@@ -26,7 +26,7 @@ An issue with none of these labels is on no track, and the board leaves it alone
 
 ## Who can move a card
 
-A card moves only when the factory's App caused the event, or a person with triage rights or higher on the repository did. The App is the account named in the repository variable `FACTORY_BOT_LOGIN`. In a public repository anybody can open an issue, close their own, or pick a form that adds a label. None of that is an event the board listens to. The cost is that an issue opened by an outside person with the new-solution form shows on the board only after a person with triage rights touches it. The check calls GitHub for the role of the person, and if the call fails, the card does not move.
+A card moves only when the factory's App caused the event, or a person with triage rights or higher on the repository did. The App is the account named in the repository variable `FACTORY_BOT_LOGIN`. While the variable is unset, the board steps of the Action do not run at all. In a public repository anybody can open an issue, close their own, or pick a form that adds a label. None of that is an event the board listens to. The cost is that an issue opened by an outside person with the new-solution form shows on the board only after a person with triage rights touches it. The check calls GitHub for the role of the person, and if the call fails, the card does not move.
 
 ## Whose board
 

@@ -121,7 +121,32 @@ elif args[:2] == ["secret", "list"]:
     if fail == "secret_list": sys.exit(1)
     print(json.dumps([{"name": n} for n in load("secrets.json", [])]))
 elif args[:2] == ["variable", "list"]:
-    print(json.dumps([{"name": n} for n in load("variables.json", [])]))
+    if fail == "variable_list": sys.exit(1)
+    print(json.dumps([{"name": n} for n in load("variables.json", ["FACTORY_BOT_LOGIN"])]))
+elif args[:1] == ["api"] and len(args) >= 2 and args[1].startswith("repos/"):
+    # The read-only questions about the default branch. review.json says what the host answers.
+    review = load("review.json", {})
+    path = args[1]
+    if "-X" in args or "-f" in args:
+        sys.exit(65)  # a write: the installer must never make one here
+    if path.count("/") == 2:
+        if fail == "repo_read": sys.exit(1)
+        branch = review.get("default_branch", "main")
+        print(branch if "--jq" in args else json.dumps({"default_branch": branch}))
+    elif path.endswith("/rules/branches/main"):
+        rules = review.get("rules", [])
+        if rules is None:
+            print(json.dumps({"message": "Resource not accessible"})); sys.exit(1)
+        print(json.dumps(rules))
+    elif path.endswith("/branches/main/protection"):
+        body = review.get("protection", {"required_pull_request_reviews": {"required_approving_review_count": 1}})
+        if body is None:
+            print(json.dumps({"message": "Resource not accessible by personal access token"})); sys.exit(1)
+        if body == "unprotected":
+            print(json.dumps({"message": "Branch not protected"})); sys.exit(1)
+        print(json.dumps(body))
+    else:
+        sys.exit(64)
 else:
     sys.exit(64)
 '''
@@ -163,6 +188,48 @@ elif args[:2] == ["plugin", "add"]:
 else:
     sys.exit(64)
 '''
+
+# A fake `specify` that does what Spec Kit 1.1.2 does for `integration install KEY`, offline: it writes the files the
+# release writes for KEY (here, copies of the files of this repository, which are the pinned release) and lists KEY in
+# .specify/integration.json. FAKE_SPECIFY_TAMPER=1 makes it write a different skill, as another release would.
+FAKE_SPECIFY = r'''#!/usr/bin/env python3
+import json, os, shutil, sys
+state = os.environ["FAKE_STATE"]
+source = os.environ["FAKE_SPECKIT_SOURCE"]
+args = sys.argv[1:]
+with open(os.path.join(state, "calls.log"), "a", encoding="utf-8") as log:
+    log.write("specify[%s] %s\n" % ("in project" if os.path.basename(os.getcwd()) == "project" else "elsewhere", " ".join(args)))
+for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+    if os.environ.get(name):
+        with open(os.path.join(state, "saw_token.log"), "a", encoding="utf-8") as seen: seen.write("specify " + name + "\n")
+if args[:1] == ["--version"]:
+    print("specify " + os.environ.get("FAKE_SPECIFY_VERSION", "1.1.2"))
+elif args[:2] == ["integration", "install"] and len(args) == 3:
+    if os.environ.get("FAKE_FAIL") == "specify_install":
+        print("error: could not install", file=sys.stderr)
+        sys.exit(1)
+    key = args[2]
+    with open(os.path.join(source, ".specify", "integrations", key + ".manifest.json"), encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    written = []
+    for path in sorted(manifest["files"]):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copyfile(os.path.join(source, path), path)
+        written.append(path)
+    if os.environ.get("FAKE_SPECIFY_TAMPER"):
+        with open(written[0], "a", encoding="utf-8") as handle: handle.write("\nAnother release.\n")
+    os.makedirs(os.path.join(".specify", "integrations"), exist_ok=True)
+    shutil.copyfile(os.path.join(source, ".specify", "integrations", key + ".manifest.json"),
+                    os.path.join(".specify", "integrations", key + ".manifest.json"))
+    with open(os.path.join(".specify", "integration.json"), encoding="utf-8") as handle: document = json.load(handle)
+    document["installed_integrations"] = sorted(set(document.get("installed_integrations", [])) | {key})
+    document.setdefault("integration_settings", {})[key] = {"script": "sh", "invoke_separator": "-"}
+    with open(os.path.join(".specify", "integration.json"), "w", encoding="utf-8") as handle: json.dump(document, handle, indent=2)
+    print("Integration installed successfully")
+else:
+    sys.exit(64)
+'''
+
 
 def last_line(out):
     lines = out.rstrip().splitlines()
@@ -591,7 +658,7 @@ class Board(Case):
         self.put_state("linked.json", [{"owner": "acme", "number": 7, "title": "Roadmap"}])
         self.put_state("fields_acme_7.json", RICH_FIELDS)
         self.put_state("secrets.json", [])
-        self.put_state("variables.json", [])
+        self.put_state("variables.json", ["FACTORY_BOT_LOGIN"])
 
     def board(self, *extra, **kw):
         return self.run_install("--checkout", self.project, "--repo", "acme/widgets", "--no-mcp", *extra, **kw)
@@ -739,7 +806,7 @@ class Board(Case):
         self.assertTrue(self.has(out, "PRESENT", "board-credential"), out)
         self.setUp()
         self.put_state("secrets.json", ["FACTORY_BOARD_APP_PRIVATE_KEY"])
-        self.put_state("variables.json", ["FACTORY_BOARD_CLIENT_ID"])
+        self.put_state("variables.json", ["FACTORY_BOARD_CLIENT_ID", "FACTORY_BOT_LOGIN"])
         _, out = self.board()
         self.assertTrue(self.has(out, "PRESENT", "board-credential"), out)
         self.setUp()
@@ -1101,7 +1168,7 @@ class Links(Case):
         self.put_state("linked.json", [{"owner": "acme", "number": 7, "title": "Roadmap"}])
         self.put_state("fields_acme_7.json", RICH_FIELDS)
         self.put_state("secrets.json", [])
-        self.put_state("variables.json", [])
+        self.put_state("variables.json", ["FACTORY_BOT_LOGIN"])
         outside = os.path.join(self.victim, "board.json")
         with open(outside, "w", encoding="utf-8") as handle:
             handle.write("keep me")
@@ -1373,13 +1440,508 @@ class BoardAndBotNotes(Board):
         _, out = self.board()
         self.assertNotIn("FACTORY_BOARD_OWNERS", out)
 
-    def test_the_variable_for_the_apps_login_is_asked_for_when_it_is_missing(self):
+    def test_the_variable_for_the_apps_login_is_reported_as_present_when_it_is_set(self):
         _, out = self.board()
-        self.assertIn("FACTORY_BOT_LOGIN is not set", out)
-        self.setUp()
+        self.assertTrue(self.has(out, "PRESENT", "bot-login", "FACTORY_BOT_LOGIN is set on acme/widgets"), out)
+
+
+def reference_manifest(key):
+    with open(os.path.join(ROOT, ".specify", "integrations", key + ".manifest.json"), encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class SpecKit(Case):
+    """The project's Spec Kit installation must cover Claude Code and Codex, and every skill must be the pinned file (ADR 0019)."""
+
+    def setUp(self):
+        super().setUp()
+        self.egm_installed()
+        write_executable(os.path.join(self.bin, "specify"), FAKE_SPECIFY)
+        self.put_project({"src/app.py": "print('hi')\n"})
+
+    def put_speckit(self, installed=("claude",)):
+        with open(os.path.join(ROOT, ".specify", "integration.json"), encoding="utf-8") as handle:
+            document = json.load(handle)
+        document["installed_integrations"] = list(installed)
+        document["integration_settings"] = {k: v for k, v in document["integration_settings"].items() if k in installed}
+        document["integration"] = document["default_integration"] = installed[0]
+        self.put_project({".specify/integration.json": json.dumps(document, indent=2) + "\n"})
+        for key in installed:
+            manifest = reference_manifest(key)
+            self.put_project({".specify/integrations/%s.manifest.json" % key: json.dumps(manifest)})
+            for path in manifest["files"]:
+                self.copy_from_factory(path)
+
+    def copy_from_factory(self, path):
+        target = os.path.join(self.project, path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(os.path.join(ROOT, path), target)
+
+    def install(self, *extra, env=None, token=None):
+        return self.run_install("--checkout", self.project, "--no-board", "--no-mcp", "--agent", "claude", *extra,
+                                env={"FAKE_SPECKIT_SOURCE": ROOT, **(env or {})}, token=token)
+
+    def project_state(self):
+        """The project as it is, without the issue workflow files that every run copies into .github/."""
+        return {k: v for k, v in snapshot(self.project).items() if k != ".github" and not k.startswith(".github/")}
+
+    def specify_calls(self):
+        return [c for c in self.calls() if c.startswith("specify")]
+
+    def integration(self):
+        return json.loads(self.read(".specify/integration.json"))
+
+    def test_a_project_with_only_claude_gets_codex_with_the_offline_command_and_no_force(self):
+        self.put_speckit(("claude",))
+        code, out = self.install()
+        self.assertTrue(self.has(out, "ADDED", "speckit", "codex: specify integration install codex"), out)
+        self.assertEqual(self.specify_calls(), ["specify[elsewhere] --version", "specify[in project] integration install codex"])
+        self.assertEqual(self.integration()["installed_integrations"], ["claude", "codex"])
+        for path, digest in reference_manifest("codex")["files"].items():
+            self.assertTrue(self.exists(path), path)
+            self.assertEqual(read_bytes(os.path.join(self.project, path)), read_bytes(os.path.join(ROOT, path)), path)
+        self.assertIn("Added the codex integration", out)
+
+    def test_a_second_run_changes_nothing_and_does_not_call_specify(self):
+        self.put_speckit(("claude",))
+        self.install()
+        before = self.project_state()
+        calls = len(self.calls())
+        _, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "speckit", "claude and codex are installed"), out)
+        self.assertEqual(self.project_state(), before)
+        self.assertEqual([c for c in self.calls()[calls:] if c.startswith("specify")], [])
+
+    def test_a_project_with_only_codex_gets_claude(self):
+        self.put_speckit(("codex",))
+        _, out = self.install()
+        self.assertTrue(self.has(out, "ADDED", "speckit", "claude: specify integration install claude"), out)
+        self.assertEqual(self.integration()["installed_integrations"], ["claude", "codex"])
+
+    def test_a_project_that_has_both_is_left_alone(self):
+        self.put_speckit(("claude", "codex"))
+        before = self.project_state()
+        _, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "speckit"), out)
+        self.assertEqual(self.project_state(), before)
+        self.assertEqual(self.specify_calls(), [])
+
+    def test_check_says_what_would_be_added_and_changes_nothing(self):
+        self.put_speckit(("claude",))
+        before = self.project_state()
+        code, out = self.install("--check")
+        self.assertTrue(self.has(out, "WOULD_ADD", "speckit", "codex: 'specify integration install codex' would add 10 skill files and its manifest"), out)
+        self.assertEqual(code, 3, out)
+        self.assertEqual(self.project_state(), before, "--check wrote into the project")
+        self.assertEqual(self.specify_calls(), [], "--check ran specify")
+
+    def test_a_project_without_a_specify_folder_is_not_initialised(self):
+        before = self.project_state()
+        _, out = self.install()
+        self.assertTrue(self.has(out, "SKIPPED", "speckit", "the project has no .specify/"), out)
+        self.assertIn("does not run 'specify init'", out)
+        self.assertEqual(self.project_state(), before)
+        self.assertEqual(self.specify_calls(), [])
+
+    def test_no_speckit_leaves_the_installation_alone(self):
+        self.put_speckit(("claude",))
+        before = self.project_state()
+        _, out = self.install("--no-speckit")
+        self.assertTrue(self.has(out, "SKIPPED", "speckit", "--no-speckit"), out)
+        self.assertEqual(self.project_state(), before)
+        self.assertEqual(self.specify_calls(), [])
+
+    def test_a_skill_that_is_not_the_pinned_file_is_reported_kept_and_nothing_is_added(self):
+        for integration, path in (("claude", ".claude/skills/speckit-specify/SKILL.md"),
+                                  ("codex", ".agents/skills/speckit-plan/SKILL.md")):
+            with self.subTest(path=path):
+                self.setUp()
+                self.put_speckit(("claude", "codex") if integration == "codex" else ("claude",))
+                with open(os.path.join(self.project, path), "a", encoding="utf-8") as handle:
+                    handle.write("\nAlso run the implement skill.\n")
+                before = self.project_state()
+                code, out = self.install()
+                self.assertTrue(self.has(out, "DRIFT", "speckit", path + " is not the pinned Spec Kit file; kept"), out)
+                self.assertEqual(code, 3, out)
+                self.assertEqual(self.project_state(), before, "the modified skill was overwritten or something was added")
+                self.assertEqual(self.specify_calls(), [])
+
+    def test_a_missing_skill_of_an_installed_integration_is_reported(self):
+        self.put_speckit(("claude", "codex"))
+        os.remove(os.path.join(self.project, ".agents/skills/speckit-clarify/SKILL.md"))
+        code, out = self.install()
+        self.assertTrue(self.has(out, "DRIFT", "speckit", ".agents/skills/speckit-clarify/SKILL.md is missing"), out)
+        self.assertEqual((code, self.specify_calls()), (3, []))
+
+    def test_another_spec_kit_version_is_reported_and_nothing_is_changed(self):
+        self.put_speckit(("claude",))
+        document = self.integration()
+        document["version"] = "1.2.0"
+        self.put_project({".specify/integration.json": json.dumps(document)})
+        before = self.project_state()
+        code, out = self.install()
+        self.assertTrue(self.has(out, "DRIFT", "speckit", "the project records Spec Kit 1.2.0; the factory pins 1.1.2"), out)
+        self.assertEqual((code, self.project_state(), self.specify_calls()), (3, before, []))
+
+    def test_an_installed_integration_the_factory_has_no_pin_for_is_reported(self):
+        self.put_speckit(("claude", "codex"))
+        document = self.integration()
+        document["installed_integrations"].append("gemini")
+        self.put_project({".specify/integration.json": json.dumps(document)})
+        code, out = self.install()
+        self.assertTrue(self.has(out, "DRIFT", "speckit", "gemini is an installed integration the factory has no pin for"), out)
+        self.assertEqual((code, self.specify_calls()), (3, []))
+
+    def test_files_of_an_unlisted_integration_are_not_overwritten(self):
+        self.put_speckit(("claude",))
+        self.put_project({".agents/skills/speckit-specify/SKILL.md": "my own skill\n"})
+        _, out = self.install()
+        self.assertTrue(self.has(out, "DRIFT", "speckit", ".agents/skills/speckit-specify/SKILL.md is there but its integration is not listed"), out)
+        self.assertEqual(self.read(".agents/skills/speckit-specify/SKILL.md"), "my own skill\n")
+        self.assertEqual(self.specify_calls(), [])
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_a_gitignore_that_hides_the_new_files_stops_the_step_before_it_writes(self):
+        self.put_speckit(("claude",))
+        subprocess.run(["git", "init", "-q", self.project], check=True)
+        self.put_project({".gitignore": ".agents/\n"})
+        before = self.project_state()
+        code, out = self.install()
+        self.assertTrue(self.has(out, "NEEDS", "speckit", "codex: git ignores .agents/skills/"), out)
+        self.assertIn("docs/spec-kit/integration-guide.md, section 11.9", out)
+        self.assertEqual((code, self.project_state(), self.specify_calls()), (3, before, []))
+        # The exception the guide gives lets the step go on, and git then sees the new files.
+        self.put_project({".gitignore": ".agents/*\n!.agents/skills/\n.agents/skills/*\n!.agents/skills/speckit-*/\n"})
+        _, out = self.install()
+        self.assertTrue(self.has(out, "ADDED", "speckit", "codex:"), out)
+        listing = subprocess.run(["git", "-C", self.project, "status", "--porcelain", "-uall", "--", ".agents"],
+                                 capture_output=True, text=True).stdout
+        self.assertIn(".agents/skills/speckit-specify/SKILL.md", listing)
+
+    def test_a_missing_specify_is_a_block_that_says_how_to_install_it(self):
+        self.put_speckit(("claude",))
+        os.remove(os.path.join(self.bin, "specify"))
+        before = self.project_state()
+        code, out = self.install()
+        self.assertTrue(self.has(out, "BLOCKED", "speckit", "specify (Spec Kit 1.1.2) is not installed"), out)
+        self.assertIn("uv tool install specify-cli==1.1.2", out)
+        self.assertEqual((code, self.project_state()), (3, before))
+
+    def test_another_release_of_specify_is_refused_before_it_writes(self):
+        self.put_speckit(("claude",))
+        before = self.project_state()
+        code, out = self.install(env={"FAKE_SPECIFY_VERSION": "1.3.0"})
+        self.assertTrue(self.has(out, "BLOCKED", "speckit", "specify is 1.3.0; the factory pins 1.1.2"), out)
+        self.assertEqual((code, self.project_state()), (3, before))
+        self.assertEqual(self.specify_calls(), ["specify[elsewhere] --version"])
+
+    def test_a_failing_install_is_reported_as_a_failure(self):
+        self.put_speckit(("claude",))
+        code, out = self.install(env={"FAKE_FAIL": "specify_install"})
+        self.assertTrue(self.has(out, "BLOCKED", "speckit", "codex: 'specify integration install codex' failed"), out)
+        self.assertIn("error: could not install", out)
+        self.assertEqual(code, 1, out)
+
+    def test_files_that_are_not_the_pinned_ones_after_the_install_are_a_failure(self):
+        # A release other than the pinned one writes other skills; the hashes catch it even when the version string lies.
+        self.put_speckit(("claude",))
+        code, out = self.install(env={"FAKE_SPECIFY_TAMPER": "1"})
+        self.assertTrue(self.has(out, "BLOCKED", "speckit", "codex: the files that specify wrote are not the pinned ones"), out)
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("READY\n", out.replace("NOT READY", ""))
+
+    def test_the_tokens_are_not_in_the_environment_of_specify(self):
+        self.put_speckit(("claude",))
+        self.install(env={"GH_TOKEN": DUMMY_TOKEN, "GITHUB_TOKEN": DUMMY_TOKEN})
+        self.assertEqual(self.specify_calls()[-1], "specify[in project] integration install codex")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "saw_token.log")), "specify saw a GitHub token")
+
+    def test_a_link_in_the_way_is_never_written_through(self):
+        self.put_speckit(("claude",))
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(self.project, ".agents"))
+        code, out = self.install()
+        self.assertTrue(self.has(out, "BLOCKED", "speckit", ".agents/skills/speckit-analyze/SKILL.md is, or goes through, a symbolic link"), out)
+        self.assertEqual((code, os.listdir(outside), self.specify_calls()), (3, [], []))
+
+    def test_a_linked_integration_file_is_not_read(self):
+        self.put_speckit(("claude",))
+        real = os.path.join(self.project, ".specify", "integration.json")
+        os.rename(real, os.path.join(self.tmp, "elsewhere.json"))
+        os.symlink(os.path.join(self.tmp, "elsewhere.json"), real)
+        code, out = self.install()
+        self.assertTrue(self.has(out, "BLOCKED", "speckit", ".specify/integration.json is, or goes through, a symbolic link"), out)
+        self.assertEqual((code, self.specify_calls()), (3, []))
+
+    def test_an_integration_file_that_cannot_be_used_is_a_sentence_and_not_a_traceback(self):
+        self.put_speckit(("claude",))
+        for text in ("{ not json", "[]", "x" * 70000, json.dumps({"version": "1.1.2", "installed_integrations": "claude"}),
+                     json.dumps({"version": "1.1.2", "installed_integrations": [{"a": 1}]}),
+                     json.dumps({"version": 7, "installed_integrations": ["claude"]}),
+                     json.dumps({"version": "1.1.2\x1b[31m", "installed_integrations": ["claude"]})):
+            with self.subTest(text=text[:30]):
+                self.put_project({".specify/integration.json": text})
+                code, out = self.install()
+                self.assertTrue(self.has(out, "NEEDS", "speckit"), out)
+                self.assertNotIn("Traceback", out)
+                self.assertNotIn("\x1b", out)
+                self.assertEqual((code, self.specify_calls()), (3, []))
+
+    def test_the_uncommitted_check_sees_the_spec_kit_files(self):
+        self.put_speckit(("claude",))
+        subprocess.run(["git", "init", "-q", self.project], check=True)
+        self.put_project({".gitignore": ".agents/*\n!.agents/skills/\n.agents/skills/*\n!.agents/skills/speckit-*/\n"})
+        _, out = self.install()
+        self.assertTrue(self.has(out, "NEEDS", "uncommitted"), out)
+
+    @unittest.skipUnless(shutil.which("specify"), "specify (Spec Kit) is not installed here")
+    def test_the_real_specify_adds_codex_and_every_file_is_the_pinned_one(self):
+        real = shutil.which("specify")
+        if real is None:
+            self.skipTest("specify (Spec Kit) is not installed here")
+        shown = subprocess.run([real, "--version"], capture_output=True, text=True).stdout.split()
+        if not shown or shown[-1] != "1.1.2":
+            self.skipTest("the specify on this machine is not 1.1.2")
+        os.remove(os.path.join(self.bin, "specify"))
+        self.put_speckit(("claude",))
+        path = "%s:%s:/usr/bin:/bin" % (self.bin, os.path.dirname(real))
+        _, out = self.install(env={"PATH": path})
+        self.assertTrue(self.has(out, "ADDED", "speckit", "codex: specify integration install codex"), out)
+        for relative, digest in reference_manifest("codex")["files"].items():
+            self.assertEqual(read_bytes(os.path.join(self.project, relative)), read_bytes(os.path.join(ROOT, relative)), relative)
+        self.assertEqual(self.integration()["installed_integrations"], ["claude", "codex"])
+        status = subprocess.run([real, "integration", "status", "--json"], cwd=self.project, capture_output=True, text=True)
+        self.assertEqual(json.loads(status.stdout)["status"], "ok", status.stdout)
+
+
+class BotLogin(Case):
+    """PL-21: a run that installs the Action into a repository that does not have FACTORY_BOT_LOGIN stops before it changes anything."""
+
+    def setUp(self):
+        super().setUp()
+        self.egm_installed()
+        self.put_project({"README.md": "# p\n"})
+
+    def install(self, *extra, **kw):
+        return self.run_install("--checkout", self.project, "--repo", "acme/widgets", "--no-mcp", "--no-board", *extra, **kw)
+
+    def writes(self):
+        return [c for c in self.calls() if any(word in c for word in ("label create", "plugin install", "marketplace add", "plugin enable"))]
+
+    def test_a_missing_variable_stops_the_run_before_it_changes_anything(self):
+        self.put_state("variables.json", [])
+        before = snapshot(self.project)
+        code, out = self.install()
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "BLOCKED", "bot-login", "FACTORY_BOT_LOGIN is not set on acme/widgets"), out)
+        self.assertIn("--allow-missing-bot-login", out)
+        self.assertEqual(snapshot(self.project), before, "the project was changed")
+        self.assertEqual(self.writes(), [], "the user scope or GitHub was changed")
+        self.assertIn("NOT READY", out)
+        self.assertFalse(self.has(out, "ADDED", "workflow-files"), out)
+        self.assertFalse(self.has(out, "PRESENT", "egm-plugin"), "later steps must not have run")
+
+    def test_check_still_shows_everything_but_does_not_say_ready(self):
+        self.put_state("variables.json", [])
+        before = snapshot(self.project)
+        code, out = self.install("--check")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "BLOCKED", "bot-login"), out)
+        self.assertTrue(self.has(out, "WOULD_ADD", "workflow-files"), "--check goes on, because it changes nothing")
+        self.assertEqual(snapshot(self.project), before)
+
+    def test_a_variable_that_is_set_lets_the_run_go_on(self):
         self.put_state("variables.json", ["FACTORY_BOT_LOGIN"])
-        _, out = self.board()
-        self.assertNotIn("FACTORY_BOT_LOGIN is not set", out)
+        code, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "bot-login", "FACTORY_BOT_LOGIN is set on acme/widgets"), out)
+        self.assertTrue(self.has(out, "ADDED", "workflow-files"), out)
+        self.assertFalse(self.has(out, "BLOCKED", "bot-login"), out)
+        self.assertIn("gh variable list --repo acme/widgets --json name", self.calls(), "only the names are asked for")
+
+    def test_the_flag_lets_a_run_go_on_without_the_variable_and_says_what_follows(self):
+        self.put_state("variables.json", [])
+        code, out = self.install("--allow-missing-bot-login")
+        self.assertTrue(self.has(out, "NOTE", "bot-login", "FACTORY_BOT_LOGIN is not set on acme/widgets"), out)
+        self.assertTrue(self.has(out, "ADDED", "workflow-files"), out)
+        self.assertFalse(self.has(out, "BLOCKED", "bot-login"), out)
+        self.assertIn("the Action does nothing and says so in its log", out.replace("\n", " "))
+        self.assertIn("gh variable set FACTORY_BOT_LOGIN --repo acme/widgets", out)
+
+    def test_a_variable_that_cannot_be_read_is_treated_as_missing_unless_allowed(self):
+        self.put_state("variables.json", ["FACTORY_BOT_LOGIN"])
+        before = snapshot(self.project)
+        code, out = self.install(env={"FAKE_FAIL": "variable_list"})
+        self.assertTrue(self.has(out, "BLOCKED", "bot-login", "could not read the variables of acme/widgets"), out)
+        self.assertEqual((code, snapshot(self.project)), (3, before))
+        code, out = self.install("--allow-missing-bot-login", env={"FAKE_FAIL": "variable_list"})
+        self.assertTrue(self.has(out, "NOTE", "bot-login", "could not read the variables of acme/widgets"), out)
+
+    def test_without_gh_the_labels_step_is_the_one_that_blocks(self):
+        code, out = self.install(with_gh=False)
+        self.assertTrue(self.has(out, "BLOCKED", "labels"), out)
+        self.assertFalse(self.has(out, "BLOCKED", "bot-login"), out)
+
+    def test_without_repo_the_installer_has_nothing_to_read_and_says_nothing_about_it(self):
+        code, out = self.run_install("--checkout", self.project, "--no-mcp", "--no-board")
+        self.assertNotIn("bot-login", out)
+        self.assertFalse([c for c in self.calls() if c.startswith("gh variable")])
+
+    def test_the_flag_is_in_the_help_and_is_refused_in_a_misspelling(self):
+        code, out = self.run_install("--help")
+        self.assertIn("--allow-missing-bot-login", out)
+        code, out = self.run_install("--allow-missing-bot-logins")
+        self.assertEqual(code, 2, out)
+
+
+class ReviewRule(Case):
+    """PL-12: the guides say a merged design document is an approval only if the default branch requires reviewed pull requests. The installer reads whether it does."""
+
+    def setUp(self):
+        super().setUp()
+        self.egm_installed()
+        self.put_project({"README.md": "# p\n"})
+
+    def install(self, *extra, **kw):
+        return self.run_install("--checkout", self.project, "--repo", "acme/widgets", "--no-mcp", "--no-board", *extra, **kw)
+
+    def review(self, **answers):
+        self.put_state("review.json", answers)
+
+    def test_a_branch_protection_that_requires_one_review_is_present(self):
+        _, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "review-rule", "main of acme/widgets requires 1 approving review"), out)
+        self.assertIn("branch protection", out)
+
+    def test_a_ruleset_is_enough_and_the_larger_count_is_reported(self):
+        self.review(protection=None, rules=[{"type": "deletion"}, {"type": "pull_request", "parameters": {"required_approving_review_count": 2}}])
+        _, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "review-rule", "main of acme/widgets requires 2 approving review"), out)
+        self.assertIn("a ruleset", out)
+
+    def test_a_branch_that_requires_no_pull_request_needs_a_person(self):
+        self.review(protection="unprotected", rules=[])
+        code, out = self.install()
+        self.assertTrue(self.has(out, "NEEDS", "review-rule", "main of acme/widgets does not require a pull request with an approving review"), out)
+        self.assertEqual(code, 3, out)
+        self.assertIn("a merged design document is not an approval", out.replace("\n", " "))
+
+    def test_pull_requests_without_an_approving_review_are_not_an_approval_either(self):
+        self.review(protection={"required_pull_request_reviews": {"required_approving_review_count": 0}}, rules=[])
+        _, out = self.install()
+        self.assertTrue(self.has(out, "NEEDS", "review-rule", "main of acme/widgets requires pull requests but no approving review"), out)
+
+    def test_what_cannot_be_read_is_blocked_and_never_called_fine(self):
+        for name, answers in (("protection unreadable", {"protection": None, "rules": []}),
+                              ("rules unreadable", {"protection": "unprotected", "rules": None}),
+                              ("both unreadable", {"protection": None, "rules": None})):
+            with self.subTest(case=name):
+                self.setUp()
+                self.review(**answers)
+                code, out = self.install()
+                self.assertTrue(self.has(out, "BLOCKED", "review-rule", "could not tell whether main of acme/widgets requires"), out)
+                self.assertEqual(code, 3, out)
+                self.assertNotIn("READY\n", out.replace("NOT READY", ""))
+                self.assertFalse(self.has(out, "PRESENT", "review-rule"), out)
+
+    def test_a_ruleset_that_requires_a_review_settles_it_even_if_the_protection_cannot_be_read(self):
+        self.review(protection=None, rules=[{"type": "pull_request", "parameters": {"required_approving_review_count": 1}}])
+        _, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "review-rule"), out)
+
+    def test_an_unreadable_repository_or_an_odd_branch_name_is_blocked(self):
+        code, out = self.install(env={"FAKE_FAIL": "repo_read"})
+        self.assertTrue(self.has(out, "BLOCKED", "review-rule", "could not read the default branch of acme/widgets"), out)
+        for name in ("feat/x", "a b", "x;touch pwned", "-x", ""):
+            with self.subTest(branch=name):
+                self.setUp()
+                self.review(default_branch=name)
+                _, out = self.install()
+                self.assertTrue(self.has(out, "BLOCKED", "review-rule"), out)
+                self.assertIn("default branch", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "pwned")))
+
+    def test_it_only_reads_and_it_also_runs_in_check_mode(self):
+        before = snapshot(self.project)
+        _, out = self.install("--check")
+        self.assertTrue(self.has(out, "PRESENT", "review-rule"), out)
+        self.assertEqual(snapshot(self.project), before)
+        asked = [c for c in self.calls() if c.startswith("gh api repos/")]
+        self.assertEqual(asked, ["gh api repos/acme/widgets --jq .default_branch",
+                                 "gh api repos/acme/widgets/rules/branches/main",
+                                 "gh api repos/acme/widgets/branches/main/protection"])
+
+    def test_without_repo_or_without_gh_there_is_nothing_to_read(self):
+        _, out = self.run_install("--checkout", self.project, "--no-mcp", "--no-board")
+        self.assertNotIn("review-rule", out)
+        _, out = self.install(with_gh=False)
+        self.assertTrue(self.has(out, "BLOCKED", "review-rule", "gh is not installed"), out)
+
+
+class BranchReviewsTool(unittest.TestCase):
+    """The judgement itself, on the answers a host could give, including answers that are shaped to mislead."""
+
+    TOOL = os.path.join(ROOT, "scripts", "lib", "branch_reviews.py")
+
+    def judge(self, rules, rules_exit, protection, protection_exit):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, value in (("rules", rules), ("protection", protection)):
+                path = os.path.join(tmp, name + ".json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(value if isinstance(value, str) else json.dumps(value))
+                paths.append(path)
+            done = subprocess.run(["python3", "-I", self.TOOL, "judge", paths[0], str(rules_exit), paths[1], str(protection_exit)],
+                                  capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.rstrip("\n").split("\t")
+
+    def test_answers_that_require_a_review(self):
+        reviews = {"required_pull_request_reviews": {"required_approving_review_count": 3}}
+        self.assertEqual(self.judge([], 0, reviews, 0), ["required", "3", "branch protection"])
+        self.assertEqual(self.judge([{"type": "pull_request", "parameters": {"required_approving_review_count": 1}}], 0,
+                                    {"message": "Branch not protected"}, 1), ["required", "1", "a ruleset"])
+
+    def test_answers_that_do_not_are_never_called_required(self):
+        zero = {"required_pull_request_reviews": {"required_approving_review_count": 0}}
+        self.assertEqual(self.judge([], 0, {"message": "Branch not protected"}, 1), ["none"])
+        self.assertEqual(self.judge([], 0, {"required_status_checks": {}}, 0), ["none"], "protection without a review rule")
+        self.assertEqual(self.judge([], 0, zero, 0), ["weak"])
+
+    def test_malformed_answers_are_not_a_review(self):
+        hostile = [
+            {"required_pull_request_reviews": {"required_approving_review_count": True}},
+            {"required_pull_request_reviews": {"required_approving_review_count": "2"}},
+            {"required_pull_request_reviews": {"required_approving_review_count": -1}},
+            {"required_pull_request_reviews": {"required_approving_review_count": 10 ** 9}},
+            {"required_pull_request_reviews": []},
+            [],
+            "text",
+        ]
+        for protection in hostile:
+            with self.subTest(protection=protection):
+                verdict = self.judge([], 0, protection, 0)
+                self.assertNotEqual(verdict[0], "required", verdict)
+        for rules in ([{"type": "pull_request"}], [{"type": "pull_request", "parameters": []}], [None, 3], {"type": "pull_request"}):
+            with self.subTest(rules=rules):
+                self.assertNotEqual(self.judge(rules, 0, {"message": "Branch not protected"}, 1)[0], "required")
+
+    def test_a_failure_is_unreadable_unless_the_host_said_the_branch_is_not_protected(self):
+        self.assertEqual(self.judge([], 0, {"message": "Resource not accessible"}, 1)[0], "unreadable")
+        self.assertEqual(self.judge([], 0, "not json at all", 1)[0], "unreadable")
+        self.assertEqual(self.judge("{", 1, {"message": "Branch not protected"}, 1)[0], "unreadable")
+        # A body that says "required" under a failing exit code is not believed.
+        reviews = {"required_pull_request_reviews": {"required_approving_review_count": 2}}
+        self.assertEqual(self.judge([], 0, reviews, 1)[0], "unreadable")
+
+    def test_a_file_far_larger_than_any_answer_is_not_read(self):
+        big = '{"required_pull_request_reviews": {"required_approving_review_count": 2}, "x": "%s"}' % ("a" * (2 * 1024 * 1024))
+        self.assertEqual(self.judge([], 0, big, 0)[0], "unreadable")
+
+    def test_wrong_arguments_exit_with_2(self):
+        for args in ([], ["judge"], ["judge", "a", "0", "b", "x"], ["nonsense", "a", "0", "b", "0"]):
+            done = subprocess.run(["python3", "-I", self.TOOL, *args], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 2, args)
 
 
 if __name__ == "__main__":

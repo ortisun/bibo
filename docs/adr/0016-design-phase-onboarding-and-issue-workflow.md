@@ -100,7 +100,7 @@ On 2026-11-02. "Verified" means read from the source named. "Unverified" means t
 - **The design gate is advisory until the engine is changed.** Until then a requester can apply `factory` to a design-track issue that is not approved. The Action only comments.
 - Fifteen labels is a lot to learn. The `design:` track is optional, so a small change meets two of them at most.
 - EGM is a third-party plugin read but not audited, version 0.1.0. The installer reports another version as `DRIFT` and keeps it. EGM reads repository text in a session that has the operator's token, so the text of the repository and of the issues can steer that session. The lockdown header and a token limited to one repository reduce the harm and do not remove it.
-- The Action's `FACTORY_BOT_LOGIN` is a repository variable that someone has to set when the factory exists. Until then the `factory:` namespace is locked to everyone, which is the safe side.
+- The Action's `FACTORY_BOT_LOGIN` is a repository variable that someone has to set when the factory exists. Until then the Action does nothing at all and says so in its log (changed on 2026-11-03, PL-21; before that it took the factory's own `factory:` labels away and commented on each change), and the installer stops a run with `--repo` unless the variable is set or `--allow-missing-bot-login` is given.
 - The map check follows the pruning rules of the bootstrap skill by copy, not by calling it. If the skill changes its rules, the two can disagree.
 - The factory repository now holds files meant for other repositories (`onboarding/`). `scripts/ci/` and `policies/` are protected paths, so this change needs the code owners.
 

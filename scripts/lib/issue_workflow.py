@@ -492,6 +492,15 @@ def reconcile(config, *, current, labelers, factory_bot_login, design_doc_exists
     return [("remove_label", name) for name in sorted(removed)] + [("comment", text)]
 
 
+def _is_the_gate_comment(comment):
+    """True for a comment that the Action itself posted: the bot account of GitHub Actions, and the marker first."""
+    if not isinstance(comment, dict) or not isinstance(comment.get("user"), dict):
+        return False
+    user = comment["user"]
+    return (user.get("login") == "github-actions[bot]" and user.get("type") == "Bot"
+            and str(comment.get("body", "")).startswith(GATE_MARKER))
+
+
 def _remove(api, base, name):
     try:
         api("DELETE", "%s/labels/%s" % (base, urllib.parse.quote(name, safe="")))
@@ -554,10 +563,9 @@ def apply_event(config, event, repo, docs_root, bot_login, api=gh_api):
         elif op[0] == "comment":
             text = op[1]
             if GATE_MARKER in text:
-                # Only the Action's own comments count. Anyone can paste the marker into a comment.
-                mine = [c for c in parse_pages(api("GET", base + "/comments", paginate=True))
-                        if isinstance(c, dict) and (c.get("user") or {}).get("login") == "github-actions[bot]"]
-                if any(GATE_MARKER in str(c.get("body", "")) for c in mine):
+                # Only the Action's own comments count (PL-12). Anyone can paste the marker into a comment, so the
+                # comment must be by the Actions bot account and must BEGIN with the marker, as the Action writes it.
+                if any(_is_the_gate_comment(c) for c in parse_pages(api("GET", base + "/comments", paginate=True))):
                     continue
             api("POST", base + "/comments", {"body": text})
     return ops
@@ -625,7 +633,18 @@ def _cmd_apply(args):
     if event.get("action") not in ("labeled", "unlabeled") or "label" not in event:
         print("nothing to do: not a label event")
         return 0
-    ops = apply_event(load_config(args.config), event, args.repo, args.docs_root, os.environ.get("FACTORY_BOT_LOGIN", ""))
+    bot_login = os.environ.get("FACTORY_BOT_LOGIN", "").strip()
+    if not bot_login:
+        # PL-21. Without the App's login every `factory:` label looks like a person's, so the Action would take the
+        # factory's own status labels away and comment on each state change. It does nothing instead: no read, no
+        # label, no comment. The text is fixed, and the annotation shows in the run's summary.
+        print("nothing done: the repository variable FACTORY_BOT_LOGIN is not set, so this Action cannot tell the "
+              "factory's own labels from a person's. It read nothing, changed no label and wrote no comment. Set the "
+              "variable to the login of the factory's GitHub App, for example my-factory[bot].")
+        print("::warning title=FACTORY_BOT_LOGIN is not set::The issue workflow did nothing. Set the repository "
+              "variable FACTORY_BOT_LOGIN to the login of the factory's GitHub App.")
+        return 0
+    ops = apply_event(load_config(args.config), event, args.repo, args.docs_root, bot_login)
     for op in ops:
         print("%s %s" % (op[0], _clean(op[1].splitlines()[0] if op[0] == "comment" else op[1])))
     return 0

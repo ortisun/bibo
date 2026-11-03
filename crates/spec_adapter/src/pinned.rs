@@ -2,17 +2,18 @@
 //!
 //! The Claude Code and shared hashes are the full values from the manifests that the Spec Kit
 //! initialisation wrote with `--integration claude` (recorded under `tests/fixtures/recordings/`).
-//! The Codex hashes are the 16-character prefixes the integration guide lists (Appendix A), because
-//! the full Codex manifest was not kept; 64 bits are enough to tell a modified skill from the
-//! pinned one, and the table says so in its name. When Spec Kit is upgraded, this file is generated
-//! again from the new manifests.
+//! The Codex hashes are the full values from the manifest that `specify integration install codex`
+//! (Spec Kit 1.1.2, offline) wrote in this repository, `.specify/integrations/codex.manifest.json`.
+//! The test `pinned_tables_equal_the_manifests_of_this_repository` keeps the three tables, the
+//! manifests and the installed files from drifting apart. When Spec Kit is upgraded, this file is
+//! generated again from the new manifests.
 
 /// A file the installer wrote and the SHA-256 it recorded for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinnedFile {
     /// The path relative to the repository root.
     pub path: &'static str,
-    /// The lowercase hex SHA-256, or its first 16 characters for the Codex table.
+    /// The lowercase hex SHA-256 (all 64 characters).
     pub sha256: &'static str,
 }
 
@@ -112,46 +113,46 @@ pub const SHARED_FILES: [PinnedFile; 12] = [
     },
 ];
 
-/// The ten skill files of the Codex integration (16-character hash prefixes).
-pub const CODEX_SKILLS_PREFIX: [PinnedFile; 10] = [
+/// The ten skill files of the Codex integration (full hashes, from `.specify/integrations/codex.manifest.json`).
+pub const CODEX_SKILLS: [PinnedFile; 10] = [
     PinnedFile {
         path: ".agents/skills/speckit-analyze/SKILL.md",
-        sha256: "0b3261b13cc33537",
+        sha256: "0b3261b13cc33537f24b3e1f6d5320694c348302c385d0046dc6b958cf2db6cb",
     },
     PinnedFile {
         path: ".agents/skills/speckit-checklist/SKILL.md",
-        sha256: "7ac5cba31a27151a",
+        sha256: "7ac5cba31a27151a1a7b73f691bd478d42750ce2dd734701a07eb0e235ffbd94",
     },
     PinnedFile {
         path: ".agents/skills/speckit-clarify/SKILL.md",
-        sha256: "f6acfbc82c96c0d9",
+        sha256: "f6acfbc82c96c0d91b2429fd0b51ce7df7f94b003d1b73acc54470d48bcc455e",
     },
     PinnedFile {
         path: ".agents/skills/speckit-constitution/SKILL.md",
-        sha256: "b2a6a979ef751181",
+        sha256: "b2a6a979ef7511812b60cde4adb6f1c4a8b1b57314ea2f1861ebc3f4796bf377",
     },
     PinnedFile {
         path: ".agents/skills/speckit-converge/SKILL.md",
-        sha256: "5859c9780ddc012f",
+        sha256: "5859c9780ddc012f600e7d35a5691e032fe05861296f226b5665a0ec03135ccd",
     },
     PinnedFile {
         path: ".agents/skills/speckit-implement/SKILL.md",
-        sha256: "848a5c9eff7b99e3",
+        sha256: "848a5c9eff7b99e348927cbde6c35378de9fea3fd317941f58fa0b0b79301eec",
     },
     PinnedFile {
         path: ".agents/skills/speckit-plan/SKILL.md",
-        sha256: "db2406adfa50103f",
+        sha256: "db2406adfa50103fc04ca8109ac934cd715086fba64365fb404630a88c62bda5",
     },
     PinnedFile {
         path: ".agents/skills/speckit-specify/SKILL.md",
-        sha256: "a505028de7f64898",
+        sha256: "a505028de7f6489878696d6656c7d057f3a66119ebb8c0cc82d69fabb7b344ff",
     },
     PinnedFile {
         path: ".agents/skills/speckit-tasks/SKILL.md",
-        sha256: "1086d7885df1188d",
+        sha256: "1086d7885df1188d00e7d5eb4715e678b4340b893e8f24ae748d823b13599a56",
     },
     PinnedFile {
         path: ".agents/skills/speckit-taskstoissues/SKILL.md",
-        sha256: "a349d410c1803852",
+        sha256: "a349d410c180385215bf5180b13319bd8259199267af24917f4f4d0adcbb6ad2",
     },
 ];

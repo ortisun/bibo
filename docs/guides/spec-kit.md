@@ -60,7 +60,7 @@ The [walkthrough](../walkthroughs/test-mode-run.md) shows step 4 in a recorded r
 
 Before the first job, the repository needs these files, committed on the protected branch:
 
-- `.specify/` from `specify init --integration claude`, at the pinned version 1.1.2. The files `.specify/init-options.json` and `.specify/integration.json` must record that version, and `.specify/extensions.yml` must not exist.
+- `.specify/` from `specify init --integration claude`, at the pinned version 1.1.2, with the Codex integration added by `specify integration install codex` so that the project works with either tool. The files `.specify/init-options.json` and `.specify/integration.json` must record that version, and `.specify/extensions.yml` must not exist. `scripts/install.sh --checkout PATH` adds whichever of the two is missing to a project that already has `.specify/`; it never runs `init` and never uses `--force`. The Codex skills live in `.agents/skills`, so the project's `.gitignore` must not ignore `.agents/skills/speckit-*` (the installer reports it if it does).
 - `.specify/memory/constitution.md`, filled in. A placeholder fails the check.
 
 The adapter never runs `init` on a repository that already has `.specify/`. ADR 0006 lets the control plane run the pinned `specify init` when `.specify/` is missing and policy authorizes it, and commit the files on the job branch for a person to read. Nobody has confirmed that step for Slice 1, so the repository owner does it by hand.
@@ -85,7 +85,7 @@ These come from places where the sources disagree or say "unverified". Nobody ha
 4. **How is a specification revised?** Spec Kit has no in-place revision. ADR 0006 proposes a new feature directory seeded by the host, and calls it a proposal that needs a spike. The spike did not run with a real agent.
 5. **Does `specify` honour an explicit feature directory** that the factory sets with `SPECIFY_FEATURE_DIRECTORY`, and do concurrent runs in separate worktrees stay apart? The integration guide lists both as unverified.
 6. **The protected-path rule and `.specify/feature.json`.** The security policy protects `.specify/**`, and the specify skill must write `.specify/feature.json`. The composition code lifts the writes the policy lists for the specification stage only (`specification_path_rules`). The security owner has not confirmed that this is the intended way.
-7. **The skill ids on other hosts.** `/speckit-specify` is the form on Claude Code and `$speckit-specify` on Codex, with the separator read from `.specify/integration.json`. The master prompt writes `/speckit.specify`. The repository records only the `claude` integration.
+7. **The skill ids on other hosts.** `/speckit-specify` is the form on Claude Code and `$speckit-specify` on Codex, with the separator read from `.specify/integration.json`. The master prompt writes `/speckit.specify`. The repository records both the `claude` and the `codex` integration (since 2026-11-03), with `-` as the separator for both, and the worker pins the skills of both.
 
 ## Where to read more
 

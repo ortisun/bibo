@@ -51,7 +51,9 @@ jobs:
 
       # Issue text reaches the script only through the event file, never through this command line.
       # FACTORY_BOT_LOGIN is the login of the factory's GitHub App, for example `my-factory[bot]`. Set it as a
-      # repository variable. With no value, nobody may set a `factory:` label.
+      # repository variable. With no value this step does nothing and says so in its log (PL-21): it cannot tell the
+      # factory's own `factory:` labels from a person's, and it would otherwise remove them and comment each time.
+      # The two board steps below wait for the same variable.
       - name: Apply the issue workflow
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,7 +70,7 @@ jobs:
       # two permissions the board step needs and nothing else, and it expires when the job ends.
       - name: Create a short-lived credential for the board
         id: board-app
-        if: ${{ vars.FACTORY_BOARD_CLIENT_ID != '' }}
+        if: ${{ vars.FACTORY_BOT_LOGIN != '' && vars.FACTORY_BOARD_CLIENT_ID != '' }}
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.FACTORY_BOARD_CLIENT_ID }}
@@ -78,6 +80,7 @@ jobs:
 
       # The issue is read with the repository token. Only the board calls use BOARD_TOKEN.
       - name: Move the issue on the board
+        if: ${{ vars.FACTORY_BOT_LOGIN != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           BOARD_TOKEN: ${{ steps.board-app.outputs.token || secrets.FACTORY_BOARD_TOKEN }}

@@ -46,7 +46,7 @@ The command added 30 files and changed nothing else. Before and after, `README.m
 .specify/workflows/workflow-registry.json
 ```
 
-Only the Claude Code integration was installed. The Codex integration writes to `.agents/skills/`, which this repository's `.gitignore` ignores (see integration guide section 11.9).
+Only the Claude Code integration was installed at the time of this example. The Codex integration was added to this repository later, on 2026-11-03, with `specify integration install codex` (see integration guide sections 3.4 and 11.9). The listing above is therefore the Claude Code part of what is committed now.
 
 Check after init:
 

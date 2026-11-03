@@ -58,6 +58,10 @@ Run the installer once. It writes `.mcp.json` and `.codex/config.toml`, copies t
 scripts/install.sh --checkout ../my-project --repo my-org/my-project --agent both
 ```
 
+## Spec Kit for both tools
+
+A project that uses the factory's specification stage has Spec Kit installed once, and its skills are files in the project: `.claude/skills/speckit-*` for Claude Code and `.agents/skills/speckit-*` for Codex. `scripts/install.sh --checkout PATH` makes the installation cover both, whatever `--agent` says, because the files belong to the project and not to the person who runs the script. It adds the missing integration with `specify integration install claude` or `codex` (no network, no `--force`), then compares every skill file with the hash the factory pins. A file that differs is `DRIFT` and is kept. The skills are written `/speckit-specify` in Claude Code and `$speckit-specify` in Codex; the separator comes from `.specify/integration.json`, where the install records `-` for both. Codex puts its skills in `.agents/skills`, so a project whose ignore rules hide `.agents/` needs the exception in `docs/spec-kit/integration-guide.md`, section 11.9, and the installer stops until it has it.
+
 ## What the factory itself never does
 
 For both tools the factory treats the project's own copies as data. A factory run never edits `.mcp.json`, `.claude/**`, `CLAUDE.md`, `.codex/**` or `AGENTS.md`, and it never honors `.mcp.json`, `.codex/config.toml`, `CLAUDE.md` or `AGENTS.md` from a repository. A person changes those files by pull request.
@@ -66,7 +70,7 @@ For both tools the factory treats the project's own copies as data. A factory ru
 
 - A design session (brainstorm, draft, review) run under Codex from start to end. EGM's own documentation says Codex passes its fixtures. This repository has not checked that.
 - The installer adding EGM to a Codex that has never had it. The author's Codex already had it, so only the check path ran against the real tool.
-- A job whose specification stage runs under Codex: the Spec Kit install in this repository records only the Claude Code integration.
+- A job whose specification stage runs under Codex. The Spec Kit install in this repository now records both integrations (the Codex skills are under `.agents/skills` and the worker refuses to start if one is not the pinned file), but the Codex runtime of the composition is still given no skill bundle, so the stage stays unavailable under Codex until that is built and a real run is shown.
 
 ## Troubleshooting
 

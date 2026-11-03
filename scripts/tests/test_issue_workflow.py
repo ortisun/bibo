@@ -484,7 +484,7 @@ class Apply(unittest.TestCase):
         first = FakeGitHub(["factory", "design: in review"])
         self.run_apply(first, ev)
         self.assertEqual(sum(1 for c in first.calls if c[0] == "POST"), 1)
-        mine = [{"user": {"login": "github-actions[bot]"}, "body": "earlier " + iw.GATE_MARKER}]
+        mine = [{"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": iw.GATE_MARKER + "\nearlier gate comment"}]
         again = FakeGitHub(["factory", "design: in review"], comments=mine)
         self.run_apply(again, ev)
         self.assertEqual(sum(1 for c in again.calls if c[0] == "POST"), 0)
@@ -494,6 +494,29 @@ class Apply(unittest.TestCase):
         fake = FakeGitHub(["factory", "design: in review"], comments=planted)
         self.run_apply(fake, event(label="factory"))
         self.assertEqual(sum(1 for c in fake.calls if c[0] == "POST"), 1)
+
+    def test_a_comment_that_is_not_the_actions_own_gate_comment_cannot_silence_it(self):
+        # PL-12. The marker pasted by a person, quoted inside another comment, or posted under another account or kind
+        # of account does not count. Each case below is a comment that the old test (the marker anywhere) accepted.
+        bot = {"login": "github-actions[bot]", "type": "Bot"}
+        cases = {
+            "by a person": {"user": {"login": "mallory", "type": "User"}, "body": iw.GATE_MARKER + "\nx"},
+            "by a person who is named like the bot": {"user": {"login": "github-actions", "type": "User"}, "body": iw.GATE_MARKER},
+            "by the bot's name but not a bot account": {"user": {"login": "github-actions[bot]", "type": "User"},
+                                                        "body": iw.GATE_MARKER},
+            "with no author": {"body": iw.GATE_MARKER},
+            "quoted after other text": {"user": bot, "body": "> " + iw.GATE_MARKER + "\nsomeone replied"},
+            "after a first line": {"user": bot, "body": "Hello\n" + iw.GATE_MARKER},
+        }
+        for name, comment in cases.items():
+            with self.subTest(comment=name):
+                fake = FakeGitHub(["factory", "design: in review"], comments=[comment])
+                self.run_apply(fake, event(label="factory"))
+                self.assertEqual(sum(1 for c in fake.calls if c[0] == "POST"), 1, "the gate comment must be posted")
+        # The control: the Action's own comment, as it writes it, does silence the next one.
+        own = FakeGitHub(["factory", "design: in review"], comments=[{"user": bot, "body": iw.GATE_MARKER + "\nThis issue is on the design track"}])
+        self.run_apply(own, event(label="factory"))
+        self.assertEqual(sum(1 for c in own.calls if c[0] == "POST"), 0)
 
     def test_a_link_in_any_part_of_the_path_means_there_is_no_design_document(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -530,6 +553,72 @@ class Apply(unittest.TestCase):
             done = subprocess.run([sys.executable, "-I", TOOL, "apply", "--event", path, "--config", iw.DEFAULT_RENDERED,
                                    "--repo", "acme/widgets"], capture_output=True, text=True)
             self.assertEqual((done.returncode, "nothing to do" in done.stdout), (0, True), done.stderr)
+
+
+class WithoutTheBotLogin(unittest.TestCase):
+    """PL-21: until FACTORY_BOT_LOGIN names the factory's App, the Action cannot tell the factory's labels from a person's.
+    It then does nothing at all and says so, instead of removing the factory's status labels and commenting each time."""
+
+    def run_cli(self, env, action="labeled", label="factory: done", kind="User"):
+        """Runs `issue_workflow.py apply` as the workflow does, with a `gh` that records every call and answers one issue."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = os.path.join(tmp, "bin")
+            os.makedirs(bin_dir)
+            log = os.path.join(tmp, "gh.log")
+            fake = os.path.join(bin_dir, "gh")
+            with open(fake, "w", encoding="utf-8") as handle:
+                handle.write('#!/bin/sh\necho "$@" >> "%s"\nprintf \'{"labels":[{"name":"factory: done"}],"body":""}\'\n' % log)
+            os.chmod(fake, 0o755)
+            path = os.path.join(tmp, "event.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(event(action=action, label=label, login="alice", kind=kind), handle)
+            done = subprocess.run([sys.executable, "-I", TOOL, "apply", "--event", path, "--config", iw.DEFAULT_RENDERED,
+                                   "--repo", "acme/widgets"], capture_output=True, text=True,
+                                  env={"PATH": bin_dir + ":/usr/bin:/bin", **env})
+            calls = []
+            if os.path.exists(log):
+                with open(log, encoding="utf-8") as handle:
+                    calls = handle.read().splitlines()
+            return done, calls
+
+    def test_with_the_variable_set_the_same_event_is_judged_and_gh_is_called(self):
+        # The control: a person added a factory label. With the App named, the Action reads the issue and removes it.
+        done, calls = self.run_cli({"FACTORY_BOT_LOGIN": BOT})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(calls, "gh was never called, so the tests below would pass for the wrong reason")
+        self.assertTrue(any("-X DELETE" in call for call in calls), calls)
+
+    def test_with_the_variable_unset_it_changes_nothing_and_says_so(self):
+        for name, env in (("absent", {}), ("empty", {"FACTORY_BOT_LOGIN": ""}), ("blank", {"FACTORY_BOT_LOGIN": "  \t"})):
+            for action in ("labeled", "unlabeled"):
+                with self.subTest(variable=name, action=action):
+                    done, calls = self.run_cli(env, action=action)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertEqual(calls, [], "the Action called GitHub (read or write) without knowing who the factory is")
+                    self.assertIn("nothing done: the repository variable FACTORY_BOT_LOGIN is not set", done.stdout)
+                    self.assertIn("::warning title=FACTORY_BOT_LOGIN is not set::", done.stdout)
+                    self.assertFalse([line for line in done.stdout.splitlines()
+                                      if line.startswith(("remove_label ", "add_label ", "comment "))],
+                                     "an operation was reported, so one was carried out")
+
+    def test_an_event_that_is_not_a_label_event_is_still_ignored_first(self):
+        # The order of the two answers is part of the contract the older test relies on.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "event.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"action": "opened", "issue": {"number": 1}}, handle)
+            done = subprocess.run([sys.executable, "-I", TOOL, "apply", "--event", path, "--config", iw.DEFAULT_RENDERED,
+                                   "--repo", "acme/widgets"], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+            self.assertIn("nothing to do: not a label event", done.stdout)
+
+    def test_the_board_steps_of_the_shipped_workflow_do_nothing_either(self):
+        workflow = yaml.safe_load(load(ShippedFiles.WORKFLOW))
+        steps = {step["name"]: step for step in workflow["jobs"]["labels"]["steps"]}
+        for name in ("Create a short-lived credential for the board", "Move the issue on the board"):
+            with self.subTest(step=name):
+                self.assertIn("vars.FACTORY_BOT_LOGIN != ''", steps[name].get("if", ""), "this step must wait for the variable")
+        # The step that applies the workflow has no condition: it runs, logs why it did nothing, and the warning shows.
+        self.assertNotIn("if", steps["Apply the issue workflow"])
 
 
 class ShippedFiles(unittest.TestCase):
@@ -580,6 +669,14 @@ class ShippedFiles(unittest.TestCase):
                     self.assertNotIn("github.event", str(step.get(field, "")),
                                      "event text must reach the script through the event file only")
                 self.assertNotIn("pull_request_target", str(step))
+
+    def test_the_checkout_does_not_leave_the_repository_token_on_disk(self):
+        # PL-20: this was never tested. The Action only reads two folders, so nothing needs the token after the checkout.
+        workflow = yaml.safe_load(load(self.WORKFLOW))
+        checkouts = [step for step in workflow["jobs"]["labels"]["steps"] if str(step.get("uses", "")).startswith("actions/checkout@")]
+        self.assertEqual(len(checkouts), 1)
+        self.assertIs(checkouts[0]["with"]["persist-credentials"], False)
+        self.assertEqual(checkouts[0]["with"]["sparse-checkout"].split(), [".github", "docs/designs"])
 
     def test_the_board_credential_reaches_the_board_steps_only(self):
         workflow = yaml.safe_load(load(self.WORKFLOW))

@@ -19,6 +19,14 @@
 //! * **Whether it is the pinned one.** Every file must hash to the value the pinned manifest of the
 //!   Spec Kit adapter records ([`factory_spec_adapter::pinned::CLAUDE_SKILLS`]). A file that does
 //!   not is refused by the name of its skill, and nothing of it is read into a bundle.
+//! * **The other host's skills are pinned the same way.** The installation may hold the Codex
+//!   integration next to the Claude Code one (`.specify/integration.json` lists both, and the
+//!   skills are under `.agents/skills`). Codex reads those files whoever the default is, so for
+//!   every skill the writer is given, the same skill of every other host in the host table must
+//!   hash to the value of [`factory_spec_adapter::pinned::CODEX_SKILLS`]. When the integration is
+//!   listed as installed, a missing file is refused. When it is not listed, a missing file is fine
+//!   and a file that is there must still be the pinned one. An integration that is listed and is
+//!   not in the host table is refused, because its skills have no pin.
 //!
 //! The adapter writes the bundle into the run's home and invokes the skill by the spelling the
 //! host uses (`/speckit-specify` on Claude Code). Nothing here runs a skill.
@@ -29,11 +37,13 @@ use factory_contracts::registry::FileAgentRegistry;
 use factory_domain::policy::SecurityPolicy;
 use factory_domain::values::{Sha256Digest, Slug};
 use factory_ports::registry::{AgentRegistry, VersionReq};
+use factory_ports::spec::SpecOperation;
 use factory_runtime::{PinnedSkill, SkillBundle, SkillFile};
+use factory_spec_adapter::integrity::{matches_pin, skill_table};
 use factory_spec_adapter::invocation::{
     Host, IntegrationConfig, Recognised, recognise, skill_name,
 };
-use factory_spec_adapter::pinned::CLAUDE_SKILLS;
+use factory_spec_adapter::pinned::PinnedFile;
 
 /// The profile of the policy that governs the specification stage.
 const PROFILE: &str = "specification";
@@ -59,6 +69,15 @@ pub enum SpecSkillsError {
     /// A skill file is not the pinned one. The name is the skill's directory.
     #[error("the skill {0} is not the pinned file")]
     Modified(String),
+    /// A skill file of a host other than the default one is not the pinned one. The skill is the
+    /// name of its directory.
+    #[error("the {} skill {skill} is not the pinned file", .host.label())]
+    HostModified {
+        /// The host that reads the file.
+        host: Host,
+        /// The skill's directory.
+        skill: String,
+    },
     /// The pinned manifest has no entry for the skill, so there is nothing to check it against.
     #[error("the skill {0} has no pinned hash")]
     NotPinned(String),
@@ -126,12 +145,17 @@ pub fn bundle_from_ids(
 
     let integration_path = protected_checkout.join(factory_spec_adapter::integrity::INTEGRATION);
     let shown = integration_path.display().to_string();
-    let integration = std::fs::read(&integration_path)
+    let installed = std::fs::read(&integration_path)
         .map_err(|error| SpecSkillsError::Installation(format!("{shown}: {}", error.kind())))
         .and_then(|bytes| {
-            IntegrationConfig::parse(&bytes)
+            IntegrationConfig::parse_installed(&bytes)
                 .map_err(|error| SpecSkillsError::Installation(format!("{shown}: {error}")))
         })?;
+    // The default integration comes first.
+    let integration = installed
+        .first()
+        .cloned()
+        .ok_or_else(|| SpecSkillsError::Installation(shown.clone()))?;
     // The adapter that reads this bundle is the Claude Code one, and the pinned hashes are those of
     // its skill files.
     if integration.host != Host::ClaudeCode {
@@ -150,19 +174,7 @@ pub fn bundle_from_ids(
             Some(Recognised::Allowed(operation)) => operation,
             _ => return Err(SpecSkillsError::NotAllowed((*id).to_owned())),
         };
-        let name = skill_name(operation);
-        let suffix = format!("{}{name}/SKILL.md", integration.separator.as_char());
-        let root = format!("{}/", Host::ClaudeCode.skill_root());
-        let pinned = CLAUDE_SKILLS
-            .iter()
-            .find(|file| file.path.starts_with(&root) && file.path.ends_with(&suffix))
-            .ok_or_else(|| SpecSkillsError::NotPinned((*id).to_owned()))?;
-        let relative = pinned.path.to_owned();
-        let directory = relative
-            .strip_prefix(&root)
-            .and_then(|rest| rest.strip_suffix("/SKILL.md"))
-            .unwrap_or_default()
-            .to_owned();
+        let (relative, directory, pinned) = pin_of(Host::ClaudeCode, &integration, operation, id)?;
         let bytes = std::fs::read(protected_checkout.join(&relative))
             .map_err(|_| SpecSkillsError::Unreadable(relative.clone()))?;
         let sha256 = Sha256Digest::parse(&format!("sha256:{}", pinned.sha256))
@@ -170,6 +182,7 @@ pub fn bundle_from_ids(
         if Sha256Digest::of(&bytes) != sha256 {
             return Err(SpecSkillsError::Modified(directory));
         }
+        verify_other_hosts(protected_checkout, &installed, operation, id)?;
         let skill = PinnedSkill::new(
             &directory,
             vec![SkillFile {
@@ -182,4 +195,65 @@ pub fn bundle_from_ids(
         skills.push(skill);
     }
     SkillBundle::new(skills).map_err(|error| SpecSkillsError::Bundle(error.to_string()))
+}
+
+/// The pinned file of `operation` for `host`: its path, the directory name of the skill, and the
+/// pin. The separator comes from the installation file; the pinned table, not this crate, holds the
+/// layout.
+fn pin_of(
+    host: Host,
+    config: &IntegrationConfig,
+    operation: SpecOperation,
+    id: &str,
+) -> Result<(String, String, &'static PinnedFile), SpecSkillsError> {
+    let suffix = format!(
+        "{}{}/SKILL.md",
+        config.separator.as_char(),
+        skill_name(operation)
+    );
+    let root = format!("{}/", host.skill_root());
+    let pinned = skill_table(host)
+        .iter()
+        .find(|file| file.path.starts_with(&root) && file.path.ends_with(&suffix))
+        .ok_or_else(|| SpecSkillsError::NotPinned(id.to_owned()))?;
+    let directory = pinned
+        .path
+        .strip_prefix(&root)
+        .and_then(|rest| rest.strip_suffix("/SKILL.md"))
+        .unwrap_or_default()
+        .to_owned();
+    Ok((pinned.path.to_owned(), directory, pinned))
+}
+
+/// The same skill of every host in the table other than the default one. See the module comment.
+fn verify_other_hosts(
+    protected_checkout: &Path,
+    installed: &[IntegrationConfig],
+    operation: SpecOperation,
+    id: &str,
+) -> Result<(), SpecSkillsError> {
+    let Some(default) = installed.first() else {
+        return Ok(());
+    };
+    for host in Host::ALL.into_iter().filter(|host| *host != default.host) {
+        // A host that is listed has its own separator; one that is not listed has no record, and
+        // the default's is used to find the file the host would read.
+        let listed = installed.iter().find(|config| config.host == host);
+        let (relative, directory, pinned) = pin_of(host, listed.unwrap_or(default), operation, id)?;
+        let bytes = match std::fs::read(protected_checkout.join(&relative)) {
+            Ok(bytes) => bytes,
+            // Not installed, and not claimed to be: there is nothing to pin.
+            Err(error) if listed.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(_) => return Err(SpecSkillsError::Unreadable(relative)),
+        };
+        if !matches_pin(pinned, &bytes) {
+            return Err(SpecSkillsError::HostModified {
+                host,
+                skill: directory,
+            });
+        }
+    }
+    Ok(())
 }

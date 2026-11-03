@@ -61,13 +61,23 @@ On 2026-11-02. "Verified" means run or read here. "Unverified" means the source 
 - A Codex entry works only for a trusted project, so a person has to answer Codex's trust prompt once per project. The installer says so and does not edit the user's trust list.
 - The text editor of the TOML file is conservative: some valid files are called `unsafe` and left to a person.
 - On Codex a disabled plugin stays disabled until a person acts.
-- The Spec Kit install records only `claude`. The engine can already run a job with Codex, but the Spec Kit notes say the separator in a skill name (`/speckit-specify` on Claude Code, `$speckit-specify` on Codex) is read from `.specify/integration.json`, which does not list Codex. That is outside this change and is a gap to close before a job runs the specification stage under Codex.
+- The Spec Kit install recorded only `claude` when this ADR was written. The separator in a skill name (`/speckit-specify` on Claude Code, `$speckit-specify` on Codex) is read from `.specify/integration.json`. **Closed in part on 2026-11-03** (see the revision note at the end).
 
 ## What is not built
 
 - A run of brainstorm, draft and review under Codex.
 - `codex plugin marketplace add` and `codex plugin add` from the installer on a clean machine.
-- A Spec Kit install that records the Codex integration.
+- A job whose specification stage runs under Codex. The Spec Kit install now records the Codex integration (below), but the Codex runtime of the composition is given no skill bundle, so that stage stays unavailable under Codex, and no real run exists.
+
+## Revision note (2026-11-03, Spec Kit with Codex)
+
+The project owner decided that the installer must make the project's Spec Kit integration cover both tools. What was done, with the Spec Kit 1.1.2 that the repository pins:
+
+- `specify integration install codex` was run in this repository. `specify integration install --help` offers `--script`, `--force` and `--integration-options` only, and both integrations are multi-install safe, so no flag was needed. It works offline. It added `.specify/integrations/codex.manifest.json` and the ten `.agents/skills/speckit-*/SKILL.md` files, and added `codex` to `installed_integrations` in `.specify/integration.json`; the default stays `claude`. `specify integration status --json` reports `ok`.
+- `.gitignore` tracks `.agents/skills/speckit-*` and ignores the rest of `.agents/` (the harness keeps local state in `.agents/solomon`).
+- The pin of the Codex skills is now the full SHA-256 of each file (it was a 16-character prefix, because the full manifest had not been kept). `bundle_for_writer` pins the Codex skill of every skill the writer is given, as it pins the Claude Code one; a modified Codex skill makes the worker print `BLOCKED: agent runtime: protected_checkout: the Codex skill speckit-specify is not the pinned file` and exit with code 3 (test `a_codex_skill_of_the_installed_spec_kit_that_is_not_the_pinned_one_blocks_the_worker`; the control that an unmodified one does not block is `a_codex_installation_that_is_the_pinned_one_does_not_block_the_worker`). Ten deliberate breaks of this are listed in `crates/composition/tests/mutations/codex_pin_breaks.py`.
+- `scripts/install.sh --checkout PATH` adds the missing integration to a project that has `.specify/`, with the same command and no `--force`, and checks every Spec Kit skill of the project against the factory's pins (`.specify/integrations/*.manifest.json` of this repository). A project with no `.specify/` is reported and not initialised: ADR 0006 keeps `init` for the control plane.
+- Decisions taken without the owner, all on the safer side: a skill file of a host that is not listed but is there must still be the pinned one; an installed integration outside the host table is refused; the installer prepares both integrations whatever `--agent` says, because the files belong to the project and not to the person running the script.
 
 ## Revision note (2026-11-02, independent review PL-7 to PL-9)
 
