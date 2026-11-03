@@ -109,7 +109,20 @@ The worker reads the file at start-up with the same strict loader as the other p
 | `factory_track` | One label for each job state of the engine. The status label of a job comes only from here. |
 | `intake_requirements` | What intake checks when the trigger label is applied. `design_track_requires` is the design state an issue on the design track needs before a job may start (`approved`). `design_approved_by` is the designation that the person who applied that label must hold (`approver`; never `requester` or `operator`). The engine enforces both. |
 
-**What the intake stage enforces.** An issue that carries a label whose name starts with `design:` (in any letter case, with or without the space) needs the label `design: approved` as its only design label. The labels are read from GitHub at intake, never from the webhook. The person who applied `design: approved` must hold the designation named by `design_approved_by`, found by numeric user ID on the protected allowlist and not narrowed away from the repository. An issue with no such label is not touched. A refusal is the intake outcome `decline`, with the gate `intake-design-approved` reported as BLOCKED and the block code `design_not_approved`. The job shows as blocked. The security policy lists that block in `gate_integrity.non_overridable_blocks`, so no override passes it. The key `design_approved_by` is the engineer's default and is pending confirmation by the architect. See [ADR 0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
+**What the intake stage enforces.** An issue that carries a label whose name starts with `design:` (in any letter case, with or without the space) needs the label `design: approved` as its only design label. The labels are read from GitHub at intake, never from the webhook. The person who applied `design: approved` must hold the designation named by `design_approved_by`, found by numeric user ID on the protected allowlist and not narrowed away from the repository. An issue with no such label is not touched. A refusal is the intake outcome `decline`, with the gate `intake-design-approved` reported as BLOCKED and the block code `design_not_approved`. The job shows as blocked. The security policy lists that block in `gate_integrity.non_overridable_blocks`, so no override passes it. The key `design_approved_by` is the engineer's default and is pending confirmation by the architect.
+
+The same gate and the same block code also refuse a job whose text is not the title and the body of its issue as GitHub shows them now. This is checked for every job, on or off the design track, and the refusal has its own reason word, `text_not_the_issue`, in the audit record, the stored design document and the report. The audit line of the design gate ends with `text of the job compared with the live issue: same` or `different`.
+
+| Reason word of a refusal | Meaning |
+|---|---|
+| `not_approved` | The issue is on the design track and carries no `design: approved`. |
+| `design_dropped` | A design label was applied and taken off; the issue is still on the track. |
+| `more_than_one_design_label` | `design: approved` is on the issue together with another design label. |
+| `approval_label_gone` | The approved label was in the list of labels but was off the issue when its applier was asked for. |
+| `not_applied_by_an_approver` | The approved label was applied by somebody who does not hold the designation, or is not a person's account. |
+| `text_not_the_issue` | The text the job carries is not the text of the issue now. |
+
+The delivery stage asks the same question again right before it pushes the factory branch and opens the draft pull request. It uses the same code, the same rule and the same allowlist. A design that is no longer approved stops the stage with the block code `design_not_approved` and no stored gate, so no override passes it; a read of GitHub that fails fails the attempt and writes an audit record that says the check was degraded. See [ADR 0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 
 The Python tool `scripts/lib/issue_workflow.py` checks the same file and renders the JSON that the installer and the GitHub Action read. A test compares what the worker reads with that JSON, so the two cannot disagree about a label.
 

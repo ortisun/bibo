@@ -474,7 +474,7 @@
         "additionalProperties": false,
         "properties": {
           "repository_id": { "type": "string", "format": "uuid", "description": "A repository registered for the caller's tenant." },
-          "text": { "type": "string", "minLength": 1, "description": "The request exactly as written. At most 200 KiB; no control character except line breaks and tabs." },
+          "text": { "type": "string", "minLength": 1, "description": "The request exactly as written. At most 200 KiB; no control character except line breaks and tabs. It must be the title of the issue named by source_ref, a blank line and its body, as the code host shows them when intake runs: the API cannot check that, and intake refuses the job when the text is not the issue's (reason text_not_the_issue). Put a note in the body of the issue." },
           "source_ref": { "type": "string", "maxLength": 2048, "pattern": "^[^/#\\s]+/[^/#\\s]+#[0-9]+$", "description": "The issue the job is for, as owner/name#number. The repository must be the one named by repository_id. A job is for one issue: intake authorizes the person who labelled it and delivery links the pull request to it, so a submission without one is refused with a 400." }
         }
       },

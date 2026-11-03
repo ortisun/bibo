@@ -53,7 +53,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `--token-file` | A regular file, not a symbolic link, readable by its owner only. It holds the bearer token. |
 | `--key` | The idempotency key, 1 to 128 characters. Without it the command makes a random one. A retry with the same key repeats nothing. |
 | `--repository` | The identifier of a repository registered for the caller's tenant. A UUID. |
-| `--text-file` | A file with the request text. The command reads at most 200 KiB. |
+| `--text-file` | A file with the request text. The command reads at most 200 KiB. The text must be the title of the issue that `--source-ref` names, a blank line, and its body, as GitHub shows them when the factory starts the job. The factory ignores only the style of the line ends and white space around the whole text. If it differs in any other way, the job is refused at intake with the reason `text_not_the_issue` and nobody can override that. Put a note in the body of the issue, not in this file. |
 | `--source-ref` | The issue the job is for, written `OWNER/NAME#N`. The repository must be the one that `--repository` names. |
 | `--stage-run` | The stage run of a dependency or build code decision, or of `show-draft`. Without it a decision is for the blocked validation stage run of the job, and `show-draft` takes the newest specification stage run. |
 | `--gates` | With `status`: also list the gate reports of the job. |
@@ -186,7 +186,7 @@ The contract is [`apps/api/openapi.json`](../../apps/api/openapi.json). The serv
 | `GET /healthz` | none | none | Liveness. The process is running. It never reads the database. |
 | `GET /readyz` | none | none | Readiness. It answers 503 when any check fails or could not run, including a database that is behind the code. |
 | `GET /openapi.json` | none | none | The API contract. |
-| `POST /v1/jobs` | bearer token | `requester` | Stores a request as a `RECEIVED` job. Needs an `Idempotency-Key` header. The same key and request finds the first job with 200. The same key and another request is 409. |
+| `POST /v1/jobs` | bearer token | `requester` | Stores a request as a `RECEIVED` job. Needs an `Idempotency-Key` header. The same key and request finds the first job with 200. The same key and another request is 409. The `text` must be the title, a blank line and the body of the issue that `source_ref` names; the API cannot check that, so intake refuses a job whose text is not the live issue's (`text_not_the_issue`). |
 | `GET /v1/jobs` | bearer token | any designation | The jobs of the caller's tenant, newest first. |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | The status of a job and of its stage runs. |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | The state changes and audit records of a job, in time order. |
