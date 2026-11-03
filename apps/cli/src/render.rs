@@ -336,6 +336,18 @@ pub fn change_refused(code: &str) -> String {
         "enabler_is_attestor" => {
             "you attested this repository's project map, and the repository was not registered as a single-maintainer one; another person with the approver designation enables it"
         }
+        "expired" => {
+            "the worker did not reach the request within fifteen minutes, and a request is for the world as you saw it; ask again"
+        }
+        "clock_skew" => {
+            "the request is dated further ahead than the clocks of the API and the worker may differ; look at the clocks, then ask again"
+        }
+        "disabled_since_request" => {
+            "a person disabled the repository after you asked, and the request is for the world before that; if you still want it, ask again"
+        }
+        "single_maintainer_not_allowed" => {
+            "a single-maintainer repository needs exactly one active person who holds the designations of the project map and of the enable; the tenant has another number"
+        }
         "malformed" => "the worker could not read the request",
         "not_settled" => {
             "the worker could not apply the request after many tries; look at the worker"
@@ -456,6 +468,17 @@ pub fn repository_changed(body: &Value, key: &str, done: &str) -> String {
     };
     format!(
         "{lead}\n{}Idempotency key: {key} (repeat the command with --key {key} to retry safely).\n",
+        repository(repository_body)
+    )
+}
+
+/// What a person reads when the repository was in the state they asked for already (finding RH-7): the API
+/// answered at once, or the worker found it so. Nothing changed and nobody is recorded as having done it now.
+#[must_use]
+pub fn already_applied(body: &Value, done: &str) -> String {
+    let repository_body = body.get("repository").unwrap_or(&Value::Null);
+    format!(
+        "The repository was {done} already. Nothing changed, and no second name was recorded.\n{}",
         repository(repository_body)
     )
 }

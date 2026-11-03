@@ -265,6 +265,33 @@ impl FileAllowlist {
             .collect())
     }
 
+    /// The numeric GitHub ids of the people of `tenant` who hold, now, any of the designations named by
+    /// `roles` (the names of the action table, such as `approver`) on `repository`: the entry is of this
+    /// tenant, not expired, and not narrowed away from the repository. A name that is not a designation grants
+    /// nothing. Read from the file at every call.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the file cannot be read: the caller fails closed.
+    pub fn holders_of(
+        &self,
+        tenant: TenantId,
+        roles: &[String],
+        repository: &RepositoryIdentity<'_>,
+        now: Timestamp,
+    ) -> Result<BTreeSet<u64>, SeamError> {
+        let wanted: BTreeSet<Designation> =
+            roles.iter().filter_map(|name| designation(name)).collect();
+        let (_, entries) = self.entries()?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| entry.tenant == tenant)
+            .filter(|entry| entry.expires_at.as_ref().is_none_or(|end| *end > now))
+            .filter(|entry| entry.covers_repository(repository))
+            .filter(|entry| entry.designations.iter().any(|held| wanted.contains(held)))
+            .map(|entry| entry.github_user_id.get())
+            .collect())
+    }
+
     /// Whether the narrowing of this person's entry leaves `repository` in reach. A person with no
     /// entry for the tenant, or an entry that lists no repositories, is not narrowed, and the answer
     /// is true: this question only ever takes authority away, so the designation check (which says

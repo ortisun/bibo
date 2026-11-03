@@ -822,13 +822,31 @@ impl DecisionKeys {
     }
 
     fn keyed_id(&self, context: &str, request: AuditEventId) -> AuditEventId {
-        let word = self
-            .current
+        Self::keyed_id_under(&self.current, context, request)
+    }
+
+    fn keyed_id_under(key: &Key, context: &str, request: AuditEventId) -> AuditEventId {
+        let word = key
             .word(format!("{context}\n{}", request.as_uuid().hyphenated()).as_bytes())
             .expect("an HMAC key can have any length");
         let mut bytes = [0_u8; 16];
         bytes.copy_from_slice(&word[..16]);
         AuditEventId::from_uuid(uuid::Builder::from_random_bytes(bytes).into_uuid())
+    }
+
+    /// Every id the result record of a request may have under the keys in force: the one the current key
+    /// makes, and during a rotation the one the previous key made. A result written before a rotation has the
+    /// second, and one id alone would not find it (finding RH-4). A result is written under the current key
+    /// only ([`repository_change_result_id`](Self::repository_change_result_id)); this is for looking.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn repository_change_result_ids(&self, request: AuditEventId) -> Vec<AuditEventId> {
+        std::iter::once(&self.current)
+            .chain(self.previous.as_ref())
+            .map(|key| Self::keyed_id_under(key, REPOSITORY_RESULT_CONTEXT, request))
+            .collect()
     }
 
     /// The id of the record that a rejection leaves, for a request. It is a keyed function of the
@@ -1384,6 +1402,28 @@ mod tests {
             Some(KeyError::SameKey)
         );
         assert!(DecisionKeys::from_bytes(&same, Some(&strong(31).into_bytes())).is_ok());
+    }
+
+    #[test]
+    fn the_result_of_a_request_is_looked_for_under_every_key_in_force() {
+        let request = AuditEventId::from_uuid(uuid::Uuid::from_u128(77));
+        let old = DecisionKeys::from_bytes(&strong(40).into_bytes(), None).expect("keys");
+        let rotated =
+            DecisionKeys::from_bytes(&strong(41).into_bytes(), Some(&strong(40).into_bytes()))
+                .expect("keys");
+        // A result written before the rotation has the id of the old key, and the rotated keys find it.
+        let written_before = old.repository_change_result_id(request);
+        let looked_for = rotated.repository_change_result_ids(request);
+        assert_eq!(looked_for.len(), 2);
+        assert!(looked_for.contains(&written_before));
+        // A result is written under the current key only.
+        assert_eq!(looked_for[0], rotated.repository_change_result_id(request));
+        assert_ne!(looked_for[0], written_before);
+        // With no previous key there is one id.
+        assert_eq!(
+            old.repository_change_result_ids(request),
+            vec![written_before]
+        );
     }
 
     /// F-5. The second of the three constructors, on its own.

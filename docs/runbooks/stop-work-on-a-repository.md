@@ -19,6 +19,8 @@ You need the factory to stop working on a repository now. A job wrote something 
 | A job that already exists | It runs on. Its stages go on, and it can still open a draft pull request. |
 | The status on the issue of a job that exists | The factory stops writing it. The issue keeps the last `factory:` label that was written, and that label goes stale. |
 
+A request to register, confirm the map of or enable the repository that was made before the disable and has not been applied yet is **cancelled** by the disable (finding RH-1): when the worker next runs it finds the disable in the audit log and refuses the request with the recorded code `disabled_since_request`. A request older than fifteen minutes is refused as `expired` whatever happened. Nothing lists the requests that wait, so if the worker is down, the safest step before an incident is to stop the worker too, and to start it again only after the disable is recorded. A person who wants the act after the incident asks again; the new request is later than the disable and is judged on its own.
+
 The status step checks that the repository is enabled each time before it writes. It writes no final state for a disabled repository, and it does not go back for it when you enable the repository again.
 
 ## Before you begin

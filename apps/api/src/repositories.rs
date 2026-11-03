@@ -69,11 +69,11 @@ use factory_composition::decision_signing::{
 };
 use factory_composition::repository_changes::{
     Change, NO_REASON, REFUSED, REQUESTED, RepositoryChangeFields, payload_digest,
-    registration_detail,
+    registration_detail, single_maintainer_is_possible,
 };
 use factory_domain::ids::{AuditEventId, CorrelationId, RepositoryId};
 use factory_domain::policy::authority::RepositoryIdentity;
-use factory_domain::values::Sha256Digest;
+use factory_domain::values::{Sha256Digest, is_repository_branch, is_repository_full_name};
 use factory_ports::store::{
     AuditActor, AuditDecision, ConstraintRule, IdempotencyKey, NewAuditEvent, ProjectMapCommit,
     Repository, StoreError, Tx, Versioned, Witness,
@@ -98,10 +98,6 @@ pub const ENABLE: &str = "enable_repository";
 /// The action of the policy table that disabling a repository needs.
 pub const DISABLE: &str = "disable_repository";
 
-/// The longest a default branch name may be, in bytes (the column's own limit).
-const MAX_BRANCH_BYTES: usize = 255;
-/// The longest `owner/name` a registration accepts. GitHub allows 39 and 100 characters.
-const MAX_FULL_NAME_BYTES: usize = 140;
 /// The most bytes of an audit reason (the store's limit is 1000).
 const REASON_BYTES: usize = 1000;
 
@@ -160,35 +156,6 @@ fn derived(tag: &str, caller: &Caller, subject: &str, key: &IdempotencyKey) -> u
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&hash[..16]);
     uuid::Builder::from_random_bytes(bytes).into_uuid()
-}
-
-/// `owner/name` as the table checks it, and no longer than GitHub allows.
-fn is_full_name(text: &str) -> bool {
-    let word = |part: &str| {
-        !part.is_empty()
-            && part != "."
-            && part != ".."
-            && part
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-    };
-    text.len() <= MAX_FULL_NAME_BYTES
-        && text
-            .split_once('/')
-            .is_some_and(|(owner, name)| word(owner) && word(name))
-}
-
-/// A branch name as the API accepts it: letters, digits and `. _ / -`, no empty part, no `..`.
-fn is_branch(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= MAX_BRANCH_BYTES
-        && !text.starts_with(['-', '/'])
-        && !text.ends_with('/')
-        && !text.contains("..")
-        && !text.contains("//")
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'/'))
 }
 
 /// The reason of a change, trimmed and checked: 10 to 500 characters, text, and no secret.
@@ -484,10 +451,10 @@ pub async fn register(
     if parsed.github_repository_id == 0 || i64::try_from(parsed.github_repository_id).is_err() {
         return Err(ApiError::BadRequest("github_repository_id"));
     }
-    if !is_full_name(&parsed.full_name) {
+    if !is_repository_full_name(&parsed.full_name) {
         return Err(ApiError::BadRequest("full_name"));
     }
-    if !is_branch(&parsed.default_branch) {
+    if !is_repository_branch(&parsed.default_branch) {
         return Err(ApiError::BadRequest("default_branch"));
     }
 
@@ -500,14 +467,24 @@ pub async fn register(
         caller,
         REGISTER,
         None,
-        // What the operator typed: the name and the GitHub id of the registration.
-        Some(RepositoryIdentity::registered(
+        // What the operator typed: the name and the GitHub id of the registration (finding RH-2).
+        Some(RepositoryIdentity::typed(
             &parsed.full_name,
             parsed.github_repository_id,
         )),
         refused_as,
     )
     .await?;
+    let mut tx = tx;
+    if parsed.single_maintainer {
+        single_maintainer_allowed(
+            state,
+            caller,
+            &mut *tx,
+            &RepositoryIdentity::typed(&parsed.full_name, parsed.github_repository_id),
+        )
+        .await?;
+    }
     let change = Change::Register {
         repository: id,
         installation: parsed.installation_id,
@@ -610,6 +587,13 @@ pub async fn switch(
             Some(_) => return Err(ApiError::ProjectMapChanged),
             None => return Err(ApiError::ProjectMapNotAttested),
         }
+        // Already enabled (for the commit attested now, which the match above settled): nothing to ask the
+        // worker. The table keeps the first enabler, and a second request would only put a second name in the
+        // log (finding RH-7).
+        if row.value.enabled {
+            let _ = tx.rollback().await;
+            return Ok(changed(&row, false, StatusCode::OK));
+        }
         let change = Change::Enable {
             repository: id,
             commit: meant.as_str().to_owned(),
@@ -650,8 +634,15 @@ pub async fn change_status(state: &ApiState, caller: &Caller, request_id: &str) 
     let id = parse_id(request_id, AuditEventId::parse).ok_or(ApiError::NotFound)?;
     let mut tx = state.ports.store.begin(caller.scope()).await?;
     let request = tx.find_audit(id).await;
-    let result_id = state.decision_keys.repository_change_result_id(id);
-    let result = tx.find_audit(result_id).await;
+    // The result is looked for under every key in force: one written before a rotation has the id of the
+    // previous key (finding RH-4).
+    let mut result = Ok(None);
+    for result_id in state.decision_keys.repository_change_result_ids(id) {
+        result = tx.find_audit(result_id).await;
+        if !matches!(result, Ok(None)) {
+            break;
+        }
+    }
     let request = match request {
         Ok(Some(record)) if record.event.action.as_str() == REQUESTED => record,
         Ok(_) => {
@@ -663,9 +654,30 @@ pub async fn change_status(state: &ApiState, caller: &Caller, request_id: &str) 
             return Err(other.into());
         }
     };
-    let fields = read_repository_change_subject(&request.event.subject)
-        .map(|read| read.fields)
-        .ok_or(ApiError::NotFound)?;
+    // A row with this action is not a request until its word is good (finding RH-5): the status route does not
+    // believe what the database login could write.
+    let read = read_repository_change_subject(&request.event.subject).ok_or(ApiError::NotFound)?;
+    let AuditActor::Human(requested_by) = request.event.actor else {
+        let _ = tx.rollback().await;
+        return Err(ApiError::NotFound);
+    };
+    if request.event.job.is_some()
+        || !state.decision_keys.verify_repository_change(
+            &RepositoryChangeSigning {
+                tenant: caller.tenant,
+                actor: requested_by,
+                event: id,
+                requested_at: &read.requested_at,
+                fields: &read.fields,
+            },
+            &read.word,
+        )
+        || payload_digest(&request.event.reason) != read.fields.payload
+    {
+        let _ = tx.rollback().await;
+        return Err(ApiError::NotFound);
+    }
+    let fields = read.fields;
     // An allowlist entry narrowed to other repositories does not see the request, as it does not see the
     // repository (REG-4). A registration that is not applied yet has no row, and is not narrowed here: the
     // narrowing of the registration was settled when it was asked for.
@@ -679,10 +691,15 @@ pub async fn change_status(state: &ApiState, caller: &Caller, request_id: &str) 
     let result = result?;
     let (state_word, code) = match &result {
         None => ("requested", Value::Null),
-        Some(record) if record.event.action.as_str() == REFUSED => (
-            "refused",
-            json!(record.event.reason.split(':').next().unwrap_or("refused")),
-        ),
+        Some(record) if record.event.action.as_str() == REFUSED => {
+            let code = record.event.reason.split(':').next().unwrap_or("refused");
+            // An enable of a repository that was enabled already: what was asked is in place (finding RH-7).
+            if code == "already_enabled" {
+                ("applied", json!(code))
+            } else {
+                ("refused", json!(code))
+            }
+        }
         Some(_) => ("applied", Value::Null),
     };
     Ok(Reply::ok(json!({
@@ -692,6 +709,33 @@ pub async fn change_status(state: &ApiState, caller: &Caller, request_id: &str) 
         "state": state_word,
         "code": code,
     })))
+}
+
+/// Finding RH-6: the exception to the strict rule is for a tenant in which exactly one active person holds the
+/// designations the rule constrains. The worker asks again when it applies the request; this is the clear answer.
+async fn single_maintainer_allowed(
+    state: &ApiState,
+    caller: &Caller,
+    tx: &mut dyn Tx,
+    identity: &RepositoryIdentity<'_>,
+) -> Result<(), ApiError> {
+    let mut roles = Vec::new();
+    for action in [CONFIRM_MAP, ENABLE] {
+        roles.extend(
+            roles_of_action(state, action)
+                .into_iter()
+                .map(|role| role.as_str().to_owned()),
+        );
+    }
+    let holders = state
+        .allowlist_file
+        .holders_of(caller.tenant, &roles, identity, state.ports.clock.now())
+        .map_err(|_| ApiError::Unavailable)?;
+    match single_maintainer_is_possible(tx, &holders).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::SingleMaintainerNotAllowed),
+        Err(other) => Err(other.into()),
+    }
 }
 
 /// What a store refusal of a repository change is to the caller. A rule of the project map is
@@ -708,38 +752,6 @@ fn refusal_of_store(error: StoreError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_full_name_is_owner_slash_name_and_nothing_else() {
-        for good in ["octo/hello", "a/b", "my-org/my.repo_1", "O/n"] {
-            assert!(is_full_name(good), "{good}");
-        }
-        for bad in [
-            "", "octo", "octo/", "/hello", "a/b/c", "a b/c", "a/b c", "a/b\n", "../x", "a/..",
-            "./x", "é/x", "a/b?x", "a/b#1", "a/b%2f",
-        ] {
-            assert!(!is_full_name(bad), "{bad:?}");
-        }
-        assert!(!is_full_name(&format!(
-            "{}/x",
-            "o".repeat(MAX_FULL_NAME_BYTES)
-        )));
-    }
-
-    #[test]
-    fn a_branch_is_a_plain_path_of_safe_characters() {
-        for good in ["main", "release/1.2", "feature/a-b_c", "v1.0.0"] {
-            assert!(is_branch(good), "{good}");
-        }
-        for bad in [
-            "", "/main", "main/", "a//b", "a..b", "-main", "a b", "a\tb", "a\nb", "é", "a:b",
-            "a~b", "a^b", "a?b", "a*b", "a[b", "a\\b",
-        ] {
-            assert!(!is_branch(bad), "{bad:?}");
-        }
-        assert!(!is_branch(&"a".repeat(MAX_BRANCH_BYTES + 1)));
-        assert!(is_branch(&"a".repeat(MAX_BRANCH_BYTES)));
-    }
 
     #[test]
     fn the_reason_is_cut_at_a_character_boundary_and_fits_the_audit_column() {

@@ -1107,7 +1107,9 @@ async fn attest_project_map(
 /// Switches the repository on for `commit`. The statement names the commit and the person, so the
 /// table holds them to the map on file (REG-1) and a refusal does not abort the transaction. It also
 /// leaves a strict repository alone when the person is the one who attested the map (REG-6), for the
-/// same reason: the table refuses it too, with an error that would abort the transaction.
+/// same reason: the table refuses it too, with an error that would abort the transaction. A repository that is
+/// enabled already is left alone (finding RH-7): the table keeps the record of the first enabler, so a second
+/// "enable" that changed the version and nothing else would only put a second name in the audit log.
 async fn enable_repository(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
@@ -1120,6 +1122,7 @@ async fn enable_repository(
         "UPDATE repositories SET enabled = true, enabled_project_map_commit = $4, \
                 enabled_by_principal_id = $5, version = version + 1 \
           WHERE tenant_id = $1 AND id = $2 AND version = $3 AND project_map_commit = $4 \
+            AND NOT enabled \
             AND (single_maintainer OR project_map_attested_by_principal_id IS DISTINCT FROM $5) \
             AND EXISTS (SELECT 1 FROM principals p \
                          WHERE p.tenant_id = $1 AND p.id = $5 AND p.kind = 'human' \

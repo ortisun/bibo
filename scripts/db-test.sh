@@ -5,6 +5,9 @@
 #   scripts/db-test.sh SUITE [SUITE..] run the named suites (see --list)
 #   scripts/db-test.sh --list          print the suite names and what each one proves
 #   scripts/db-test.sh write-schema    regenerate crates/storage/src/schema.rs with diesel print-schema
+#   scripts/db-test.sh check-migrations  fail when the bytes of a migration listed in docs/database/applied-migrations.sha256
+#                                      changed (no database needed; the migrations suite runs the same check first)
+#   scripts/db-test.sh freeze-migrations  append the migrations that are not listed yet to that file (never rewrites a line)
 #   scripts/db-test.sh plans --rows N  the plans suite at N rows in each large table (a multiple of 10,000; 100000 is the
 #                                      done criterion of s1-database-review). The same as FACTORY_DB_PLANS_SCALE=N/10000.
 #
@@ -38,6 +41,7 @@ MIGRATIONS="$ROOT/migrations"
 DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
+MIGRATION_SUMS="$ROOT/docs/database/applied-migrations.sha256"
 
 SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges api_privileges repository_map contracts store_model compat"
 
@@ -69,7 +73,7 @@ blocked() {
 }
 
 usage() {
-  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 list_suites() {
@@ -105,7 +109,8 @@ api_privileges   the group of the API login (factory_api_app) holds only what th
                  a principal, an approval, a ledger or outbox row, and it works only on the tenant it names
 repository_map  a repository cannot be enabled without a project map commit, for any role; the commit is 40 lowercase hex
                  characters; the attestor is an active human of the tenant and the database stamps the time; the API login
-                 may register a repository and change four columns of it, in its own tenant only
+                 may only switch a repository off, in its own tenant only, and writes only a person's audit rows in the
+                 API's words; the logins of the factory cannot enable a strict repository with no enabler
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
 store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
                  gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that
@@ -456,6 +461,7 @@ race_errors_mention() { (cat "$WORK"/race.*.err 2>/dev/null || true) | grep -c -
 # suites
 
 suite_migrations() {
+  check_applied_migrations || return 1
   require_diesel
   local db="factory_t_${RUN_ID}_migrations" out="$WORK/migrations.out" cfg
   cfg="$(plain_diesel_config)"
@@ -556,8 +562,62 @@ suite_migrations() {
     return 1
   fi
   ok "the committed schema.rs equals diesel print-schema"
+  repair_check "$db" "$cfg" || { drop_db "$db"; return 1; }
   drop_db "$db"
   upgrade_check
+}
+
+# Migration 2026-11-03-002800 (finding RH-8) switches off a strict repository that is enabled with no recorded enabler, and
+# writes an audit record for each. No row like that can be made once the migration has run (the guard binds the logins of the
+# factory, and the owner who makes one here is not bound), so the check reverts that one migration, makes the rows the way a
+# privileged writer could have, runs the migration again and reads what it did to them. A strict repository with an enabler and
+# a single-maintainer repository with none are the siblings: they must be left alone.
+repair_check() {
+  local db="$1" cfg="$2" out="$WORK/repair.out" got
+  if ! diesel_run "$db" --config-file "$cfg" migration revert >"$out" 2>&1; then
+    not_ok "repair: reverting the newest migration failed"
+    cat "$out" >&2
+    return 1
+  fi
+  if ! psql_db "$db" -f "$TESTS/00_helpers.sql" \
+        -c "SELECT dbtest.mk_tenant(1)" \
+        -c "INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1004), 'human', 7104, 'person-two')" \
+        -c "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, single_maintainer) VALUES (dbtest.u(1), dbtest.u(1011), 9011, 8011, 'org1/single', 'main', true), (dbtest.u(1), dbtest.u(1012), 9012, 8012, 'org1/strict-with-enabler', 'main', false)" \
+        -c "UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = dbtest.u(1002), enabled = true, version = version + 1 WHERE tenant_id = dbtest.u(1) AND id IN (dbtest.u(1001), dbtest.u(1011))" \
+        -c "UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = dbtest.u(1002), enabled = true, enabled_by_principal_id = dbtest.u(1004), version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u(1012)" \
+        >/dev/null 2>"$out"; then
+    not_ok "repair: making a strict repository that is enabled with no enabler failed"
+    cat "$out" >&2
+    return 1
+  fi
+  got="$(psql_scalar "$db" -c "SELECT string_agg(full_name || '=' || enabled::text, ' ' ORDER BY full_name) FROM repositories")"
+  if [ "$got" != "org1/repo=true org1/single=true org1/strict-with-enabler=true" ]; then
+    not_ok "repair: the rows before the migration are not what the check made: $got"
+    return 1
+  fi
+  if ! diesel_run "$db" --config-file "$cfg" migration run >"$out" 2>&1; then
+    not_ok "repair: running the migration again on those rows failed"
+    cat "$out" >&2
+    return 1
+  fi
+  got="$(psql_scalar "$db" -c "SELECT string_agg(full_name || '=' || enabled::text, ' ' ORDER BY full_name) FROM repositories")"
+  if [ "$got" != "org1/repo=false org1/single=true org1/strict-with-enabler=true" ]; then
+    not_ok "repair: the migration did not switch off exactly the strict repository with no enabler: $got"
+    return 1
+  fi
+  ok "repair: the migration switched off the strict repository that was enabled with no enabler, and left the other two enabled"
+  got="$(psql_scalar "$db" -c "SELECT count(*) FROM audit_events WHERE action = 'repository.disabled_by_migration' AND actor_type = 'system' AND subject = 'repository ' || dbtest.u(1001)::text || ' disabled'")"
+  if [ "$got" != "1" ]; then
+    not_ok "repair: expected one audit record of the switch-off, found $got"
+    return 1
+  fi
+  ok "repair: it wrote one audit record, as the system, naming the repository it switched off"
+  got="$(psql_scalar "$db" -c "SELECT version FROM repositories WHERE id = dbtest.u(1001)")"
+  if [ "$got" != "3" ]; then
+    not_ok "repair: expected the version of the switched-off repository to rise to 3, found $got"
+    return 1
+  fi
+  ok "repair: the version of the switched-off repository rose (an optimistic writer sees the change)"
 }
 
 # The last migration of the schema before ports v1.1. The upgrade test migrates to here, loads rows, runs the rest.
@@ -1247,6 +1307,63 @@ suite_contracts() {
   return "$rc"
 }
 
+# ---------------------------------------------------------------------------------------------
+# applied migrations are never edited (docs/database/migration-safety.md, rule 1). Diesel keeps no checksum, so a changed
+# file would pass every other check. docs/database/applied-migrations.sha256 lists "<sha256>  <directory>/<file>" for
+# every up.sql and down.sql of a migration that is merged. A migration that is not listed yet may still be edited; one that
+# sorts before the newest listed migration and is not listed is refused, because nothing new belongs in the past.
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+check_applied_migrations() {
+  local sum path name newest="" bad=0 count=0 d listed
+  if [ ! -f "$MIGRATION_SUMS" ]; then
+    not_ok "the list of applied migrations is missing: $MIGRATION_SUMS (scripts/db-test.sh freeze-migrations writes it)"
+    return 1
+  fi
+  while read -r sum path; do
+    [ -n "$sum" ] || continue
+    name="${path%%/*}"
+    if [ -z "$newest" ] || [[ "$name" > "$newest" ]]; then newest="$name"; fi
+    if [ ! -f "$MIGRATIONS/$path" ]; then
+      not_ok "migrations/$path is listed as applied and is missing"
+      bad=1
+    elif [ "$(sha256_of "$MIGRATIONS/$path")" != "$sum" ]; then
+      not_ok "migrations/$path changed after it was listed as applied. An applied migration is never edited: put the change in a new migration"
+      bad=1
+    else
+      count=$((count + 1))
+    fi
+  done <"$MIGRATION_SUMS"
+  for d in "$MIGRATIONS"/*/; do
+    name="$(basename "${d%/}")"
+    listed=0
+    grep -q "  $name/" "$MIGRATION_SUMS" && listed=1
+    if [ "$listed" = 0 ] && [ -n "$newest" ] && [[ "$name" < "$newest" ]]; then
+      not_ok "migrations/$name sorts before the newest applied migration ($newest) and is not listed: a migration is added after the last one"
+      bad=1
+    fi
+  done
+  [ "$bad" = 0 ] || return 1
+  ok "applied migrations: $count files match docs/database/applied-migrations.sha256 byte for byte"
+}
+
+freeze_migrations() {
+  local d name f
+  touch "$MIGRATION_SUMS"
+  for d in "$MIGRATIONS"/*/; do
+    name="$(basename "${d%/}")"
+    grep -q "  $name/" "$MIGRATION_SUMS" && continue
+    for f in up.sql down.sql; do
+      [ -f "$d$f" ] || continue
+      printf '%s  %s/%s\n' "$(sha256_of "$d$f")" "$name" "$f" >>"$MIGRATION_SUMS"
+    done
+    say "listed $name"
+  done
+}
+
 write_schema() {
   require_diesel
   ensure_template || return 1
@@ -1284,6 +1401,8 @@ main() {
         export FACTORY_DB_PLANS_SCALE=$((rows / 10000))
         ;;
       write-schema) do_write=1 ;;
+      check-migrations) check_applied_migrations; exit $? ;;
+      freeze-migrations) freeze_migrations; exit $? ;;
       all) read -r -a selected <<< "$SUITES" ;;
       *)
         case " $SUITES " in

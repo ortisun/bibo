@@ -315,7 +315,7 @@
         "operationId": "enableRepository",
         "tags": ["repositories"],
         "summary": "Lets the repository take tickets, for the project map commit the approver names. It needs a project map that a person attested.",
-        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The person who attested the map cannot enable a repository that was not registered with single_maintainer: that is refused with 409 and the code enabler_is_attestor (finding REG-6). The database refuses the same changes for every role. These refusals are made here, from the row as it is, and made again by the worker, which applies the request. This route appends one signed request and answers 202. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The person who attested the map cannot enable a repository that was not registered with single_maintainer: that is refused with 409 and the code enabler_is_attestor (finding REG-6). The database refuses the same changes for every role. These refusals are made here, from the row as it is, and made again by the worker, which applies the request. This route appends one signed request and answers 202. A repository that is enabled for the commit attested now is answered 200 with changed false: nothing is recorded and no second approver is named. A repeat of the same Idempotency-Key with the same request changes nothing.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/RepositoryId" },
@@ -375,7 +375,7 @@
         "operationId": "getRepositoryChange",
         "tags": ["repositories"],
         "summary": "Where a request to register, attest or enable a repository stands.",
-        "description": "requested until the worker settles the request, then applied, or refused with the fixed code of the refusal (not_permitted, not_an_active_person, not_found, conflict, project_map_not_attested, project_map_changed, enabler_is_attestor, malformed or not_settled). A request of another tenant and one that does not exist have the same answer. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. The answer holds no text of the request.",
+        "description": "requested until the worker settles the request, then applied, or refused with the fixed code of the refusal (not_permitted, not_an_active_person, not_found, conflict, project_map_not_attested, project_map_changed, enabler_is_attestor, single_maintainer_not_allowed, expired, clock_skew, disabled_since_request, malformed or not_settled), or applied with the code already_enabled when the repository was enabled already. A request lives fifteen minutes and a disable made after it cancels it. A request of another tenant and one that does not exist have the same answer. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. The answer holds no text of the request.",
         "security": [{ "bearerToken": [] }],
         "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "The request_id that the change returned." }],
         "responses": {
@@ -457,7 +457,7 @@
         "required": ["error"],
         "additionalProperties": false,
         "properties": {
-          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed", "enabler_is_attestor"] }
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed", "enabler_is_attestor", "single_maintainer_not_allowed"] }
         }
       },
       "FieldError": {

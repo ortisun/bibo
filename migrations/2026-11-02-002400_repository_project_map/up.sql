@@ -17,9 +17,7 @@
 --      principal of the tenant, as repositories_attestation_guard does for the bypass attestation.
 --   4. `enabled` now defaults to false. A row that is written without saying so starts switched off.
 --   5. Rows that were enabled before this migration are switched off, because none of them has a map. A person
---      attests the map and enables each one again. The version of each such row rises by one. NO AUDIT RECORD is
---      written for this switch-off: the audit chain does not say who or what switched them off, only this file and
---      the NOTICE do. A deployment note should carry the count of repositories that were switched off.
+--      attests the map and enables each one again. The version of each such row rises by one.
 --   6. The login of the HTTP API (factory_api_app) may register a repository and change four columns of it. It
 --      could write nothing to this table before (finding API-3 of docs/reviews/api-security-review.md). The grants
 --      are column grants, so the login still cannot set the autonomy ceiling, the protection preflight result or
@@ -28,26 +26,13 @@
 --   7. The API may write four more audit actions (repository.registered, repository.map_attested,
 --      repository.enabled and repository.disabled), in the list of the trigger audit_events_api_actions.
 --
--- Residual risk, stated plainly: whoever holds the credentials of the API database login can now, in one session
--- that names a tenant, register any installation, GitHub repository id and name; write a map commit under the
--- name of any active human principal of that tenant; enable a repository that has a map commit; switch off every
--- repository; switch back on one that an operator switched off as an incident response; and write the matching
--- audit rows with any actor. Before this migration that login could write none of it. The audit rows are signed
--- by nobody. This is WEAKER than the decision requests of people. Since AUT-12 those carry a keyed word that the
--- worker verifies before it applies them, and a change of a repository does not. An earlier text of this comment
--- said "the same limit holds for the decision requests"; that was out of date, because AUT-12 is fixed
--- (docs/reviews/authority-and-evidence-security-review.md, section 10) and the review of this change says so
--- (docs/reviews/engine-registration-and-status-security-review.md, REG-2). The choice between a signed request
--- for the acts that widen the factory's reach, a function owned by another role, or accepting the risk with an
--- owner and a date belonged to the product owner. SUPERSEDED on 2026-11-03: migration 2026-11-03-002700 took
--- register, attest and enable away from this login and made them signed requests that the worker applies, and
--- left the API one write, the switch-off. What this comment says about the login is the state of this
--- migration, not of the database now. (A comment only: no statement of this file changed.)
+-- Residual risk, stated plainly: whoever holds the credentials of the API database login can now enable a
+-- repository that has a map commit, or write a map commit under the name of a principal of a tenant it names,
+-- and can write the matching audit row. Before this migration that login could write none of it. The audit rows
+-- are signed by nobody. The same limit holds for the decision requests of people until the deployment narrows
+-- the login further (docs/reviews/authority-and-evidence-security-review.md, AUT-12).
 --
--- Expand only: nullable columns, and constraints that are added and then validated. The constraints are added
--- NOT VALID and then validated in the same transaction. That two-step form lets reads and writes go on only when
--- the steps run in separate transactions. Inside this migration the lock of ADD CONSTRAINT is held to the commit,
--- so it gives no benefit here. The table is small, and the validation is a scan under that lock.
+-- Expand only: nullable columns, constraints added NOT VALID and then validated.
 
 SET LOCAL lock_timeout = '5s';
 

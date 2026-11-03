@@ -1,6 +1,6 @@
 # Migration safety
 
-- Status: the Slice 0 baseline (nine migrations), the five migrations of `s1-database-tenancy-and-state-sync` (supersede edge, then row-level security in four parts), the four of `s1-database-port-alignment` (state machine rows, claim protocol, Store model, listings) and the one of `s1-database-review` (migration 19). What the nineteen migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007; since `s1-database-review` they are exercised, one migration at a time, against the earlier code (`scripts/db-test.sh compat`, and the section "Version N-1 code on version N schema" below). Nothing already applied was amended.
+- Status: the Slice 0 baseline (nine migrations), the five migrations of `s1-database-tenancy-and-state-sync` (supersede edge, then row-level security in four parts), the four of `s1-database-port-alignment` (state machine rows, claim protocol, Store model, listings) and the one of `s1-database-review` (migration 19). What the twenty-eight migrations do is tested (the table below lists all of them: 20 to 28 are the API login, the audit actions and the repository registration path). The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007; since `s1-database-review` they are exercised, one migration at a time, against the earlier code (`scripts/db-test.sh compat`, and the section "Version N-1 code on version N schema" below). **Applied migrations were amended before 2026-11-03**, and the record is below ("Migrations that were edited after they were first committed"). Since 2026-11-03 `docs/database/applied-migrations.sha256` lists every migration file by checksum and the `migrations` suite fails when a listed file changes.
 - Form: how-to guide and explanation.
 - Source: [ADR 0007](../adr/0007-persistence-access-and-tenancy.md) rules 1 and 2 and the "Required tests" list, the [documentation policy](../reference/documentation-policy.md) row for data and schema migrations.
 
@@ -27,6 +27,15 @@
 | 17 | `2026-10-27-001700_store_model` | `stage_runs.failing_set_sha256` and the BLOCKED outcome rule; the two attestation columns on `repositories` with their trigger; the task node rules; `jobs_bump_guard` in place of `bump_guard` on `jobs`; grants for the new columns. Constraints added `NOT VALID` and then validated. |
 | 18 | `2026-10-27-001800_listings` | The index `jobs_repository_listing_idx`. |
 | 19 | `2026-10-28-001900_lease_renewal_is_heap_only` | Drops the index `attempts_lease_expiry_idx`, so that a lease renewal can be a heap-only update (`s1-database-review`; measured in [performance.md](performance.md)). Changes a plan, not a statement. |
+| 20 | `2026-10-28-002000_api_login_narrow_group` | The group `factory_api_app`, so that the login of the HTTP API holds only what the API uses (finding API-3). Grants only. |
+| 21 | `2026-10-29-002100_api_audit_actions` | The trigger `audit_events_api_actions`: the API login may write the audit actions the API writes and no other (findings RR-8 and RR-21). |
+| 22 | `2026-10-29-002200_api_stage_decision_action` | `decision.stage_requested` is added to the actions of that trigger. Function replaced, trigger kept. |
+| 23 | `2026-10-29-002300_api_reads_evidence` | `SELECT` on three tables for the API login, so that it can serve the evidence a person reads before a decision. |
+| 24 | `2026-11-02-002400_repository_project_map` | Three nullable columns for the project map of a repository (the commit, the attestor, the time), the CHECK that an enabled repository has a map, `enabled` defaulting to false, column grants for the API login. **Switches off every repository that was enabled, with a `NOTICE` and no audit record.** |
+| 25 | `2026-11-02-002500_repository_enabled_is_bound_to_the_map` | The record of the enabling (commit, person, time); a repository stays enabled only for the map it was enabled for (finding REG-1). **Switches off the repositories enabled since 24, with a `NOTICE` and no audit record.** |
+| 26 | `2026-11-03-002600_repository_enabler_differs_from_attestor` | The column `single_maintainer`, and the rule that the enabler is not the attestor (finding REG-6). **Switches off the repositories enabled by their attestor, with a `NOTICE` and no audit record.** |
+| 27 | `2026-11-03-002700_repository_changes_are_signed_requests` | Register, attest and enable become signed requests that the worker applies; the API login keeps only the switch-off (finding REG-2). Takes grants away from the API login. |
+| 28 | `2026-11-03-002800_registration_hardening_round_two` | The audit trigger of the API login also judges the actor and the words of its two repository actions (RH-5); a trigger refuses an enabled strict repository with no enabler for the logins of the factory (RH-8). Repairs, with a `NOTICE` and an audit record each, the rows that break that rule. Prints the number of repositories that may have been switched off without a record (RH-9). |
 
 The migrations are ordered so that each one creates objects that only depend on earlier ones. The two foreign keys that would otherwise form a cycle (`artifacts` to `stage_runs`, and `jobs` to `ledger_entries`) are added by `ALTER TABLE` in the later migration, and the second one is deferred.
 
@@ -53,9 +62,34 @@ These follow ADR 0007's "expand, migrate, contract", so version N and version N 
    | `ALTER COLUMN TYPE` | Rewrites the table | Add a new column and migrate |
 
 4. **Indexes created concurrently cannot run inside a transaction.** Diesel runs each migration in one. For such a migration add a `metadata.toml` next to `up.sql` and `down.sql` with `run_in_transaction = false`, and keep that migration to the one statement.
-5. **Never edit a migration that has been applied anywhere.** Add a new one. The `migrations` suite would still pass on a clean database, but every other database would have a different history.
+5. **Never edit a migration that has been applied anywhere.** Add a new one. Diesel keeps no checksum, so an edited migration passes every other check on a clean database while every other database has a different history. The list `docs/database/applied-migrations.sha256` holds `sha256  <directory>/<file>` for every `up.sql` and `down.sql` of a merged migration; the first step of the `migrations` suite (and `scripts/db-test.sh check-migrations`, which needs no database) fails when a listed file changes, and when a migration that sorts before the newest listed one is not listed. Append a new migration to the list in the commit that merges it (`scripts/db-test.sh freeze-migrations`, which only adds lines); until then it may still be edited. A correction to the comments of an applied migration goes in the comments of the new one and in the documents, never in the old file.
 6. **Regenerate `schema.rs` in the same commit** (`scripts/db-test.sh write-schema`).
 7. **Add a data-preserving upgrade test** for each migration after the baseline: load rows with the previous schema, run the new migration, and check the rows. ADR 0007 requires it. The `migrations` suite does it for migrations 15 to 18: it builds the schema as it was after migration 14 (`UPGRADE_FROM` in `scripts/db-test.sh`), writes rows into every tenant-owned table with the statements of that time (`tests/upgrade_fixture.sql`), runs the newer migrations, compares a hash of every table over the columns it had before (`tests/upgrade_fingerprint.sql`), and checks that the new columns hold their defaults and that the earlier code's claim, renewal and head move still work (`tests/upgrade_check.sql`). The next package moves `UPGRADE_FROM` forward.
+
+### What the migrations of November 2026 switched off
+
+Three migrations switched repositories off in place, with a `NOTICE` that went to the output of the program that ran them and **no audit record**: `2026-11-02-002400` (every repository that was enabled, because none had a project map), `2026-11-02-002500` (those enabled since) and `2026-11-03-002600` (those enabled by the person who attested their map). Each raised the version of the rows it changed. Nothing in the database marks which rows they were, so no record can be written now that says which. A worker that wrote one record at its first start would also write it on an installation those migrations never touched, and a migration that wrote them would change rows that the upgrade checks compare byte for byte. So the record is a procedure (finding RH-9):
+
+1. Read the output of the migration run for the three `NOTICE` lines and write the counts in the deployment note. Migration `2026-11-03-002800` prints one more `NOTICE` with the number of candidates in the database it ran on.
+2. List the candidates: disabled repositories that have an attested project map and no audit record of a disable.
+
+   ```sql
+   SELECT r.tenant_id, r.id, r.full_name, r.version
+     FROM repositories r
+    WHERE NOT r.enabled AND r.project_map_commit IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM audit_events a
+                       WHERE a.tenant_id = r.tenant_id AND position(r.id::text IN a.subject) > 0
+                         AND a.action IN ('repository.disabled', 'repository.disabled_by_attestation', 'repository.disabled_by_migration'));
+   ```
+
+   Run it once per tenant with `factory.tenant_id` set (the table forces row-level security). A repository that was attested and never enabled is also on the list; read the rest of each row before you decide.
+3. Write down, in the place the project keeps incident notes, which of them were enabled before the upgrade (the person who ran it knows, or an older backup does), and enable each again with `repository enable` after a person has read its map.
+
+A repository switched off by a raw `UPDATE` (a holder of the API database credentials can do that, RH-10) is on the same list.
+
+### Migrations that were edited after they were first committed
+
+Applied migrations must not be edited (rule 5). Before `docs/database/applied-migrations.sha256` existed, some were. Git history shows a second commit that touched `2026-10-27-000400`, `2026-10-27-000900` (up and down), `2026-10-27-001400`, `2026-10-28-001900`, `2026-10-29-002100` and `2026-11-02-002400`. The first five are recorded here and the list holds their present bytes; nothing was restored, because the history of the early slices is not a record of what was applied where. `2026-11-02-002400` had two later commits that changed its comments only (2026-11-02, a correction of the residual-risk text, and 2026-11-03, a supersession note). Both were reverted on 2026-11-03 so that the file is byte for byte what the first commit made it, and the corrections are in the header of `2026-11-03-002800` and in the threat model (T-38). The header of `2026-11-03-002700` says the repository requests are on "the same path" as the decisions of people; they were not as to expiry until the worker was changed on 2026-11-03 (RH-1), and the header of `2026-11-03-002800` says so.
 
 ### Changing the state machine
 
