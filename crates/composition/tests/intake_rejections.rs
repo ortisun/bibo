@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use factory_composition::decision_signing::{DecisionKeys, RejectionSigning};
 use factory_composition::intake_rejections::{
     IntakeRejections, IntakeRejectionsDeps, REASON_CODE, REJECTED, REPLY, REQUESTED,
-    RejectionFields,
+    RejectionFields, ReplyLimits,
 };
 use factory_domain::ids::{AuditEventId, CorrelationId, RepositoryId, TenantId};
 use factory_domain::scope::TenantScope;
@@ -202,11 +202,17 @@ impl Rig {
     }
 
     fn hook_over(&self, host: Arc<dyn ChangeHost>) -> IntakeRejections {
+        self.hook_limited(host, ReplyLimits::STANDARD)
+    }
+
+    /// The step with limits of a test's choosing, to switch one bound off and show the other.
+    fn hook_limited(&self, host: Arc<dyn ChangeHost>, limits: ReplyLimits) -> IntakeRejections {
         IntakeRejections::new(IntakeRejectionsDeps {
             store: self.world.store.clone(),
             host,
             policy_hash: self.policy_hash.clone(),
             keys: self.keys.clone(),
+            limits,
         })
     }
 
@@ -572,6 +578,15 @@ async fn an_unauthorized_sender_who_toggles_the_label_gets_one_reply_in_the_wind
     let mut replies: Vec<String> = records.iter().map(word).collect();
     replies.sort_unstable();
     assert_eq!(replies, ["posted", "posted", "suppressed", "suppressed"]);
+    // The two that were held back say which bound did it: the spacing, and not the cap.
+    for record in records.iter().filter(|record| word(record) == "suppressed") {
+        assert_eq!(
+            word_of(record, "withheld="),
+            "spacing",
+            "{}",
+            record.event.subject
+        );
+    }
     // A worker that starts later reads the log from the beginning, finds the replies that were
     // posted and answers none of them again, nor the toggles of the same sender that follow.
     let later = rig.hook_over(host.clone());
@@ -599,4 +614,147 @@ async fn a_request_of_another_tenant_is_not_answered_by_this_one() {
     let records = rig.records(REJECTED).await;
     assert_eq!(records.len(), 1, "but the rejection is still audited");
     assert!(records[0].event.subject.contains("reply=not_sent"));
+}
+
+/// The word a record carries after `key`, or an empty text.
+fn word_of(record: &AuditRecord, key: &str) -> String {
+    record
+        .event
+        .subject
+        .split(' ')
+        .find_map(|word| word.strip_prefix(key))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// SF-16. The cap on its own, with the spacing switched off: a sender gets the most replies the
+/// period allows, the rest are recorded with the bound that held them back, and a worker that
+/// starts later finds the same count in the log. Another sender is not touched by it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unauthorized_sender_gets_at_most_the_cap_of_replies_in_the_period() {
+    let rig = Rig::new().await;
+    let host = Hosting::new();
+    let limits = ReplyLimits {
+        spacing: std::time::Duration::ZERO,
+        cap: 2,
+        period: std::time::Duration::from_secs(24 * 60 * 60),
+    };
+    let hook = rig.hook_limited(host.clone(), limits);
+    for n in 0..4_u8 {
+        rig.request(&rig.fields(&format!("0190a3b2-7c4d-4e5f-8a6b-00000000010{n}"), Some(1)))
+            .await;
+    }
+    rig.request(&rig.fields("0190a3b2-7c4d-4e5f-8a6b-000000000109", Some(2)))
+        .await;
+    hook.pass(rig.tenant).await;
+    assert_eq!(
+        host.comments().len(),
+        3,
+        "two for the first sender, one for the second"
+    );
+    let records = rig.records(REJECTED).await;
+    assert_eq!(
+        records.len(),
+        5,
+        "every request is recorded, answered or not"
+    );
+    let of_first: Vec<&AuditRecord> = records
+        .iter()
+        .filter(|record| word_of(record, "sender=") == "1")
+        .collect();
+    let posted = of_first
+        .iter()
+        .filter(|record| word_of(record, "reply=") == "posted")
+        .count();
+    let held: Vec<&&AuditRecord> = of_first
+        .iter()
+        .filter(|record| word_of(record, "reply=") == "suppressed")
+        .collect();
+    assert_eq!((posted, held.len()), (2, 2), "{of_first:#?}");
+    for record in held {
+        assert_eq!(
+            word_of(record, "withheld="),
+            "cap",
+            "the record names the bound: {}",
+            record.event.subject
+        );
+        assert!(record.event.reason.starts_with(REASON_CODE));
+    }
+    let of_second = records
+        .iter()
+        .find(|record| word_of(record, "sender=") == "2")
+        .expect("a record for the second sender");
+    assert_eq!(word_of(of_second, "reply="), "posted");
+    assert_eq!(word_of(of_second, "withheld="), "", "nothing was held back");
+
+    // A worker that starts later reads the posted replies from the log and holds the cap.
+    let later = rig.hook_limited(host.clone(), limits);
+    rig.request(&rig.fields("0190a3b2-7c4d-4e5f-8a6b-00000000010a", Some(1)))
+        .await;
+    later.pass(rig.tenant).await;
+    assert_eq!(host.comments().len(), 3, "a restart is not a new period");
+    assert_eq!(rig.records(REJECTED).await.len(), 6);
+}
+
+/// SF-16. The spacing on its own, with a cap too high to matter: the toggles of one sender inside
+/// the spacing are recorded with the word `spacing` and post nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_held_back_by_the_spacing_names_the_spacing_in_its_record() {
+    let rig = Rig::new().await;
+    let host = Hosting::new();
+    let hook = rig.hook_limited(
+        host.clone(),
+        ReplyLimits {
+            cap: 1_000,
+            ..ReplyLimits::STANDARD
+        },
+    );
+    for n in 0..3_u8 {
+        rig.request(&rig.fields(&format!("0190a3b2-7c4d-4e5f-8a6b-00000000020{n}"), Some(7)))
+            .await;
+    }
+    hook.pass(rig.tenant).await;
+    assert_eq!(host.comments().len(), 1);
+    let records = rig.records(REJECTED).await;
+    let mut seen: Vec<(String, String)> = records
+        .iter()
+        .map(|record| (word_of(record, "reply="), word_of(record, "withheld=")))
+        .collect();
+    seen.sort_unstable();
+    assert_eq!(
+        seen,
+        [
+            ("posted".to_owned(), String::new()),
+            ("suppressed".to_owned(), "spacing".to_owned()),
+            ("suppressed".to_owned(), "spacing".to_owned()),
+        ]
+    );
+}
+
+/// SF-16. A cap of zero is the safe way to be wrong: nobody is answered, and each request is still
+/// recorded, with the bound that held it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cap_of_zero_answers_nobody_and_still_records_each_request() {
+    let rig = Rig::new().await;
+    let host = Hosting::new();
+    let hook = rig.hook_limited(
+        host.clone(),
+        ReplyLimits {
+            spacing: std::time::Duration::ZERO,
+            cap: 0,
+            period: std::time::Duration::from_secs(24 * 60 * 60),
+        },
+    );
+    rig.request(&rig.fields("0190a3b2-7c4d-4e5f-8a6b-000000000301", Some(5)))
+        .await;
+    rig.request(&rig.fields("0190a3b2-7c4d-4e5f-8a6b-000000000302", None))
+        .await;
+    hook.pass(rig.tenant).await;
+    assert!(host.comments().is_empty(), "no comment is posted");
+    let records = rig.records(REJECTED).await;
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(word_of(record, "reply="), "suppressed");
+        assert_eq!(word_of(record, "withheld="), "cap");
+    }
 }

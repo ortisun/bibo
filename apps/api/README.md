@@ -236,9 +236,19 @@ narrowed to other repositories) makes no job (FR-002, SC-002). Because the API h
 one signed request in the audit log, in the transaction that records the delivery, under the action
 `webhook_accepted_or_rejected.denied`, which its database trigger allows. The worker's hook answers it: one fixed
 reply on the issue and the record `intake.rejected`
-(`factory_composition::intake_rejections`). A repeated delivery leaves no second request, a bot is never answered,
-and a repository that is switched off is not answered either. The answer to the sender of the webhook is the same
-`202` in every case.
+(`factory_composition::intake_rejections`). A repeated delivery leaves no second request, and a bot is never answered.
+The worker answers one sender at most once in ten minutes and three times in 24 hours (SF-16); a request it does not
+answer is still recorded, with `reply=suppressed` and the bound that held it (`withheld=spacing` or `withheld=cap`).
+
+A repository that is switched off (registered, not enabled) answers nobody and starts nothing, whoever the sender is.
+The lookup that binds a delivery to a tenant answers only for a repository that is registered and enabled, so such a
+label is dropped there like one for a repository that was never registered: no delivery row, no job, no request for a
+reply, and the platform record `webhook.unbound`. For the factory label (SF-19) that record's reason says that the
+repository is not registered or that the factory is switched off for it, and that the label starts nothing and nobody
+is answered; any other delivery that does not resolve keeps the plain reason. The record carries the delivery id and
+nothing from the payload. A record in the tenant's own stream that names the repository would need the lookup to
+return a disabled repository too, which is open. The answer to the sender of the webhook is the same `202` in every
+case.
 
 ## Configuration
 

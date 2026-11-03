@@ -29,6 +29,15 @@
 //!    audit log in the same transaction (`ask_for_a_reply`); the worker's hook posts the reply and
 //!    writes the record `intake.rejected` (`factory_composition::intake_rejections`). A repeat of
 //!    a delivery leaves none, so the reply is not sent twice. A bot is never answered.
+//! 7. **A repository that is switched off is not bound, and the record says what the label did
+//!    (SF-19).** The lookup of step 3 answers only for a repository that is registered and
+//!    enabled, so a label in a repository that is switched off is dropped there, whoever the
+//!    sender is: no delivery row, no job, no request for a reply. The platform record
+//!    `webhook.unbound` is all the API can leave, because it has no tenant for the delivery; for
+//!    the factory label its reason says that the repository is not registered **or** that the
+//!    factory is switched off for it, and that the label starts nothing, instead of the plain
+//!    "not registered". A record in the tenant's own stream, naming the repository, would need
+//!    the lookup to return the disabled row too (a change of the function and of the port).
 //!
 //! Every outcome after a valid signature is `202 {"status": "accepted"}`: a sender learns nothing
 //! about tenants, repositories or the allowlist from the answer.
@@ -51,6 +60,16 @@ use crate::answers::{Answer, ApiError, Reply};
 use crate::jobs::{audit_action, commit};
 use crate::limits::{Key, PlatformEvent};
 use crate::state::ApiState;
+
+/// The reason of the record that the factory label leaves when the repository does not resolve
+/// (SF-19). The lookup that binds a delivery to a tenant answers only for a repository that is
+/// registered **and enabled**, so a repository that is switched off looks to the API like one that
+/// was never registered, and the reason says both. It says what the factory did with the label,
+/// so that a reader of the log is not left with "not registered" for a repository that is.
+const UNBOUND_FACTORY_LABEL: &str = "The factory label was applied in a repository that is not registered or that the factory is switched off for. The label starts nothing and nobody is answered.";
+
+/// The reason of the record of any other delivery that does not resolve.
+const UNBOUND: &str = "The installation or repository is not registered.";
 
 /// What a delivery is acknowledged with, whatever became of it.
 fn accepted() -> Answer {
@@ -150,10 +169,18 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
         .resolve_installation(delivery.installation, repository)
         .await?
     else {
+        let factory_label = matches!(
+            &delivery.hint,
+            WebhookHint::IssueLabeled { label, .. } if *label == state.github.factory_label
+        );
         state.platform_audit.report(PlatformEvent {
             action: "webhook.unbound",
             subject,
-            reason: "The installation or repository is not registered.",
+            reason: if factory_label {
+                UNBOUND_FACTORY_LABEL
+            } else {
+                UNBOUND
+            },
         });
         return accepted();
     };

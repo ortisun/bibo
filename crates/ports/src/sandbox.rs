@@ -1358,6 +1358,31 @@ mod tests {
         }
     }
 
+    /// NT-SBX-01. The refusal of a privileged container has more than one layer: the rules a spec is
+    /// held to here, before any container is made; the arguments the supervisor builds; and the
+    /// look at the container after it was created. A test that creates a privileged container and
+    /// sees it refused cannot tell which layer refused it, so each layer has a test of its own.
+    /// This is the first: with no other layer in the way, a privileged spec is refused for that
+    /// rule and no other, in every profile, and the same spec unprivileged is not.
+    #[test]
+    fn negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile() {
+        for profile in [
+            SandboxProfile::FetchDeps,
+            SandboxProfile::Agent,
+            SandboxProfile::Verify,
+        ] {
+            let mut broken = spec(profile);
+            broken.hardening.privileged = true;
+            assert_eq!(
+                rules_of(&broken),
+                vec![SandboxRule::Privileged],
+                "{profile:?}: only the privileged rule, and no other, is broken"
+            );
+            broken.hardening.privileged = false;
+            assert_eq!(broken.validate(&policy()), Ok(()), "{profile:?}");
+        }
+    }
+
     #[test]
     fn a_shared_inter_process_namespace_is_refused_but_ipc_none_is_allowed() {
         let mut host = spec(SandboxProfile::Agent);

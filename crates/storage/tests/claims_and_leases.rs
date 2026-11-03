@@ -579,3 +579,163 @@ async fn negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lap
         "the renewal moved the end of the lease"
     );
 }
+
+// ---- The fences of a renewal, one test each (F-4) --------------------------------------------
+//
+// The test above puts four refusals in one function, so a failure of it does not say which fence
+// is gone, and a fence that is gone is seen only if the function reaches its line. Each fence of
+// a renewal (the owner, the epoch, the tenant, the lapse) has a test of its own below, with the
+// control that the owner's renewal works, and the break that removes the fence is caught by the
+// test of that fence.
+
+/// An attempt started by worker-1, and what a test needs to renew it.
+struct Held {
+    scene: Scene,
+    attempt: factory_domain::ids::AttemptId,
+    epoch: factory_ports::store::LeaseEpoch,
+}
+
+impl Held {
+    async fn start() -> Self {
+        let scene = Scene::new().await;
+        let job = scene.active_job(scene.a).await;
+        let run = scene.ready_stage_run(scene.a, job).await;
+        let started = scene.start(scene.a, run, "worker-1").await.expect("start");
+        Self {
+            attempt: started.attempt.value.id,
+            epoch: started.attempt.value.epoch,
+            scene,
+        }
+    }
+
+    fn fence(&self, worker: &str, epoch: factory_ports::store::LeaseEpoch) -> Fence {
+        Fence {
+            attempt: self.attempt,
+            epoch,
+            worker: WorkerId::new(worker).expect("name"),
+        }
+    }
+
+    /// The row of the attempt as one text: version, owner, epoch, end of the lease, last beat.
+    async fn snapshot(&self) -> String {
+        self.scene
+            .db
+            .text(&format!(
+                "SELECT version || '|' || lease_owner || '|' || lease_epoch || '|' || lease_expires_at || '|' || \
+                 coalesce(last_heartbeat_at::text, '-') FROM attempts WHERE id = '{}'",
+                self.attempt.as_uuid()
+            ))
+            .await
+            .expect("the attempt")
+    }
+
+    /// The owner renews: the control that makes a refusal mean something.
+    async fn the_owner_renews(&self) {
+        let mut tx = self.scene.tx(self.scene.a).await;
+        tx.heartbeat(self.fence("worker-1", self.epoch), Duration::from_secs(600))
+            .await
+            .expect("the owner renews a live lease");
+        tx.commit().await.expect("commit");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing() {
+    let held = Held::start().await;
+    let before = held.snapshot().await;
+    let mut tx = held.scene.tx(held.scene.a).await;
+    assert_eq!(
+        tx.heartbeat(held.fence("worker-2", held.epoch), Duration::from_secs(600))
+            .await,
+        Err(StoreError::LeaseFenced),
+        "the right attempt and the right epoch, named by another worker"
+    );
+    tx.rollback().await.expect("rollback");
+    assert_eq!(held.snapshot().await, before, "the row is as it was");
+    held.the_owner_renews().await;
+    assert_ne!(held.snapshot().await, before, "the owner's renewal works");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing() {
+    let held = Held::start().await;
+    let before = held.snapshot().await;
+    let mut tx = held.scene.tx(held.scene.a).await;
+    for (name, epoch) in [
+        (
+            "one above",
+            factory_ports::store::LeaseEpoch::new(held.epoch.get() + 1),
+        ),
+        (
+            "far above",
+            factory_ports::store::LeaseEpoch::new(held.epoch.get() + 100),
+        ),
+    ] {
+        assert_eq!(
+            tx.heartbeat(held.fence("worker-1", epoch), Duration::from_secs(600))
+                .await,
+            Err(StoreError::LeaseFenced),
+            "the owner at an epoch the lease does not hold: {name}"
+        );
+    }
+    tx.rollback().await.expect("rollback");
+    assert_eq!(held.snapshot().await, before, "the row is as it was");
+    held.the_owner_renews().await;
+    assert_ne!(held.snapshot().await, before, "the owner's renewal works");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing() {
+    let held = Held::start().await;
+    held.scene
+        .db
+        .run(&format!(
+            "UPDATE attempts SET lease_expires_at = now() - interval '1 second', version = version + 1 WHERE id = '{}'",
+            held.attempt.as_uuid()
+        ))
+        .await;
+    let lapsed = held.snapshot().await;
+    let mut tx = held.scene.tx(held.scene.a).await;
+    assert_eq!(
+        tx.heartbeat(held.fence("worker-1", held.epoch), Duration::from_secs(600))
+            .await,
+        Err(StoreError::LeaseFenced),
+        "a lapsed lease is the sweeper's, and the owner cannot renew it"
+    );
+    tx.rollback().await.expect("rollback");
+    assert_eq!(held.snapshot().await, lapsed, "the row is as it was");
+    // The control: while the lease holds, the owner renews it.
+    held.scene
+        .db
+        .run(&format!(
+            "UPDATE attempts SET lease_expires_at = now() + interval '30 seconds', version = version + 1 WHERE id = '{}'",
+            held.attempt.as_uuid()
+        ))
+        .await;
+    let live = held.snapshot().await;
+    held.the_owner_renews().await;
+    assert_ne!(held.snapshot().await, live, "the owner renews a live lease");
+}
+
+/// The tenant is held by two layers that a session cannot tell apart: the filter in the statement
+/// (`tenant_id = $1`) and the row-level security of the table (docs/database/tenancy.md). A
+/// renewal presented through the session of another tenant reaches neither, and the test shows
+/// the result of both. It cannot show either alone, and a break that removes only the filter
+/// changes nothing; the row-level security is held on its own by `tenant_isolation.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_lse_02_a_renewal_presented_by_another_tenant_changes_nothing() {
+    let held = Held::start().await;
+    let before = held.snapshot().await;
+    let mut other = held.scene.tx(held.scene.b).await;
+    let forged = other
+        .heartbeat(held.fence("worker-1", held.epoch), Duration::from_secs(600))
+        .await;
+    assert!(
+        matches!(forged, Err(StoreError::LeaseFenced | StoreError::NotFound)),
+        "a renewal from another tenant reaches nothing: {forged:?}"
+    );
+    other.rollback().await.expect("rollback");
+    assert_eq!(held.snapshot().await, before, "the row is as it was");
+    held.the_owner_renews().await;
+    assert_ne!(held.snapshot().await, before, "the owner's renewal works");
+}

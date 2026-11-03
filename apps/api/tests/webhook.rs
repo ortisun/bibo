@@ -547,8 +547,9 @@ async fn a_redelivered_label_from_someone_who_may_not_ask_leaves_no_second_reque
     env.stop().await;
 }
 
-/// A repository the factory is switched off for has no one to answer: a label there leaves no
-/// request, and no job.
+/// A repository the factory is switched off for is not bound by the lookup that maps a delivery to a
+/// tenant, so a label there leaves no request for a reply, no delivery row and no job, whoever the
+/// sender is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_label_in_a_repository_that_is_switched_off_leaves_no_request() {
     let env = Env::start().await;
@@ -568,6 +569,137 @@ async fn a_label_in_a_repository_that_is_switched_off_leaves_no_request() {
     assert_eq!(reply.status, 202);
     assert_eq!(rows(&env, "jobs").await, 0);
     assert!(rejection_requests(&env).await.is_empty());
+    env.stop().await;
+}
+
+/// SF-19. A label of the factory in a repository the factory is switched off for is not answered, and
+/// the platform record it leaves says what the factory did with it. The API cannot tell a repository
+/// that is switched off from one that was never registered (the lookup answers only for a repository
+/// that is registered and enabled), so the reason says both, and says that the label starts nothing
+/// and nobody is answered. Any other delivery that does not resolve keeps the plain reason, and a
+/// repository that is switched on is bound as before. The `202` is the same for every case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_factory_label_in_a_repository_that_is_switched_off_leaves_a_record_that_says_what_became_of_it()
+ {
+    let env = Env::start().await;
+    let a = &env.a;
+    env.db
+        .run(&format!(
+            "UPDATE repositories SET enabled = false, version = version + 1 WHERE tenant_id = '{}'",
+            a.id.as_uuid()
+        ))
+        .await;
+    // Three senders of the factory label, then a label that is not the factory's.
+    let factory_senders = [
+        ("someone the tenant does not know", 999_999_u64),
+        ("someone who may not ask", a.outsider.github_id),
+        ("a requester", a.requester.github_id),
+    ];
+    let mut bodies = Vec::new();
+    for (n, (name, sender)) in factory_senders.iter().enumerate() {
+        let reply = env
+            .send(env.delivery(
+                "issues",
+                &delivery_id(96 + n as u64),
+                &payload(a, "factory", *sender, 40 + n as u64),
+            ))
+            .await;
+        assert_eq!(reply.status, 202, "{name}");
+        bodies.push(reply.body);
+    }
+    let other = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(99),
+            &payload(a, "bug", a.outsider.github_id, 43),
+        ))
+        .await;
+    assert_eq!(other.status, 202);
+    bodies.push(other.body);
+    assert!(
+        bodies.windows(2).all(|pair| pair[0] == pair[1]),
+        "the answer is the same for everybody"
+    );
+
+    // Nothing in the tenant: no delivery row, no job, no request for a reply.
+    assert_eq!(rows(&env, "webhook_deliveries").await, 0);
+    assert_eq!(rows(&env, "jobs").await, 0);
+    assert!(rejection_requests(&env).await.is_empty());
+
+    // The platform stream holds one record for each, written by a task at a limited rate.
+    let platform =
+        "tenant_id = '00000000-0000-0000-0000-000000000001' AND action = 'webhook.unbound'";
+    assert!(
+        eventually(Duration::from_secs(10), || async {
+            env.db
+                .number(&format!(
+                    "SELECT count(*) FROM audit_events WHERE {platform}"
+                ))
+                .await
+                == 4
+        })
+        .await,
+        "the four dropped deliveries were not audited"
+    );
+    let reasons = |like: &'static str| {
+        let query =
+            format!("SELECT count(*) FROM audit_events WHERE {platform} AND reason LIKE '{like}'");
+        let env = &env;
+        async move { env.db.number(&query).await }
+    };
+    assert_eq!(
+        reasons("%switched off%").await,
+        3,
+        "each factory label says that the factory may be switched off for the repository"
+    );
+    assert_eq!(
+        reasons("%starts nothing and nobody is answered%").await,
+        3,
+        "and what became of the label"
+    );
+    assert_eq!(
+        reasons("The installation or repository is not registered.").await,
+        1,
+        "the other label keeps the plain reason"
+    );
+    // The record names the delivery and nothing the sender wrote.
+    for n in 0..4 {
+        assert_eq!(
+            env.db
+                .number(&format!(
+                    "SELECT count(*) FROM audit_events WHERE {platform} AND subject = 'delivery {}'",
+                    delivery_id(96 + n)
+                ))
+                .await,
+            1,
+            "delivery {n}"
+        );
+    }
+    assert_eq!(
+        env.db
+            .number(&format!(
+                "SELECT count(*) FROM audit_events WHERE {platform} AND (subject LIKE '%someone%' OR reason LIKE '%someone%')"
+            ))
+            .await,
+        0
+    );
+
+    // Switched on again, the same label is bound and starts a job.
+    env.db
+        .run(&format!(
+            "UPDATE repositories SET enabled = true, version = version + 1 WHERE tenant_id = '{}'",
+            a.id.as_uuid()
+        ))
+        .await;
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(100),
+            &payload(a, "factory", a.requester.github_id, 44),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 1);
     env.stop().await;
 }
 

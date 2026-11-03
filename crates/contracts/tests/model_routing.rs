@@ -631,3 +631,37 @@ fn every_way_to_widen_the_policy_is_reported_by_its_key() {
         .contains(&"roles[builder]".to_owned())
     );
 }
+
+/// SF-18. The module comment of the crate said that the routing policy did not exist and that no
+/// schema described it, after both existed. A type cannot check a comment, so this test reads it:
+/// it must not say the file is missing, and it must point at the module that reads the policy and
+/// at the crate that applies it.
+#[test]
+fn sf_18_the_module_comment_of_the_crate_does_not_say_the_routing_policy_is_missing() {
+    let lib = read_text(&repo_root().join("crates/contracts/src/lib.rs"));
+    let comment: String = lib
+        .lines()
+        .take_while(|line| line.starts_with("//!") || line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for stale in ["does not exist", "no schema describes"] {
+        assert!(!comment.contains(stale), "the comment still says {stale:?}");
+    }
+    for wanted in [
+        "policies/model_routing.yaml",
+        "policy::routing",
+        "factory_composition::routing",
+    ] {
+        assert!(
+            comment.contains(wanted),
+            "the comment does not name {wanted}"
+        );
+    }
+    // The policy and its schema are in the repository, as the comment now says.
+    assert!(repo_root().join("policies/model_routing.yaml").is_file());
+    assert!(
+        repo_root()
+            .join("schemas/policy-model-routing.schema.json")
+            .is_file()
+    );
+}

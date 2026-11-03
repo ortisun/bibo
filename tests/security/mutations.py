@@ -55,6 +55,7 @@ CONFIG = "crates/composition/src/config.rs"
 SIGNING = "crates/composition/src/decision_signing.rs"
 TIGHTEN = "crates/domain/src/policy/tighten.rs"
 PORTS_SANDBOX = "crates/ports/src/sandbox.rs"
+SANDBOX_POSTURE = "crates/sandbox/src/container/posture.rs"
 GITHUB_PERMISSIONS = "crates/github/src/permissions.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
@@ -119,6 +120,13 @@ MUTATIONS = {
         "the check that a claim was read at the version the run still has is gone, so the second worker is refused by a later rule with another answer",
         [(ATTEMPTS, 'if run.version != start.expected.get() || run.status != "READY" {', "if false {")],
     ),
+    "a-claim-has-no-lock-and-no-version-guard": (
+        "the stage run is read without a lock and the update that moves it to RUNNING no longer asks for the version and the status it was read at, so two workers that read it together both start it. Each of the two is a layer behind the other (and behind the early check and the unique index of the live attempt): either alone changes no answer, and a test cannot see it; both gone, nothing but the index is left",
+        [
+            (ATTEMPTS, "FROM stage_runs WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE\",", "FROM stage_runs WHERE tenant_id = $1 AND id = $2\","),
+            (ATTEMPTS, "WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'READY' \\", "WHERE tenant_id = $1 AND id = $2 AND $3 >= 0 \\"),
+        ],
+    ),
     "the-engine-does-not-write-command-executed": (
         "the engine writes no audit record for a command the sandbox ran",
         [(SANDBOX_AUDIT, "if seen < MAX_COMMAND_RECORDS {", "if false && seen < MAX_COMMAND_RECORDS {")],
@@ -139,9 +147,13 @@ MUTATIONS = {
         "the approval judge no longer refuses an approval when the gates of the pull request are not clear",
         [(JUDGE, "    if !request.gates_clear {\n        return Err(Refusal::GatesNotClear);", "    if false && !request.gates_clear {\n        return Err(Refusal::GatesNotClear);")],
     ),
-    "stale-evidence-does-not-stop-an-approval": (
-        "the approval judge no longer compares the evidence the person saw with the evidence now",
+    "a-stale-binding-does-not-stop-an-approval": (
+        "the approval judge no longer compares what the person saw (head, tree, base, manifest, specification version) with what the request holds; the second look, at the world as it is now, is left to refuse it under another name",
         [(JUDGE, "    if let Some((part, _)) = stale {\n        return Err(Refusal::StaleBinding(part));", "    if false && let Some((part, _)) = stale {\n        return Err(Refusal::StaleBinding(part));")],
+    ),
+    "a-moved-ledger-does-not-stop-an-approval": (
+        "the approval judge no longer compares the head of the evidence ledger the person saw with the ledger now, so evidence that arrived after the person looked does not stop the approval",
+        [(JUDGE, "    if live.ledger_head != &seen.ledger_head {\n        return Err(Refusal::EvidenceMoved);", "    if false && live.ledger_head != &seen.ledger_head {\n        return Err(Refusal::EvidenceMoved);")],
     ),
     "a-forbidden-argument-is-allowed": (
         "an argument that the policy forbids for a program no longer denies the command",
@@ -180,8 +192,40 @@ MUTATIONS = {
         [(SIGNING, "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if previous.as_ref().is_some_and(|old| old.0 == current.0) {", "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if false && previous.as_ref().is_some_and(|old| old.0 == current.0) {")],
     ),
     "a-privileged-container-is-not-refused": (
-        "the check of a sandbox spec no longer refuses privileged mode",
+        "the check of a sandbox spec no longer refuses privileged mode (the first of the layers that refuse it: the rules of the port, before any container is made)",
         [(PORTS_SANDBOX, "        if h.privileged {\n            rules.push(SandboxRule::Privileged);", "        if false && h.privileged {\n            rules.push(SandboxRule::Privileged);")],
+    ),
+    "the-inspect-does-not-read-the-privileged-flag": (
+        "the look at a container after it was created reads the privileged flag as off, so the posture check cannot refuse a container the daemon made privileged (the layer after the rules of the port)",
+        [(SANDBOX_POSTURE, '        privileged: flag(host, &["Privileged"]),', "        privileged: false,")],
+    ),
+    "a-rotation-from-a-key-to-itself-is-accepted": (
+        "the rotation of a key already held (`rotated_from`) accepts a previous key equal to the current one",
+        [(SIGNING, "        let old = Key::from_bytes(previous)?;\n        if old.0 == self.current.0 {", "        let old = Key::from_bytes(previous)?;\n        if false && old.0 == self.current.0 {")],
+    ),
+    "the-test-constructor-accepts-the-same-key-twice": (
+        "the constructor for tests (`fixed_for_tests`) accepts a previous key equal to the current one",
+        [(SIGNING, "        let previous = previous.map(Key::fixed).transpose()?;\n        if previous.as_ref().is_some_and(|old| old.0 == current.0) {", "        let previous = previous.map(Key::fixed).transpose()?;\n        if false && previous.as_ref().is_some_and(|old| old.0 == current.0) {")],
+    ),
+    "a-key-file-of-another-user-is-accepted": (
+        "a key file that belongs to another user than the one the process runs as passes the location check (the owner of the file is not compared)",
+        [(SIGNING, "    process == Some(file_owner)\n", "    let _ = (file_owner, process);\n    true\n")],
+    ),
+    "a-key-file-in-a-directory-of-another-user-is-accepted": (
+        "a key file whose directory belongs to a user other than the file's owner (and not root) passes the location check",
+        [(SIGNING, "    file_owner == directory_owner || directory_owner == 0\n", "    let _ = (file_owner, directory_owner);\n    true\n")],
+    ),
+    "a-key-in-a-directory-others-can-write-is-accepted": (
+        "a key file in, or below, a directory that group or others can write (and that is not sticky) passes the location check",
+        [(SIGNING, "        if mode & 0o022 != 0 && mode & 0o1000 == 0 {", "        if false && mode & 0o022 != 0 && mode & 0o1000 == 0 {")],
+    ),
+    "a-previous-key-never-ends": (
+        "the previous decision signing key still verifies after `previous_key_valid_until` has passed",
+        [(SIGNING, "    if now > until {", "    if false && now > until {")],
+    ),
+    "production-keeps-a-previous-key-with-no-end": (
+        "the production profile uses a previous decision signing key that has no end (`previous_key_valid_until` is not set)",
+        [(SIGNING, "    let Some(text) = settings.previous_key_valid_until.as_deref() else {\n        if profile == Profile::Production {", "    let Some(text) = settings.previous_key_valid_until.as_deref() else {\n        if false && profile == Profile::Production {")],
     ),
     "an-app-with-a-forbidden-permission-gets-a-token": (
         "the audit of the App no longer refuses an App that holds a permission the policy forbids",
@@ -208,12 +252,14 @@ TESTS = {
     "a-renewal-ignores-the-owner": ["-p", "factory-storage", "negative_nt_lse_02"],
     "a-renewal-ignores-the-epoch": ["-p", "factory-storage", "negative_nt_lse_02"],
     "a-second-claimant-is-not-told-it-lost": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-claim-has-no-lock-and-no-version-guard": ["-p", "factory-storage", "negative_nt_lse_02"],
     "the-engine-does-not-write-command-executed": ["-p", "factory-workflow", "negative_nt_aud_03"],
     "the-api-writes-the-old-webhook-name": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_aud_03"],
     "the-job-token-is-accepted-by-the-webhook-endpoint": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_inj_04"],
     "the-builder-report-is-stored-as-written": ["-p", "factory-workflow", "-p", "factory-api", "negative_nt_sec_01"],
     "a-failing-gate-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_01"],
-    "stale-evidence-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_02"],
+    "a-stale-binding-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_02"],
+    "a-moved-ledger-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_02"],
     "a-forbidden-argument-is-allowed": ["-p", "factory-domain", "negative_nt_tool_05"],
     "a-parent-component-is-not-refused": ["-p", "factory-domain", "negative_nt_tool_04"],
     "a-widening-of-a-switch-counts-as-a-tightening": ["-p", "factory-domain", "negative_nt_pol_02"],
@@ -222,8 +268,19 @@ TESTS = {
     "a-bot-is-not-a-bot": ["-p", "factory-github", "negative_nt_wh_09"],
     "a-delivery-that-fails-verification-is-acknowledged": ["-p", "factory-api", "--test", "webhook", "negative_nt_wh_01"],
     "a-secret-file-may-be-read-by-group-and-others": ["-p", "factory-composition", "--test", "security_rereview", "--test", "external_world", "held_the_key_file", "a_secret_key_file_that"],
-    "a-rotation-to-the-same-key-is-accepted": ["-p", "factory-composition", "--test", "security_rereview", "held_a_rotation_to_the_same_key"],
-    "a-privileged-container-is-not-refused": ["-p", "factory-sandbox", "negative_nt_sbx_01"],
+    # The constructors that refuse the same key are three copies of one rule: the one the files go
+    # through, the one a rotation goes through, and the one tests use. A test that goes through one
+    # cannot see another gone, so each has a test of its own (F-5).
+    "a-rotation-to-the-same-key-is-accepted": ["-p", "factory-composition", "--lib", "--test", "security_rereview", "held_a_rotation_to_the_same_key", "from_bytes_refuses_a_previous_key", "a_rotation_by_files_accepts_the_previous_key"],
+    "a-rotation-from-a-key-to-itself-is-accepted": ["-p", "factory-composition", "--lib", "rotated_from_refuses_a_previous_key"],
+    "the-test-constructor-accepts-the-same-key-twice": ["-p", "factory-composition", "--lib", "--test", "security_rereview", "held_a_rotation_to_the_same_key", "a_short_key_and_a_repeated_key_are_refused"],
+    "a-key-file-of-another-user-is-accepted": ["-p", "factory-composition", "--lib", "a_key_file_must_belong_to_the_user_the_process_runs_as"],
+    "a-key-file-in-a-directory-of-another-user-is-accepted": ["-p", "factory-composition", "--lib", "a_key_file_must_belong_to_the_owner_of_its_directory"],
+    "a-key-in-a-directory-others-can-write-is-accepted": ["-p", "factory-composition", "--lib", "in_production_a_key_in_a_directory_others_can_write_is_refused"],
+    "a-previous-key-never-ends": ["-p", "factory-composition", "--lib", "the_previous_key_ends_when_the_configuration_says"],
+    "production-keeps-a-previous-key-with-no-end": ["-p", "factory-composition", "--lib", "the_previous_key_ends_when_the_configuration_says"],
+    "a-privileged-container-is-not-refused": ["-p", "factory-sandbox", "-p", "factory-ports", "negative_nt_sbx_01"],
+    "the-inspect-does-not-read-the-privileged-flag": ["-p", "factory-sandbox", "negative_nt_sbx_01"],
     "an-app-with-a-forbidden-permission-gets-a-token": ["-p", "factory-github", "negative_nt_authz_09"],
 }
 
