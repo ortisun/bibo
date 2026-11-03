@@ -184,8 +184,7 @@ async fn docker_requests_of(config: &FactoryConfig) -> Vec<factory_ports::proces
         .sweep_orphans(&[])
         .await
         .expect("an empty daemon has nothing to sweep");
-    let seen = recorder.seen.lock().expect("lock").clone();
-    seen
+    recorder.seen.lock().expect("lock").clone()
 }
 
 fn plain(env: &[(String, factory_ports::process::EnvValue)], name: &str) -> Option<String> {

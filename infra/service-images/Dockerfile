@@ -63,6 +63,7 @@ COPY xtask xtask
 COPY schemas schemas
 COPY migrations migrations
 COPY docs/database/tests/role_readiness.sql docs/database/tests/role_readiness.sql
+COPY fixtures/readability/rules.json fixtures/readability/rules.json
 
 # The registry cache holds only downloaded crates, which Cargo.lock checks by hash, so it cannot
 # change what is built. The target directory is removed in the same step, so it never becomes a

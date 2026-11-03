@@ -16,6 +16,8 @@
 !schemas/
 !migrations/
 !docs/database/tests/role_readiness.sql
+# Read at compile time by `crates/workflow/src/gates/readability/catalog.rs` (include_str!).
+!fixtures/readability/rules.json
 
 # Inside what is let in: build output, and files that are named like a credential.
 **/target

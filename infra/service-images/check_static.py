@@ -38,6 +38,7 @@ ALLOWED = {
     "schemas/",
     "migrations/",
     "docs/database/tests/role_readiness.sql",
+    "fixtures/readability/rules.json",
 }
 # Paths that must never be let back in, however they are spelled.
 NEVER = (".git", ".env", "infra/compose/secrets", "target", ".claude")
