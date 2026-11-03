@@ -1,0 +1,4 @@
+id       = service-images
+title    = The API and worker images, once built (infra/service-images/build.sh), are non-root, shell-less, setuid-free, hold no credential and start on a read-only root. BLOCKED when there is no Docker daemon or the images are not built; this step never builds
+requires = docker python3
+run      = infra/service-images/test.sh

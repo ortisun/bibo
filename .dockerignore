@@ -1,0 +1,26 @@
+# The build context of the service images (infra/service-images/Dockerfile) is the repository root.
+#
+# An allow list: everything is left out, then exactly what the two programs need to compile is let
+# back in. Nothing that can hold a secret (infra/compose/secrets, .env files, .git with its history,
+# the Claude and editor folders) is ever sent to the Docker daemon, so none can reach a layer.
+# infra/service-images/test.sh --static checks that the first rule is "*" and that none of those
+# paths is let back in.
+*
+
+!Cargo.toml
+!Cargo.lock
+!.cargo/
+!crates/
+!apps/
+!xtask/
+!schemas/
+!migrations/
+!docs/database/tests/role_readiness.sql
+
+# Inside what is let in: build output, and files that are named like a credential.
+**/target
+**/.DS_Store
+**/.env
+**/.env.*
+**/*.pem
+**/*.key

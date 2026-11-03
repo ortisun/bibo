@@ -8,6 +8,7 @@
 #
 # HOW TO START IT
 #   scripts/local-up.sh              the "local" profile: PostgreSQL 18 and the artifact volume
+#   infra/service-images/build.sh    builds factory-api:local and factory-worker:local (needs the Docker daemon)
 #   scripts/local-up.sh --factory    also the "factory" profile (only once you have built the two images)
 #   scripts/smoke.sh                 starts a throwaway copy with the "test" profile and checks it
 #   Every setting comes from the environment (see the list below). Nothing is read from a file
@@ -19,11 +20,12 @@
 #            a loopback port chosen by the script, no restart, every object labelled
 #            factory.test=true. Adds "sandbox-probe", a container that behaves like a sandbox so
 #            the smoke script can prove it has no route to PostgreSQL.
-#   factory  the factory's own services, "api" and "worker". The programs exist (apps/api serves HTTP; apps/worker
-#            runs its start-up checks and, until the credentials are supplied, exits with code 3, BLOCKED), but
-#            no Dockerfile for either is in the repository, so nobody has built the two images and this profile
-#            has never been started. The contract (image names, configuration files, secret files, the user) is
-#            in docs/operations/local-deployment.md, section "Contract for the factory services".
+#   factory  the factory's own services, "api" and "worker" (apps/api serves HTTP; apps/worker runs its start-up
+#            checks and, until the credentials are supplied, exits with code 3, BLOCKED). The images are built by
+#            infra/service-images/build.sh from infra/service-images/Dockerfile and tested by
+#            infra/service-images/test.sh. This profile has not been started with the images yet. The contract
+#            (image names, configuration files, secret files, the user) is in docs/operations/local-deployment.md,
+#            section "Contract for the factory services".
 #
 # NETWORK LAYOUT (docs/security/sandbox-policy.md section 5)
 #   data       PostgreSQL, api, worker. The only network PostgreSQL is on. Sandbox containers and
@@ -58,7 +60,6 @@
 #   FACTORY_SANDBOX_AGENT_IMAGE, FACTORY_SANDBOX_VERIFY_IMAGE, FACTORY_SANDBOX_SIDECAR_IMAGE
 #                         images the worker starts as sandboxes, by digest, from
 #                         infra/sandbox-images/images.json
-#   FACTORY_WORKER_DOCKER_HOST   how the worker reaches Docker. See the note at the worker service.
 #   FACTORY_SANDBOX_PROBE_IMAGE  image of the probe (test profile). scripts/smoke.sh sets it to the
 #                         agent sandbox image.
 
@@ -192,11 +193,12 @@ services:
     cpus: 0.5
     pids_limit: 64
 
-  # ---- The factory services (profile "factory": needs two images that nobody has built yet) ----
-  # State on 2026-10-29: apps/api is a working HTTP server (docs/reference/commands.md, "The API server"). apps/worker
+  # ---- The factory services (profile "factory": needs the two images infra/service-images/build.sh makes) ----
+  # State on 2026-11-03: apps/api is a working HTTP server (docs/reference/commands.md, "The API server"). apps/worker
   # runs its start-up checks and exits with code 3 (BLOCKED) until a deployment supplies the model provider, the
-  # GitHub App and the tenants. No Dockerfile for either is in the repository, so there is no image to run, and
-  # nothing in this profile has been started. The files below are what the programs read, taken from the code.
+  # GitHub App and the tenants. infra/service-images/Dockerfile builds one image for each (distroless, no shell, a
+  # numeric non-root user, the program as the entry point), and infra/service-images/test.sh tests them on their
+  # own. Nothing in this profile has been started with them yet. The files below are what the programs read.
   #
   # How they are configured: ONE YAML file named by FACTORY_CONFIG (the examples in config/ are parsed by the
   # programs' own tests), an environment that can only tighten it (FACTORY_PROFILE, FACTORY_LOG), and every secret
@@ -260,11 +262,12 @@ services:
       FACTORY_CONFIG: /etc/factory/worker.yaml
       FACTORY_PROFILE: local
       FACTORY_LOG: ${FACTORY_LOG:-info}
-      # How the worker reaches Docker to start sandboxes. This file mounts NO Docker socket: a container that can
-      # talk to the Docker daemon controls the whole machine. With nothing set the worker cannot start a sandbox
-      # and the job is BLOCKED, which is the fail-closed answer the sandbox policy asks for. The options are in
-      # docs/operations/local-deployment.md.
-      DOCKER_HOST: ${FACTORY_WORKER_DOCKER_HOST:-}
+      # How the worker reaches Docker to start sandboxes is NOT set here. The worker starts its docker client with an
+      # empty environment, so a DOCKER_HOST in this block would be ignored; the address is the configuration key
+      # sandbox.docker_host (and sandbox.docker_config) of the worker's file, FACTORY_WORKER_CONFIG. This file mounts
+      # NO Docker socket: a container that can talk to the Docker daemon controls the whole machine. With no key, no
+      # client in the image and no socket, the worker cannot start a sandbox and the job is BLOCKED, which is the
+      # fail-closed answer the sandbox policy asks for. The options are in docs/operations/local-deployment.md.
     # Two logins, two pools (ADR 0012). Each file holds the database URL for that login; the worker refuses a file
     # that group or others can read, and a URL whose login is not the one the configuration names.
     secrets:
