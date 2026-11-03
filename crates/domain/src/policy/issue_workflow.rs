@@ -201,55 +201,109 @@ strict! {
         /// protected allowlist, such as `approver`. A designation by name, matched by numeric
         /// GitHub user id; never a GitHub role. Pending confirmation by the architect (ADR 0016).
         pub design_approved_by: String,
-        /// The most replies the factory posts on one issue about its design in the window (DG-9).
-        /// Whole, at least 1 and at most [`REPLY_CAP_MOST`]. A missing key is a load error, and
-        /// zero is a problem of the policy: neither can mean "no limit".
-        pub design_reply_cap_per_issue: u32,
-        /// The length of that window in hours, at least 1 and at most [`REPLY_WINDOW_HOURS_MOST`].
+        /// The most replies of the kind [`ReplyKind::Refusal`] the factory posts on one issue in
+        /// the window: the answers of the design gate at intake (DG-9, DR-4). Whole, at least 1
+        /// and at most [`REPLY_CAP_MOST`]. A missing key is a load error, and zero is a problem
+        /// of the policy: neither can mean "no limit".
+        pub design_refusal_cap_per_issue: u32,
+        /// The most replies of the kind [`ReplyKind::Withdrawal`]: the stop before the pull
+        /// request opens (DG-8). Counted apart from the others, so that one kind cannot use up
+        /// the room of another (DR-4). Same range and same rules as the key above.
+        pub design_withdrawal_cap_per_issue: u32,
+        /// The most replies of the kind [`ReplyKind::Environment`]: the notice that the place where
+        /// the tools run is not available (LB-02). Same range and same rules.
+        pub design_environment_cap_per_issue: u32,
+        /// The length of the window of all three, in hours, at least 1 and at most
+        /// [`REPLY_WINDOW_HOURS_MOST`].
         pub design_reply_window_hours: u32,
     }
 }
 
 /// The most replies about a design that the policy may allow on one issue in a window: what the
-/// adapter can count in the one page of comments it reads.
+/// adapter can count in the pages of comments it reads.
 pub const REPLY_CAP_MOST: u32 = 100;
 
 /// The longest window of that cap in hours: a week.
 pub const REPLY_WINDOW_HOURS_MOST: u32 = 168;
 
-/// How many replies about a design the factory may post on one issue, and over how long (DG-9). It
-/// is built only from numbers that are in range, so a zero cannot be held.
+/// The kind of a reply about a design. Each kind has a cap of its own and a family of its own, so
+/// that the replies of one kind are counted apart from the others and a kind cannot use up the room
+/// of another (DR-4): a requester who is refused many times cannot silence the notice that the
+/// factory stopped before the pull request, or the notice about the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReplyKind {
+    /// An answer of the design gate at intake: not approved, not clear, approved by the wrong
+    /// person, dropped, the text is not the issue's, the approval is older than the words, or the
+    /// factory could not check.
+    Refusal,
+    /// The stop before the pull request is opened, because the design is not approved now or
+    /// could not be checked again (DG-8).
+    Withdrawal,
+    /// The notice that the place where the factory runs its tools is not available (LB-02).
+    Environment,
+}
+
+impl ReplyKind {
+    /// Every kind, in the order the policy lists them.
+    pub const ALL: [Self; 3] = [Self::Refusal, Self::Withdrawal, Self::Environment];
+
+    /// The family word of the kind: a slug that every comment of the kind carries as a hidden
+    /// marker, so that the adapter counts the kinds apart without reading text.
+    #[must_use]
+    pub const fn family(self) -> &'static str {
+        match self {
+            Self::Refusal => "design-refusal",
+            Self::Withdrawal => "design-withdrawal",
+            Self::Environment => "design-environment",
+        }
+    }
+}
+
+/// How many replies of one kind the factory may post on one issue, and over how long (DG-9, DR-4).
+/// It is built only from numbers that are in range, so a zero cannot be held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplyCap {
+    kind: ReplyKind,
     max: u32,
     window: std::time::Duration,
 }
 
 impl ReplyCap {
-    /// The cap for a rule that cannot be read: one reply on an issue in a day, the least that still
-    /// tells a person that the factory stopped. It is the closed value, not a default of the
-    /// policy: the policy has none.
-    pub const WHEN_THE_POLICY_CANNOT_BE_READ: Self = Self {
-        max: 1,
-        window: std::time::Duration::from_secs(24 * 3600),
-    };
-
-    /// A cap of `max` replies in `window_hours`, or `None` when either number is zero or above its
-    /// most.
+    /// The cap of a kind for a rule that cannot be read: one reply of the kind on an issue in a
+    /// day, the least that still tells a person that the factory stopped. It is the closed value,
+    /// not a default of the policy: the policy has none.
     #[must_use]
-    pub fn new(max: u32, window_hours: u32) -> Option<Self> {
+    pub const fn when_the_policy_cannot_be_read(kind: ReplyKind) -> Self {
+        Self {
+            kind,
+            max: 1,
+            window: std::time::Duration::from_secs(24 * 3600),
+        }
+    }
+
+    /// A cap of `max` replies of `kind` in `window_hours`, or `None` when either number is zero or
+    /// above its most.
+    #[must_use]
+    pub fn new(kind: ReplyKind, max: u32, window_hours: u32) -> Option<Self> {
         if !(1..=REPLY_CAP_MOST).contains(&max)
             || !(1..=REPLY_WINDOW_HOURS_MOST).contains(&window_hours)
         {
             return None;
         }
         Some(Self {
+            kind,
             max,
             window: std::time::Duration::from_secs(u64::from(window_hours) * 3600),
         })
     }
 
-    /// The most replies in the window.
+    /// The kind of reply the cap counts.
+    #[must_use]
+    pub const fn kind(&self) -> ReplyKind {
+        self.kind
+    }
+
+    /// The most replies of the kind in the window.
     #[must_use]
     pub const fn max(&self) -> u32 {
         self.max
@@ -612,7 +666,7 @@ pub struct DesignGate {
     track_key: String,
     approved_label: String,
     approved_by: Designation,
-    reply_cap: ReplyCap,
+    reply_caps: [ReplyCap; 3],
 }
 
 impl DesignGate {
@@ -628,10 +682,15 @@ impl DesignGate {
         self.approved_by
     }
 
-    /// How many replies about a design the factory may post on one issue, and over how long (DG-9).
+    /// How many replies of `kind` the factory may post on one issue, and over how long (DG-9,
+    /// DR-4). Each kind has its own cap.
     #[must_use]
-    pub const fn reply_cap(&self) -> ReplyCap {
-        self.reply_cap
+    pub const fn reply_cap(&self, kind: ReplyKind) -> ReplyCap {
+        match kind {
+            ReplyKind::Refusal => self.reply_caps[0],
+            ReplyKind::Withdrawal => self.reply_caps[1],
+            ReplyKind::Environment => self.reply_caps[2],
+        }
     }
 
     /// True when the name is a design label in the wide sense described on the type. Used to put
@@ -890,23 +949,38 @@ impl IssueWorkflowPolicy {
             )),
             Some(_) => {}
         }
-        if ReplyCap::new(
-            self.intake_requirements.design_reply_cap_per_issue,
-            self.intake_requirements.design_reply_window_hours,
-        )
-        .is_none()
-        {
-            found.push(problem(
-                if (1..=REPLY_CAP_MOST).contains(&self.intake_requirements.design_reply_cap_per_issue) {
-                    "intake_requirements.design_reply_window_hours"
-                } else {
-                    "intake_requirements.design_reply_cap_per_issue"
-                },
-                ProblemKind::Constraint,
-                format!(
-                    "the replies about a design are capped by a number from 1 to {REPLY_CAP_MOST} and a window of 1 to {REPLY_WINDOW_HOURS_MOST} hours; zero is not a way to say there is no limit"
-                ),
-            ));
+        let caps = [
+            (
+                ReplyKind::Refusal,
+                "intake_requirements.design_refusal_cap_per_issue",
+                self.intake_requirements.design_refusal_cap_per_issue,
+            ),
+            (
+                ReplyKind::Withdrawal,
+                "intake_requirements.design_withdrawal_cap_per_issue",
+                self.intake_requirements.design_withdrawal_cap_per_issue,
+            ),
+            (
+                ReplyKind::Environment,
+                "intake_requirements.design_environment_cap_per_issue",
+                self.intake_requirements.design_environment_cap_per_issue,
+            ),
+        ];
+        let window = self.intake_requirements.design_reply_window_hours;
+        for (kind, key, max) in caps {
+            if ReplyCap::new(kind, max, window).is_none() {
+                found.push(problem(
+                    if (1..=REPLY_CAP_MOST).contains(&max) {
+                        "intake_requirements.design_reply_window_hours"
+                    } else {
+                        key
+                    },
+                    ProblemKind::Constraint,
+                    format!(
+                        "the replies about a design are capped by a number from 1 to {REPLY_CAP_MOST} for each kind and a window of 1 to {REPLY_WINDOW_HOURS_MOST} hours; zero is not a way to say there is no limit"
+                    ),
+                ));
+            }
         }
         let document = &design.approval_requires.design_document;
         if !glob_is_a_design_document(&document.path_glob) {
@@ -992,17 +1066,34 @@ impl IssueWorkflowPolicy {
                     "this is not a designation of the allowlist",
                 )]
             })?;
-        let reply_cap = ReplyCap::new(
-            self.intake_requirements.design_reply_cap_per_issue,
-            self.intake_requirements.design_reply_window_hours,
-        )
-        .ok_or_else(|| {
-            vec![problem(
-                "intake_requirements.design_reply_cap_per_issue",
-                ProblemKind::Constraint,
-                "the replies about a design have no usable cap",
-            )]
-        })?;
+        let cap = |kind, max| {
+            ReplyCap::new(
+                kind,
+                max,
+                self.intake_requirements.design_reply_window_hours,
+            )
+            .ok_or_else(|| {
+                vec![problem(
+                    "intake_requirements.design_reply_window_hours",
+                    ProblemKind::Constraint,
+                    "the replies about a design have no usable cap",
+                )]
+            })
+        };
+        let reply_caps = [
+            cap(
+                ReplyKind::Refusal,
+                self.intake_requirements.design_refusal_cap_per_issue,
+            )?,
+            cap(
+                ReplyKind::Withdrawal,
+                self.intake_requirements.design_withdrawal_cap_per_issue,
+            )?,
+            cap(
+                ReplyKind::Environment,
+                self.intake_requirements.design_environment_cap_per_issue,
+            )?,
+        ];
         let key = self.namespaces.design.prefix.trim().to_ascii_lowercase();
         Ok(DesignGate {
             track_key: key,
@@ -1011,7 +1102,7 @@ impl IssueWorkflowPolicy {
                 self.namespaces.design.prefix, self.intake_requirements.design_track_requires
             ),
             approved_by,
-            reply_cap,
+            reply_caps,
         })
     }
 
@@ -1103,7 +1194,7 @@ mod tests {
             track_key: "design:".to_owned(),
             approved_label: "design: approved".to_owned(),
             approved_by: Designation::Approver,
-            reply_cap: ReplyCap::new(5, 24).expect("a cap"),
+            reply_caps: ReplyKind::ALL.map(|kind| ReplyCap::new(kind, 3, 24).expect("a cap")),
         }
     }
 

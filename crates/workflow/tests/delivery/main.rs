@@ -24,6 +24,8 @@ mod world;
 mod approval;
 mod approval_stage;
 mod design_recheck;
+mod design_recheck_durable;
+mod design_recheck_words;
 mod documented;
 mod happy;
 mod judging;

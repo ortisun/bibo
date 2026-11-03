@@ -149,7 +149,7 @@ pub struct CommentCap {
 }
 
 impl CommentCap {
-    /// The most comments of a family that one request can count: the comments of a thread that one
+    /// The most comments of a family that a look can count: the comments of a thread that one
     /// page returns. A cap above this could not be checked, so it is refused.
     pub const MOST: u32 = 100;
 
@@ -196,7 +196,7 @@ pub enum CappedPost {
     AlreadyThere(CommentRef),
     /// The thread already holds as many comments of the family in the window as the cap allows.
     CapReached,
-    /// The comments of the window do not fit in the one page the adapter reads, so the adapter
+    /// The comments of the window do not fit in the few pages the adapter reads (DR-4), so the adapter
     /// cannot tell whether the factory already answered or how many times. It posts nothing.
     NotChecked,
 }
@@ -362,6 +362,25 @@ impl LabelTimeline {
             self.events.iter().map(|e| e.label.as_str()).collect();
         Ok(names.into_iter().map(str::to_owned).collect())
     }
+}
+
+/// When the words of an issue (its title and its body) were last edited, as the code host reports
+/// it. The design gate needs it to tell whether an approval covers the words of the issue as they
+/// are now (DR-1): an approval is a label, and a label says nothing about the words.
+///
+/// The time of the issue's `updated_at` cannot stand for it: any activity moves that time, the
+/// label of the approval and the label that asks for work included. A source gives this value only
+/// when the code host has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextEdit {
+    /// The host knows of no edit: the title and the body are as the issue was opened.
+    Never,
+    /// The last edit of the title or the body was at this time.
+    At(Timestamp),
+    /// The source cannot say: it has no way to read the time, or the host answered something that
+    /// cannot be read as a time. A caller treats this as "may have been edited at any time" and
+    /// never as [`Never`](Self::Never) (fail closed).
+    Unknown,
 }
 
 /// An issue as fetched live. Its text is untrusted.
@@ -756,6 +775,20 @@ pub trait IssueSource: Send + Sync {
         Err(GitHostError::Unavailable)
     }
 
+    /// When the title or the body of the issue was last edited (DR-1). A read of the host, always
+    /// live. The default is [`TextEdit::Unknown`]: a source that keeps no edit time cannot say, and
+    /// a caller that needs the answer refuses. A source answers [`TextEdit::Unknown`] too when the
+    /// host answered but not in a shape that can be read as a time or as "never"; it never guesses
+    /// "never". A read that fails is an error.
+    async fn text_edit(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<TextEdit, GitHostError> {
+        let _ = (scope, issue);
+        Ok(TextEdit::Unknown)
+    }
+
     /// Reads the rules that apply to the default branch. A failure to read is an error, which the
     /// engine treats as level L0.
     async fn repository_protection(
@@ -845,13 +878,14 @@ pub trait ChangeHost: Send + Sync {
     ) -> Result<CommentRef, GitHostError>;
 
     /// Like [`post_comment`](Self::post_comment), for a reply the factory must not repeat without
-    /// end on the same thread (DG-9). The adapter reads **one** page of the thread, only the
-    /// comments written or changed within `cap.window()`, and:
+    /// end on the same thread (DG-9). The adapter looks at the thread through a **small, fixed
+    /// number of pages** (three of 100, DR-4), only the comments written or changed within
+    /// `cap.window()`, and:
     ///
     /// * finds the comment of `idempotency_key` among them: [`CappedPost::AlreadyThere`];
     /// * counts the factory's own comments of `cap.family()` and, when there are `cap.max()` or
     ///   more: [`CappedPost::CapReached`];
-    /// * cannot read them all in the page: [`CappedPost::NotChecked`];
+    /// * cannot read them all in the few pages of its look: [`CappedPost::NotChecked`];
     /// * otherwise posts, and the comment carries the family marker: [`CappedPost::Posted`].
     ///
     /// Only the App's own comments count, whoever pastes its marker. A host that cannot count

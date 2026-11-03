@@ -167,6 +167,12 @@ fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
             "/git/refs",
             "pulls/{number}/merge",
         ] {
+            // The one read of GraphQL the adapter makes (the time a body was last edited, DR-1)
+            // is in `edits.rs`; `security_review` holds it to a constant query and a short list
+            // of routes.
+            if needle == "graphql" && path.file_name().is_some_and(|name| name == "edits.rs") {
+                continue;
+            }
             assert!(
                 !code.iter().any(|l| l.contains(needle)),
                 "{} holds {needle}",

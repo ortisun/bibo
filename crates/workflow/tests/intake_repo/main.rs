@@ -14,7 +14,9 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod approval_words;
 mod design;
+mod durable_record;
 mod harness;
 mod intake;
 mod pair;

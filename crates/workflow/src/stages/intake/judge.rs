@@ -4,7 +4,9 @@
 //! request (DG-8), so that an approval taken back while the job ran stops the pull request. Both
 //! call [`DesignJudge::judge`]: one code path reads the rule, fetches the issue from the code host
 //! now, keeps an issue on the design track after its design label was taken off, finds who applied
-//! the approving label, and hands the labels to [`design::judge`]. A second copy of that logic
+//! the approving label and when, reads when the words of the issue were last edited (an approval
+//! covers the words as they were when it was applied, DR-1), and hands the labels to
+//! [`design::judge`]. A second copy of that logic
 //! would drift from the first, and the second asker is the one nobody tests every day.
 //!
 //! The judge reads and decides. It posts nothing and records nothing: each stage answers the person
@@ -21,7 +23,7 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{GitScope, IssueRef, IssueSource};
 
 use super::authorize::Labeller;
-use super::design::{self, DesignDecision, Judging, TextCheck};
+use super::design::{self, ApprovalCoverage, DesignDecision, Judging, TextCheck};
 use super::seams::DesignGatePolicy;
 use crate::handlers::StageError;
 
@@ -187,6 +189,20 @@ impl DesignJudge {
         } else {
             None
         };
+        // An approval covers the words that were there when it was applied (DR-1). The time of
+        // the last edit is read only for an issue that has the approving label alone, and a host
+        // that fails to answer fails the attempt like every other read. An answer that cannot be
+        // compared never covers.
+        let coverage = if labels == DesignLabels::ApprovalLabelOnly {
+            let edit = self
+                .issues
+                .text_edit(scope, issue)
+                .await
+                .map_err(|_| DesignStop::Stage(StageError::Tool))?;
+            ApprovalCoverage::of(applied.as_ref().and_then(|found| found.applied_at), edit)
+        } else {
+            ApprovalCoverage::NotAsked
+        };
         let repository = format!("{}/{}", issue.repo.owner(), issue.repo.name());
         let decision = design::judge(
             &Judging {
@@ -200,6 +216,7 @@ impl DesignJudge {
             labels,
             applied.as_ref().map(Labeller::of),
             text,
+            coverage,
         );
         Ok(Judged {
             rule,

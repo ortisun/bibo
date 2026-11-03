@@ -82,6 +82,74 @@ pub enum ProviderError {
     /// `sandbox.docker_config` is not a directory on this machine.
     #[error("sandbox.docker_config: {0} is not a directory on this machine")]
     DockerConfig(String),
+    /// `sandbox.docker_config` is a directory that names a Docker daemon or a credential helper,
+    /// or whose content cannot be judged (DR-6).
+    #[error(
+        "sandbox.docker_config: {0} {1}; a Docker configuration directory may not name a daemon or a credential helper unless sandbox.allow_docker_config_contexts is true (never in the production profile)"
+    )]
+    DockerConfigContent(String, &'static str),
+}
+
+/// The most bytes of `config.json` of the Docker client that are read. A larger file is not a
+/// configuration file anyone wrote by hand, and it is refused rather than read.
+const DOCKER_CONFIG_FILE_LIMIT: u64 = 1024 * 1024;
+
+/// Why the Docker client's configuration directory may not be used, or `None` (DR-6). It is used
+/// when it has no `contexts` entry, and its `config.json`, if it has one, names no `currentContext`
+/// other than the default and no `credsStore` or `credHelpers`: a context can point the client at
+/// a daemon on another machine whatever `docker_host` says, and a credential helper is a program
+/// the client would run. Anything that cannot be read, or is not what it should be (a `contexts`
+/// that is not a folder, a `config.json` that is a link, not an object or not JSON), is a reason:
+/// the check fails closed.
+fn docker_config_problem(directory: &std::path::Path) -> Option<&'static str> {
+    use std::io::ErrorKind::NotFound;
+    match std::fs::symlink_metadata(directory.join("contexts")) {
+        Ok(found) if !found.is_dir() => return Some("has a contexts entry that is not a folder"),
+        Ok(_) => match std::fs::read_dir(directory.join("contexts")) {
+            Ok(mut entries) => {
+                if entries.next().is_some() {
+                    return Some("has a contexts folder with an entry, which can name a daemon");
+                }
+            }
+            Err(_) => return Some("has a contexts folder that cannot be read"),
+        },
+        Err(error) if error.kind() == NotFound => {}
+        Err(_) => return Some("has a contexts entry that cannot be read"),
+    }
+    let file = directory.join("config.json");
+    match std::fs::symlink_metadata(&file) {
+        Err(error) if error.kind() == NotFound => return None,
+        Err(_) => return Some("has a config.json that cannot be read"),
+        Ok(found) if !found.is_file() || found.len() > DOCKER_CONFIG_FILE_LIMIT => {
+            return Some("has a config.json that is not a plain file of a sensible size");
+        }
+        Ok(_) => {}
+    }
+    let Ok(bytes) = std::fs::read(&file) else {
+        return Some("has a config.json that cannot be read");
+    };
+    let Ok(serde_json::Value::Object(config)) = serde_json::from_slice(&bytes) else {
+        return Some("has a config.json that is not a JSON object");
+    };
+    // The values that mean "none" are the ones the client itself reads as none.
+    match config.get("currentContext") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::String(name)) if name.is_empty() || name == "default" => {}
+        Some(_) => {
+            return Some("has a config.json that names a currentContext other than the default");
+        }
+    }
+    match config.get("credsStore") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::String(name)) if name.is_empty() => {}
+        Some(_) => return Some("has a config.json that names a credential helper (credsStore)"),
+    }
+    match config.get("credHelpers") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Object(map)) if map.is_empty() => {}
+        Some(_) => return Some("has a config.json that names credential helpers (credHelpers)"),
+    }
+    None
 }
 
 /// The settings of the `docker` client from the sandbox section of the configuration. The client
@@ -99,9 +167,25 @@ pub fn docker_settings_from(sandbox: &SandboxConfig) -> Result<DockerSettings, P
         if !directory.is_dir() {
             return Err(ProviderError::DockerConfig(directory.display().to_string()));
         }
+        if !sandbox.allow_docker_config_contexts
+            && let Some(problem) = docker_config_problem(directory)
+        {
+            return Err(ProviderError::DockerConfigContent(
+                directory.display().to_string(),
+                problem,
+            ));
+        }
         settings
             .env
             .push(("DOCKER_CONFIG".to_owned(), directory.display().to_string()));
+        if !sandbox.allow_docker_config_contexts {
+            // What the directory holds when a command runs can differ from what it held at the
+            // start. The default context is the one named by `DOCKER_HOST` or the default socket,
+            // so a `currentContext` that appears later cannot redirect the client.
+            settings
+                .env
+                .push(("DOCKER_CONTEXT".to_owned(), "default".to_owned()));
+        }
     }
     Ok(settings)
 }

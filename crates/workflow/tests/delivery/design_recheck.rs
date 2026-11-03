@@ -310,7 +310,11 @@ async fn a_rule_that_cannot_be_read_blocks_the_run_and_says_the_factory_could_no
     // The rule is unreadable, so the cap is unknown: the reply is asked with the least one.
     assert_eq!(
         world.design.replies.caps(),
-        [factory_domain::policy::issue_workflow::ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ]
+        [
+            factory_domain::policy::issue_workflow::ReplyCap::when_the_policy_cannot_be_read(
+                factory_domain::policy::issue_workflow::ReplyKind::Withdrawal
+            )
+        ]
     );
 }
 
@@ -360,7 +364,7 @@ async fn a_cap_that_is_reached_posts_nothing_and_the_block_stands_with_a_record_
     assert!(world.design.replies.texts().is_empty());
     let (_, reply) = recorded_pair(&world);
     assert!(
-        reply.contains(": capped (at most 5 in 24 hours)"),
+        reply.contains(": capped (at most 2 in 24 hours)"),
         "{reply}"
     );
 }
@@ -373,7 +377,11 @@ async fn the_recheck_asks_with_the_cap_of_the_policy_and_writes_the_record_first
     let _ = assert_stopped(&world).await;
     let caps = world.design.replies.caps();
     assert_eq!(caps.len(), 1);
-    assert_eq!(caps[0].max(), 5);
+    assert_eq!(
+        caps[0].kind(),
+        factory_domain::policy::issue_workflow::ReplyKind::Withdrawal
+    );
+    assert_eq!(caps[0].max(), 2);
     assert_eq!(caps[0].window(), std::time::Duration::from_secs(24 * 3600));
 }
 

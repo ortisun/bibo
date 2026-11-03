@@ -68,12 +68,14 @@ _ALLOWED = {
     "design_document": {"issue_body_field", "path_glob"},
     "factory_track": {"states"},
     "factory_state": {"job_state", "name", "color", "description"},
-    "intake_requirements": {"design_track_requires", "design_approved_by", "design_reply_cap_per_issue",
+    "intake_requirements": {"design_track_requires", "design_approved_by", "design_refusal_cap_per_issue",
+                            "design_withdrawal_cap_per_issue", "design_environment_cap_per_issue",
                             "design_reply_window_hours"},
 }
 
-# The cap on the replies the factory posts on one issue about its design (DG-9): how many, and over how
-# many hours. Whole numbers, never zero, and no larger than what the engine's adapter can count in one page.
+# The caps on the replies the factory posts on one issue about its design (DG-9, DR-4), one for each kind of
+# reply, and the window they share: how many, and over how many hours. Whole numbers, never zero, and no larger
+# than what the engine's adapter can count in the pages it looks at.
 _REPLY_CAP_RANGE = (1, 100)
 _REPLY_WINDOW_HOURS_RANGE = (1, 168)
 
@@ -218,7 +220,9 @@ def check_policy(policy, approval, state_machine):
         errors.append("design-approver: design_approved_by %r must be one of %s"
                       % (approver, ", ".join(sorted(_DESIGN_APPROVER_DESIGNATIONS))))
     for key, label, (low, high) in (
-            ("design_reply_cap_per_issue", "design-reply-cap", _REPLY_CAP_RANGE),
+            ("design_refusal_cap_per_issue", "design-reply-cap", _REPLY_CAP_RANGE),
+            ("design_withdrawal_cap_per_issue", "design-reply-cap", _REPLY_CAP_RANGE),
+            ("design_environment_cap_per_issue", "design-reply-cap", _REPLY_CAP_RANGE),
             ("design_reply_window_hours", "design-reply-window", _REPLY_WINDOW_HOURS_RANGE)):
         value = (policy.get("intake_requirements") or {}).get(key)
         # A bool is an int in Python and is not a number of replies.
@@ -279,7 +283,11 @@ def render(policy, raw):
             "start_states": design["start_states"],
             "transitions": [[e["from"], e["to"]] for e in design["transitions"]],
             "approved": policy["intake_requirements"]["design_track_requires"],
-            "reply_cap_per_issue": policy["intake_requirements"]["design_reply_cap_per_issue"],
+            "reply_caps_per_issue": {
+                "refusal": policy["intake_requirements"]["design_refusal_cap_per_issue"],
+                "withdrawal": policy["intake_requirements"]["design_withdrawal_cap_per_issue"],
+                "environment": policy["intake_requirements"]["design_environment_cap_per_issue"],
+            },
             "reply_window_hours": policy["intake_requirements"]["design_reply_window_hours"],
             "document_field": document["issue_body_field"],
             "document_glob": document["path_glob"],

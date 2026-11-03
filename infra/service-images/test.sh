@@ -135,7 +135,7 @@ fs_audit() {
   CONTAINERS="$CONTAINERS $name"
   docker export "$name" | python3 -I "$FSAUDIT" fs --out-dir "$dir" \
     --forbidden "$LIB/forbidden-binaries.txt" --shells "$LIB/shells.txt" --policy "$POLICY" \
-    --runtime-minted factory_job_token --runtime-minted api_token
+    --runtime-minted factory_job_token
   local rc=("${PIPESTATUS[@]}")
   docker export "$name" >"$WORK/fs-$role.tar" 2>/dev/null
   docker rm -f "$name" >/dev/null 2>&1

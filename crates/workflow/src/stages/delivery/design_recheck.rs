@@ -33,8 +33,8 @@ use std::sync::Arc;
 
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::machines::guards::EnvironmentCause;
-use factory_domain::policy::issue_workflow::ReplyCap;
-use factory_domain::vocabulary::Fidelity;
+use factory_domain::policy::issue_workflow::{ReplyCap, ReplyKind};
+use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::githost::{GitScope, IssueRef};
 
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
@@ -114,10 +114,17 @@ impl DesignRecheck {
         let Ok(allowlist) = self.allowlists.current(scope.tenant).await else {
             return self.cannot_judge(ctx, scope, issue, &issue_text).await;
         };
+        // The judge only reads, so it reads with the narrowest credential there is: the class
+        // of the intake stage (`issues: read` and `metadata: read`), and not the delivery token,
+        // which can write (DR-10). The comments are posted with a scope of their own.
+        let reading = GitScope {
+            stage: StageKind::Intake,
+            ..scope.clone()
+        };
         let judged = self
             .judge
             .judge(Question {
-                scope,
+                scope: &reading,
                 issue,
                 allowlist: &allowlist,
                 now,
@@ -129,16 +136,18 @@ impl DesignRecheck {
                 if matches!(decision, DesignDecision::Refused { .. }) {
                     // The record first, then the reply, then the record of the reply (DG-9). Every
                     // refusal gets the same comment: the design is not approved as the issue shows
-                    // it now. The record keeps the reason.
-                    ctx.note_audit_because(
+                    // it now. The record keeps the reason, and it is in the store before the reply
+                    // is tried, whatever happens to the attempt after (DR-3).
+                    ctx.record_now(
                         AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
                         self.judge.redacted_reason(design::recheck_audit_reason(
                             &decision,
                             &issue_text,
                             Some(ReplyStatus::ToFollow),
                         )),
-                    );
-                    let cap = rule.reply_cap();
+                    )
+                    .await?;
+                    let cap = rule.reply_cap(ReplyKind::Withdrawal);
                     let status = self
                         .reply(
                             ctx,
@@ -193,12 +202,13 @@ impl DesignRecheck {
         issue: &IssueRef,
         issue_text: &str,
     ) -> Result<(), StageError> {
-        ctx.note_audit_because(
+        ctx.record_now(
             AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
             design::recheck_unjudgeable_reason(issue_text, Some(ReplyStatus::ToFollow)),
-        );
+        )
+        .await?;
         // The rule cannot be read, so the cap cannot be either: the least one applies.
-        let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;
+        let cap = ReplyCap::when_the_policy_cannot_be_read(ReplyKind::Withdrawal);
         let status = self
             .reply(ctx, scope, issue, Reply::CannotCheckAgain, "", &cap)
             .await;

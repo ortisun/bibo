@@ -171,12 +171,12 @@ async fn comments_that_are_not_replies_of_the_family_do_not_count() {
 }
 
 #[tokio::test]
-async fn a_thread_with_more_comments_than_one_page_in_the_window_gets_no_reply() {
+async fn a_thread_with_more_comments_than_the_look_reads_in_the_window_gets_no_reply() {
     let world = World::new();
     let (issue, target) = issue(&world);
-    // People write 130 comments within the day. The adapter reads one page of 100, so it cannot
-    // tell whether it already answered: it posts nothing, and does not read the rest.
-    for n in 0..130 {
+    // People write 350 comments within the day. The adapter reads three pages of 100 (DR-4), so
+    // it cannot tell whether it already answered: it posts nothing, and does not read the rest.
+    for n in 0..350 {
         world
             .fake
             .add_comment(FIXTURE, issue.number, "octocat", &format!("comment {n}"));
@@ -185,16 +185,74 @@ async fn a_thread_with_more_comments_than_one_page_in_the_window_gets_no_reply()
         post(&world, &target, "k-1", &cap(5)).await,
         CappedPost::NotChecked
     );
-    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 130);
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 350);
     let listings = world
         .fake
         .requests_to("GET /repos/{owner}/{repo}/issues/{number}/comments");
-    assert_eq!(listings.len(), 1, "one page, no more");
+    assert_eq!(listings.len(), 3, "three pages, no more");
     // The sibling: with a hundred comments or fewer in the window, the reply is posted. The same
     // thread read through a window that excludes the old comments is short enough.
     let (_other, short) = issue_with_comments(&world, 40);
     let done = post(&world, &short, "k-1", &cap(5)).await;
     assert!(matches!(done, CappedPost::Posted(_)), "{done:?}");
+}
+
+#[tokio::test]
+async fn a_thread_of_up_to_three_pages_is_counted_and_gets_its_reply() {
+    // DR-4. One page of 100 was enough for a stranger to silence every reply on an issue. The
+    // look is three pages now, so 100 comments of strangers no longer do it, and a thread that
+    // fills two pages is still read to the end.
+    let world = World::new();
+    let (issue, target) = issue(&world);
+    for n in 0..230 {
+        world
+            .fake
+            .add_comment(FIXTURE, issue.number, "octocat", &format!("comment {n}"));
+    }
+    let done = post(&world, &target, "k-1", &cap(5)).await;
+    assert!(matches!(done, CappedPost::Posted(_)), "{done:?}");
+    let listings = world
+        .fake
+        .requests_to("GET /repos/{owner}/{repo}/issues/{number}/comments");
+    assert_eq!(listings.len(), 3, "the third page is read to see its end");
+    // The factory's own comments past the first page are still counted: the cap holds on a long
+    // thread, and the same key is still found.
+    let again = post(&world, &target, "k-1", &cap(5)).await;
+    assert!(matches!(again, CappedPost::AlreadyThere(_)), "{again:?}");
+}
+
+#[tokio::test]
+async fn each_kind_of_reply_is_counted_apart_and_one_kind_cannot_use_up_another() {
+    // DR-4. A requester who is refused many times fills the cap of the refusals and no more: the
+    // notice that the factory stopped before the pull request, and the notice about the
+    // environment, have a cap and a family of their own.
+    let world = World::new();
+    let (issue, target) = issue(&world);
+    let refusals = CommentCap::new("design-refusal", 3, DAY).unwrap();
+    let withdrawals = CommentCap::new("design-withdrawal", 1, DAY).unwrap();
+    let environment = CommentCap::new("design-environment", 1, DAY).unwrap();
+    for n in 1..=3 {
+        let done = post(&world, &target, &format!("refusal-{n}"), &refusals).await;
+        assert!(matches!(done, CappedPost::Posted(_)), "{n}: {done:?}");
+    }
+    assert_eq!(
+        post(&world, &target, "refusal-4", &refusals).await,
+        CappedPost::CapReached
+    );
+    let withdrawn = post(&world, &target, "withdrawal-1", &withdrawals).await;
+    assert!(matches!(withdrawn, CappedPost::Posted(_)), "{withdrawn:?}");
+    let told = post(&world, &target, "environment-1", &environment).await;
+    assert!(matches!(told, CappedPost::Posted(_)), "{told:?}");
+    // Each kind stops at its own cap.
+    assert_eq!(
+        post(&world, &target, "withdrawal-2", &withdrawals).await,
+        CappedPost::CapReached
+    );
+    assert_eq!(
+        post(&world, &target, "environment-2", &environment).await,
+        CappedPost::CapReached
+    );
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 5);
 }
 
 fn issue_with_comments(world: &World, count: usize) -> (IssueRef, CommentTarget) {

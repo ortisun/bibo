@@ -96,7 +96,9 @@ pub fn issue_workflow_policy() -> IssueWorkflowPolicy {
         "intake_requirements": {
             "design_track_requires": rendered["design"]["approved"],
             "design_approved_by": "approver",
-            "design_reply_cap_per_issue": rendered["design"]["reply_cap_per_issue"],
+            "design_refusal_cap_per_issue": rendered["design"]["reply_caps_per_issue"]["refusal"],
+            "design_withdrawal_cap_per_issue": rendered["design"]["reply_caps_per_issue"]["withdrawal"],
+            "design_environment_cap_per_issue": rendered["design"]["reply_caps_per_issue"]["environment"],
             "design_reply_window_hours": rendered["design"]["reply_window_hours"],
         },
     }))

@@ -108,6 +108,8 @@ pub(crate) enum Route {
     ReviewCreate,
     CheckRunCreate,
     StatusCreate,
+    /// The one read of GraphQL the fake knows (DR-1).
+    Graphql,
 }
 
 impl Route {
@@ -145,6 +147,7 @@ impl Route {
             Route::ReviewCreate => "POST /repos/{owner}/{repo}/pulls/{number}/reviews",
             Route::CheckRunCreate => "POST /repos/{owner}/{repo}/check-runs",
             Route::StatusCreate => "POST /repos/{owner}/{repo}/statuses/{sha}",
+            Route::Graphql => "POST /graphql",
         }
     }
 }
@@ -220,6 +223,7 @@ pub(crate) fn match_route(method: &str, path: &str) -> Option<(Route, Vec<String
         }
         ("POST", ["repos", o, r, "check-runs"]) => (Route::CheckRunCreate, params(&[o, r])),
         ("POST", ["repos", o, r, "statuses", sha]) => (Route::StatusCreate, params(&[o, r, sha])),
+        ("POST", ["graphql"]) => (Route::Graphql, vec![]),
         _ => return None,
     };
     Some(found)
@@ -451,11 +455,64 @@ fn dispatch(
         Route::MintToken => mint_token(state, now, request, &params[0]),
         Route::RevokeToken => revoke_token(state, now, token.as_ref()),
         Route::InstallationRepositories => Ok(installation_repositories(state, token.as_ref())),
+        Route::Graphql => {
+            let token = token.expect("the match above sent only token requests here");
+            Ok(graphql(state, request, &token))
+        }
         _ => {
             let token = token.expect("the match above sent only token requests here");
             dispatch_repo(state, now, request, route, params, &token)
         }
     }
+}
+
+/// The one query of GraphQL the fake answers: the time the body of an issue was last edited
+/// (DR-1). GitHub answers a query it cannot run with status 200 and an `errors` member, and so does
+/// this: a query that is not this one (a mutation above all), a repository the token cannot see,
+/// a token without `issues: read`, and an issue that is not there.
+fn graphql(state: &State, request: &HttpRequest, token: &TokenRecord) -> HttpResponse {
+    let refused = |message: &str| {
+        HttpResponse::json(
+            200,
+            &json!({"data": Value::Null, "errors": [{"message": message}]}),
+        )
+    };
+    let Ok(body) = body_json(request) else {
+        return HttpResponse::json(400, &json!({"message": "Problems parsing JSON"}));
+    };
+    let query = body["query"].as_str().unwrap_or_default();
+    if !query.trim_start().starts_with("query")
+        || query.contains("mutation")
+        || !query.contains("lastEditedAt")
+    {
+        return refused("this fake answers only the read of lastEditedAt");
+    }
+    let variables = &body["variables"];
+    let (Some(owner), Some(name), Some(number)) = (
+        variables["owner"].as_str(),
+        variables["name"].as_str(),
+        variables["number"].as_u64(),
+    ) else {
+        return refused("variables owner, name and number are required");
+    };
+    if require(token, "issues", "read").is_err() {
+        return refused("Resource not accessible by integration");
+    }
+    let Ok(full) = repo_access(state, token, owner, name) else {
+        return refused("Could not resolve to a Repository");
+    };
+    let Some(issue) = state.repos[&full].issues.get(&number) else {
+        return HttpResponse::json(
+            200,
+            &json!({"data": {"repository": {"issue": Value::Null}}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to an Issue"}]}),
+        );
+    };
+    HttpResponse::json(
+        200,
+        &json!({"data": {"repository": {"issue": {
+            "lastEditedAt": issue.body_edited_at.map_or(Value::Null, |at| json!(iso(at))),
+        }}}}),
+    )
 }
 
 /// A JWT problem is reported to the caller in GitHub's words; any other bad credential is just
@@ -1429,7 +1486,8 @@ fn dispatch_repo(
         | Route::Installation
         | Route::MintToken
         | Route::RevokeToken
-        | Route::InstallationRepositories => unreachable!("handled before the repository check"),
+        | Route::InstallationRepositories
+        | Route::Graphql => unreachable!("handled before the repository check"),
     }
 }
 
@@ -1563,6 +1621,7 @@ fn create_pull(
             labels: Vec::new(),
             created_at: now,
             updated_at: now,
+            body_edited_at: None,
             comments: Vec::new(),
             events: Vec::new(),
             events_newest_first: false,

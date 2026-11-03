@@ -17,7 +17,7 @@ use factory_composition::design_gate::{FileDesignGatePolicy, IssueRefusalReplies
 use factory_composition::health::CheckStatus;
 use factory_domain::ids::TenantId;
 use factory_domain::policy::decision::Designation;
-use factory_domain::policy::issue_workflow::ReplyCap;
+use factory_domain::policy::issue_workflow::{ReplyCap, ReplyKind};
 use factory_ports::githost::{CommentTarget, IssueRef};
 use factory_ports::paths::RepoRef;
 use factory_testkit::githost::FakeChangeHost;
@@ -26,9 +26,10 @@ use factory_workflow::stages::intake::seams::{
 };
 use gh::harness::{FIXTURE, World};
 
-/// Five replies in a day, as the real policy says.
+/// Five refusals in a day (the real policy says three; five makes the tests below longer than
+/// they need to be).
 fn the_cap() -> ReplyCap {
-    ReplyCap::new(5, 24).expect("a cap")
+    ReplyCap::new(ReplyKind::Refusal, 5, 24).expect("a cap")
 }
 
 const FILE: &str = "policies/issue-workflow.yaml";
@@ -303,7 +304,7 @@ async fn the_sixth_reply_of_a_day_on_one_issue_is_not_posted() {
 #[tokio::test]
 async fn a_thread_too_long_to_check_gets_no_reply() {
     let (world, replies, tenant, issue) = over_the_adapter();
-    for n in 0..130 {
+    for n in 0..350 {
         world
             .fake
             .add_comment(FIXTURE, issue.number, "octocat", &format!("comment {n}"));
@@ -314,8 +315,70 @@ async fn a_thread_too_long_to_check_gets_no_reply() {
             .await,
         Err(ReplyError::NotChecked)
     );
-    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 130);
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 350);
     every_token_is_revoked(&world);
+}
+
+#[tokio::test]
+async fn a_hundred_and_thirty_comments_of_strangers_no_longer_silence_the_reply() {
+    // DR-4. One page of 100 was enough to make the factory post nothing on an issue. The look is
+    // three pages now, so the same thread gets its reply.
+    let (world, replies, tenant, issue) = over_the_adapter();
+    for n in 0..130 {
+        world
+            .fake
+            .add_comment(FIXTURE, issue.number, "octocat", &format!("comment {n}"));
+    }
+    replies
+        .post(tenant, &issue, "design-gate-1", "Not yet.", &the_cap())
+        .await
+        .expect("posted");
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 131);
+}
+
+#[tokio::test]
+async fn each_kind_of_reply_has_its_own_cap_through_the_poster() {
+    // DR-4. The poster marks a reply with the family of its kind, so the refusals, the withdrawal
+    // and the notice about the environment are counted apart: a refusal cap that is used up does
+    // not stop the other two.
+    let (world, replies, tenant, issue) = over_the_adapter();
+    let cap = |kind| ReplyCap::new(kind, 1, 24).expect("a cap");
+    let (refusal, withdrawal, environment) = (
+        cap(ReplyKind::Refusal),
+        cap(ReplyKind::Withdrawal),
+        cap(ReplyKind::Environment),
+    );
+    replies
+        .post(tenant, &issue, "design-gate-1", "Not yet.", &refusal)
+        .await
+        .expect("a refusal");
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-gate-2", "Not yet, again.", &refusal)
+            .await,
+        Err(ReplyError::CapReached)
+    );
+    replies
+        .post(tenant, &issue, "design-recheck-1", "Stopped.", &withdrawal)
+        .await
+        .expect("the withdrawal has its own room");
+    replies
+        .post(
+            tenant,
+            &issue,
+            "environment-1",
+            "Not available.",
+            &environment,
+        )
+        .await
+        .expect("so does the notice about the environment");
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-recheck-2", "Stopped.", &withdrawal)
+            .await,
+        Err(ReplyError::CapReached)
+    );
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 3);
 }
 
 #[tokio::test]
@@ -376,11 +439,15 @@ async fn the_token_of_a_reply_is_revoked_whether_it_was_posted_capped_cut_or_wil
 #[tokio::test]
 async fn a_cap_of_zero_cannot_be_made_and_so_cannot_be_asked_for() {
     // DG-9 (a). The type that carries the cap is built only from a number that is in range.
-    assert!(ReplyCap::new(0, 24).is_none());
-    assert!(ReplyCap::new(5, 0).is_none());
-    assert!(ReplyCap::new(101, 24).is_none());
-    assert!(ReplyCap::new(5, 169).is_none());
-    assert!(ReplyCap::new(5, 24).is_some());
-    // And the closed value for a rule that cannot be read is one a day.
-    assert_eq!(ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ.max(), 1);
+    for kind in ReplyKind::ALL {
+        assert!(ReplyCap::new(kind, 0, 24).is_none());
+        assert!(ReplyCap::new(kind, 5, 0).is_none());
+        assert!(ReplyCap::new(kind, 101, 24).is_none());
+        assert!(ReplyCap::new(kind, 5, 169).is_none());
+        assert!(ReplyCap::new(kind, 5, 24).is_some());
+        // And the closed value for a rule that cannot be read is one a day, of the same kind.
+        let closed = ReplyCap::when_the_policy_cannot_be_read(kind);
+        assert_eq!(closed.max(), 1);
+        assert_eq!(closed.kind(), kind);
+    }
 }

@@ -31,7 +31,7 @@ BREAKS = [
     (
         "LB-02: a missing sandbox is not told to the person who asked",
         WORKFLOW_TESTS,
-        [(HANDLER, "        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = rule.reply_cap();", "        if false && matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = rule.reply_cap();")],
+        [(HANDLER, "        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = rule.reply_cap(ReplyKind::Environment);", "        if false && matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = rule.reply_cap(ReplyKind::Environment);")],
     ),
     (
         "LB-02: the environment is told before the design gate has passed (the unreadable rule gets the environment text)",
@@ -46,7 +46,7 @@ BREAKS = [
     (
         "LB-02: the comment is asked for with a cap of its own and not the policy's",
         WORKFLOW_TESTS,
-        [(HANDLER, "        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = rule.reply_cap();", "        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = factory_domain::policy::issue_workflow::ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;")],
+        [(HANDLER, "        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = rule.reply_cap(ReplyKind::Environment);", "        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {\n            let cap = factory_domain::policy::issue_workflow::ReplyCap::when_the_policy_cannot_be_read(factory_domain::policy::issue_workflow::ReplyKind::Environment);")],
     ),
     (
         "LB-02: the comment has the key of the design replies, so one stage run may leave two",

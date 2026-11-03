@@ -46,12 +46,6 @@ use crate::health::CheckResult;
 /// The name of the check in the health line.
 pub const CHECK_NAME: &str = "design gate";
 
-/// The family of comments the cap counts (DG-9): every reply of the factory about a design on an
-/// issue, whether the gate at intake or the re-check before the pull request wrote it. The adapter
-/// puts a hidden marker of this family on each comment and counts the markers in one page of the
-/// thread.
-const REPLY_FAMILY: &str = "intake-design";
-
 /// The design rule, read from the protected checkout at every call.
 #[derive(Debug, Clone)]
 pub struct FileDesignGatePolicy {
@@ -175,7 +169,10 @@ impl RefusalReplies for IssueRefusalReplies {
     ) -> Result<(), ReplyError> {
         // A cap that cannot be made is a reply that is not sent: the policy type does not hold a
         // zero, and this is the second place where none could pass.
-        let Some(cap) = CommentCap::new(REPLY_FAMILY, cap.max(), cap.window()) else {
+        // The family is the kind of the reply (DR-4): the adapter puts a hidden marker of the
+        // family on each comment and counts the markers of that family alone in its bounded look
+        // at the thread, so one kind of reply cannot use up the room of another.
+        let Some(cap) = CommentCap::new(cap.kind().family(), cap.max(), cap.window()) else {
             return Err(ReplyError::NotSent);
         };
         // The approval stage holds the narrowest token that may write `issues`: it reads, and

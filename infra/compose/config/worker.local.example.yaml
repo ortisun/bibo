@@ -37,7 +37,8 @@ sandbox:
   # Where the Docker daemon is. The worker starts the docker client with an empty environment, so a DOCKER_HOST in
   # the container's environment does NOT reach it; these two keys are the only way (docs/reference/configuration.md, "sandbox").
   # docker_host: unix:///var/run/docker.sock   # or tcp://127.0.0.1:2375; a tcp host that is not loopback needs allow_remote_docker: true (never in production)
-  # docker_config: /home/factory/.docker       # an absolute path to a directory that exists where the worker runs
+  # docker_config: /home/factory/.docker       # an absolute path to a directory that exists where the worker runs; it may not hold a Docker context or a credential helper (DR-6)
+  # allow_docker_config_contexts: true          # lifts that check outside production; whoever can write the directory then chooses the daemon
   # remote: { https_host: github.com }   # or { directory: /abs/path } outside production
   # sidecar_command: []                  # the egress sidecar's arguments; with none the real sidecar refuses to start
 

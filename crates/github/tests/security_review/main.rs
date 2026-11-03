@@ -170,6 +170,7 @@ fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {
         ("issues.rs", include_str!("../../src/issues.rs")),
         ("token.rs", include_str!("../../src/token.rs")),
         ("adapter.rs", include_str!("../../src/adapter.rs")),
+        ("edits.rs", include_str!("../../src/edits.rs")),
     ];
     let wire = include_str!("../../src/wire.rs");
     assert!(!wire.contains("Put"), "wire.rs gained a PUT method");
@@ -187,8 +188,39 @@ fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {
             "markPullRequestReady",
             "enablePullRequestAutoMerge",
             "Method::Put",
+            "mutation",
         ] {
-            assert!(!code.contains(needle), "{name} names {needle}");
+            // The one read of GraphQL the adapter makes (the time a body was last edited, DR-1) is
+            // in `edits.rs`, and only there. A mutation is named nowhere, that file included.
+            if name == "edits.rs" && needle == "graphql" {
+                continue;
+            }
+            assert!(
+                !code
+                    .to_ascii_lowercase()
+                    .contains(&needle.to_ascii_lowercase()),
+                "{name} names {needle}"
+            );
+        }
+    }
+    // `edits.rs` is allowed one query, and it is a constant read: it starts with `query`, asks for
+    // one field, and the only route to GraphQL is that file's.
+    let edits = include_str!("../../src/edits.rs");
+    assert!(
+        edits.contains("pub(crate) const QUERY: &str = \"query("),
+        "the one GraphQL document of the adapter is a query"
+    );
+    assert_eq!(
+        edits.matches("const QUERY").count(),
+        1,
+        "edits.rs holds one GraphQL document"
+    );
+    for (name, source) in sources {
+        if name != "edits.rs" {
+            assert!(
+                !source.contains("edits::ROUTE") || name == "issues.rs",
+                "{name} reaches GraphQL; only the issue source may"
+            );
         }
     }
 }
@@ -227,6 +259,7 @@ async fn held_every_request_of_the_adapter_is_on_a_short_list_of_methods_and_rou
     };
     let _ = source.fetch_issue(&intake, &issue).await;
     let _ = source.label_actor(&intake, &issue, "factory").await;
+    let _ = source.text_edit(&intake, &issue).await;
     let _ = source
         .fetch_comment(
             &intake,
@@ -310,12 +343,17 @@ async fn held_every_request_of_the_adapter_is_on_a_short_list_of_methods_and_rou
         "PATCH /repos/{owner}/{repo}/pulls/{number}",
         "PATCH /repos/{owner}/{repo}/check-runs/{id}",
         "POST /app/installations/{id}/access_tokens",
+        "POST /graphql",
         "POST /repos/{owner}/{repo}/issues/{number}/comments",
         "POST /repos/{owner}/{repo}/pulls",
         "POST /repos/{owner}/{repo}/check-runs",
     ];
     for route in PINNED {
         for forbidden in ["merge", "ready", "graphql", "auto", "PUT "] {
+            // The one read of GraphQL (DR-1): a POST to `/graphql`, named in `edits.rs`.
+            if *route == "POST /graphql" && forbidden == "graphql" {
+                continue;
+            }
             assert!(
                 !route.contains(forbidden),
                 "the pinned list names {forbidden:?}: {route}"

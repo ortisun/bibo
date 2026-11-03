@@ -60,7 +60,6 @@ use factory_workflow::stages::validation::{Binding, GATES};
 
 use crate::design_fakes::{APPROVED, APPROVER_ID, DesignWorld, LABEL, REQUESTER_ID, person};
 use crate::spy::Spy;
-use factory_testkit::contracts::githost::IssueSourceSubject as _;
 use factory_workflow::stages::delivery::DesignRecheck;
 use factory_workflow::stages::intake::judge::DesignJudge;
 
@@ -319,8 +318,14 @@ pub struct World {
     pub drift: Arc<Drift>,
     /// What the design re-check reads (DG-8).
     pub design: DesignWorld,
-    /// The reasons of the audit records that the last `execute` noted, also when it failed.
+    /// The reasons of the audit records that the last `execute` wrote, also when it failed: the
+    /// ones written at once (DR-3) first, then the ones noted for the end of the attempt. The two
+    /// are told apart in `durable` and in `noted_at_the_end`.
     pub noted: Mutex<Vec<String>>,
+    /// The records the stage writes at once, as the engine's writer would (DR-3).
+    pub durable: Arc<crate::design_fakes::Durable>,
+    /// The reasons that the last `execute` only noted.
+    pub noted_at_the_end: Mutex<Vec<String>>,
     pub cancel: FakeCancel,
     pub tenant: TenantId,
     pub job: JobId,
@@ -462,7 +467,9 @@ impl World {
             sources,
             drift: Arc::new(Drift::default()),
             design: DesignWorld::new(),
+            durable: Arc::new(crate::design_fakes::Durable::default()),
             noted: Mutex::default(),
+            noted_at_the_end: Mutex::default(),
             cancel: FakeCancel::new(),
             tenant,
             repo,
@@ -476,6 +483,8 @@ impl World {
         // The issue is a small change, as the factory accepted it: the factory label and no
         // design label. A test that wants a design track says so (`issue_shows`).
         world.issue_shows(&[LABEL]);
+        // The replies double keeps what the stage had written at once when it was asked (DR-3).
+        world.design.replies.look_at(world.durable.clone());
         world
     }
 
@@ -887,11 +896,14 @@ impl World {
     /// Records that `actor` applied `label` to the issue of the job.
     pub async fn label_applied_by(&self, label: &str, actor: &GithubActor) {
         let issue = self.sources.target.lock().expect("lock").issue.clone();
-        self.design
-            .issues
-            .fake()
-            .seed_label(&issue, label, actor)
-            .await;
+        // With a time, as the code host always gives one: an approval with no time to compare with
+        // the last edit of the words covers nothing (DR-1).
+        self.design.issues.fake().seed_label_at(
+            &issue,
+            label,
+            actor,
+            factory_domain::values::Timestamp::parse("2026-10-28T09:00:00Z").expect("a time"),
+        );
     }
 
     /// The issue as it is when the job passed intake: the factory label and an approved design,
@@ -960,6 +972,7 @@ impl World {
         contract: &StageContract,
         upstream: &[UpstreamRun],
     ) -> Result<Vec<NamedArtifact>, StageError> {
+        self.durable.clear();
         let mut ctx = StageContext::new(
             self.identity(),
             self.attempt,
@@ -972,9 +985,14 @@ impl World {
             None,
             &[],
             upstream,
-        );
+        )
+        .with_durable(&*self.durable);
         let executed = handler.execute(&mut ctx).await;
-        *self.noted.lock().expect("lock") = ctx.noted_reasons();
+        let at_the_end = ctx.noted_reasons();
+        let mut all = self.durable.records();
+        all.extend(at_the_end.iter().cloned());
+        *self.noted.lock().expect("lock") = all;
+        *self.noted_at_the_end.lock().expect("lock") = at_the_end;
         let output = executed?;
         let mut stored = Vec::new();
         for document in &output.documents {

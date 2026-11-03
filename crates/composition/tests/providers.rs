@@ -222,7 +222,13 @@ async fn the_docker_keys_of_the_configuration_reach_every_docker_command_of_the_
             Some(directory.display().to_string()),
             "{request:?}"
         );
-        assert_eq!(request.env.len(), 2, "nothing else is passed: {request:?}");
+        // The default context rides with the directory so that it cannot name a daemon (DR-6).
+        assert_eq!(
+            plain(&request.env, "DOCKER_CONTEXT").as_deref(),
+            Some("default"),
+            "{request:?}"
+        );
+        assert_eq!(request.env.len(), 3, "nothing else is passed: {request:?}");
     }
 }
 
@@ -247,6 +253,165 @@ async fn a_remote_docker_host_allowed_by_the_flag_reaches_the_client_unchanged()
     assert!(seen.iter().all(|request| {
         plain(&request.env, "DOCKER_HOST").as_deref() == Some("tcp://10.0.0.5:2375")
     }));
+}
+
+/// A fresh directory with `files` in it (a path with a slash makes the folders), for a test of the
+/// Docker configuration directory. The caller removes it.
+fn docker_config_with(label: &str, files: &[(&str, &str)]) -> PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "composition-docker-config-{label}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("a directory");
+    for (name, content) in files {
+        let path = directory.join(name);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("a folder");
+        std::fs::write(&path, content).expect("a file");
+    }
+    directory
+}
+
+fn assembled_with_docker_config(
+    directory: &std::path::Path,
+    flag: bool,
+) -> Result<(), ProviderError> {
+    let policies = load_policy(&root(), &[]).expect("the repository policy loads");
+    let extra = format!(
+        "  docker_config: {}\n  allow_docker_config_contexts: {flag}\n",
+        directory.display()
+    );
+    let config = FactoryConfig::from_yaml(&config_text("local", &extra)).expect("parses");
+    assemble(inputs(&config, &policies)).map(|_| ())
+}
+
+#[test]
+fn a_docker_config_that_names_a_daemon_or_a_credential_helper_stops_the_assembly_and_names_the_key()
+{
+    // DR-6: a context in the directory points the client at a daemon whatever `docker_host` says.
+    let big = format!("{{\"auths\":{{}},\"pad\":\"{}\"}}", "x".repeat(1_100_000));
+    let cases: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        (
+            "other-context",
+            vec![("config.json", r#"{"currentContext":"remote"}"#)],
+        ),
+        (
+            "other-context-with-default-name-case",
+            vec![("config.json", r#"{"currentContext":"Default"}"#)],
+        ),
+        (
+            "context-not-a-string",
+            vec![("config.json", r#"{"currentContext":7}"#)],
+        ),
+        (
+            "contexts-entry",
+            vec![("contexts/meta/0a1b/meta.json", "{}")],
+        ),
+        ("contexts-file", vec![("contexts", "not a directory")]),
+        (
+            "creds-store",
+            vec![("config.json", r#"{"credsStore":"desktop"}"#)],
+        ),
+        (
+            "creds-helpers",
+            vec![("config.json", r#"{"credHelpers":{"example.org":"helper"}}"#)],
+        ),
+        (
+            "creds-store-not-a-string",
+            vec![("config.json", r#"{"credsStore":true}"#)],
+        ),
+        ("not-json", vec![("config.json", "this is not json")]),
+        ("not-an-object", vec![("config.json", "[]")]),
+        ("too-big", vec![("config.json", big.as_str())]),
+    ];
+    for (label, files) in cases {
+        let directory = docker_config_with(label, &files);
+        let refused = assembled_with_docker_config(&directory, false)
+            .err()
+            .unwrap_or_else(|| panic!("{label}: the directory was accepted"));
+        assert!(
+            matches!(refused, ProviderError::DockerConfigContent(..)),
+            "{label}: {refused:?}"
+        );
+        let text = refused.to_string();
+        assert!(text.contains("sandbox.docker_config"), "{label}: {text}");
+        assert!(
+            text.contains("allow_docker_config_contexts"),
+            "{label}: the message says how to allow it: {text}"
+        );
+        // The flag is the one way through, in a profile that allows it.
+        assembled_with_docker_config(&directory, true)
+            .unwrap_or_else(|e| panic!("{label}: the flag allows it: {e}"));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+}
+
+#[test]
+fn a_docker_config_with_no_context_and_no_helper_is_accepted() {
+    let cases: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        ("empty", vec![]),
+        ("empty-json", vec![("config.json", "{}")]),
+        (
+            "default-context",
+            vec![("config.json", r#"{"currentContext":"default","auths":{}}"#)],
+        ),
+        (
+            "blank-context",
+            vec![(
+                "config.json",
+                r#"{"currentContext":"","credsStore":"","credHelpers":{}}"#,
+            )],
+        ),
+        (
+            "other-keys",
+            vec![(
+                "config.json",
+                r#"{"auths":{},"proxies":{},"psFormat":"table"}"#,
+            )],
+        ),
+    ];
+    for (label, files) in cases {
+        let directory = docker_config_with(label, &files);
+        let result = assembled_with_docker_config(&directory, false);
+        let _ = std::fs::remove_dir_all(&directory);
+        result.unwrap_or_else(|e| panic!("{label}: {e}"));
+    }
+    // An empty `contexts` folder names nothing.
+    let directory = docker_config_with("empty-contexts", &[]);
+    std::fs::create_dir_all(directory.join("contexts")).expect("a folder");
+    let result = assembled_with_docker_config(&directory, false);
+    let _ = std::fs::remove_dir_all(&directory);
+    result.expect("an empty contexts folder is accepted");
+}
+
+#[tokio::test]
+async fn a_docker_config_directory_comes_with_the_default_context_so_it_cannot_redirect_the_client()
+{
+    // Defence in depth for DR-6: whatever the directory says when a command runs, the client is
+    // told to use the default context, unless the flag was set.
+    let directory = docker_config_with("context-env", &[("config.json", "{}")]);
+    let extra = format!("  docker_config: {}\n", directory.display());
+    let config = FactoryConfig::from_yaml(&config_text("local", &extra)).expect("parses");
+    let seen = docker_requests_of(&config).await;
+    assert!(!seen.is_empty());
+    for request in &seen {
+        assert_eq!(
+            plain(&request.env, "DOCKER_CONTEXT").as_deref(),
+            Some("default"),
+            "{request:?}"
+        );
+    }
+    // With the flag, the directory is the operator's to use as it is.
+    let allowed = format!("{extra}  allow_docker_config_contexts: true\n");
+    let config = FactoryConfig::from_yaml(&config_text("local", &allowed)).expect("parses");
+    let seen = docker_requests_of(&config).await;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter()
+            .all(|request| plain(&request.env, "DOCKER_CONTEXT").is_none()),
+        "{seen:?}"
+    );
 }
 
 #[test]
