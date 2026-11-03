@@ -432,18 +432,18 @@ fn the_real_policy_caps_each_kind_of_design_reply_apart_in_a_day() {
     assert_eq!(policy.intake_requirements.design_refusal_cap_per_issue, 3);
     assert_eq!(
         policy.intake_requirements.design_withdrawal_cap_per_issue,
-        1
+        2
     );
     assert_eq!(
         policy.intake_requirements.design_environment_cap_per_issue,
-        1
+        2
     );
     assert_eq!(policy.intake_requirements.design_reply_window_hours, 24);
     let rule = policy.design_gate().expect("a sound rule");
     for (kind, most) in [
         (ReplyKind::Refusal, 3),
-        (ReplyKind::Withdrawal, 1),
-        (ReplyKind::Environment, 1),
+        (ReplyKind::Withdrawal, 2),
+        (ReplyKind::Environment, 2),
     ] {
         let cap = rule.reply_cap(kind);
         assert_eq!(cap.kind(), kind);

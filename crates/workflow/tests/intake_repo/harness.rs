@@ -396,6 +396,9 @@ pub enum ReplyMode {
     InFlight,
 }
 
+/// Where a reply looks in the store: the store, the tenant and the job.
+type StoreProbe = (Arc<dyn Store>, TenantId, JobId);
+
 /// Keeps the comments the stage asks for, one for each key, as the host does.
 pub struct RecordingReplies {
     posted: Mutex<Vec<Posted>>,
@@ -408,7 +411,7 @@ pub struct RecordingReplies {
     pub release: Arc<tokio::sync::Notify>,
     /// Where to look in the store when a reply is asked for: the reasons of the audit records of
     /// the job that the store already holds at that moment (DR-3).
-    probe: Mutex<Option<(Arc<dyn Store>, TenantId, JobId)>>,
+    probe: Mutex<Option<StoreProbe>>,
     seen_at_post: Mutex<Vec<Vec<String>>>,
 }
 

@@ -229,7 +229,7 @@ class PolicyCheck(unittest.TestCase):
         self.assertEqual(
             (real["design_refusal_cap_per_issue"], real["design_withdrawal_cap_per_issue"],
              real["design_environment_cap_per_issue"], real["design_reply_window_hours"]),
-            (3, 1, 1, 24))
+            (3, 2, 2, 24))
         for cap, window in ((1, 1), (100, 168), (3, 24)):
             with self.subTest(cap=cap, window=window):
                 policy = copy.deepcopy(real_policy())

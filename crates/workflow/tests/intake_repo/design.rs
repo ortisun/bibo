@@ -804,7 +804,7 @@ async fn a_job_that_passed_the_gate_and_is_blocked_by_the_environment_leaves_one
     let caps = rig.replies.caps();
     assert_eq!(caps.len(), 1);
     assert_eq!(caps[0].kind(), ReplyKind::Environment);
-    assert_eq!(caps[0].max(), 1);
+    assert_eq!(caps[0].max(), 2);
     let audit: Vec<String> = rig
         .world
         .audit(job)
@@ -897,7 +897,7 @@ async fn a_cap_that_is_reached_leaves_the_environment_block_without_a_comment() 
     assert!(
         audit
             .iter()
-            .any(|reason| reason.contains(": capped (at most 1 in 24 hours)")),
+            .any(|reason| reason.contains(": capped (at most 2 in 24 hours)")),
         "{audit:?}"
     );
 }

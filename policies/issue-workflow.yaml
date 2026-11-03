@@ -146,6 +146,6 @@ intake_requirements:
   # "no limit". Each cap is 1..100 replies and the window 1..168 hours. The blocks, the labels and
   # the audit records are not affected by a cap: only the comment is.
   design_refusal_cap_per_issue: 3
-  design_withdrawal_cap_per_issue: 1
-  design_environment_cap_per_issue: 1
+  design_withdrawal_cap_per_issue: 2
+  design_environment_cap_per_issue: 2
   design_reply_window_hours: 24

@@ -90,12 +90,12 @@ BREAKS = [
     (
         "DR-6: the content of the directory is never read",
         PROVIDER_TESTS,
-        [(PROVIDERS, "        if !sandbox.allow_docker_config_contexts {\n            if let Some(problem)", "        if false {\n            if let Some(problem)")],
+        [(PROVIDERS, "        if !sandbox.allow_docker_config_contexts\n            && let Some(problem)", "        if false\n            && let Some(problem)")],
     ),
     (
         "DR-6: the flag does not lift the check",
         PROVIDER_TESTS,
-        [(PROVIDERS, "        if !sandbox.allow_docker_config_contexts {\n            if let Some(problem)", "        if true {\n            if let Some(problem)")],
+        [(PROVIDERS, "        if !sandbox.allow_docker_config_contexts\n            && let Some(problem)", "        if true\n            && let Some(problem)")],
     ),
     (
         "DR-6: the client is not told to use the default context",

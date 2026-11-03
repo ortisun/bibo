@@ -364,7 +364,7 @@ async fn a_cap_that_is_reached_posts_nothing_and_the_block_stands_with_a_record_
     assert!(world.design.replies.texts().is_empty());
     let (_, reply) = recorded_pair(&world);
     assert!(
-        reply.contains(": capped (at most 1 in 24 hours)"),
+        reply.contains(": capped (at most 2 in 24 hours)"),
         "{reply}"
     );
 }
@@ -381,7 +381,7 @@ async fn the_recheck_asks_with_the_cap_of_the_policy_and_writes_the_record_first
         caps[0].kind(),
         factory_domain::policy::issue_workflow::ReplyKind::Withdrawal
     );
-    assert_eq!(caps[0].max(), 1);
+    assert_eq!(caps[0].max(), 2);
     assert_eq!(caps[0].window(), std::time::Duration::from_secs(24 * 3600));
 }
 

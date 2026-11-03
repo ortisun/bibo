@@ -167,13 +167,13 @@ pub fn docker_settings_from(sandbox: &SandboxConfig) -> Result<DockerSettings, P
         if !directory.is_dir() {
             return Err(ProviderError::DockerConfig(directory.display().to_string()));
         }
-        if !sandbox.allow_docker_config_contexts {
-            if let Some(problem) = docker_config_problem(directory) {
-                return Err(ProviderError::DockerConfigContent(
-                    directory.display().to_string(),
-                    problem,
-                ));
-            }
+        if !sandbox.allow_docker_config_contexts
+            && let Some(problem) = docker_config_problem(directory)
+        {
+            return Err(ProviderError::DockerConfigContent(
+                directory.display().to_string(),
+                problem,
+            ));
         }
         settings
             .env
