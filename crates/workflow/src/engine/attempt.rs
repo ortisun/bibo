@@ -269,6 +269,9 @@ impl Engine {
         // It also makes its sandboxes and runs its commands through this wrapper, so each is an
         // audit record of the attempt.
         let audited = AuditedSandbox::new(self.deps.sandbox.as_ref(), notes.clone());
+        // A record the handler must have in the store before it acts on the world (a reply on
+        // the issue) is written through this, in a transaction of its own (DR-3).
+        let durable = super::durable::EngineRecords::new(self, claimed);
         let mut ctx = StageContext::new(
             prepared.identity,
             claimed.attempt,
@@ -282,7 +285,8 @@ impl Engine {
             &prepared.human_inputs,
             &prepared.upstream,
         )
-        .with_notes(notes.clone());
+        .with_notes(notes.clone())
+        .with_durable(&durable);
         let watched = self
             .watch(
                 claimed,

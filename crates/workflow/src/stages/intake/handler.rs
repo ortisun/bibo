@@ -40,7 +40,7 @@ use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::TeardownReason;
 use serde_json::Value;
 
-use factory_domain::policy::issue_workflow::ReplyCap;
+use factory_domain::policy::issue_workflow::{ReplyCap, ReplyKind};
 
 use super::authorize::{Authorization, Labeller, authorize};
 use super::classify::{Classification, DeclineReason, IntakeRules, Outcome, ReadProblem, decide};
@@ -479,14 +479,16 @@ impl StageHandler for IntakeHandler {
         {
             Ok(judged) => judged,
             Err(DesignStop::Unjudgeable) => {
-                // The record first, then the reply, then the record of the reply (DG-9). The rule
-                // cannot be read, so the cap cannot be either: the reply is asked with the least
-                // one, never without one.
-                ctx.note_audit_because(
+                // The record first, then the reply, then the record of the reply (DG-9). The record
+                // is in the store before the reply is tried, whatever happens to the attempt after
+                // (DR-3). The rule cannot be read, so the cap cannot be either: the reply is asked
+                // with the least one, never without one.
+                ctx.record_now(
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
                     design::unjudgeable_reason(&issue_text, Some(ReplyStatus::ToFollow)),
-                );
-                let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;
+                )
+                .await?;
+                let cap = ReplyCap::when_the_policy_cannot_be_read(ReplyKind::Refusal);
                 let status = self
                     .reply(&identity, &snapshot.issue, Reply::CannotCheck, "", &cap)
                     .await;
@@ -526,27 +528,32 @@ impl StageHandler for IntakeHandler {
         // comparison of the text of the job with the issue is made for every job (DG-3). The record
         // of a refusal is written **before** the reply is tried (DG-9): a comment endpoint that is
         // down must not take the record of the block with it. It says the reply is still to follow,
-        // and a second record says what became of it.
+        // and a second record says what became of it. The first is written to the store at once,
+        // in a transaction of its own, so that a cancel, a lost lease or a crash after the reply
+        // cannot take it (DR-3); the second is noted and is written with the attempt.
         let refused = matches!(design_decision, DesignDecision::Refused { .. });
-        ctx.note_audit_because(
-            AuditAction::new(
-                AuditKind::AuthorizationDecision,
-                if design_decision.allows_work() {
-                    AuditDecision::Granted
-                } else {
-                    AuditDecision::Denied
-                },
-            ),
-            self.redacted_reason(design::audit_reason(
-                &design_decision,
-                &issue_text,
-                refused.then_some(ReplyStatus::ToFollow),
-                text_check,
-            )),
+        let decision_action = AuditAction::new(
+            AuditKind::AuthorizationDecision,
+            if design_decision.allows_work() {
+                AuditDecision::Granted
+            } else {
+                AuditDecision::Denied
+            },
         );
+        let decision_reason = self.redacted_reason(design::audit_reason(
+            &design_decision,
+            &issue_text,
+            refused.then_some(ReplyStatus::ToFollow),
+            text_check,
+        ));
+        if refused {
+            ctx.record_now(decision_action, decision_reason).await?;
+        } else {
+            ctx.note_audit_because(decision_action, decision_reason);
+        }
         let mut design_status = None;
         if let DesignDecision::Refused { reason, .. } = &design_decision {
-            let cap = design_rule.reply_cap();
+            let cap = design_rule.reply_cap(reason.reply().kind());
             let status = self
                 .reply(
                     &identity,
@@ -1148,7 +1155,28 @@ impl IntakeHandler {
         error: StageError,
     ) -> StageError {
         if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {
-            let cap = rule.reply_cap();
+            let cap = rule.reply_cap(ReplyKind::Environment);
+            // The record that the notice is to follow is in the store before the notice is
+            // tried (DR-3). A store that cannot take it means no notice: the error of the stage
+            // is returned as it was, and the engine meets the same store when it records the block.
+            if ctx
+                .record_now(
+                    AuditAction::new(
+                        AuditKind::SandboxCreatedPostureResultDestroyed,
+                        AuditDecision::Denied,
+                    ),
+                    design::reply_reason(
+                        design::ENVIRONMENT_REPLY_LEAD,
+                        issue_text,
+                        ReplyStatus::ToFollow,
+                        &cap,
+                    ),
+                )
+                .await
+                .is_err()
+            {
+                return error;
+            }
             let status = self
                 .reply(
                     identity,

@@ -31,6 +31,7 @@ mod control;
 mod decide;
 mod decision;
 mod dependency;
+mod durable;
 mod ended;
 mod error;
 mod failure;

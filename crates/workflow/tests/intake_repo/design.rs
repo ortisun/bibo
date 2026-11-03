@@ -9,6 +9,7 @@
 use factory_domain::ids::JobId;
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::policy::decision::Designation;
+use factory_domain::policy::issue_workflow::ReplyKind;
 use factory_domain::policy::{ApprovalPolicy, PolicyEngine};
 use factory_domain::state::{JobStatus, StageRunStatus};
 use factory_domain::values::HumanText;
@@ -699,7 +700,7 @@ async fn a_cap_that_is_reached_posts_nothing_and_leaves_a_record() {
     assert!(
         reasons.iter().any(|reason| reason
             .starts_with("design gate reply for issue example-org/fixture#12: capped")
-            && reason.contains("at most 5 in 24 hours")),
+            && reason.contains("at most 3 in 24 hours")),
         "{reasons:?}"
     );
 }
@@ -723,15 +724,16 @@ async fn a_thread_too_long_to_check_gets_no_reply_and_a_record_that_says_so() {
 
 #[tokio::test]
 async fn the_reply_is_asked_with_the_cap_of_the_policy() {
-    // DG-9 (a). The cap is the policy's (five in 24 hours), read with the rule, not a number of
-    // the stage's own.
+    // DG-9 (a), DR-4. The cap is the policy's (three refusals in 24 hours), read with the rule,
+    // not a number of the stage's own, and it is the cap of the kind of the reply.
     let rig = rig().await;
     let _ = job_with(&rig, &[LABEL, "design: proposed"], None).await;
     let (_, outcome) = rig.run_next().await;
     assert_eq!(outcome, AttemptOutcome::Succeeded, "{outcome:?}");
     let caps = rig.replies.caps();
     assert_eq!(caps.len(), 1);
-    assert_eq!(caps[0].max(), 5);
+    assert_eq!(caps[0].kind(), ReplyKind::Refusal);
+    assert_eq!(caps[0].max(), 3);
     assert_eq!(caps[0].window(), std::time::Duration::from_secs(24 * 3600));
 }
 
@@ -754,7 +756,9 @@ async fn a_reply_about_a_policy_that_cannot_be_read_is_asked_with_the_least_cap(
     assert_eq!(caps.len(), 1);
     assert_eq!(
         caps[0],
-        factory_domain::policy::issue_workflow::ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ
+        factory_domain::policy::issue_workflow::ReplyCap::when_the_policy_cannot_be_read(
+            ReplyKind::Refusal
+        )
     );
 }
 
@@ -796,10 +800,11 @@ async fn a_job_that_passed_the_gate_and_is_blocked_by_the_environment_leaves_one
         "{}",
         comments[0].text
     );
-    // It is asked with the cap of the policy, and the record says what became of it.
+    // It is asked with the cap of the policy for its kind, and the record says what became of it.
     let caps = rig.replies.caps();
     assert_eq!(caps.len(), 1);
-    assert_eq!(caps[0].max(), 5);
+    assert_eq!(caps[0].kind(), ReplyKind::Environment);
+    assert_eq!(caps[0].max(), 1);
     let audit: Vec<String> = rig
         .world
         .audit(job)
@@ -892,7 +897,7 @@ async fn a_cap_that_is_reached_leaves_the_environment_block_without_a_comment() 
     assert!(
         audit
             .iter()
-            .any(|reason| reason.contains(": capped (at most 5 in 24 hours)")),
+            .any(|reason| reason.contains(": capped (at most 1 in 24 hours)")),
         "{audit:?}"
     );
 }

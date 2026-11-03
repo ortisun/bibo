@@ -66,6 +66,10 @@ pub const REQUESTER_ID: u64 = 1001;
 /// The label that asks the factory to work.
 pub const LABEL: &str = "factory";
 
+/// When the approval of a design was applied, unless a test says otherwise. The fake host shows the
+/// issue as updated at 2026-10-28T10:00:00Z, after it.
+pub const APPROVED_AT: &str = "2026-10-28T09:00:00Z";
+
 pub fn security_policy() -> SecurityPolicy {
     serde_json::from_str(SECURITY_POLICY).expect("the security policy fixture is valid")
 }
@@ -385,8 +389,11 @@ pub enum ReplyMode {
     HostRefuses,
     /// The host already holds as many replies as the cap allows (DG-9).
     CapReached,
-    /// The thread holds more comments than the one page the host reads (DG-9).
+    /// The thread holds more comments than the look the host takes (DG-9, DR-4).
     ThreadCut,
+    /// The reply is in flight and does not end until the test releases it (DR-3): the comment is
+    /// on its way, and whatever the attempt does meanwhile has to leave the record.
+    InFlight,
 }
 
 /// Keeps the comments the stage asks for, one for each key, as the host does.
@@ -395,6 +402,14 @@ pub struct RecordingReplies {
     asked: Mutex<usize>,
     mode: Mutex<ReplyMode>,
     caps: Mutex<Vec<ReplyCap>>,
+    /// Tells a test that a reply is in flight (`ReplyMode::InFlight`).
+    pub entered: Arc<tokio::sync::Notify>,
+    /// Lets the reply in flight end.
+    pub release: Arc<tokio::sync::Notify>,
+    /// Where to look in the store when a reply is asked for: the reasons of the audit records of
+    /// the job that the store already holds at that moment (DR-3).
+    probe: Mutex<Option<(Arc<dyn Store>, TenantId, JobId)>>,
+    seen_at_post: Mutex<Vec<Vec<String>>>,
 }
 
 impl RecordingReplies {
@@ -404,7 +419,22 @@ impl RecordingReplies {
             asked: Mutex::new(0),
             mode: Mutex::new(ReplyMode::Works),
             caps: Mutex::new(Vec::new()),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            probe: Mutex::new(None),
+            seen_at_post: Mutex::new(Vec::new()),
         }
+    }
+
+    /// From now on, each time a reply is asked for, the reasons of the audit records that the store
+    /// holds for this job at that moment are kept (DR-3).
+    pub fn look_in_the_store(&self, store: Arc<dyn Store>, tenant: TenantId, job: JobId) {
+        *self.probe.lock().expect("lock") = Some((store, tenant, job));
+    }
+
+    /// What the store held for the job when each reply was asked for, oldest first.
+    pub fn store_held_at_post(&self) -> Vec<Vec<String>> {
+        self.seen_at_post.lock().expect("lock").clone()
     }
 
     /// The cap the stage gave each time it asked, oldest first.
@@ -443,12 +473,33 @@ impl RefusalReplies for RecordingReplies {
     ) -> Result<(), ReplyError> {
         *self.asked.lock().expect("lock") += 1;
         self.caps.lock().expect("lock").push(*cap);
-        match *self.mode.lock().expect("lock") {
+        let probe = self.probe.lock().expect("lock").clone();
+        if let Some((store, tenant, job)) = probe {
+            let mut tx = store
+                .begin(TenantScope::new(tenant))
+                .await
+                .expect("a transaction");
+            let rows = tx
+                .read_audit(factory_ports::store::AuditFilter::Job(job), 0, 10_000)
+                .await
+                .expect("the audit log");
+            tx.rollback().await.expect("rollback");
+            self.seen_at_post
+                .lock()
+                .expect("lock")
+                .push(rows.into_iter().map(|row| row.event.reason).collect());
+        }
+        let mode = *self.mode.lock().expect("lock");
+        if mode == ReplyMode::InFlight {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        match mode {
             ReplyMode::HostDown => return Err(ReplyError::Later),
             ReplyMode::HostRefuses => return Err(ReplyError::NotSent),
             ReplyMode::CapReached => return Err(ReplyError::CapReached),
             ReplyMode::ThreadCut => return Err(ReplyError::NotChecked),
-            ReplyMode::Works => {}
+            ReplyMode::Works | ReplyMode::InFlight => {}
         }
         let mut posted = self.posted.lock().expect("lock");
         if !posted.iter().any(|held| held.key == key) {
@@ -905,11 +956,21 @@ impl Rig {
         });
     }
 
-    /// Records that `actor` applied the label of the approved design.
+    /// Records that `actor` applied the label of the approved design, at [`APPROVED_AT`]. The
+    /// fake host knows of no edit of the words unless a test says so, so the approval covers
+    /// them (DR-1).
     pub async fn approval_applied_by(&self, actor: &GithubActor) {
-        self.issues
-            .seed_label(&self.issue, "design: approved", actor)
-            .await;
+        self.approval_applied_by_at(actor, APPROVED_AT);
+    }
+
+    /// Records that `actor` applied the label of the approved design at this time.
+    pub fn approval_applied_by_at(&self, actor: &GithubActor, at: &str) {
+        self.issues.seed_label_at(
+            &self.issue,
+            "design: approved",
+            actor,
+            factory_domain::values::Timestamp::parse(at).expect("a time"),
+        );
     }
 
     /// A job that is received and has its request stored, not yet labelled or admitted. The issue

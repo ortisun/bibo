@@ -14,7 +14,7 @@ use factory_contracts::policy::{
     ISSUE_WORKFLOW_FILE, PolicyError, PolicyErrorKind, PolicyLoader, ProtectedPolicySource,
 };
 use factory_domain::policy::decision::Designation;
-use factory_domain::policy::issue_workflow::{STATUS_PREFIX, check_status_label_name};
+use factory_domain::policy::issue_workflow::{ReplyKind, STATUS_PREFIX, check_status_label_name};
 use factory_domain::state::JobStatus;
 use serde_json::Value;
 use support::{TempDir, read_text, repo_root};
@@ -423,40 +423,101 @@ fn a_policy_without_the_approver_of_designs_or_with_a_wrong_one_is_refused() {
 }
 
 #[test]
-fn the_real_policy_caps_design_replies_at_five_an_issue_a_day() {
+fn the_real_policy_caps_each_kind_of_design_reply_apart_in_a_day() {
+    // DG-9, DR-4: a cap for each kind, so that one kind cannot use up the room of another.
     let source = ProtectedPolicySource::protected_default_branch(&repo_root(), &[]).unwrap();
     let policy = PolicyLoader::load_issue_workflow(&source)
         .expect("loads")
         .document;
-    assert_eq!(policy.intake_requirements.design_reply_cap_per_issue, 5);
+    assert_eq!(policy.intake_requirements.design_refusal_cap_per_issue, 3);
+    assert_eq!(
+        policy.intake_requirements.design_withdrawal_cap_per_issue,
+        1
+    );
+    assert_eq!(
+        policy.intake_requirements.design_environment_cap_per_issue,
+        1
+    );
     assert_eq!(policy.intake_requirements.design_reply_window_hours, 24);
-    let cap = policy.design_gate().expect("a sound rule").reply_cap();
-    assert_eq!(cap.max(), 5);
-    assert_eq!(cap.window(), std::time::Duration::from_secs(24 * 3600));
+    let rule = policy.design_gate().expect("a sound rule");
+    for (kind, most) in [
+        (ReplyKind::Refusal, 3),
+        (ReplyKind::Withdrawal, 1),
+        (ReplyKind::Environment, 1),
+    ] {
+        let cap = rule.reply_cap(kind);
+        assert_eq!(cap.kind(), kind);
+        assert_eq!(cap.max(), most, "{kind:?}");
+        assert_eq!(cap.window(), std::time::Duration::from_secs(24 * 3600));
+    }
+    // The families are three different words, so the adapter counts the kinds apart.
+    let families: std::collections::BTreeSet<&str> =
+        ReplyKind::ALL.iter().map(|kind| kind.family()).collect();
+    assert_eq!(families.len(), 3);
 }
+
+const CAP_KEYS: [&str; 3] = [
+    "design_refusal_cap_per_issue",
+    "design_withdrawal_cap_per_issue",
+    "design_environment_cap_per_issue",
+];
 
 #[test]
 fn a_missing_or_zero_cap_on_design_replies_is_refused_and_never_read_as_no_limit() {
-    // DG-9. The sibling: the real values load.
+    // DG-9, DR-4. The sibling: the real values load.
     load_text(&real()).expect("the real policy loads");
     // Missing: there is no default in code. The file is refused, so the gate refuses every issue.
-    for line in [
-        "  design_reply_cap_per_issue: 5\n",
-        "  design_reply_window_hours: 24\n",
-    ] {
-        let text = replace_once(&real(), line, "");
-        assert_eq!(refused(&text).kind, PolicyErrorKind::Type, "{line}");
+    // Every key of the three caps and the window is required.
+    for key in CAP_KEYS
+        .iter()
+        .copied()
+        .chain(["design_reply_window_hours"])
+    {
+        let value = real()
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(&format!("{key}: ")))
+            .unwrap_or_else(|| panic!("{key} is in the real policy"))
+            .to_owned();
+        let text = replace_once(&real(), &format!("  {key}: {value}\n"), "");
+        assert_eq!(refused(&text).kind, PolicyErrorKind::Type, "{key}");
     }
-    // Zero, and numbers outside the range, are refused with the key named.
+    // The key of the single cap that these replaced is not known any more: a policy that still
+    // has only that one is refused, not read with some default.
+    let old = replace_once(
+        &real(),
+        "  design_refusal_cap_per_issue: 3\n",
+        "  design_reply_cap_per_issue: 5\n  design_refusal_cap_per_issue: 3\n",
+    );
+    assert!(load_text(&old).is_err(), "the old key is refused");
+    // Zero, and numbers outside the range, are refused with the key named, for each kind.
+    for key in CAP_KEYS {
+        let from = format!("{key}: ");
+        let current = real()
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(&from).map(str::to_owned))
+            .expect("the key");
+        for bad in ["0", "101"] {
+            let text = replace_once(
+                &real(),
+                &format!("{from}{current}"),
+                &format!("{from}{bad}"),
+            );
+            let shown = format!("{}", refused(&text));
+            assert!(
+                shown.contains(&format!("intake_requirements.{key}")),
+                "{key}: {bad}: {shown}"
+            );
+        }
+        for good in ["1", "100"] {
+            let text = replace_once(
+                &real(),
+                &format!("{from}{current}"),
+                &format!("{from}{good}"),
+            );
+            load_text(&text).unwrap_or_else(|e| panic!("{key}: {good}: {e}"));
+        }
+    }
     for (from, to) in [
-        (
-            "design_reply_cap_per_issue: 5",
-            "design_reply_cap_per_issue: 0",
-        ),
-        (
-            "design_reply_cap_per_issue: 5",
-            "design_reply_cap_per_issue: 101",
-        ),
         (
             "design_reply_window_hours: 24",
             "design_reply_window_hours: 0",
@@ -473,19 +534,11 @@ fn a_missing_or_zero_cap_on_design_replies_is_refused_and_never_read_as_no_limit
             "{to}: {shown}"
         );
     }
-    // The edges load, so the refusals above are about the range and not about the setup.
+    // The edges of the window load, so the refusals above are about the range.
     for (from, to) in [
-        (
-            "design_reply_cap_per_issue: 5",
-            "design_reply_cap_per_issue: 100",
-        ),
         (
             "design_reply_window_hours: 24",
             "design_reply_window_hours: 168",
-        ),
-        (
-            "design_reply_cap_per_issue: 5",
-            "design_reply_cap_per_issue: 1",
         ),
         (
             "design_reply_window_hours: 24",

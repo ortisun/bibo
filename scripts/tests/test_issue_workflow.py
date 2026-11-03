@@ -136,19 +136,34 @@ class PolicyCheck(unittest.TestCase):
             p["intake_requirements"]["design_approved_by"] = "operator"
 
         def reply_cap_missing(p):
-            del p["intake_requirements"]["design_reply_cap_per_issue"]
+            del p["intake_requirements"]["design_refusal_cap_per_issue"]
 
         def reply_cap_zero(p):
-            p["intake_requirements"]["design_reply_cap_per_issue"] = 0
+            p["intake_requirements"]["design_refusal_cap_per_issue"] = 0
 
         def reply_cap_too_high(p):
-            p["intake_requirements"]["design_reply_cap_per_issue"] = 101
+            p["intake_requirements"]["design_refusal_cap_per_issue"] = 101
 
         def reply_cap_is_text(p):
-            p["intake_requirements"]["design_reply_cap_per_issue"] = "five"
+            p["intake_requirements"]["design_refusal_cap_per_issue"] = "five"
 
         def reply_cap_is_a_flag(p):
-            p["intake_requirements"]["design_reply_cap_per_issue"] = True
+            p["intake_requirements"]["design_refusal_cap_per_issue"] = True
+
+        def withdrawal_cap_missing(p):
+            del p["intake_requirements"]["design_withdrawal_cap_per_issue"]
+
+        def withdrawal_cap_zero(p):
+            p["intake_requirements"]["design_withdrawal_cap_per_issue"] = 0
+
+        def environment_cap_missing(p):
+            del p["intake_requirements"]["design_environment_cap_per_issue"]
+
+        def environment_cap_too_high(p):
+            p["intake_requirements"]["design_environment_cap_per_issue"] = 101
+
+        def the_old_single_cap_is_unknown(p):
+            p["intake_requirements"]["design_reply_cap_per_issue"] = 5
 
         def reply_window_missing(p):
             del p["intake_requirements"]["design_reply_window_hours"]
@@ -178,7 +193,10 @@ class PolicyCheck(unittest.TestCase):
             (approver_is_the_requester, "design-approver"), (approver_is_the_operator, "design-approver"),
             (reply_cap_missing, "design-reply-cap"), (reply_cap_zero, "design-reply-cap"),
             (reply_cap_too_high, "design-reply-cap"), (reply_cap_is_text, "design-reply-cap"),
-            (reply_cap_is_a_flag, "design-reply-cap"), (reply_window_missing, "design-reply-window"),
+            (reply_cap_is_a_flag, "design-reply-cap"), (withdrawal_cap_missing, "design-reply-cap"),
+            (withdrawal_cap_zero, "design-reply-cap"), (environment_cap_missing, "design-reply-cap"),
+            (environment_cap_too_high, "design-reply-cap"), (the_old_single_cap_is_unknown, "design_reply_cap_per_issue"),
+            (reply_window_missing, "design-reply-window"),
             (reply_window_zero, "design-reply-window"), (reply_window_too_long, "design-reply-window"),
         ]
         for damage, expected in cases:
@@ -208,11 +226,16 @@ class PolicyCheck(unittest.TestCase):
         # DG-9. The real values load; zero, a missing value, text and a flag do not (they are the
         # sibling that proves the check can fail). The engine reads the same two keys.
         real = real_policy()["intake_requirements"]
-        self.assertEqual((real["design_reply_cap_per_issue"], real["design_reply_window_hours"]), (5, 24))
-        for cap, window in ((1, 1), (100, 168), (5, 24)):
+        self.assertEqual(
+            (real["design_refusal_cap_per_issue"], real["design_withdrawal_cap_per_issue"],
+             real["design_environment_cap_per_issue"], real["design_reply_window_hours"]),
+            (3, 1, 1, 24))
+        for cap, window in ((1, 1), (100, 168), (3, 24)):
             with self.subTest(cap=cap, window=window):
                 policy = copy.deepcopy(real_policy())
-                policy["intake_requirements"]["design_reply_cap_per_issue"] = cap
+                for key in ("design_refusal_cap_per_issue", "design_withdrawal_cap_per_issue",
+                            "design_environment_cap_per_issue"):
+                    policy["intake_requirements"][key] = cap
                 policy["intake_requirements"]["design_reply_window_hours"] = window
                 self.assertEqual(problems(policy), [])
 

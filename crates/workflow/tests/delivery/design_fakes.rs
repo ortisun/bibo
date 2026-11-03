@@ -128,6 +128,15 @@ impl IssueSource for Issues {
         self.inner.labels_ever_applied(scope, issue).await
     }
 
+    async fn text_edit(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<factory_ports::githost::TextEdit, GitHostError> {
+        self.read()?;
+        self.inner.text_edit(scope, issue).await
+    }
+
     async fn repository_protection(
         &self,
         scope: &GitScope,
@@ -218,12 +227,44 @@ impl AllowlistSource for People {
     }
 }
 
+/// The records the stage writes at once (DR-3), in the order it writes them. The world gives the
+/// context this in place of the engine's.
+#[derive(Default)]
+pub struct Durable {
+    records: Mutex<Vec<String>>,
+}
+
+impl Durable {
+    pub fn records(&self) -> Vec<String> {
+        self.records.lock().expect("lock").clone()
+    }
+
+    pub fn clear(&self) {
+        self.records.lock().expect("lock").clear();
+    }
+}
+
+#[async_trait]
+impl factory_workflow::handlers::DurableRecords for Durable {
+    async fn record(
+        &self,
+        _action: factory_workflow::audit::AuditAction,
+        reason: String,
+    ) -> Result<(), factory_workflow::handlers::StageError> {
+        self.records.lock().expect("lock").push(reason);
+        Ok(())
+    }
+}
+
 /// The comments the stage asked to post, one for each key, as the host keeps them.
 pub struct Replies {
     posted: Mutex<Vec<(String, String)>>,
     down: AtomicBool,
     capped: AtomicBool,
     caps: Mutex<Vec<ReplyCap>>,
+    /// The records already written at once when each reply was asked for (DR-3).
+    durable: Mutex<Option<Arc<Durable>>>,
+    durable_at_post: Mutex<Vec<Vec<String>>>,
 }
 
 impl Replies {
@@ -233,7 +274,20 @@ impl Replies {
             down: AtomicBool::new(false),
             capped: AtomicBool::new(false),
             caps: Mutex::new(Vec::new()),
+            durable: Mutex::new(None),
+            durable_at_post: Mutex::new(Vec::new()),
         }
+    }
+
+    /// From now on, each time a reply is asked for, the records that `durable` already holds are
+    /// kept (DR-3).
+    pub fn look_at(&self, durable: Arc<Durable>) {
+        *self.durable.lock().expect("lock") = Some(durable);
+    }
+
+    /// What the durable records held when each reply was asked for, oldest first.
+    pub fn durable_at_post(&self) -> Vec<Vec<String>> {
+        self.durable_at_post.lock().expect("lock").clone()
     }
 
     /// The host cannot take a comment now.
@@ -286,6 +340,12 @@ impl RefusalReplies for Replies {
         cap: &ReplyCap,
     ) -> Result<(), ReplyError> {
         self.caps.lock().expect("lock").push(*cap);
+        if let Some(durable) = self.durable.lock().expect("lock").clone() {
+            self.durable_at_post
+                .lock()
+                .expect("lock")
+                .push(durable.records());
+        }
         if self.down.load(Ordering::SeqCst) {
             return Err(ReplyError::Later);
         }

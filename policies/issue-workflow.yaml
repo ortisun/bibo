@@ -131,15 +131,21 @@ intake_requirements:
   # cannot be `requester` or `operator`. PENDING CONFIRMATION BY THE ARCHITECT: `approver` is the
   # engineer's default (ADR 0016), as the defaults of ADR 0009 and ADR 0014 are.
   design_approved_by: approver
-  # DG-9. The most replies the factory posts on one issue about the design (the refusals of the
-  # design gate at intake, and the stop before the pull request opens), counted over the window.
-  # A reply is a comment with a hidden marker of the factory's own; the adapter counts the App's
-  # own comments in one bounded page of the thread, so the count does not depend on how long the
-  # thread is, and a thread with more comments in the window than that page holds gets no reply at
-  # all. When the cap is reached the factory posts nothing more on that issue and writes an audit
-  # record instead. A missing key, zero, or a number outside the range is a load error (and the
-  # gate then refuses every issue): there is no default and no way to read "0" as "no limit". The
-  # cap is 1..100 replies and the window 1..168 hours. The blocks, the labels and the audit records
-  # are not affected by the cap: only the comment is.
-  design_reply_cap_per_issue: 5
+  # DG-9, DR-4. The most replies the factory posts on one issue about the design, counted over the
+  # window, with a cap for each KIND of reply so that one kind cannot use up the room of another:
+  # `refusal` is the answer of the design gate at intake; `withdrawal` is the stop before the pull
+  # request opens (DG-8); `environment` is the notice that the place where the tools run is not
+  # available (LB-02). A reply is a comment with a hidden marker of the factory's own and a hidden
+  # family word of its kind; the adapter counts the App's own comments in a bounded look at the
+  # thread (a fixed small number of pages of 100 comments, only the comments written or changed
+  # within the window), so the count does not depend on how long the thread is, and a thread with
+  # more comments in the window than the look holds gets no reply at all, which the audit record
+  # says. When a cap is reached the factory posts nothing more of that kind on that issue and
+  # writes an audit record instead. A missing key, zero, or a number outside the range is a load
+  # error (and the gate then refuses every issue): there is no default and no way to read "0" as
+  # "no limit". Each cap is 1..100 replies and the window 1..168 hours. The blocks, the labels and
+  # the audit records are not affected by a cap: only the comment is.
+  design_refusal_cap_per_issue: 3
+  design_withdrawal_cap_per_issue: 1
+  design_environment_cap_per_issue: 1
   design_reply_window_hours: 24

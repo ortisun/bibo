@@ -4,7 +4,11 @@
     "document_field": "Design document",
     "document_glob": "docs/designs/*.md",
     "prefix": "design: ",
-    "reply_cap_per_issue": 5,
+    "reply_caps_per_issue": {
+      "environment": 1,
+      "refusal": 3,
+      "withdrawal": 1
+    },
     "reply_window_hours": 24,
     "start_states": [
       "proposed",
@@ -142,6 +146,6 @@
   ],
   "schema": "factory-issue-workflow/1",
   "source": "policies/issue-workflow.yaml",
-  "source_sha256": "37ad826c2da7f3ada3f9af793c921059e599d98e2317c0484fa5762ce14f87c6",
+  "source_sha256": "6f62b8bc584d7cbde4df344b4bbc4352e061d806f97437fbb71be4dd7189485c",
   "trigger": "factory"
 }

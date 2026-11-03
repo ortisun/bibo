@@ -23,6 +23,25 @@
 //!   people, and the Action only checks that a design document exists, so the label alone proves
 //!   nothing about who decided.
 //!
+//! # The approval covers the words as they were when it was applied (DR-1)
+//!
+//! `design: approved` is a label, and a label says nothing about the words of the issue. An author
+//! or a requester can edit the title or the body after the approver applied it, and the factory
+//! would act on words the approver never read. So the approval counts only when the title and the
+//! body were **last edited before the label was applied**. The code host's time of the last edit
+//! ([`TextEdit`](factory_ports::githost::TextEdit): the body through one read of GraphQL, the title
+//! through the `renamed` events) is compared with the time of the application of the label:
+//!
+//! * an edit **after** the label, or in the same second: refused, reason `approval_older_than_text`;
+//! * a time that cannot be read, a label with no time, or a source that cannot say: refused, reason
+//!   `edit_time_unreadable`. Nothing unreadable ever reads as "not edited";
+//! * a host that fails to answer is an error of the attempt, as every other read of the host is,
+//!   and is tried again.
+//!
+//! The person is told to ask an approver to take the label off and apply it again after reading the
+//! issue as it is now. The same rule runs at the re-check before the pull request (DG-8), because it
+//! is part of the judgement ([`judge`]) that both stages call.
+//!
 //! # The text must be the issue's text (DG-3)
 //!
 //! Besides the labels, the gate compares the text the job carries with the text the live issue
@@ -64,8 +83,11 @@
 
 use factory_domain::ids::TenantId;
 use factory_domain::policy::authority::{Allowlist, AuthorityPolicy};
-use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels, ReplyCap, printable_label};
+use factory_domain::policy::issue_workflow::{
+    DesignGate, DesignLabels, ReplyCap, ReplyKind, printable_label,
+};
 use factory_domain::values::{GitSha, Timestamp};
+use factory_ports::githost::TextEdit;
 use serde_json::{Value, json};
 
 use super::authorize::{Authorization, DenialReason, Labeller, authorize_designation};
@@ -107,6 +129,12 @@ pub enum RefusalReason {
     /// The text the job carries is not the text of the live issue (DG-3). This is decided
     /// whether or not the issue is on the design track.
     TextNotTheIssue,
+    /// The title or the body was edited after the approving label was applied, or in the same
+    /// second (DR-1): the approval does not cover the words.
+    ApprovalOlderThanText,
+    /// The time of the last edit cannot be read, or the label has no time to compare with, so it
+    /// cannot be said that the approval covers the words (DR-1). Fail closed.
+    EditTimeUnreadable,
 }
 
 impl RefusalReason {
@@ -120,6 +148,8 @@ impl RefusalReason {
             Self::ApprovalLabelGone => "approval_label_gone",
             Self::NotAnApprover(_) => "not_applied_by_an_approver",
             Self::TextNotTheIssue => "text_not_the_issue",
+            Self::ApprovalOlderThanText => "approval_older_than_text",
+            Self::EditTimeUnreadable => "edit_time_unreadable",
         }
     }
 
@@ -132,6 +162,38 @@ impl RefusalReason {
             Self::MoreThanOneDesignLabel => Reply::MoreThanOneDesignLabel,
             Self::NotAnApprover(_) => Reply::NotByAnApprover,
             Self::TextNotTheIssue => Reply::TextNotTheIssue,
+            Self::ApprovalOlderThanText => Reply::ApprovalOlderThanText,
+            Self::EditTimeUnreadable => Reply::EditTimeUnreadable,
+        }
+    }
+}
+
+/// Whether the approval covers the words of the issue as they are now (DR-1). The judge fills it
+/// only for an issue whose one design label is the approving label; anything but
+/// [`Covers`](Self::Covers) refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalCoverage {
+    /// The title and the body were last edited before the approving label was applied (or never).
+    Covers,
+    /// They were edited after it, or in the same second.
+    EditedAfter,
+    /// The time of the edit or the time of the application cannot be read.
+    Unreadable,
+    /// Not asked: the issue does not have the approving label alone, so there is no approval to
+    /// cover anything. If it ever reaches an approval, it is read as unreadable.
+    NotAsked,
+}
+
+impl ApprovalCoverage {
+    /// The coverage from the time of the application of the label and the last edit of the words.
+    /// Nothing that cannot be compared covers.
+    #[must_use]
+    pub fn of(applied_at: Option<Timestamp>, edit: TextEdit) -> Self {
+        match (applied_at, edit) {
+            (_, TextEdit::Unknown) | (None, _) => Self::Unreadable,
+            (Some(_), TextEdit::Never) => Self::Covers,
+            (Some(applied), TextEdit::At(edited)) if edited < applied => Self::Covers,
+            (Some(_), TextEdit::At(_)) => Self::EditedAfter,
         }
     }
 }
@@ -241,12 +303,17 @@ pub struct Judging<'a> {
 /// `text` is what the comparison of the text of the job with the live issue found. A text that is
 /// different refuses a job that the labels would let through (DG-3); a refusal for the labels
 /// keeps its own reason, and the audit line still says that the text was different.
+///
+/// `coverage` says whether the approval covers the words as they are now (DR-1). It is consulted
+/// when the approver is the right person, and only [`ApprovalCoverage::Covers`] lets the issue
+/// through; a refusal for the person keeps its own reason.
 #[must_use]
 pub fn judge(
     judging: &Judging<'_>,
     labels: DesignLabels,
     applied_by: Option<Labeller<'_>>,
     text: TextCheck,
+    coverage: ApprovalCoverage,
 ) -> DesignDecision {
     let allowlist_version = judging.allowlist.version_hash().to_owned();
     let refused = |reason, labels_seen, applied_by| DesignDecision::Refused {
@@ -276,9 +343,17 @@ pub fn judge(
                 Authorization::Authorized {
                     actor,
                     allowlist_version,
-                } => DesignDecision::Approved {
-                    approver: actor,
-                    allowlist_version,
+                } => match coverage {
+                    ApprovalCoverage::Covers => DesignDecision::Approved {
+                        approver: actor,
+                        allowlist_version,
+                    },
+                    ApprovalCoverage::EditedAfter => {
+                        refused(RefusalReason::ApprovalOlderThanText, seen, Some(actor))
+                    }
+                    ApprovalCoverage::Unreadable | ApprovalCoverage::NotAsked => {
+                        refused(RefusalReason::EditTimeUnreadable, seen, Some(actor))
+                    }
                 },
                 Authorization::Denied {
                     reason: DenialReason::NoLabel,
@@ -313,6 +388,10 @@ pub enum Reply {
     CannotCheck,
     /// The text of the job is not the text of the issue (DG-3).
     TextNotTheIssue,
+    /// The title or the body was edited after the approval was applied (DR-1).
+    ApprovalOlderThanText,
+    /// It cannot be told whether the title or the body was edited after the approval (DR-1).
+    EditTimeUnreadable,
     /// Work had started, and the factory stopped before it opened the pull request, because the
     /// design is not approved as the issue shows it now (DG-8).
     DesignWithdrawn,
@@ -326,6 +405,24 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// The kind of the reply: the cap it is counted under and the family it is marked with
+    /// (DR-4). The replies of one kind cannot use up the room of another.
+    #[must_use]
+    pub const fn kind(self) -> ReplyKind {
+        match self {
+            Self::NotApproved
+            | Self::MoreThanOneDesignLabel
+            | Self::NotByAnApprover
+            | Self::DesignDropped
+            | Self::CannotCheck
+            | Self::TextNotTheIssue
+            | Self::ApprovalOlderThanText
+            | Self::EditTimeUnreadable => ReplyKind::Refusal,
+            Self::DesignWithdrawn | Self::CannotCheckAgain => ReplyKind::Withdrawal,
+            Self::EnvironmentBlocked => ReplyKind::Environment,
+        }
+    }
+
     /// The plain-English text. `trigger` is the label that asks the factory to work and
     /// `approved` the label of the approved design, both from protected configuration. The text
     /// holds nothing from the issue, names nobody and says nothing about any list.
@@ -374,10 +471,22 @@ impl Reply {
                  or send the job again with the text of the issue as it is. \
                  If somebody edited the issue after the job was made, apply the `{trigger}` label again so that the factory reads the new words."
             ),
+            Self::ApprovalOlderThanText => format!(
+                "The factory did not start work on this issue because the title or the body was edited after the design was approved. \
+                 The approval covers the words that the issue had when `{approved}` was applied, and the factory acts only on words an approver has seen. \
+                 To go on, ask an approver of this repository to read the issue as it is now, take the label `{approved}` off, and apply it again. \
+                 After that, apply the `{trigger}` label again."
+            ),
+            Self::EditTimeUnreadable => format!(
+                "The factory did not start work on this issue because it could not tell whether the title or the body was edited after the design was approved. \
+                 Until it can, it does not take the approval to cover the words. \
+                 Ask an approver of this repository to take the label `{approved}` off and apply it again, and then apply the `{trigger}` label again. \
+                 If the same message comes back, ask the person who runs the factory for this repository to look at it."
+            ),
             Self::DesignWithdrawn => format!(
                 "The factory stopped before it opened the pull request, because the design of this issue is not approved as the issue shows it now. \
                  No pull request was opened. \
-                 The approval may have been taken off, the design may have been reopened, another design label may have been added, or the approval may have been applied again by someone the factory does not accept approvals from. \
+                 The approval may have been taken off, the design may have been reopened, another design label may have been added, the approval may have been applied again by someone the factory does not accept approvals from, or the title or the body may have been edited after the approval. \
                  To go on, make sure `{approved}` is the one design label on the issue and that an approver of this repository applied it. \
                  Then ask the person who runs the factory to unblock the job, or apply the `{trigger}` label again to start a new one."
             ),
@@ -550,7 +659,7 @@ pub fn audit_reason(
             approver,
             allowlist_version,
         } => format!(
-            "design gate passed: issue {issue}; the approved label was applied by user id {approver}, who holds the approver designation; allowlist version {allowlist_version}; {compared}"
+            "design gate passed: issue {issue}; the approved label was applied by user id {approver}, who holds the approver designation, after the last edit of the title and the body; allowlist version {allowlist_version}; {compared}"
         ),
         DesignDecision::Refused {
             reason,
@@ -639,6 +748,12 @@ fn explanation(reason: &str) -> &'static str {
         "text_not_the_issue" => {
             "The text the job carries is not the text of the issue as it is now. The factory acts only on the text of the issue."
         }
+        "approval_older_than_text" => {
+            "The title or the body of the issue was edited after the label of the approved design was applied, so the approval does not cover the words."
+        }
+        "edit_time_unreadable" => {
+            "It cannot be told whether the title or the body of the issue was edited after the label of the approved design was applied, so the approval is not taken to cover the words."
+        }
         _ => "The issue is on the design track and its design is not approved yet.",
     }
 }
@@ -647,6 +762,9 @@ fn explanation(reason: &str) -> &'static str {
 fn report_title(reason: &str) -> &'static str {
     match reason {
         "text_not_the_issue" => "The text of the job is not the text of the issue",
+        "approval_older_than_text" | "edit_time_unreadable" => {
+            "The approval does not cover the words of the issue"
+        }
         _ => "The design is not approved",
     }
 }
@@ -656,6 +774,9 @@ fn report_requirement(reason: &str) -> &'static str {
     match reason {
         "text_not_the_issue" => {
             "the text of the job to be the title and the body of the issue as it is now"
+        }
+        "approval_older_than_text" | "edit_time_unreadable" => {
+            "the label of the approved design, applied by a person who holds the approver designation after the last edit of the title and the body"
         }
         _ => {
             "the label of the approved design, applied by a person who holds the approver designation"
@@ -669,6 +790,10 @@ fn report_requirement(reason: &str) -> &'static str {
 pub fn stop_sentence(document: &Value) -> &'static str {
     if document["reason"] == "text_not_the_issue" {
         "The request does not go on until its text is the text of the issue."
+    } else if document["reason"] == "approval_older_than_text"
+        || document["reason"] == "edit_time_unreadable"
+    {
+        "The request does not go on until the design is approved again after the last edit of the issue."
     } else {
         "The request does not go on until the design is approved."
     }
@@ -813,6 +938,75 @@ mod tests {
         assert_eq!(compare_text("", " \n"), TextCheck::Same);
     }
 
+    fn time(text: &str) -> Timestamp {
+        Timestamp::parse(text).expect("a time")
+    }
+
+    #[test]
+    fn an_approval_covers_the_words_only_when_the_last_edit_was_before_it() {
+        // DR-1. The edit before the approval, an issue never edited: covered.
+        let applied = Some(time("2026-11-03T10:00:00Z"));
+        assert_eq!(
+            ApprovalCoverage::of(applied, TextEdit::Never),
+            ApprovalCoverage::Covers
+        );
+        assert_eq!(
+            ApprovalCoverage::of(applied, TextEdit::At(time("2026-11-03T09:59:59Z"))),
+            ApprovalCoverage::Covers
+        );
+        // The edit after it, and in the same second: not covered.
+        for edited in [
+            "2026-11-03T10:00:00Z",
+            "2026-11-03T10:00:01Z",
+            "2026-11-04T00:00:00Z",
+        ] {
+            assert_eq!(
+                ApprovalCoverage::of(applied, TextEdit::At(time(edited))),
+                ApprovalCoverage::EditedAfter,
+                "{edited}"
+            );
+        }
+        // Nothing that cannot be compared covers: an edit time the source cannot say, and a label
+        // with no time of application, even for an issue the host says was never edited.
+        assert_eq!(
+            ApprovalCoverage::of(applied, TextEdit::Unknown),
+            ApprovalCoverage::Unreadable
+        );
+        for edit in [
+            TextEdit::Never,
+            TextEdit::At(time("2026-11-03T09:00:00Z")),
+            TextEdit::Unknown,
+        ] {
+            assert_eq!(
+                ApprovalCoverage::of(None, edit),
+                ApprovalCoverage::Unreadable,
+                "{edit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_replies_are_counted_under_the_kind_they_belong_to() {
+        // DR-4. The refusals of intake share a cap, the stop before the pull request has its own,
+        // and so does the notice about the environment.
+        for reply in [
+            Reply::NotApproved,
+            Reply::MoreThanOneDesignLabel,
+            Reply::NotByAnApprover,
+            Reply::DesignDropped,
+            Reply::CannotCheck,
+            Reply::TextNotTheIssue,
+            Reply::ApprovalOlderThanText,
+            Reply::EditTimeUnreadable,
+        ] {
+            assert_eq!(reply.kind(), ReplyKind::Refusal, "{reply:?}");
+        }
+        for reply in [Reply::DesignWithdrawn, Reply::CannotCheckAgain] {
+            assert_eq!(reply.kind(), ReplyKind::Withdrawal, "{reply:?}");
+        }
+        assert_eq!(Reply::EnvironmentBlocked.kind(), ReplyKind::Environment);
+    }
+
     #[test]
     fn the_words_of_the_comparison_are_the_ones_the_record_uses() {
         assert_eq!(TextCheck::Same.word(), "same");
@@ -864,6 +1058,8 @@ mod tests {
             Reply::DesignDropped,
             Reply::CannotCheck,
             Reply::TextNotTheIssue,
+            Reply::ApprovalOlderThanText,
+            Reply::EditTimeUnreadable,
         ] {
             let text = reply.text("factory", "design: approved");
             assert!(text.contains("`factory`"), "{reply:?}");
@@ -883,12 +1079,14 @@ mod tests {
                 assert!(!text.contains(forbidden), "{reply:?} says {forbidden}");
             }
         }
-        // Four of them tell the person which label to look at.
+        // Six of them tell the person which label to look at.
         for reply in [
             Reply::NotApproved,
             Reply::MoreThanOneDesignLabel,
             Reply::NotByAnApprover,
             Reply::DesignDropped,
+            Reply::ApprovalOlderThanText,
+            Reply::EditTimeUnreadable,
         ] {
             assert!(
                 reply
@@ -907,6 +1105,8 @@ mod tests {
             Reply::DesignDropped,
             Reply::CannotCheck,
             Reply::TextNotTheIssue,
+            Reply::ApprovalOlderThanText,
+            Reply::EditTimeUnreadable,
             Reply::DesignWithdrawn,
             Reply::CannotCheckAgain,
         ]

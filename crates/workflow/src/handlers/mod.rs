@@ -20,7 +20,8 @@ use factory_ports::agent::RoutingNeed;
 
 pub(crate) use context::Notes;
 pub use context::{
-    ContractContext, GateContext, RunIdentity, SandboxReady, StageContext, StagePorts, UpstreamRun,
+    ContractContext, DurableRecords, GateContext, RunIdentity, SandboxReady, StageContext,
+    StagePorts, UpstreamRun,
 };
 pub use output::{NamedArtifact, NeedsHumanRequest, OutputDocument, StageError, StageOutput};
 pub use registry::{HandlerRegistry, RegistryError};

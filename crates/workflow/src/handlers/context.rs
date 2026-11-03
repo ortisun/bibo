@@ -20,7 +20,7 @@ use factory_ports::sandbox::SandboxProvider;
 use factory_ports::store::LeaseEpoch;
 use factory_ports::workspace::WorkspaceProvider;
 
-use super::output::NamedArtifact;
+use super::output::{NamedArtifact, StageError};
 use crate::audit::AuditAction;
 
 /// Who a run is: the tenant, the job, the stage run and the stage kind.
@@ -226,6 +226,9 @@ pub struct StageContext<'a> {
     /// The runs this one builds on.
     pub upstream: &'a [UpstreamRun],
     pub(crate) notes: Notes,
+    /// Where a record is written at once, in a transaction of its own. The engine sets it; a
+    /// context built without an engine (a test of a handler) has none.
+    pub(crate) durable: Option<&'a dyn DurableRecords>,
 }
 
 impl std::fmt::Debug for StageContext<'_> {
@@ -269,7 +272,16 @@ impl<'a> StageContext<'a> {
             human_inputs,
             upstream,
             notes: Notes::default(),
+            durable: None,
         }
+    }
+
+    /// Gives the context a way to write a record at once (DR-3). The engine calls this, and so
+    /// may a test of a handler that wants to see what is written before the handler acts.
+    #[must_use]
+    pub fn with_durable(mut self, durable: &'a dyn DurableRecords) -> Self {
+        self.durable = Some(durable);
+        self
     }
 
     /// Shares the notes with the engine, which reads them while the handler runs.
@@ -325,6 +337,36 @@ impl<'a> StageContext<'a> {
         self.notes.note_fact(action, reason);
     }
 
+    /// Writes an audit record **now**, in a transaction of its own, and returns when it is
+    /// committed (DR-3). A handler uses it for the record of a decision that comes before an act
+    /// on the world that cannot be taken back, such as a comment on an issue: the record then
+    /// does not wait for the attempt to end, and a cancel, a lost lease or a crash after it
+    /// cannot drop it. Everything else is noted with [`note_audit_because`](Self::note_audit_because).
+    ///
+    /// The record is written whatever the state of the lease: it is a fact about a decision that
+    /// was taken, an audit row changes no aggregate, and the epoch check (INV-05) guards the
+    /// writes that do.
+    ///
+    /// A context that has no engine behind it (a test of a handler) cannot write: the record is
+    /// noted, and the engine of a real run is the only place where it is durable.
+    ///
+    /// # Errors
+    /// [`StageError::Tool`] when the store cannot take the record. The handler must then not act:
+    /// the attempt fails and is tried again.
+    pub async fn record_now(
+        &mut self,
+        action: AuditAction,
+        reason: String,
+    ) -> Result<(), StageError> {
+        match self.durable {
+            Some(records) => records.record(action, reason).await,
+            None => {
+                self.note_audit_because(action, reason);
+                Ok(())
+            }
+        }
+    }
+
     /// The reasons of the audit records the handler has noted with
     /// [`note_audit_because`](Self::note_audit_because) so far, in order. The engine takes the
     /// records itself when the attempt ends; this reads them without taking them, so that a test
@@ -333,6 +375,15 @@ impl<'a> StageContext<'a> {
     pub fn noted_reasons(&self) -> Vec<String> {
         self.notes.fact_reasons()
     }
+}
+
+/// Writes one audit record at once, in a transaction of its own, for the attempt that holds the
+/// context (DR-3). The engine implements it over the store; a test of a handler may implement it
+/// to see the records in the order the handler writes them.
+#[async_trait::async_trait]
+pub trait DurableRecords: Send + Sync {
+    /// Commits one audit record of the stage handler of the attempt.
+    async fn record(&self, action: AuditAction, reason: String) -> Result<(), StageError>;
 }
 
 /// Everything `evaluate` receives.
