@@ -931,6 +931,36 @@ async fn a_refusal_leaves_no_credential_with_the_log_filter_at_trace() {
     let _ = lab.stop_worker();
 }
 
+/// LB-05: the worker used to warn on every start that no secret of the kind `webhook_secret` was
+/// registered, a kind that the API holds and the worker never does. A warning that is always there
+/// is ignored on the day it matters. The worker starts here with GitHub configured and no webhook
+/// secret, as a worker does, and its log has no such line.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_worker_does_not_warn_about_a_secret_kind_it_never_holds() {
+    let mut lab = Lab::start(Options::default()).await;
+    lab.spawn_worker(&[]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let (stdout, stderr) = lab.logs();
+        if stdout.contains("worker loop started") || stderr.contains("worker loop started") {
+            break;
+        }
+        assert!(
+            lab.worker_ended().is_none() && std::time::Instant::now() < deadline,
+            "the worker did not reach its loop: {stderr}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (stdout, stderr) = lab.logs();
+    let _ = lab.stop_worker();
+    let all = format!("{stdout}\n{stderr}");
+    assert!(
+        !all.contains("no secret of a kind the policy lists is registered"),
+        "the worker warned about a kind it does not hold: {all}"
+    );
+    assert!(!all.contains("webhook_secret"), "{all}");
+}
+
 /// GitHub fails the way it does: a token request answered 502, the issue read answered 429 with a
 /// `Retry-After`, and the one comment post answered 502. The test doubles never fail like this. The
 /// adapter retries the first two inside the call; the failed post fails the attempt, and the engine

@@ -91,7 +91,10 @@ The configuration keys that point at the outside world are in [the reference](..
    the policy, the redactor, the registry of secret values, the connected store and the telemetry
    guard.
 3. Add what the binary alone needs (the worker starts the broker listener), then
-   `Prepared::check_secret_kinds(profile)`.
+   `Prepared::check_secret_kinds(profile, not_held)`. `not_held` lists the kinds of secret the policy names for
+   the factory as a whole that this binary never holds (the worker passes `WORKER_DOES_NOT_HOLD`, the webhook
+   secret, which only the API holds): they are skipped, with no warning. A kind the binary holds and lacks is
+   still refused in the production profile and logged in the others.
 4. Build a `PortRegistry`, call `check(profile)`, and only then build the engine.
 
 ## Tests
