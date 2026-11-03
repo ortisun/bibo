@@ -84,7 +84,7 @@ def tar_of(entries: List[Entry]) -> bytes:
     return buffer.getvalue()
 
 
-def audit(entries: List[Entry]) -> dict:
+def audit(entries: List[Entry], extra_args: Optional[List[str]] = None) -> dict:
     """Runs `fsaudit.py fs` on the entries and returns the finding files, by name."""
     with tempfile.TemporaryDirectory(prefix="sbx-fsaudit-") as scratch:
         out = Path(scratch) / "out"
@@ -102,6 +102,7 @@ def audit(entries: List[Entry]) -> dict:
                 str(SHELLS),
                 "--policy",
                 str(POLICY),
+                *(extra_args or []),
             ],
             input=tar_of(entries),
             capture_output=True,
@@ -202,6 +203,41 @@ def main() -> int:
         mentions(compiled, "secrets.txt", "/etc/starts-with-mz.conf")
         and mentions(compiled, "secrets.txt", "/etc/plain-utf8.conf"),
         compiled["secrets.txt"],
+    )
+
+    # A program of the factory holds the constant prefix of a job token, laid next to other
+    # constants with no separator. The pattern reads the neighbours as part of a token, so a
+    # compiled file is not scanned for credentials that the factory mints at run time. A text file
+    # still is, and the option names nothing else.
+    glued = b"\x7fELF\x00\x00" + b"sfjt_token_issued" + b"INTAKEREPOSITORYINTELLIGENCE" * 12 + b"\x00\x00"
+    real_token = "sfjt_" + "0123456789abcdef" * 4
+    minted = ["--runtime-minted", "factory_job_token", "--runtime-minted", "api_token"]
+    entries = [
+        Entry("./usr/local/bin/factory-program", glued),
+        Entry("./usr/local/bin/holds-a-vendor-token", b"\x7fELF\x00\x00" + SECRET.encode() + b"\x00\x00"),
+        Entry("./etc/holds-a-job-token.conf", f"token = {real_token}\n".encode()),
+    ]
+    without = audit(entries)
+    with_option = audit(entries, minted)
+    expect(
+        "without the option the glued constants of a program are read as a job token",
+        mentions(without, "secrets.txt", "/usr/local/bin/factory-program"),
+        without["secrets.txt"],
+    )
+    expect(
+        "with the option a compiled file is not scanned for a credential minted at run time",
+        not mentions(with_option, "secrets.txt", "/usr/local/bin/factory-program"),
+        with_option["secrets.txt"],
+    )
+    expect(
+        "with the option a vendor token inside a compiled file is still a finding",
+        mentions(with_option, "secrets.txt", "/usr/local/bin/holds-a-vendor-token"),
+        with_option["secrets.txt"],
+    )
+    expect(
+        "with the option a job token in a text file is still a finding",
+        mentions(with_option, "secrets.txt", "/etc/holds-a-job-token.conf"),
+        with_option["secrets.txt"],
     )
 
     # Files under the trees that the sandbox user could have written are scanned.

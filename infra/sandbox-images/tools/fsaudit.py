@@ -73,7 +73,7 @@ import re
 import sys
 import tarfile
 from pathlib import Path
-from typing import Dict, List, Optional, Pattern, Tuple
+from typing import Dict, FrozenSet, List, Optional, Pattern, Tuple
 
 CHUNK = 8 * 1024 * 1024
 OVERLAP = 4096
@@ -236,9 +236,15 @@ def scan_bytes(
     high_signal_only: bool,
     path: str,
     findings: List[str],
+    runtime_minted: FrozenSet[str] = frozenset(),
 ) -> None:
     for pattern_id, regex in patterns:
         if high_signal_only:
+            # A credential that the factory mints at run time cannot be inside a compiled file. Its
+            # prefix is, as a constant, and the compiler lays constants side by side with no
+            # separator, so the pattern would read the neighbours as part of a token.
+            if pattern_id in runtime_minted:
+                continue
             literals = HIGH_SIGNAL_LITERALS.get(pattern_id)
             if literals is None or not any(literal in data for literal in literals):
                 continue
@@ -258,6 +264,7 @@ def command_fs(args: argparse.Namespace) -> int:
     shells = read_names(Path(args.shells))
     patterns = load_patterns(Path(args.policy))
     known = {value.lower() for value in args.known_sha256}
+    runtime_minted = frozenset(args.runtime_minted)
 
     setid: List[str] = []
     world_writable: List[str] = []
@@ -342,7 +349,7 @@ def command_fs(args: argparse.Namespace) -> int:
                 carry = b""
                 while block:
                     window = carry + block
-                    scan_bytes(window, patterns, True, path, file_findings)
+                    scan_bytes(window, patterns, True, path, file_findings, runtime_minted)
                     scanned_bytes += len(block)
                     carry = window[-OVERLAP:]
                     block = handle.read(CHUNK)
@@ -456,6 +463,17 @@ def main(argv: List[str]) -> int:
         action="append",
         default=[],
         help="SHA-256 of a vendor binary that was pinned and checked at build time; matches inside it are ignored",
+    )
+    fs.add_argument(
+        "--runtime-minted",
+        action="append",
+        default=[],
+        metavar="PATTERN_ID",
+        help=(
+            "id of a pattern for a credential that the factory mints at run time (for example "
+            "factory_job_token). It is applied to text files and not to compiled or large files, "
+            "where only the constant prefix of such a credential can appear"
+        ),
     )
     fs.set_defaults(handler=command_fs)
 
