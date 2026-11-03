@@ -168,15 +168,10 @@ async fn negative_nt_stat_02_a_stage_token_is_not_widened_and_the_status_token_i
     assert_eq!(
         sets,
         vec![
-            read(&[
-                ("contents", "read"),
-                ("issues", "read"),
-                ("metadata", "read"),
-                ("pull_requests", "read")
-            ]),
+            read(&[("issues", "read"), ("metadata", "read")]),
             read(&[("issues", "write"), ("metadata", "read")]),
         ],
-        "the intake token stays at issues read, and the status token is a separate token"
+        "the intake token stays at issues read (and nothing else, LB-03), and the status token is a separate token"
     );
 }
 

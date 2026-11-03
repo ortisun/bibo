@@ -215,6 +215,7 @@ pub fn permissions_asked(stage: StageKind, kind: TokenKind) -> Vec<(&'static str
             ("metadata", "read"),
             ("pull_requests", "write"),
         ],
+        (TokenKind::Stage, StageKind::Intake) => vec![("issues", "read"), ("metadata", "read")],
         (TokenKind::Stage, StageKind::Approval) => vec![
             ("contents", "read"),
             ("issues", "write"),

@@ -1010,7 +1010,7 @@ credentials:
     installation_token:
       mint: per_job
       repositories: exactly_one        # narrowed with the `repositories` body parameter
-      permissions: narrowed_per_stage  # read-only for analysis stages
+      permissions: narrowed_per_stage  # read-only for analysis stages; the intake stage asks for `issues: read` and `metadata: read` only (LB-03, crates/github/src/permissions.rs)
       lifetime_s: 3600                 # fixed by GitHub (documented); factory revokes earlier
       revoke_on_job_end: true          # DELETE /installation/token
       holders: [control_plane_only]

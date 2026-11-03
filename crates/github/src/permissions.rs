@@ -1,7 +1,8 @@
 //! The permissions a token carries, and the audit of the App's own permissions.
 //!
-//! `docs/security/secrets-and-credentials.md` section 3.3: an intake or analysis stage gets
-//! `contents`, `issues` and `pull_requests` read-only. The delivery stage gets `contents`,
+//! `docs/security/secrets-and-credentials.md` section 3.3: the intake stage gets `issues` read-only
+//! (LB-03), because it reads one issue and its events; an analysis stage gets `contents`, `issues`
+//! and `pull_requests` read-only. The delivery stage gets `contents`,
 //! `pull_requests` and `issues` write and `checks` write. The approval stage reads, and writes
 //! `issues` only, so that it can post the one comment that acknowledges a decision (AUT-9). A token
 //! for a stage never carries more than that stage needs. Every set also names `metadata: read`, which every GitHub App has.
@@ -55,7 +56,17 @@ impl PermissionSet {
         Self(entries.iter().copied().collect())
     }
 
-    /// An intake or analysis stage: read only.
+    /// The intake stage (LB-03): it reads one issue and the events of that issue, so it asks for
+    /// `issues: read` and the `metadata: read` that every installation token carries, and for
+    /// nothing else. It has no use for the contents of the repository or for pull requests. It is
+    /// a class of its own, narrower than [`read_stage`](Self::read_stage), so that a change to
+    /// the analysis stages cannot widen it.
+    #[must_use]
+    pub fn issue_reader() -> Self {
+        Self::of(&[("metadata", Level::Read), ("issues", Level::Read)])
+    }
+
+    /// An analysis stage that reads the repository: read only.
     #[must_use]
     pub fn read_stage() -> Self {
         Self::of(&[
@@ -122,6 +133,7 @@ impl PermissionSet {
     #[must_use]
     pub fn for_stage(stage: StageKind) -> Self {
         match stage {
+            StageKind::Intake => Self::issue_reader(),
             StageKind::Delivery => Self::delivery_stage(),
             StageKind::Approval => Self::approval_stage(),
             _ => Self::read_stage(),
@@ -328,9 +340,57 @@ mod tests {
     }
 
     #[test]
+    fn the_intake_stage_asks_for_issues_read_and_metadata_read_and_nothing_else() {
+        // LB-03: intake reads one issue and its events. It gets no contents and no pull requests.
+        let set = PermissionSet::for_stage(StageKind::Intake);
+        assert_eq!(
+            set.entries(),
+            [("issues", Level::Read), ("metadata", Level::Read)]
+        );
+        assert_eq!(set, PermissionSet::issue_reader());
+        assert!(!set.holds("contents", Level::Read));
+        assert!(!set.holds("pull_requests", Level::Read));
+        assert!(!set.holds("issues", Level::Write));
+    }
+
+    #[test]
+    fn the_narrow_class_is_for_intake_alone_and_the_other_stages_keep_theirs() {
+        // Every stage that reads more than issues keeps the class it had.
+        for stage in StageKind::ALL.iter().copied() {
+            let expected = match stage {
+                StageKind::Intake => PermissionSet::issue_reader(),
+                StageKind::Delivery => PermissionSet::delivery_stage(),
+                StageKind::Approval => PermissionSet::approval_stage(),
+                _ => PermissionSet::read_stage(),
+            };
+            assert_eq!(PermissionSet::for_stage(stage), expected, "{stage:?}");
+        }
+        // The narrow class is inside the wider read class, never the reverse.
+        let narrow = PermissionSet::issue_reader();
+        let wide = PermissionSet::read_stage();
+        assert!(
+            narrow
+                .entries()
+                .iter()
+                .all(|(name, level)| wide.holds(name, *level))
+        );
+        assert!(narrow.entries().len() < wide.entries().len());
+    }
+
+    #[test]
+    fn a_grant_wider_than_the_narrow_class_is_not_accepted_as_that_class() {
+        // A server that answers with a wider token than the request asked for is refused, so a
+        // caller cannot widen the class by naming a permission in the answer.
+        let asked = PermissionSet::issue_reader();
+        assert!(asked.contains_all_of(&map(&[("issues", "read"), ("metadata", "read")])));
+        assert!(!asked.contains_all_of(&map(&[("issues", "write")])));
+        assert!(!asked.contains_all_of(&map(&[("contents", "read")])));
+        assert!(!asked.contains_all_of(&map(&[("pull_requests", "read")])));
+    }
+
+    #[test]
     fn only_the_delivery_stage_can_write() {
         for stage in [
-            StageKind::Intake,
             StageKind::RepositoryIntelligence,
             StageKind::Specification,
             StageKind::Implementation,
@@ -358,6 +418,7 @@ mod tests {
     #[test]
     fn no_set_asks_for_a_forbidden_permission_or_for_statuses() {
         for set in [
+            PermissionSet::issue_reader(),
             PermissionSet::read_stage(),
             PermissionSet::delivery_stage(),
             PermissionSet::approval_stage(),
