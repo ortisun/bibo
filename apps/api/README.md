@@ -227,12 +227,15 @@ reply on the issue and the record `intake.rejected`
 The worker answers one sender at most once in ten minutes and three times in 24 hours (SF-16); a request it does not
 answer is still recorded, with `reply=suppressed` and the bound that held it (`withheld=spacing` or `withheld=cap`).
 
-A repository that is switched off (registered, not enabled) answers nobody and starts nothing, whoever the sender is,
-and leaves no request for a reply. It does not leave only the accepted delivery (SF-19): one more record under
-`webhook_accepted_or_rejected.denied` (decision `deny`, no signed word, so the worker does not read it) names the
-reason, `repository_switched_off`, the registered repository and issue, the numeric id of the sender and the delivery
-id, and nothing from the payload. A repeat of the delivery leaves no second record. The answer to the sender of the
-webhook is the same `202` in every case.
+A repository that is switched off (registered, not enabled) answers nobody and starts nothing, whoever the sender is.
+The lookup that binds a delivery to a tenant answers only for a repository that is registered and enabled, so such a
+label is dropped there like one for a repository that was never registered: no delivery row, no job, no request for a
+reply, and the platform record `webhook.unbound`. For the factory label (SF-19) that record's reason says that the
+repository is not registered or that the factory is switched off for it, and that the label starts nothing and nobody
+is answered; any other delivery that does not resolve keeps the plain reason. The record carries the delivery id and
+nothing from the payload. A record in the tenant's own stream that names the repository would need the lookup to
+return a disabled repository too, which is open. The answer to the sender of the webhook is the same `202` in every
+case.
 
 ## Configuration
 

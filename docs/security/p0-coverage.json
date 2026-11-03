@@ -640,6 +640,15 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-claim-has-no-lock-and-no-version-guard",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-delivery-that-fails-verification-is-acknowledged",
    "date": "2026-10-29",
    "result": "CAUGHT",
@@ -701,6 +710,33 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-key-file-in-a-directory-of-another-user-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-key-file-of-another-user-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_key_file_must_belong_to_the_user_the_process_runs_as"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-key-in-a-directory-others-can-write-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "in_production_a_key_in_a_directory_others_can_write_is_refused"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-moved-head-is-not-noticed",
    "date": "2026-10-29",
    "result": "CAUGHT",
@@ -711,56 +747,93 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-moved-ledger-does-not-stop-an-approval",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-parent-component-is-not-refused",
-   "date": "2026-10-29",
-   "result": "MISSED",
-   "failed": []
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-previous-key-never-ends",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+   ]
   },
   {
    "script": "tests/security/mutations.py",
    "name": "a-privileged-container-is-not-refused",
-   "date": "2026-10-29",
-   "result": "MISSED",
-   "failed": []
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile"
+   ]
   },
   {
    "script": "tests/security/mutations.py",
    "name": "a-renewal-ignores-the-epoch",
-   "date": "2026-10-29",
+   "date": "2026-11-03",
    "result": "CAUGHT",
    "failed": [
+    "negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing",
     "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
    ]
   },
   {
    "script": "tests/security/mutations.py",
    "name": "a-renewal-ignores-the-lapse",
-   "date": "2026-10-29",
+   "date": "2026-11-03",
    "result": "CAUGHT",
    "failed": [
+    "negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing",
     "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
    ]
   },
   {
    "script": "tests/security/mutations.py",
    "name": "a-renewal-ignores-the-owner",
-   "date": "2026-10-29",
+   "date": "2026-11-03",
    "result": "CAUGHT",
    "failed": [
+    "negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing",
     "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
    ]
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-rotation-from-a-key-to-itself-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "rotated_from_refuses_a_previous_key_equal_to_the_current_one"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-rotation-to-the-same-key-is-accepted",
-   "date": "2026-10-29",
-   "result": "MISSED",
-   "failed": []
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_rotation_by_files_accepts_the_previous_key_and_nothing_older",
+    "from_bytes_refuses_a_previous_key_equal_to_the_current_one"
+   ]
   },
   {
    "script": "tests/security/mutations.py",
    "name": "a-second-claimant-is-not-told-it-lost",
-   "date": "2026-10-29",
+   "date": "2026-11-03",
    "result": "CAUGHT",
    "failed": [
     "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
@@ -774,6 +847,15 @@
    "failed": [
     "a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why",
     "held_the_key_file_is_checked_for_mode_link_size_and_kind"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-stale-binding-does-not-stop-an-approval",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such"
    ]
   },
   {
@@ -839,10 +921,12 @@
   },
   {
    "script": "tests/security/mutations.py",
-   "name": "stale-evidence-does-not-stop-an-approval",
-   "date": "2026-10-29",
-   "result": "MISSED",
-   "failed": []
+   "name": "production-keeps-a-previous-key-with-no-end",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+   ]
   },
   {
    "script": "tests/security/mutations.py",
@@ -897,11 +981,30 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "the-inspect-does-not-read-the-privileged-flag",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "the-job-token-is-accepted-by-the-webhook-endpoint",
    "date": "2026-10-29",
    "result": "CAUGHT",
    "failed": [
     "negative_nt_inj_04_composed_a_job_token_is_refused_by_every_operation_of_the_api_and_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-test-constructor-accepts-the-same-key-twice",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_short_key_and_a_repeated_key_are_refused",
+    "held_a_rotation_to_the_same_key_is_refused"
    ]
   },
   {
@@ -1876,14 +1979,39 @@
     {
      "name": "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing",
      "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_presented_by_another_tenant_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
     }
    ],
    "control_off": [
     {
      "kind": "mutation",
      "script": "tests/security/mutations.py",
+     "name": "a-claim-has-no-lock-and-no-version-guard",
+     "catches": [
+      "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
      "name": "a-renewal-ignores-the-epoch",
      "catches": [
+      "negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing",
       "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
      ]
     },
@@ -1892,6 +2020,7 @@
      "script": "tests/security/mutations.py",
      "name": "a-renewal-ignores-the-lapse",
      "catches": [
+      "negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing",
       "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
      ]
     },
@@ -1900,6 +2029,7 @@
      "script": "tests/security/mutations.py",
      "name": "a-renewal-ignores-the-owner",
      "catches": [
+      "negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing",
       "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
      ]
     },
@@ -1912,7 +2042,7 @@
      ]
     }
    ],
-   "note": "A hundred interleavings of two workers on one stage run on PostgreSQL (one winner, the other told it lost, one live lease row, the lease owned by the winner) and a renewal with the wrong owner, the wrong epoch, another tenant and after the lease lapsed (the row is as it was; the owner renews a live lease). The separate property that a stale worker changes nothing after takeover is NT-LSE-01."
+   "note": "A hundred interleavings of two workers on one stage run on PostgreSQL (one winner, the other told it lost, one live lease row, the lease owned by the winner) and a renewal with the wrong owner, the wrong epoch, another tenant and after the lease lapsed. The four fences of a renewal were in one test, so a break was caught by the whole function and a fence the function did not reach was not seen (F-4); each fence has a test of its own now, and the break that removes it is caught by the test of that fence. Two things are not shown by a break, and are said so: the tenant filter of the renewal and the row-level security of the table refuse the same renewal, so removing the filter alone changes nothing (the security of the rows is held by `tenant_isolation.rs`); and the claim is held by a lock, a version guard in the update, an early check and the unique index of the live attempt, each behind the next, so only the pair of lock and guard is removed together, which the hundred interleavings catch. The separate property that a stale worker changes nothing after takeover is NT-LSE-01."
   },
   {
    "id": "NT-LSE-03",
@@ -1977,7 +2107,7 @@
   },
   {
    "id": "NT-MRG-02",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_mrg_02_missing_or_blocked_evidence_never_passes_a_stage",
@@ -1986,9 +2116,35 @@
     {
      "name": "negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused",
      "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    },
+    {
+     "name": "negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    },
+    {
+     "name": "negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved",
+     "file": "crates/workflow/tests/delivery/judging.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-moved-ledger-does-not-stop-an-approval",
+     "catches": [
+      "negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-stale-binding-does-not-stop-an-approval",
+     "catches": [
+      "negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such"
+     ]
+    }
+   ],
+   "note": "An approval by a person who saw something other than the pull request now is refused by two checks of the judge: what the person saw is compared with what the request holds (the binding), and then with the world as it is now (the head, the tree, the base and the ledger of evidence). A person who saw an old head fails both, so the break of the first was MISSED while its filter ran only the engine scenarios. The two tests added ask for the refusal that names the binding, part by part, and for the one that names the ledger, each with the other check left nothing to refuse. The first break was called `stale-evidence-does-not-stop-an-approval` and described the wrong comparison; it is now `a-stale-binding-does-not-stop-an-approval`, and the ledger has its own."
   },
   {
    "id": "NT-MRG-03",
@@ -2270,7 +2426,7 @@
   },
   {
    "id": "NT-SBX-01",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start",
@@ -2279,9 +2435,31 @@
     {
      "name": "negative_nt_sbx_01_a_container_the_policy_allows_is_started_after_the_inspect",
      "file": "crates/sandbox/tests/scripted.rs"
+    },
+    {
+     "name": "negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile",
+     "file": "crates/ports/src/sandbox.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-privileged-container-is-not-refused",
+     "catches": [
+      "negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-inspect-does-not-read-the-privileged-flag",
+     "catches": [
+      "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start"
+     ]
+    }
+   ],
+   "note": "A privileged container is refused in layers: the rules a spec is held to in the port, before any container is made; the arguments the supervisor builds; and the look at the container after it was created. The scripted test sees the last, and the break of the first was MISSED because the filter ran only the scripted test. `negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile` holds the first on its own, and each layer has its own break. The layer of the arguments is held by the break test `break_a_privileged_container_is_caught_before_the_start` of the sandbox crate, which needs Docker and did not run here."
   },
   {
    "id": "NT-SBX-02",
@@ -3207,7 +3385,7 @@
   },
   {
    "id": "NT-TOOL-04",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_tool_04_path_policy_refuses_traversal_encoding_and_hidden_files",
@@ -3219,9 +3397,23 @@
      "needs": [
       "docker"
      ]
+    },
+    {
+     "name": "negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason",
+     "file": "crates/domain/tests/policy/paths.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-parent-component-is-not-refused",
+     "catches": [
+      "negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason"
+     ]
+    }
+   ],
+   "note": "The refusal of a path made of `..` is made by two checks: the one that names a parent component, and the one that refuses every component of dots and blanks. A test that asks only whether the path was refused cannot see the first gone, so `negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason` asks for the reason and the rule that is audited (`reject_dotdot`), and a component of dots that is not `..` for its own (`normalization`). The break was MISSED until that test existed (its filter ran only the test that asks whether the path was refused). The part that runs inside the container needs Docker and did not run."
   },
   {
    "id": "NT-TOOL-05",
@@ -3564,9 +3756,78 @@
     {
      "name": "a_key_file_that_group_or_others_can_read_is_refused",
      "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_rotation_by_files_accepts_the_previous_key_and_nothing_older",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_short_key_and_a_repeated_key_are_refused",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "from_bytes_refuses_a_previous_key_equal_to_the_current_one",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "rotated_from_refuses_a_previous_key_equal_to_the_current_one",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root",
+     "file": "crates/composition/src/decision_signing.rs"
     }
    ],
    "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-key-file-in-a-directory-of-another-user-is-accepted",
+     "catches": [
+      "a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-key-file-of-another-user-is-accepted",
+     "catches": [
+      "a_key_file_must_belong_to_the_user_the_process_runs_as"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-key-in-a-directory-others-can-write-is-accepted",
+     "catches": [
+      "in_production_a_key_in_a_directory_others_can_write_is_refused"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-previous-key-never-ends",
+     "catches": [
+      "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-rotation-from-a-key-to-itself-is-accepted",
+     "catches": [
+      "rotated_from_refuses_a_previous_key_equal_to_the_current_one"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-rotation-to-the-same-key-is-accepted",
+     "catches": [
+      "a_rotation_by_files_accepts_the_previous_key_and_nothing_older",
+      "from_bytes_refuses_a_previous_key_equal_to_the_current_one"
+     ]
+    },
     {
      "kind": "mutation",
      "script": "tests/security/mutations.py",
@@ -3575,9 +3836,26 @@
       "held_the_key_file_is_checked_for_mode_link_size_and_kind",
       "a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why"
      ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "production-keeps-a-previous-key-with-no-end",
+     "catches": [
+      "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-test-constructor-accepts-the-same-key-twice",
+     "catches": [
+      "a_short_key_and_a_repeated_key_are_refused",
+      "held_a_rotation_to_the_same_key_is_refused"
+     ]
     }
    ],
-   "note": "Added for finding F-5. The mode check of a secret file is proven by a break. The checks of the owner, the directory and the end date of a previous key have tests and no break yet; the break that removes the same-key check of a rotation is MISSED (a second check refuses the same key)."
+   "note": "Added for finding F-5, and its breaks completed in the revision after. Every check of a secret key file has a test and a break: the mode (`a-secret-file-may-be-read-by-group-and-others`); the owner of the file, the owner of its directory, and a directory above it that others can write; the end of a previous key, and a previous key with no end in production; and the refusal of a previous key equal to the current one, which is written in three constructors (`from_bytes`, `rotated_from`, `fixed_for_tests`) and has one test and one break for each. The break that removes it from `from_bytes` was MISSED because the only test ran through `fixed_for_tests`, the second copy. The rule about the owner of the directory is a function of two owners, `goes_with_its_directory`, because a test cannot make a file that belongs to another user. The owner and directory checks are written for the decision signing key files; the other secret files get the mode, kind, size and link check only."
   }
  ]
 }
