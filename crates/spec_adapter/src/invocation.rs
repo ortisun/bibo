@@ -66,9 +66,19 @@ impl Host {
     /// syntax was not verified.
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
-        [Self::ClaudeCode, Self::Codex]
-            .into_iter()
-            .find(|host| host.key() == key)
+        Self::ALL.into_iter().find(|host| host.key() == key)
+    }
+
+    /// Every host in the table.
+    pub const ALL: [Self; 2] = [Self::ClaudeCode, Self::Codex];
+
+    /// The name of the host in a sentence.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
     }
 }
 
@@ -134,10 +144,41 @@ impl IntegrationConfig {
     pub fn parse(bytes: &[u8]) -> Result<Self, InvocationError> {
         let value: Value =
             serde_json::from_slice(bytes).map_err(|_| InvocationError::BadConfiguration)?;
+        Self::for_key(&value, Self::default_key(&value)?)
+    }
+
+    /// Reads `.specify/integration.json` for **every** integration it lists as installed, the
+    /// default one first. A project can hold several (`specify integration install codex` next to
+    /// `claude`), and the skills of each are files the stage must be able to pin.
+    ///
+    /// # Errors
+    /// [`InvocationError`] as for [`Self::parse`], and [`InvocationError::UnsupportedHost`] for an
+    /// installed integration that is not in the host table: its skills have no pin, so the
+    /// installation is not accepted.
+    pub fn parse_installed(bytes: &[u8]) -> Result<Vec<Self>, InvocationError> {
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|_| InvocationError::BadConfiguration)?;
+        let mut found = vec![Self::for_key(&value, Self::default_key(&value)?)?];
+        if let Some(listed) = value.get("installed_integrations") {
+            for entry in listed.as_array().ok_or(InvocationError::BadConfiguration)? {
+                let key = entry.as_str().ok_or(InvocationError::BadConfiguration)?;
+                let config = Self::for_key(&value, key)?;
+                if found.iter().all(|known| known.host != config.host) {
+                    found.push(config);
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    fn default_key(value: &Value) -> Result<&str, InvocationError> {
         let text = |pointer: &str| value.pointer(pointer).and_then(Value::as_str);
-        let key = text("/integration")
+        text("/integration")
             .or_else(|| text("/default_integration"))
-            .ok_or(InvocationError::BadConfiguration)?;
+            .ok_or(InvocationError::BadConfiguration)
+    }
+
+    fn for_key(value: &Value, key: &str) -> Result<Self, InvocationError> {
         let host = Host::from_key(key).ok_or(InvocationError::UnsupportedHost)?;
         let separator = value
             .pointer("/integration_settings")
@@ -146,7 +187,9 @@ impl IntegrationConfig {
             .and_then(Value::as_str)
             .ok_or(InvocationError::BadConfiguration)?;
         Ok(Self {
-            version: text("/version")
+            version: value
+                .pointer("/version")
+                .and_then(Value::as_str)
                 .ok_or(InvocationError::BadConfiguration)?
                 .to_owned(),
             host,

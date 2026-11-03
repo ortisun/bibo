@@ -66,7 +66,7 @@ For both tools the factory treats the project's own copies as data. A factory ru
 
 - A design session (brainstorm, draft, review) run under Codex from start to end. EGM's own documentation says Codex passes its fixtures. This repository has not checked that.
 - The installer adding EGM to a Codex that has never had it. The author's Codex already had it, so only the check path ran against the real tool.
-- A job whose specification stage runs under Codex: the Spec Kit install in this repository records only the Claude Code integration.
+- A job whose specification stage runs under Codex. The Spec Kit install in this repository now records both integrations (the Codex skills are under `.agents/skills` and the worker refuses to start if one is not the pinned file), but the Codex runtime of the composition is still given no skill bundle, so the stage stays unavailable under Codex until that is built and a real run is shown.
 
 ## Troubleshooting
 

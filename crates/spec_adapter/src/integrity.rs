@@ -21,7 +21,7 @@ use factory_ports::spec::{SpecError, SpecFile};
 use serde_json::Value;
 
 use crate::invocation::{Host, PINNED_VERSION};
-use crate::pinned::{CLAUDE_SKILLS, CODEX_SKILLS_PREFIX, PinnedFile, SHARED_FILES};
+use crate::pinned::{CLAUDE_SKILLS, CODEX_SKILLS, PinnedFile, SHARED_FILES};
 
 /// The recorded options of the installation.
 pub const INIT_OPTIONS: &str = ".specify/init-options.json";
@@ -100,16 +100,20 @@ pub fn installation_paths(host: Host) -> Vec<&'static str> {
     paths
 }
 
-fn skill_table(host: Host) -> &'static [PinnedFile] {
+/// The pinned skill files of a host: ten, each with the full SHA-256 of the pinned release.
+#[must_use]
+pub fn skill_table(host: Host) -> &'static [PinnedFile] {
     match host {
         Host::ClaudeCode => &CLAUDE_SKILLS,
-        Host::Codex => &CODEX_SKILLS_PREFIX,
+        Host::Codex => &CODEX_SKILLS,
     }
 }
 
-fn matches_pin(pin: &PinnedFile, bytes: &[u8]) -> bool {
-    let digest = Sha256Digest::of(bytes);
-    digest.hex().starts_with(pin.sha256)
+/// Whether the bytes hash to the pinned value. The whole 64-character value is compared: a shorter
+/// pin, a prefix, matches nothing.
+#[must_use]
+pub fn matches_pin(pin: &PinnedFile, bytes: &[u8]) -> bool {
+    Sha256Digest::of(bytes).hex() == pin.sha256
 }
 
 /// Checks the installation.
@@ -287,6 +291,22 @@ mod tests {
         let argv = command.argv();
         assert_eq!(&argv[..2], ["specify", "init"]);
         assert_eq!(&argv[argv.len() - 2..], ["--integration", "codex"]);
+    }
+
+    #[test]
+    fn a_prefix_of_the_pinned_hash_is_not_the_pinned_hash() {
+        let bytes = b"a skill";
+        let full = Sha256Digest::of(bytes).hex().to_owned();
+        let pin = |sha256: &str| PinnedFile {
+            path: ".agents/skills/speckit-specify/SKILL.md",
+            sha256: Box::leak(sha256.to_owned().into_boxed_str()),
+        };
+        assert!(matches_pin(&pin(&full), bytes));
+        // Break: the comparison was `starts_with`, which the 16-character table needed.
+        assert!(!matches_pin(&pin(&full[..16]), bytes));
+        assert!(!matches_pin(&pin(""), bytes));
+        let other = Sha256Digest::of(b"another skill").hex().to_owned();
+        assert!(!matches_pin(&pin(&other), bytes));
     }
 
     #[test]

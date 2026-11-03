@@ -149,6 +149,13 @@ The command only covers files that Spec Kit installed. It does not cover `.speci
 
 `specify integration install codex` in a project that already has Claude installed added only the ten `.agents/skills/speckit-*/SKILL.md` files and `.specify/integrations/codex.manifest.json`. It left the default integration as `claude` and reported that 12 shared files "already exist and were not updated". Verified in a throwaway copy.
 
+**Done in this repository on 2026-11-03** (Spec Kit 1.1.2, the pinned version; no network was used, the run took under a second). `specify integration install --help` lists `--script`, `--force` and `--integration-options` and no other flag. Both `claude` and `codex` show "Multi-install Safe: yes" in `specify integration list`, so `--force` was not needed and must not be used. The command changed three things: `.specify/integration.json` (the list `installed_integrations` is now `["claude","codex"]`, the default is still `claude`, and `integration_settings.codex.invoke_separator` is `"-"`), `.specify/integrations/codex.manifest.json` (new) and the ten files under `.agents/skills/` (new). `init-options.json`, the shared files and the Claude Code skills are byte for byte what they were. `specify integration status --json` reports `ok`, with three manifests checked (`claude`, `codex`, `speckit`) and nothing missing or modified. The full SHA-256 values are in the Codex manifest and in `crates/spec_adapter/src/pinned.rs` (`CODEX_SKILLS`). The test `pinned_tables_equal_the_manifests_of_this_repository` fails if a table, a manifest and a file disagree.
+
+Two consequences of the second host:
+
+* **The worker pins the Codex skills too.** `bundle_for_writer` (crate `composition`) refuses to build the specification stage's skills unless, for every skill the writer is given, the same skill under `.agents/skills` hashes to its pin. A listed Codex integration with a missing file is refused, an unlisted Codex directory is refused when a skill is there and not the pinned one, and an installed integration that is not in the host table (`claude`, `codex`) is refused because its skills have no pin. The worker prints `BLOCKED: agent runtime: protected_checkout: the Codex skill speckit-specify is not the pinned file` and exits with code 3. The six skills the writer is not given are covered by `check_installation` on each job, which compares all ten files of the host that runs the job.
+* **The installer extends a project.** `scripts/install.sh --checkout PATH` adds the missing integration to a project that already has `.specify/`, with this same command, and reports a skill that is not the pinned file. See `docs/guides/claude-and-codex.md`.
+
 ## 4. Per-host invocation matrix
 
 The internal command ids use dots (`speckit.specify`, as in `specify artifact list --json` and the workflow file). The host invocation uses a hyphen. The separator is stored per host in `.specify/integration.json` as `invoke_separator`, and was `"-"` for both Claude Code and Codex. The adapter must read that value and must not hard-code either form. The `/speckit.specify` form in the master prompt is not what 1.1.2 uses on these two hosts.
@@ -218,7 +225,7 @@ Files that exist only later:
 
 The installed `.specify/.gitignore` ignores `feature.json`. A fresh clone therefore has no active feature until the adapter sets one.
 
-If the repository's own `.gitignore` already ignores `.agents/`, the Codex integration's skills will not be committed. That is the case in this repository (`.gitignore` ignores `.agents/` because the Solomon harness keeps local state there). This is why only the Claude Code integration is initialised in the repository root. See section 11.9.
+If a repository's own `.gitignore` ignores `.agents/`, the Codex integration's skills will not be committed. This repository's did (it kept the Solomon harness's local state there). On 2026-11-03 it was changed to track the Spec Kit skills only, and the Codex integration was added next to the Claude Code one. See sections 3.4 and 11.9.
 
 ## 6. Skill inventory and factory policy
 
@@ -563,7 +570,7 @@ See section 7. Do not parse it.
 
 ### 11.9 The Codex integration collides with this repository's `.gitignore`
 
-Codex skills install to `.agents/skills/`. This repository ignores `.agents/` and uses `.agents/solomon/` for harness state. Installing the Codex integration here would create files that Git silently ignores. If the factory needs Codex as a specification host, decide where its skills live (for example, a tracked exception in `.gitignore` for `.agents/skills/speckit-*`) before running `specify integration install codex`.
+Codex skills install to `.agents/skills/`. This repository ignored `.agents/` and uses `.agents/solomon/` for harness state, so the Codex integration would have been silently ignored. **Resolved on 2026-11-03** with the tracked exception this section proposed: `.gitignore` now ignores `.agents/*`, re-includes `.agents/skills/`, ignores everything in it, and re-includes `.agents/skills/speckit-*/`. `.agents/solomon/` and any other local skill stay ignored (checked with `git check-ignore`). A repository that has its own rule for `.agents/` needs the same exception before the installer adds the Codex integration, and the installer says so when it finds the skills ignored.
 
 ### 11.10 Networked and out-of-scope subcommands
 
@@ -593,7 +600,7 @@ Codex skills install to `.agents/skills/`. This repository ignores `.agents/` an
 
 ## Appendix A: pinned hashes for Spec Kit 1.1.2
 
-SHA-256 prefixes (first 16 characters) from the `.specify/integrations/*.manifest.json` files. Use the full values from the manifests in code.
+SHA-256 prefixes (first 16 characters) from the `.specify/integrations/*.manifest.json` files, for reading. The code uses the full 64-character values for all three tables, Codex included (`crates/spec_adapter/src/pinned.rs`). The Codex prefixes below were recorded in October and the full values written by `specify integration install codex` on 2026-11-03 begin with the same characters, so the installer is deterministic.
 
 Claude Code, `.claude/skills/<name>/SKILL.md`:
 
