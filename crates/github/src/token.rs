@@ -518,6 +518,64 @@ impl TokenMinter {
         Err(GitHostError::Unavailable)
     }
 
+    /// Revokes every token that `job` holds and does **not** end the job (LB-04): a later call
+    /// mints a new token. This is for a job that waits for a person for a long time; `revoke_job`
+    /// is for a job that is over, and refuses every later call. A revocation that fails is kept
+    /// for the next pass. Returns how many tokens were revoked.
+    async fn release_job(&self, job: JobId) -> usize {
+        let (tokens, retries) = {
+            let mut state = self.state();
+            let tokens = state.live.remove(&job).unwrap_or_default();
+            let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut state.leftovers)
+                .into_iter()
+                .partition(|(j, _)| *j == job);
+            state.leftovers = others;
+            (tokens, mine.into_iter().map(|(_, live)| live))
+        };
+        let all: Vec<Live> = retries.chain(tokens).collect();
+        let total = all.len();
+        let mut failed = Vec::new();
+        for live in all {
+            if let Err(live) = self.revoke_one(live).await {
+                failed.push((job, *live));
+            }
+        }
+        let released = total - failed.len();
+        if !failed.is_empty() {
+            self.state().leftovers.extend(failed);
+        }
+        released
+    }
+
+    /// Releases the tokens of the jobs in `idle` that are not running now, without ending them
+    /// (LB-04). As for the cleanup sweep, `running_now` is asked **after** the tokens that exist
+    /// have been listed, so a round that began meanwhile keeps its token (finding STS-4). A job
+    /// that is not in `idle` is never touched. Returns how many tokens were revoked.
+    pub(crate) async fn release_idle_after(
+        &self,
+        idle: &HashSet<JobId>,
+        running_now: &dyn Fn() -> HashSet<JobId>,
+    ) -> usize {
+        let listed: Vec<JobId> = {
+            let state = self.state();
+            state
+                .live
+                .keys()
+                .chain(state.leftovers.iter().map(|(job, _)| job))
+                .filter(|job| idle.contains(job))
+                .copied()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        let running = running_now();
+        let mut released = 0;
+        for job in listed.into_iter().filter(|job| !running.contains(job)) {
+            released += self.release_job(job).await;
+        }
+        released
+    }
+
     /// The cleanup sweep: revokes the tokens of every job that is not in `running`, including
     /// tokens whose earlier revocation failed. Returns how many tokens were revoked.
     pub(crate) async fn sweep(&self, running: &HashSet<JobId>) -> usize {

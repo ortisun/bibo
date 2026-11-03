@@ -190,6 +190,22 @@ impl GithubAdapter {
         self.client.minter().sweep(running).await
     }
 
+    /// Revokes the tokens of the jobs in `idle` that are not running, without ending the jobs
+    /// (LB-04). A job that has waited blocked for a long time should not hold a token until
+    /// GitHub expires it, and it is not over: when it goes on, its next call mints a new token,
+    /// which an ended job cannot do. `running_now` is asked after the tokens are listed, as for
+    /// [`sweep_orphans_after`](Self::sweep_orphans_after). Returns how many tokens were revoked.
+    pub async fn release_idle_after(
+        &self,
+        idle: &HashSet<JobId>,
+        running_now: &dyn Fn() -> HashSet<JobId>,
+    ) -> usize {
+        self.client
+            .minter()
+            .release_idle_after(idle, running_now)
+            .await
+    }
+
     /// The cleanup sweep for a caller whose set of running work changes while it looks: `open` is
     /// what it has read, and `running_now` is asked after the live tokens are listed, so that a
     /// job that began meanwhile is spared (finding STS-4). Returns how many tokens were revoked.

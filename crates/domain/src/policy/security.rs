@@ -964,6 +964,10 @@ strict! {
         pub lifetime_s: u64,
         /// Whether it is revoked at job end.
         pub revoke_on_job_end: bool,
+        /// Seconds a job may stay `BLOCKED` before its tokens are revoked (LB-04). The job is not
+        /// ended: its next call mints a new token. A job that waits for a person keeps its token.
+        /// At least 60 and at most 86400 (`credentials.github_app.installation_token`).
+        pub revoke_when_blocked_after_s: u64,
         /// Who may hold it.
         pub holders: Vec<String>,
         /// Whether it is written to disk.

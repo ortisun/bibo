@@ -551,6 +551,49 @@ fn negative_nt_pol_03_a_file_over_the_size_limit_is_refused() {
     assert_eq!(error.kind, PolicyErrorKind::TooLarge);
 }
 
+// ---- LB-04: the bound after which a blocked job gives up its read token ---------------------
+
+#[test]
+fn lb_04_the_bound_on_a_blocked_jobs_token_is_required_and_has_to_make_sense() {
+    let text = real(SECURITY_FILE);
+    let line = "      revoke_when_blocked_after_s: 3600";
+    assert!(text.contains(line), "the real policy states the bound");
+    // Absent: the loader refuses the file, so the worker cannot start without the bound.
+    let without = replace_once(&text, &format!("{line}\n"), "");
+    let error = refused(load_security_text(&without), "the bound is missing");
+    assert!(
+        error.message.contains("revoke_when_blocked_after_s"),
+        "{error}"
+    );
+    // Zero, too small to be a wait at all, and larger than a day: each is a problem named by key.
+    for (value, why) in [
+        ("0", "zero"),
+        ("59", "under a minute"),
+        ("86401", "over a day"),
+    ] {
+        let changed = replace_once(
+            &text,
+            line,
+            &format!("      revoke_when_blocked_after_s: {value}"),
+        );
+        let error = refused(load_security_text(&changed), why);
+        assert_eq!(
+            error.key.as_deref(),
+            Some("credentials.github_app.installation_token.revoke_when_blocked_after_s"),
+            "{why}: {error}"
+        );
+    }
+    // The control: one minute and one day are the limits and they load.
+    for value in ["60", "86400"] {
+        let changed = replace_once(
+            &text,
+            line,
+            &format!("      revoke_when_blocked_after_s: {value}"),
+        );
+        load_security_text(&changed).unwrap_or_else(|e| panic!("{value}: {e}"));
+    }
+}
+
 // ---- NT-POL-01: policy comes only from the protected source ---------------------------------
 
 #[test]

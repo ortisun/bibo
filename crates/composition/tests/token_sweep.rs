@@ -10,6 +10,7 @@ mod support;
 mod gh;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use factory_composition::config::FactoryConfig;
 use factory_composition::hooks::BeforeClaim as _;
@@ -26,6 +27,7 @@ use factory_workflow::commands::JobCommand;
 use gh::harness::{FIXTURE, World};
 use gh::keys::{Form, Throwaway};
 use std::os::unix::fs::PermissionsExt;
+use support::engine::{Eval, PgWorld};
 
 fn root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -174,6 +176,127 @@ async fn without_the_step_the_tokens_of_an_ended_job_stay_live() {
     let tokens = github.fake.tokens();
     assert_eq!(tokens.len(), 1);
     assert!(tokens[0].revoked_at.is_none());
+    assert!(github.fake.revocations().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Runs the next claimed attempt of the world, which is the stage the script is set for.
+async fn run_next(world: &PgWorld) {
+    let claimed = world.claim_one("worker-sweep").await;
+    world
+        .engine
+        .run_attempt(&claimed)
+        .await
+        .expect("the attempt runs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_blocked_for_the_bound_gives_up_its_read_token_and_a_job_waiting_for_a_person_keeps_its()
+ {
+    // LB-04. Real: PostgreSQL, the engine, the adapter and the step. Fake: the GitHub server.
+    let (_db, engine, tenant) = support::pg_world().await;
+    let github = World::new();
+    let dir = root()
+        .join("target/token-sweep")
+        .join(format!("blocked-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let adapter = adapter_for(&github, tenant, &dir);
+    let changes = adapter.change_host();
+    let store: Arc<dyn Store> = engine.store.clone();
+    let jobs = Arc::new(ActiveJobs::new());
+    // A bound of ten minutes, so that the tokens (which GitHub expires after an hour) are still
+    // alive when it runs out.
+    let bound = Duration::from_secs(600);
+    let step = RevokeEndedJobs::new(adapter, store, vec![tenant], Arc::clone(&jobs))
+        .revoking_blocked_after(bound, github.clock.clone());
+
+    // Job A is blocked at intake; job B waits for a person at intake. Each holds a read token.
+    let blocked = engine.admitted_job().await;
+    engine
+        .script(StageKind::Intake)
+        .queue_evals([Eval::Blocked]);
+    run_next(&engine).await;
+    assert_eq!(engine.view(blocked).await.status, JobStatus::Blocked);
+    let waiting = engine.admitted_job().await;
+    engine
+        .script(StageKind::Intake)
+        .evals_otherwise(Eval::HumanGate);
+    run_next(&engine).await;
+    assert_eq!(
+        engine.view(waiting).await.status,
+        JobStatus::WaitingForHuman
+    );
+    for job in [blocked, waiting] {
+        changes
+            .fetch_target(&scope(tenant, job, StageKind::RepositoryIntelligence))
+            .await
+            .expect("a fetch target");
+    }
+    assert_eq!(github.fake.tokens().len(), 2);
+
+    // The first pass notes that A is blocked. Less than the bound later, nothing is revoked.
+    step.before_claim().await;
+    github.clock.advance(bound - Duration::from_secs(60));
+    step.before_claim().await;
+    assert!(github.fake.tokens().iter().all(|t| t.revoked_at.is_none()));
+
+    // The bound has run: A's token goes, B's stays, however long B waits.
+    github.clock.advance(Duration::from_secs(120));
+    step.before_claim().await;
+    let revoked: Vec<bool> = github
+        .fake
+        .tokens()
+        .iter()
+        .map(|t| t.revoked_at.is_some())
+        .collect();
+    assert_eq!(revoked.iter().filter(|r| **r).count(), 1, "{revoked:?}");
+    assert_eq!(github.fake.revocations().len(), 1, "one DELETE, for job A");
+    // Many passes later, B is still not touched: only the blocked job is ever revoked.
+    github.clock.advance(Duration::from_secs(300));
+    step.before_claim().await;
+    step.before_claim().await;
+    assert_eq!(
+        github.fake.revocations().len(),
+        1,
+        "the job that waits for a person keeps its token"
+    );
+
+    // A is not ended: it can still read, with a new token.
+    let before = github.fake.mints().len();
+    changes
+        .fetch_target(&scope(tenant, blocked, StageKind::RepositoryIntelligence))
+        .await
+        .expect("a blocked job that is unblocked can mint again");
+    assert_eq!(github.fake.mints().len(), before + 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_bound_a_blocked_job_keeps_its_token_as_before() {
+    // The control: a step built without the bound leaves the token of a blocked job alone.
+    let (_db, engine, tenant) = support::pg_world().await;
+    let github = World::new();
+    let dir = root()
+        .join("target/token-sweep")
+        .join(format!("unbounded-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let adapter = adapter_for(&github, tenant, &dir);
+    let store: Arc<dyn Store> = engine.store.clone();
+    let changes = adapter.change_host();
+    let step = RevokeEndedJobs::new(adapter, store, vec![tenant], Arc::new(ActiveJobs::new()));
+    let blocked = engine.admitted_job().await;
+    engine
+        .script(StageKind::Intake)
+        .queue_evals([Eval::Blocked]);
+    run_next(&engine).await;
+    changes
+        .fetch_target(&scope(tenant, blocked, StageKind::RepositoryIntelligence))
+        .await
+        .expect("a fetch target");
+    step.before_claim().await;
+    github.clock.advance(Duration::from_secs(1_200));
+    step.before_claim().await;
+    assert!(github.fake.tokens().iter().all(|t| t.revoked_at.is_none()));
     assert!(github.fake.revocations().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }

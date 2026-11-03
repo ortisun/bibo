@@ -739,6 +739,107 @@ async fn negative_nt_sec_10_a_round_that_began_while_the_sweep_looked_keeps_its_
     assert_eq!(world.adapter.sweep_orphans(&open).await, 2);
 }
 
+/// LB-04. The tokens of a job that has been blocked for a long time are revoked, and the job is
+/// not over: it can still mint a new token, which an ended job cannot.
+#[tokio::test]
+async fn lb_04_an_idle_job_loses_its_tokens_and_can_still_mint_new_ones() {
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    let idle: HashSet<JobId> = [job(1)].into_iter().collect();
+    let nothing_runs = HashSet::new;
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &nothing_runs).await,
+        2
+    );
+    assert_eq!(world.fake.revocations().len(), 2);
+    assert!(world.fake.tokens().iter().all(|t| t.revoked_at.is_some()));
+    // A second pass finds nothing left to revoke.
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &nothing_runs).await,
+        0
+    );
+    // The job is not ended: the next call mints a fresh token and works.
+    let before = world.fake.mints().len();
+    world
+        .adapter
+        .issue_source()
+        .fetch_issue(&at(StageKind::Intake, 1), &issue)
+        .await
+        .expect("an idle job that wakes up can read again");
+    assert_eq!(world.fake.mints().len(), before + 1);
+    // The control: ending the job is what refuses it.
+    world
+        .adapter
+        .change_host()
+        .revoke_job_tokens(job(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        world
+            .adapter
+            .issue_source()
+            .fetch_issue(&at(StageKind::Intake, 1), &issue)
+            .await,
+        Err(GitHostError::Unauthorized)
+    );
+}
+
+#[tokio::test]
+async fn lb_04_only_the_jobs_named_as_idle_lose_their_tokens_and_a_running_one_is_spared() {
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    mint_two_tokens(&world, 2, &issue).await;
+    mint_two_tokens(&world, 3, &issue).await;
+    // Jobs 1 and 2 are named as idle, and job 2 began to run again meanwhile.
+    let idle: HashSet<JobId> = [job(1), job(2)].into_iter().collect();
+    let running_now = || [job(2)].into_iter().collect::<HashSet<JobId>>();
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &running_now).await,
+        2
+    );
+    let revoked: Vec<bool> = world
+        .fake
+        .tokens()
+        .iter()
+        .map(|t| t.revoked_at.is_some())
+        .collect();
+    assert_eq!(revoked.iter().filter(|r| **r).count(), 2, "only job 1");
+    // A job that is not named is never touched, whatever its tokens look like.
+    let calls = world.fake.revocations().len();
+    assert_eq!(
+        world
+            .adapter
+            .release_idle_after(&HashSet::new(), &HashSet::new)
+            .await,
+        0
+    );
+    assert_eq!(world.fake.revocations().len(), calls);
+}
+
+#[tokio::test]
+async fn lb_04_a_revocation_that_fails_for_an_idle_job_is_kept_and_tried_again() {
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    let idle: HashSet<JobId> = [job(1)].into_iter().collect();
+    world
+        .fake
+        .fail_always("DELETE /installation/token", 500, "boom");
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &HashSet::new).await,
+        0
+    );
+    assert!(world.fake.revocations().is_empty());
+    world.fake.clear_faults();
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &HashSet::new).await,
+        2
+    );
+    assert_eq!(world.fake.revocations().len(), 2);
+}
+
 #[tokio::test]
 async fn negative_nt_sec_10_a_revocation_that_fails_is_kept_and_retried() {
     let world = World::new();
