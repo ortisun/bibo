@@ -45,21 +45,35 @@
 //!
 //! A sender who removes the label and puts it back sends a delivery for each toggle, and each is a
 //! request with its own key. One reply tells them what they need to know, so the step answers a
-//! sender at most once in [`REPLY_WINDOW`], counted from the time the database wrote the request
-//! that was answered. The others are recorded all the same, with `reply=suppressed`, and no
-//! comment is posted. The bound is read from the log: the rejection records that say
-//! `reply=posted` rebuild it, so a worker that starts later, or two workers, keep the same
-//! window. A sender is the numeric id the delivery carried, and deliveries with none share a
-//! bucket. The window is for the sender in the tenant and not for an issue or a repository, so a
-//! sender who labels many issues is answered once.
+//! sender under two bounds ([`ReplyLimits`]), and where they meet the safer reading wins: fewer
+//! replies, never more.
+//!
+//! * **Spacing.** At most one reply in [`REPLY_WINDOW`] (ten minutes).
+//! * **Cap.** At most [`REPLY_CAP`] replies (three) in [`REPLY_CAP_PERIOD`] (24 hours), in the
+//!   style of the cap on the replies about a design (DG-9).
+//!
+//! Both count from the time the database wrote the request that was answered. A request that is
+//! not answered is recorded all the same: the record says `reply=suppressed` and, after it,
+//! `withheld=spacing` or `withheld=cap`, so that every reply held back leaves a precise trace, and
+//! no comment is posted. The bounds are read from the log: the rejection records that say
+//! `reply=posted` rebuild them, so a worker that starts later, or two workers, keep the same
+//! limits. A sender is the numeric id the delivery carried, and deliveries with none share a
+//! bucket. The bounds are for the sender in the tenant and not for an issue or a repository, so a
+//! sender who labels many issues is answered once in ten minutes and three times in a day.
+//!
+//! The numbers are constants of this module and not keys of the policy file: they bound a reply
+//! that names nobody and says the same words to everyone, and a project cannot loosen them. A
+//! policy key (tighten only, like `design_reply_cap_per_issue`) would need the policy type, its
+//! schema and the Python mirror to change together; it is left for a decision that wants a
+//! project to be able to tighten these.
 //!
 //! # The token
 //!
-//! The reply is a comment on an issue, which needs `issues: write`. The stage that holds the
-//! narrowest token with that right is the approval stage (it reads, and writes `issues` only, so
-//! that it can post the one comment that acknowledges a decision). A rejection has no job, so the
-//! scope names the id of the request as its job, and the tokens of that job are revoked when the
-//! reply is done.
+//! The reply is a comment on an issue, which needs `issues: write`. The scope names the approval
+//! stage, which holds that right, and the adapter posts a comment with the token class for a
+//! comment (SF-14): `issues: write` and `metadata: read` for the one repository, and nothing else.
+//! A rejection has no job, so the scope names the id of the request as its job, and the tokens of
+//! that job are revoked when the reply is done.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -93,8 +107,64 @@ pub const REASON_CODE: &str = "unauthorized_actor";
 /// the specification allows, and it names nobody and holds no text of the issue.
 pub const REPLY: &str = "The factory did not start work on this issue. You are not on the list of people who may ask for this. If you think this is a mistake, ask the person who manages the factory for this repository.";
 
-/// How long a sender who may not ask is answered once for (SF-16).
+/// A sender who may not ask is answered at most once in this long (SF-16).
 pub const REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A sender who may not ask is answered at most this many times in [`REPLY_CAP_PERIOD`] (SF-16).
+pub const REPLY_CAP: usize = 3;
+
+/// The period the cap counts over (SF-16).
+pub const REPLY_CAP_PERIOD: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// The most replies remembered for one sender, so that the memory stays finite whatever cap a
+/// caller gives.
+const REMEMBERED_REPLIES: usize = 1_000;
+
+/// How often a sender who may not ask is answered (SF-16). The standard values are the constants
+/// above. The fields are open so that a test can switch one bound off and show the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplyLimits {
+    /// At most one reply in this long. Zero switches the spacing off.
+    pub spacing: std::time::Duration,
+    /// At most this many replies in `period`. Zero means no reply at all, the safe way to be wrong.
+    pub cap: usize,
+    /// The period the cap counts over.
+    pub period: std::time::Duration,
+}
+
+impl ReplyLimits {
+    /// The limits the worker runs with.
+    pub const STANDARD: Self = Self {
+        spacing: REPLY_WINDOW,
+        cap: REPLY_CAP,
+        period: REPLY_CAP_PERIOD,
+    };
+}
+
+impl Default for ReplyLimits {
+    fn default() -> Self {
+        Self::STANDARD
+    }
+}
+
+/// Which bound held a reply back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Withheld {
+    /// A reply was posted to the sender a moment ago.
+    Spacing,
+    /// The sender has had the most replies the period allows.
+    Cap,
+}
+
+impl Withheld {
+    /// The word the record carries after `withheld=`.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Spacing => "spacing",
+            Self::Cap => "cap",
+        }
+    }
+}
 
 /// How many requests one pass answers for one tenant.
 const PER_PASS: usize = 10;
@@ -192,17 +262,45 @@ struct Pending {
 struct Scan {
     cursor: u64,
     pending: BTreeMap<u64, Pending>,
-    /// When the last reply to each sender was posted, from the log: the sender's numeric id, or
-    /// `None` for a delivery that carried none.
-    replied: BTreeMap<Option<u64>, Timestamp>,
+    /// When the replies to each sender were posted, from the log, oldest first and bounded: the
+    /// sender's numeric id, or `None` for a delivery that carried none.
+    replied: BTreeMap<Option<u64>, Vec<Timestamp>>,
 }
 
-/// True when a request is inside the window of a reply that was posted to the same sender: it is
-/// recorded and not answered.
-fn within_window(last_reply: Option<Timestamp>, request_at: Timestamp) -> bool {
-    last_reply
-        .and_then(|at| at.checked_add(REPLY_WINDOW))
-        .is_some_and(|end| request_at < end)
+impl Scan {
+    /// Notes a reply posted at `at`, keeping the list in order and bounded.
+    fn note_reply(&mut self, sender: Option<u64>, at: Timestamp) {
+        let times = self.replied.entry(sender).or_default();
+        let place = times.partition_point(|held| *held <= at);
+        times.insert(place, at);
+        if times.len() > REMEMBERED_REPLIES {
+            times.remove(0);
+        }
+    }
+}
+
+/// Which bound, if any, holds back a request made at `request_at` for a sender who was answered at
+/// `replies`. `None` when the sender is to be answered. A reply counts for a bound while the
+/// request is made before the reply's time plus the length of the bound, so a reply noted later
+/// than the request holds it back too: the safer way to be wrong.
+fn withheld(
+    limits: &ReplyLimits,
+    replies: &[Timestamp],
+    request_at: Timestamp,
+) -> Option<Withheld> {
+    let inside = |length: std::time::Duration| {
+        replies
+            .iter()
+            .filter(|at| at.checked_add(length).is_some_and(|end| request_at < end))
+            .count()
+    };
+    if inside(limits.spacing) > 0 {
+        Some(Withheld::Spacing)
+    } else if inside(limits.period) >= limits.cap {
+        Some(Withheld::Cap)
+    } else {
+        None
+    }
 }
 
 /// The sender and the time of a rejection record that says the reply was posted, or `None` for a
@@ -229,8 +327,8 @@ enum Reply {
     Posted,
     /// The reply cannot be sent and will not be: the host refused, or the repository is not here.
     NotSent,
-    /// The sender was answered a moment ago, and one reply in the window is enough (SF-16).
-    Suppressed,
+    /// The sender was answered enough already, and the bound named holds this one back (SF-16).
+    Suppressed(Withheld),
     /// The host could not be reached or asked for time. Try again next pass.
     Later,
 }
@@ -245,6 +343,8 @@ pub struct IntakeRejectionsDeps {
     pub policy_hash: Sha256Digest,
     /// The keys the API signs its requests with.
     pub keys: Arc<DecisionKeys>,
+    /// How often a sender is answered ([`ReplyLimits::STANDARD`] in the worker).
+    pub limits: ReplyLimits,
 }
 
 /// Answers the labels the API refused, and records the rejection. A step of the hook before each
@@ -328,8 +428,7 @@ impl IntakeRejections {
                                 scan.pending.retain(|_, pending| pending.id != id);
                             }
                             if let Some((sender, at)) = posted_reply(&record) {
-                                let last = scan.replied.entry(sender).or_insert(at);
-                                *last = (*last).max(at);
+                                scan.note_reply(sender, at);
                             }
                         }
                         _ => {}
@@ -374,18 +473,20 @@ impl IntakeRejections {
     // ---- answering ------------------------------------------------------------------------
 
     async fn settle(&self, tenant: TenantId, request: Pending) {
-        // One reply for a sender in the window. The check and the note of the reply that follows
-        // are both under the lock of the scan, so two requests of one pass cannot both pass.
+        // The bounds on the replies to a sender (SF-16). The requests of one pass are settled one
+        // after the other, and a reply that was posted is noted before the next request is
+        // checked, so two requests of one pass cannot both pass a bound that only one may.
         let sender = request.fields.sender;
-        let suppressed = {
+        let held_back = {
             let scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
-            let last = scans
+            let replies = scans
                 .get(&tenant)
-                .and_then(|scan| scan.replied.get(&sender).copied());
-            within_window(last, request.at)
+                .and_then(|scan| scan.replied.get(&sender))
+                .map_or(&[][..], Vec::as_slice);
+            withheld(&self.deps.limits, replies, request.at)
         };
-        let (reply, repository) = if suppressed {
-            (Reply::Suppressed, None)
+        let (reply, repository) = if let Some(bound) = held_back {
+            (Reply::Suppressed(bound), None)
         } else {
             self.reply(tenant, &request).await
         };
@@ -410,10 +511,7 @@ impl IntakeRejections {
             .await
         {
             if reply == Reply::Posted {
-                self.with_scan(tenant, |scan| {
-                    let last = scan.replied.entry(sender).or_insert(request.at);
-                    *last = (*last).max(request.at);
-                });
+                self.with_scan(tenant, |scan| scan.note_reply(sender, request.at));
             }
             tracing::info!(
                 code = REASON_CODE,
@@ -501,7 +599,7 @@ impl IntakeRejections {
         );
         // Numbers, the delivery id and fixed words only: nothing the sender wrote.
         let subject = format!(
-            "request={} issue={place}#{} sender={} delivery={} allowlist={} reply={}",
+            "request={} issue={place}#{} sender={} delivery={} allowlist={} reply={}{}",
             request.id.as_uuid().hyphenated(),
             fields.issue,
             fields
@@ -511,8 +609,13 @@ impl IntakeRejections {
             fields.allowlist,
             match reply {
                 Reply::Posted => "posted",
-                Reply::Suppressed => "suppressed",
+                Reply::Suppressed(_) => "suppressed",
                 Reply::NotSent | Reply::Later => "not_sent",
+            },
+            // A reply that was held back says which bound held it (SF-16).
+            match reply {
+                Reply::Suppressed(bound) => format!(" withheld={}", bound.word()),
+                Reply::Posted | Reply::NotSent | Reply::Later => String::new(),
             },
         );
         let event = NewAuditEvent {
@@ -616,18 +719,110 @@ mod tests {
         assert!(signed.len() <= 500, "{}", signed.len());
     }
 
+    fn t(text: &str) -> Timestamp {
+        Timestamp::parse(text).expect("a time")
+    }
+
     #[test]
     fn a_request_inside_the_window_of_a_posted_reply_is_not_answered() {
-        let t = |text: &str| Timestamp::parse(text).expect("a time");
-        let replied = t("2026-10-29T10:00:00Z");
+        let replied = [t("2026-10-29T10:00:00Z")];
+        let standard = ReplyLimits::STANDARD;
         // Nothing posted before: answer.
-        assert!(!within_window(None, t("2026-10-29T10:00:00Z")));
+        assert_eq!(withheld(&standard, &[], t("2026-10-29T10:00:00Z")), None);
         // Inside the window.
-        assert!(within_window(Some(replied), t("2026-10-29T10:00:01Z")));
-        assert!(within_window(Some(replied), t("2026-10-29T10:09:59Z")));
+        for at in ["2026-10-29T10:00:01Z", "2026-10-29T10:09:59Z"] {
+            assert_eq!(
+                withheld(&standard, &replied, t(at)),
+                Some(Withheld::Spacing),
+                "{at}"
+            );
+        }
         // At the end of the window and after it: answer again.
-        assert!(!within_window(Some(replied), t("2026-10-29T10:10:00Z")));
-        assert!(!within_window(Some(replied), t("2026-10-29T11:00:00Z")));
+        for at in ["2026-10-29T10:10:00Z", "2026-10-29T11:00:00Z"] {
+            assert_eq!(withheld(&standard, &replied, t(at)), None, "{at}");
+        }
+    }
+
+    #[test]
+    fn the_cap_counts_the_replies_of_the_period_and_the_spacing_comes_first() {
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        let limits = ReplyLimits {
+            spacing: std::time::Duration::from_secs(60),
+            cap: 3,
+            period: day,
+        };
+        let replies = [
+            t("2026-10-29T10:00:00Z"),
+            t("2026-10-29T12:00:00Z"),
+            t("2026-10-29T14:00:00Z"),
+        ];
+        // Three replies in the period and none in the last minute: the cap holds the request.
+        assert_eq!(
+            withheld(&limits, &replies, t("2026-10-29T20:00:00Z")),
+            Some(Withheld::Cap)
+        );
+        // Two of them (the oldest has aged out) is under the cap: answer.
+        assert_eq!(withheld(&limits, &replies, t("2026-10-30T10:00:00Z")), None);
+        // One second before the oldest ages out: still held.
+        assert_eq!(
+            withheld(&limits, &replies, t("2026-10-30T09:59:59Z")),
+            Some(Withheld::Cap)
+        );
+        // A reply a moment ago is the spacing, also when the cap is reached too.
+        assert_eq!(
+            withheld(&limits, &replies, t("2026-10-29T14:00:30Z")),
+            Some(Withheld::Spacing)
+        );
+        // Under the cap with no reply a moment ago: answer.
+        assert_eq!(
+            withheld(&limits, &replies[..2], t("2026-10-29T20:00:00Z")),
+            None
+        );
+        // A cap of zero answers nobody, and a spacing of zero holds nobody.
+        let none = ReplyLimits {
+            spacing: std::time::Duration::ZERO,
+            cap: 0,
+            period: day,
+        };
+        assert_eq!(
+            withheld(&none, &[], t("2026-10-29T10:00:00Z")),
+            Some(Withheld::Cap)
+        );
+        let free = ReplyLimits {
+            spacing: std::time::Duration::ZERO,
+            cap: 10,
+            period: day,
+        };
+        assert_eq!(withheld(&free, &replies, t("2026-10-29T14:00:00Z")), None);
+    }
+
+    #[test]
+    fn the_replies_of_a_sender_are_kept_in_order_and_bounded() {
+        let mut scan = Scan::default();
+        for at in [
+            "2026-10-29T12:00:00Z",
+            "2026-10-29T10:00:00Z",
+            "2026-10-29T11:00:00Z",
+        ] {
+            scan.note_reply(Some(1), t(at));
+        }
+        assert_eq!(
+            scan.replied[&Some(1)],
+            [
+                t("2026-10-29T10:00:00Z"),
+                t("2026-10-29T11:00:00Z"),
+                t("2026-10-29T12:00:00Z")
+            ]
+        );
+        for n in 0..(REMEMBERED_REPLIES + 5) {
+            scan.note_reply(
+                None,
+                t("2026-10-30T00:00:00Z")
+                    .checked_add(std::time::Duration::from_secs(n as u64))
+                    .expect("a time"),
+            );
+        }
+        assert_eq!(scan.replied[&None].len(), REMEMBERED_REPLIES);
     }
 
     #[test]

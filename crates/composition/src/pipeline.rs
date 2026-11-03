@@ -928,6 +928,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         host: Arc::clone(&external.changes),
         policy_hash: policies.hash.clone(),
         keys: Arc::clone(&decision_keys),
+        limits: crate::intake_rejections::ReplyLimits::STANDARD,
     }));
     let hook = Arc::new(
         ClaimWork::new(ClaimWorkDeps {
