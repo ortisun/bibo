@@ -544,6 +544,31 @@ impl ChangeAuthority for AllowlistAuthority {
             .map_err(|_| Unreadable)?;
         Ok(held.iter().any(|designation| needed.contains(designation)))
     }
+
+    async fn constrained_holders(
+        &self,
+        tenant: TenantId,
+        repository: &RepositoryIdentity<'_>,
+    ) -> Result<std::collections::BTreeSet<u64>, Unreadable> {
+        let mut roles: Vec<String> = Vec::new();
+        for action in [
+            crate::repository_changes::ATTEST_ACTION,
+            crate::repository_changes::ENABLE_ACTION,
+        ] {
+            if let Some(names) = self
+                .approval
+                .actions
+                .iter()
+                .find(|row| row.id == action)
+                .and_then(|row| row.approver_roles.as_ref())
+            {
+                roles.extend(names.iter().cloned());
+            }
+        }
+        self.allowlist
+            .holders_of(tenant, &roles, repository, self.clock.now())
+            .map_err(|_| Unreadable)
+    }
 }
 
 /// Applies an approval, rejection or rework. The real one is the approval service, which judges

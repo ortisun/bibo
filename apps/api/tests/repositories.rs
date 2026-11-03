@@ -1083,12 +1083,14 @@ async fn attesting_another_map_switches_an_enabled_repository_off_and_it_must_be
     );
     let actions = audit_actions(&env).await;
     assert!(
-        actions.ends_with("repository.map_attested,repository.map_attested,repository.disabled"),
+        actions.ends_with(
+            "repository.map_attested,repository.map_attested,repository.disabled_by_attestation"
+        ),
         "{actions}"
     );
     let disabled = env
         .db
-        .text("SELECT reason || ' / ' || actor_type FROM audit_events WHERE action = 'repository.disabled'")
+        .text("SELECT reason || ' / ' || actor_type FROM audit_events WHERE action = 'repository.disabled_by_attestation'")
         .await
         .expect("the record of the switch-off");
     assert!(
@@ -1618,6 +1620,29 @@ async fn enable_as_operator(env: &Env, id: &str, key: &str) -> Reply {
     .await
 }
 
+/// Takes the approver designation from tenant A's approver: the operator is then the one person who holds the
+/// designations of the project map and of the enable.
+fn demote_the_approver(env: &Env) {
+    let path = env.checkout.join("allowlist/allowlist.yaml");
+    let text = std::fs::read_to_string(&path).expect("the allowlist file");
+    let line = format!(
+        "  - tenant: {}\n    github_user_id: {}\n    login: {}\n    designations: [approver]\n",
+        env.a.id.as_uuid(),
+        env.a.approver.github_id,
+        env.a.approver.login
+    );
+    assert_eq!(
+        text.matches(&line).count(),
+        1,
+        "the approver's entry is in the file once"
+    );
+    std::fs::write(
+        &path,
+        text.replace(&line, &line.replace("[approver]", "[requester]")),
+    )
+    .expect("the allowlist file");
+}
+
 fn single_maintainer_registration(n: u64) -> Value {
     let mut body = registration(n);
     body["single_maintainer"] = json!(true);
@@ -1667,7 +1692,38 @@ async fn the_person_who_attested_the_map_cannot_enable_a_strict_repository_but_c
         env.a.approver.principal.as_text()
     );
 
-    // A single-maintainer repository: the same person does it all, and the registration says so.
+    // The exception is for a tenant in which exactly one active person holds the designations of the project
+    // map and of the enable (finding RH-6). Here two do (the operator, and the approver), so it is refused at
+    // once with a named code, and nothing is recorded.
+    let requests_before = env
+        .db
+        .number("SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested'")
+        .await;
+    let refused = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-2",
+        &single_maintainer_registration(2),
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.text());
+    assert_eq!(
+        refused.json(),
+        json!({"error": "single_maintainer_not_allowed"})
+    );
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested'"
+            )
+            .await,
+        requests_before,
+        "a refusal at the door records no request"
+    );
+    // The sibling: the approver leaves the allowlist's approvers, the operator is the one person left, and the
+    // same registration, under the same key, is accepted.
+    demote_the_approver(&env);
     let made = post(
         &env,
         &env.a.operator,
@@ -2390,5 +2446,249 @@ async fn the_worker_asks_the_allowlist_again_and_a_person_removed_since_the_requ
         early.text()
     );
     assert_eq!(early.json(), json!({"error": "project_map_not_attested"}));
+    env.stop().await;
+}
+
+// ---- RH-2: an entry that lists a repository id also fixes the name it may register ----------------------------
+
+/// A person narrowed to one repository id could register that id under any name, and the credential for the
+/// repository is chosen by name (RH-2). The typed name must be the name recorded in the entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operator_narrowed_by_the_github_id_cannot_register_that_id_under_another_name() {
+    let env = Env::start().await;
+    narrow_operator(
+        &env,
+        "      - name: org/new-1\n        github_repository_id: 8001\n",
+    );
+    let mut other_name = registration(1);
+    other_name["full_name"] = json!("org/victim");
+    let refused = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-other-name",
+        &other_name,
+    )
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.text());
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM repositories WHERE github_repository_id = 8001")
+            .await,
+        0,
+        "nothing was registered, and nothing was asked of the worker"
+    );
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested'"
+            )
+            .await,
+        0
+    );
+    // The sibling: the id with the name the entry records is registered. The case of the name is not looked at.
+    let mut recorded_name = registration(1);
+    recorded_name["full_name"] = json!("ORG/New-1");
+    let made = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-recorded-name",
+        &recorded_name,
+    )
+    .await;
+    assert_eq!(made.status, 201, "{}", made.text());
+    // A listed id with a different id is refused whatever the name.
+    let mut other_id = registration(1);
+    other_id["github_repository_id"] = json!(8999);
+    let refused = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-other-id",
+        &other_id,
+    )
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.text());
+    env.stop().await;
+}
+
+// ---- RH-7: enabling an enabled repository is answered as applied and names no second approver ------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn enabling_an_enabled_repository_is_answered_as_already_applied_and_records_nothing() {
+    let env = Env::start().await;
+    let id = enabled_repository(&env, 1).await;
+    let requests = env
+        .db
+        .number("SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested'")
+        .await;
+    let enabled_records = env
+        .db
+        .number("SELECT count(*) FROM audit_events WHERE action = 'repository.enabled'")
+        .await;
+    let version = flag(&env, &id, "version").await;
+    let again = enable(&env, &id, "enable-again").await;
+    assert_eq!(again.status, 200, "{}", again.text());
+    assert_eq!(again.json()["changed"], false);
+    assert_eq!(again.json()["repository"]["enabled"], true);
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested'"
+            )
+            .await,
+        requests,
+        "no request was recorded"
+    );
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'repository.enabled'")
+            .await,
+        enabled_records,
+        "no second approver is in the log"
+    );
+    assert_eq!(
+        flag(&env, &id, "version").await,
+        version,
+        "and the version did not move"
+    );
+    // The sibling: once it is disabled, enabling asks the worker again.
+    assert_eq!(disable(&env, &id, "disable-1").await.status, 200);
+    let accepted = post_raw(
+        &env,
+        &env.a.approver,
+        &format!("/v1/repositories/{id}/enable"),
+        "enable-after-disable",
+        &json!({"commit": COMMIT}),
+    )
+    .await;
+    assert_eq!(accepted.status, 202, "{}", accepted.text());
+    env.stop().await;
+}
+
+// ---- RH-5: the status route believes only a request that carries its word ------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_status_route_does_not_believe_a_request_row_that_nobody_signed() {
+    let env = Env::start().await;
+    let id = register(&env, 1).await;
+    // A row with the shape of a request and a made-up word: what a holder of the database credentials of the API
+    // could write (the trigger judges the shape, not the word).
+    let forged = "11111111-1111-7111-8111-111111111111";
+    env.db
+        .run(&format!(
+            "SELECT set_config('factory.tenant_id', '{tenant}', true); \
+             INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, correlation_id) \
+             VALUES ('{tenant}', '{forged}', 'human', '{person}', 'repository.change_requested', \
+                     'change kind=attest repository={id} commit={COMMIT} payload=sha256:{zeros} at=2026-11-03T10:00:00Z mac={zeros64}', \
+                     'record', 'a made-up request', 'sha256:{zeros}', '{forged}')",
+            tenant = env.a.id.as_uuid(),
+            person = env.a.operator.principal.as_text(),
+            zeros = "0".repeat(64),
+            zeros64 = "0".repeat(64),
+        ))
+        .await;
+    let state = change_state(&env, &env.a.operator, forged).await;
+    assert_eq!(
+        state.status,
+        404,
+        "a row without a good word is not a request: {}",
+        state.text()
+    );
+    // The sibling: the request the API wrote has the same route and is found.
+    let accepted = post_raw(
+        &env,
+        &env.a.operator,
+        &format!("/v1/repositories/{id}/project-map"),
+        "attest-1",
+        &attestation(),
+    )
+    .await;
+    assert_eq!(accepted.status, 202, "{}", accepted.text());
+    let request = accepted.json()["request_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let state = change_state(&env, &env.a.operator, &request).await;
+    assert_eq!(state.status, 200, "{}", state.text());
+    assert_eq!(state.json()["state"], "requested");
+    env.stop().await;
+}
+
+// ---- RH-4: after a key rotation the status route still finds the result -----------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_key_rotation_a_request_that_was_applied_before_it_still_reads_applied() {
+    use factory_composition::decision_signing::DecisionKeys;
+    use factory_domain::ids::{AuditEventId, CorrelationId};
+    use factory_domain::scope::TenantScope;
+    use factory_domain::values::{Sha256Digest, Slug};
+    use factory_ports::store::{AuditAction, AuditActor, AuditDecision, NewAuditEvent, Store};
+
+    // A key the strength test accepts: the hex digits of a digest.
+    let key = |seed: u8| -> Vec<u8> {
+        factory_domain::values::Sha256Digest::of(&[seed])
+            .as_str()
+            .trim_start_matches("sha256:")
+            .as_bytes()
+            .to_vec()
+    };
+    let old = DecisionKeys::from_bytes(&key(10), None).expect("the old key");
+    let rotated = std::sync::Arc::new(
+        DecisionKeys::from_bytes(&key(11), Some(&key(10))).expect("the rotated keys"),
+    );
+    let env = Env::start_with(support::Options {
+        decision_keys: Some(rotated),
+        ..support::Options::default()
+    })
+    .await;
+    let id = register(&env, 1).await;
+    let accepted = post_raw(
+        &env,
+        &env.a.operator,
+        &format!("/v1/repositories/{id}/project-map"),
+        "attest-1",
+        &attestation(),
+    )
+    .await;
+    assert_eq!(accepted.status, 202, "{}", accepted.text());
+    let request = accepted.json()["request_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    assert_eq!(
+        change_state(&env, &env.a.operator, &request).await.json()["state"],
+        "requested"
+    );
+    // A worker that held the old key applied it before the rotation: its result has the id the old key makes.
+    let request_id = AuditEventId::parse(&request).expect("an id");
+    let mut tx = env
+        .worker
+        .begin(TenantScope::new(env.a.id))
+        .await
+        .expect("a transaction");
+    tx.record_audit(NewAuditEvent {
+        id: old.repository_change_result_id(request_id),
+        actor: AuditActor::System(Slug::parse("worker.repository").expect("a slug")),
+        action: AuditAction::new("repository.map_attested").expect("an action"),
+        subject: format!("request={request} repository {id} project map attested"),
+        decision: AuditDecision::Record,
+        reason: "applied before the rotation".to_owned(),
+        policy_hash: Sha256Digest::of(b"a policy"),
+        job: None,
+        stage_run: None,
+        correlation_id: CorrelationId::from_uuid(uuid::Uuid::from_u128(5)),
+    })
+    .await
+    .expect("the result");
+    tx.commit().await.expect("commit");
+    let state = change_state(&env, &env.a.operator, &request).await;
+    assert_eq!(state.status, 200, "{}", state.text());
+    assert_eq!(
+        state.json()["state"],
+        "applied",
+        "the result has the id of the previous key, and the route looks under both"
+    );
     env.stop().await;
 }

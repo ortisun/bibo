@@ -839,6 +839,15 @@ fn wait_for_request(
                         ctx.complain(&render::refusal(answer.status, &answer.body));
                         Exit::of_status(answer.status)
                     }
+                    Ok(answer)
+                        if state.get("code").and_then(Value::as_str) == Some("already_enabled") =>
+                    {
+                        ctx.say(&render::already_applied(
+                            &json!({"repository": answer.body, "changed": false}),
+                            done,
+                        ));
+                        Exit::Ok
+                    }
                     Ok(answer) => {
                         ctx.say(&render::repository_changed(
                             &json!({"repository": answer.body, "changed": true}),
@@ -1029,6 +1038,15 @@ fn request_and_wait(
         Err(unreachable) => {
             ctx.complain(&format!("{unreachable}."));
             Exit::Unreachable
+        }
+        // The repository is in the state asked for already (finding RH-7): the API answers at once and records nothing.
+        Ok(answer)
+            if answer.status == 200
+                && answer.body.get("changed").and_then(Value::as_bool) == Some(false)
+                && answer.body.get("repository").is_some() =>
+        {
+            ctx.say(&render::already_applied(&answer.body, done));
+            Exit::Ok
         }
         Ok(answer) if answer.status != 202 => {
             if Exit::of_status(answer.status) == Exit::Ok {

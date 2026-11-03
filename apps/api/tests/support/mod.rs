@@ -127,6 +127,8 @@ pub struct Options {
     pub serve_tenant_b_to_everyone: bool,
     /// THE BREAK "answer readiness OK while the schema is behind": the store reports this version.
     pub report_schema: Option<SchemaVersion>,
+    /// The signing keys, when a test needs a rotation (a previous key). Otherwise a new random key.
+    pub decision_keys: Option<Arc<factory_composition::decision_signing::DecisionKeys>>,
 }
 
 impl Default for Options {
@@ -141,6 +143,7 @@ impl Default for Options {
             authority_by_login: None,
             serve_tenant_b_to_everyone: false,
             report_schema: None,
+            decision_keys: None,
         }
     }
 }
@@ -270,10 +273,12 @@ impl Env {
             allowlist_file,
             policies,
             redactor,
-            decision_keys: Arc::new(
-                factory_composition::decision_signing::DecisionKeys::generated()
-                    .expect("a signing key"),
-            ),
+            decision_keys: options.decision_keys.unwrap_or_else(|| {
+                Arc::new(
+                    factory_composition::decision_signing::DecisionKeys::generated()
+                        .expect("a signing key"),
+                )
+            }),
             audience: "factory-api".to_owned(),
             github: GithubSettings {
                 webhook_secret_files: Vec::new(),
@@ -325,6 +330,8 @@ impl Env {
             )),
             policy_hash: self.state.policy_hash(),
             keys: Arc::clone(&self.state.decision_keys),
+            clock: Arc::new(SystemClock),
+            max_age: factory_composition::repository_changes::REQUEST_MAX_AGE,
         });
         for tenant in [self.a.id, self.b.id] {
             step.pass(tenant).await;

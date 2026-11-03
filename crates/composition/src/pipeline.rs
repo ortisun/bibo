@@ -944,6 +944,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         authority: Arc::clone(&allowlist_authority) as Arc<dyn ChangeAuthority>,
         policy_hash: policies.hash.clone(),
         keys: Arc::clone(&decision_keys),
+        clock: Arc::clone(&clock),
+        max_age: crate::repository_changes::REQUEST_MAX_AGE,
     }));
     let hook = Arc::new(
         ClaimWork::new(ClaimWorkDeps {

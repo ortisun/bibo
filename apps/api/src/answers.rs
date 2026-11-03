@@ -68,6 +68,12 @@ pub enum ApiError {
     /// not registered as a single-maintainer one (finding REG-6).
     #[error("the person who attested the project map cannot enable the repository")]
     EnablerIsAttestor,
+    /// The repository was to be registered as a single-maintainer one, and the tenant does not have exactly
+    /// one active person who holds the designations the strict rule constrains (finding RH-6).
+    #[error(
+        "a single-maintainer repository needs exactly one active person who holds the designations"
+    )]
+    SingleMaintainerNotAllowed,
 }
 
 impl ApiError {
@@ -86,9 +92,10 @@ impl ApiError {
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ProjectMapNotAttested | Self::ProjectMapChanged | Self::EnablerIsAttestor => {
-                StatusCode::CONFLICT
-            }
+            Self::ProjectMapNotAttested
+            | Self::ProjectMapChanged
+            | Self::EnablerIsAttestor
+            | Self::SingleMaintainerNotAllowed => StatusCode::CONFLICT,
         }
     }
 
@@ -110,6 +117,7 @@ impl ApiError {
             Self::ProjectMapNotAttested => "project_map_not_attested",
             Self::ProjectMapChanged => "project_map_changed",
             Self::EnablerIsAttestor => "enabler_is_attestor",
+            Self::SingleMaintainerNotAllowed => "single_maintainer_not_allowed",
         }
     }
 
