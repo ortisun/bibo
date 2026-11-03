@@ -131,6 +131,9 @@ pub fn decline_explanation(reason: DeclineReason) -> &'static str {
         DeclineReason::DesignNotApproved => {
             "The design for this issue is not approved yet, so the factory does not start work. Work starts after the label of the approved design is on the issue, applied by an approver, and the factory label is applied again."
         }
+        DeclineReason::TextNotTheIssue => {
+            "The text of the job is not the text of the issue as it is now, so the factory does not start work. The factory acts only on the title and the body of the issue. Put any note in the body of the issue, and apply the factory label again."
+        }
         DeclineReason::KindNotSupported(kind) => match kind.as_str() {
             "question" => {
                 "This request asks a question and does not ask for a change to the software. The factory changes software and does not answer questions. An operator can override this decision."

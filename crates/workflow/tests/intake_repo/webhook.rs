@@ -79,9 +79,11 @@ async fn a_webhook_job_has_its_issue_fetched_and_recorded_as_revision_one() {
 }
 
 #[tokio::test]
-async fn a_job_that_already_has_text_is_not_fetched_again() {
+async fn a_job_that_already_has_text_is_not_fetched_again_and_is_refused_when_the_issue_says_other_words()
+ {
     let rig = Rig::new().await;
-    // The host holds other words than the stored request: they must not replace it.
+    // The host holds other words than the stored request: they must not replace it (DG-3: and the
+    // job does not go on with words that are not the issue's).
     rig.host_has_issue(
         "Other title",
         "Other words that must not be read.",
@@ -97,6 +99,81 @@ async fn a_job_that_already_has_text_is_not_fetched_again() {
     assert_eq!(
         stored.text,
         "Add a --json flag\n\nPlease print counts as JSON."
+    );
+    assert!(
+        rig.runtime.recorded_prompts().is_empty(),
+        "the classifier read nothing: the text is not the issue's"
+    );
+    assert_eq!(
+        rig.world.view(job).await.status,
+        JobStatus::Blocked,
+        "the job is refused, visibly"
+    );
+}
+
+#[tokio::test]
+async fn a_webhook_job_matches_its_issue_by_construction_and_the_audit_line_says_so() {
+    let rig = Rig::new().await;
+    rig.host_has_issue(
+        "Add a --json flag",
+        "Please let the word count tool print its counts as JSON.",
+        REQUESTER_ID,
+    );
+    let job = rig.webhook_job().await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        rig.world
+            .view(job)
+            .await
+            .newest(StageKind::Intake)
+            .expect("a run")
+            .status,
+        StageRunStatus::Passed
+    );
+    let audit = rig.world.audit(job).await;
+    assert!(
+        audit.iter().any(|record| record
+            .event
+            .reason
+            .contains("text of the job compared with the live issue: same")),
+        "{:?}",
+        audit
+            .iter()
+            .map(|record| record.event.reason.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn a_webhook_job_whose_issue_holds_a_secret_still_matches_because_both_sides_are_redacted() {
+    // The text that is stored has each secret replaced. The live text is replaced the same way
+    // before the two are compared, so an issue with a secret in it is not a different text.
+    let secret = crate::repo_rig::canary_token();
+    let rig = Rig::new().await;
+    rig.host_has_issue(
+        "Add a --json flag",
+        &format!("Please print counts as JSON. The key is {secret}."),
+        REQUESTER_ID,
+    );
+    let job = rig.webhook_job().await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    let stored = stored_request(&rig, job).await.expect("a stored request");
+    assert!(
+        !stored.text.contains(&secret),
+        "the secret never reaches the store"
+    );
+    assert_eq!(
+        rig.world
+            .view(job)
+            .await
+            .newest(StageKind::Intake)
+            .expect("a run")
+            .status,
+        StageRunStatus::Passed
     );
 }
 

@@ -1124,8 +1124,9 @@ async fn a_label_name_cannot_forge_a_field_of_the_audit_line() {
         !reason.chars().any(char::is_control),
         "a control character reached the audit line: {reason:?}"
     );
-    // Six fields, as for any refusal: the name added none.
-    assert_eq!(reason.matches("; ").count(), 5, "{reason}");
+    // Seven fields, as for any refusal (the last says what the comparison of the text found): the
+    // name added none.
+    assert_eq!(reason.matches("; ").count(), 6, "{reason}");
     // The name is one item of the quoted list, and the real field follows it.
     assert!(
         reason.contains(
@@ -1160,4 +1161,233 @@ async fn a_secret_shaped_label_name_does_not_reach_the_audit_line_the_document_o
             .contains(&secret)
     );
     assert!(!design_report(&rig, job).await.to_string().contains(&secret));
+}
+
+// ---- DG-3: the text of the job is the text of the live issue ------------------------------------
+//
+// Decided by the product owner on 2026-11-02: the text the factory acts on must be the title and
+// the body of the issue as the code host shows them now, or the job is refused. A webhook job takes
+// its text from the issue, so it matches by construction. A job made through the API or the
+// command line carries words the caller typed, and those must be the issue's words.
+
+/// The text of another issue, say a design that is not approved.
+const ANOTHER_ISSUES_TEXT: &str =
+    "Rewrite the storage layer\n\nMove everything to a new schema and drop the old tables.";
+
+/// The audit line says what the comparison found.
+fn text_field(reason: &str, word: &str) -> bool {
+    reason.contains(&format!(
+        "text of the job compared with the live issue: {word}"
+    ))
+}
+
+#[tokio::test]
+async fn text_that_is_another_issues_is_refused_even_when_the_issue_is_off_the_design_track() {
+    // The scenario of DG-3: issue 12 is a trivial issue with no design label and the factory
+    // label. The job carries the text of a design that is not approved.
+    let rig = rig().await;
+    let job = rig
+        .job_whose_issue_says(ANOTHER_ISSUES_TEXT, USUAL_REQUEST)
+        .await;
+    let (_, outcome) = rig.run_next().await;
+    let comment = assert_refused(&rig, job, &outcome).await;
+
+    assert!(
+        comment.contains("text of this job is not the text of the issue"),
+        "{comment}"
+    );
+    assert!(comment.contains("`factory` label again"), "{comment}");
+    assert!(
+        !comment.contains("storage layer"),
+        "the comment says nothing of either text: {comment}"
+    );
+    let document = design_document(&rig, job).await;
+    assert_eq!(document["result"], "refused");
+    assert_eq!(document["reason"], "text_not_the_issue");
+    assert_eq!(document["block_code"], "DESIGN_NOT_APPROVED");
+    assert_eq!(document["text"], "different");
+    let report = design_report(&rig, job).await;
+    assert_eq!(report["outcome"], "BLOCKED");
+    assert_eq!(report["blocked_reason"]["code"], "design_not_approved");
+    // The audit line records the comparison and names the issue.
+    let reason = design_audit_reason(&rig, job).await;
+    assert!(reason.contains("example-org/fixture#12"), "{reason}");
+    assert!(reason.contains("text_not_the_issue"), "{reason}");
+    assert!(text_field(&reason, "different"), "{reason}");
+    // Nothing of the other text went anywhere the record reads it.
+    assert!(!reason.contains("storage layer"), "{reason}");
+    // The decision says it in words that a person can read.
+    let decision = rig
+        .documents_with(job, StageKind::Intake, "decision")
+        .await
+        .into_iter()
+        .next()
+        .expect("the decision");
+    assert_eq!(decision["decision"], "decline");
+    assert!(
+        decision["explanation"]
+            .as_str()
+            .unwrap()
+            .contains("text of the job"),
+        "{decision}"
+    );
+}
+
+#[tokio::test]
+async fn the_same_text_goes_on_and_the_audit_line_says_the_texts_were_the_same() {
+    // The sibling: the one thing changed is that the job carries the issue's text.
+    let rig = rig().await;
+    let job = rig.job(USUAL_REQUEST).await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_accepted(&rig, job, &outcome).await;
+    let document = design_document(&rig, job).await;
+    assert_eq!(document["result"], "not_on_track");
+    assert_eq!(document["text"], "same");
+    let reason = design_audit_reason(&rig, job).await;
+    assert!(text_field(&reason, "same"), "{reason}");
+    assert!(
+        rig.world
+            .audit(job)
+            .await
+            .iter()
+            .any(
+                |record| record.event.action.as_str() == "authorization_decision.granted"
+                    && record.event.reason.starts_with("design gate")
+            ),
+        "a pass is on the record too"
+    );
+}
+
+#[tokio::test]
+async fn a_difference_of_line_endings_or_outer_white_space_is_the_same_text() {
+    // A text typed on another system: Windows line ends, a final newline, a leading blank line.
+    // Nothing a person reads is different.
+    for stored in [
+        "Add a --json flag\r\n\r\nPlease let the word count tool print its counts as JSON.",
+        "Add a --json flag\n\nPlease let the word count tool print its counts as JSON.\n",
+        "\n\nAdd a --json flag\n\nPlease let the word count tool print its counts as JSON.  ",
+        "Add a --json flag\r\rPlease let the word count tool print its counts as JSON.",
+    ] {
+        let rig = rig().await;
+        let job = rig.job_whose_issue_says(stored, USUAL_REQUEST).await;
+        rig.classifier_returns(usual());
+        let (_, outcome) = rig.run_next().await;
+        assert_accepted(&rig, job, &outcome).await;
+        assert_eq!(
+            design_document(&rig, job).await["text"],
+            "same",
+            "{stored:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_other_difference_is_a_different_text() {
+    for stored in [
+        // One word changed.
+        "Add a --yaml flag\n\nPlease let the word count tool print its counts as JSON.",
+        // The case of one letter.
+        "Add a --json flag\n\nplease let the word count tool print its counts as JSON.",
+        // Something added at the end: the notes of a requester.
+        "Add a --json flag\n\nPlease let the word count tool print its counts as JSON.\n\nAlso drop the old flags.",
+        // A space inside a line.
+        "Add a --json flag\n\nPlease let the word count tool  print its counts as JSON.",
+        // Something taken away.
+        "Add a --json flag",
+    ] {
+        let rig = rig().await;
+        let job = rig.job_whose_issue_says(stored, USUAL_REQUEST).await;
+        let (_, outcome) = rig.run_next().await;
+        assert_refused(&rig, job, &outcome).await;
+        assert_eq!(
+            design_document(&rig, job).await["reason"],
+            "text_not_the_issue",
+            "{stored:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn notes_that_a_requester_added_to_the_text_are_refused_and_the_reply_says_where_they_go() {
+    // The defined behaviour for an API or CLI job whose text deliberately differs: it is refused,
+    // and the reply tells the requester that notes belong in the body of the issue.
+    let rig = rig().await;
+    let with_notes =
+        format!("{USUAL_REQUEST}\n\nNotes from the requester: do it after the release.");
+    let job = rig.job_whose_issue_says(&with_notes, USUAL_REQUEST).await;
+    let (_, outcome) = rig.run_next().await;
+    let comment = assert_refused(&rig, job, &outcome).await;
+    assert!(comment.contains("body of the issue"), "{comment}");
+    assert!(!comment.contains("release"), "{comment}");
+}
+
+#[tokio::test]
+async fn an_issue_edited_after_the_job_was_made_is_refused_on_the_next_attempt() {
+    let rig = rig().await;
+    let job = rig.job(USUAL_REQUEST).await;
+    // The author edits the body before the stage runs.
+    rig.host_says("Add a --json flag\n\nPlease also delete the audit log.");
+    let (_, outcome) = rig.run_next().await;
+    assert_refused(&rig, job, &outcome).await;
+    assert_eq!(
+        design_document(&rig, job).await["reason"],
+        "text_not_the_issue"
+    );
+}
+
+#[tokio::test]
+async fn the_approval_of_a_design_does_not_make_another_issues_text_acceptable() {
+    // The issue is on the design track and approved by an approver. The text is still not its.
+    // The sibling is `the_same_issue_with_the_approved_label_applied_by_an_approver_is_accepted`.
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL, APPROVED]);
+    rig.approval_applied_by(&approver()).await;
+    let job = rig
+        .job_whose_issue_says(ANOTHER_ISSUES_TEXT, USUAL_REQUEST)
+        .await;
+    let (_, outcome) = rig.run_next().await;
+    assert_refused(&rig, job, &outcome).await;
+    assert_eq!(
+        design_document(&rig, job).await["reason"],
+        "text_not_the_issue"
+    );
+}
+
+#[tokio::test]
+async fn a_design_that_is_not_approved_is_refused_for_that_reason_and_the_audit_line_records_the_text_too()
+ {
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL, "design: in review"]);
+    let job = rig
+        .job_whose_issue_says(ANOTHER_ISSUES_TEXT, USUAL_REQUEST)
+        .await;
+    let (_, outcome) = rig.run_next().await;
+    assert_refused(&rig, job, &outcome).await;
+    assert_eq!(design_document(&rig, job).await["reason"], "not_approved");
+    let reason = design_audit_reason(&rig, job).await;
+    assert!(text_field(&reason, "different"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_refusal_for_the_text_cannot_be_overridden() {
+    let rig = rig().await;
+    let job = rig
+        .job_whose_issue_says(ANOTHER_ISSUES_TEXT, USUAL_REQUEST)
+        .await;
+    rig.run_next().await;
+    let refused = override_as_security_approver(&rig, job).await;
+    assert!(
+        matches!(refused, Err(EngineError::GuardUnmet(_))),
+        "{refused:?}"
+    );
+    assert_eq!(
+        rig.world
+            .view(job)
+            .await
+            .newest(StageKind::Intake)
+            .expect("a run")
+            .status,
+        StageRunStatus::Blocked
+    );
 }

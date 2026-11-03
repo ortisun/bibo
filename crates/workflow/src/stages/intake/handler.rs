@@ -30,7 +30,6 @@ use factory_domain::ids::GateReportId;
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::RepoKind;
 use factory_domain::policy::authority::Allowlist;
-use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels};
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug, Timestamp};
@@ -48,9 +47,10 @@ use super::common::{
     GateDefinition, GateFacts, GateSubject, gate_report, stage_contract,
 };
 use super::design::{
-    self, ARTIFACT as DESIGN_ARTIFACT, DesignDecision, GATE as DESIGN_GATE, Judging, Reply,
+    self, ARTIFACT as DESIGN_ARTIFACT, DesignDecision, GATE as DESIGN_GATE, RefusalReason, Reply,
     ReplyStatus,
 };
+use super::judge::{DesignJudge, DesignStop, Judged, Question, redact_request, request_text};
 use super::normalize::{
     ClassifierRef, OriginalRef, decision_document, description_from, normalized_request, title_from,
 };
@@ -116,6 +116,9 @@ pub struct IntakeHandler {
     sandboxes: Arc<dyn AgentSandboxSpecs>,
     probes: Arc<dyn CapabilityProbes>,
     readability: ReadabilityGate,
+    /// Reads the issue and judges its design. The delivery stage asks the same code again before
+    /// it opens the pull request.
+    judge: DesignJudge,
 }
 
 /// The collaborators of the handler, in one place so a composition root names each.
@@ -146,6 +149,12 @@ impl IntakeHandler {
     /// A handler over its collaborators.
     #[must_use]
     pub fn new(config: IntakeConfig, deps: IntakeDeps) -> Self {
+        let judge = DesignJudge::new(
+            Arc::clone(&deps.issues),
+            Arc::clone(&deps.design),
+            Arc::clone(&deps.policy),
+            Arc::clone(&deps.redactor),
+        );
         Self {
             config,
             requests: deps.requests,
@@ -159,6 +168,7 @@ impl IntakeHandler {
             sandboxes: deps.sandboxes,
             probes: deps.probes,
             readability: ReadabilityGate::new(Options::new()),
+            judge,
         }
     }
 
@@ -457,8 +467,12 @@ impl StageHandler for IntakeHandler {
             snapshot.issue.repo.name(),
             snapshot.issue.number
         );
-        let (design_rule, design_decision) = match self
-            .judge_design(&identity, &snapshot.issue, &allowlist, now)
+        let Judged {
+            rule: design_rule,
+            decision: design_decision,
+            text: text_check,
+        } = match self
+            .judge_design(&identity, &snapshot, &allowlist, now)
             .await
         {
             Ok(judged) => judged,
@@ -510,29 +524,31 @@ impl StageHandler for IntakeHandler {
                 .await?,
             );
         }
-        if !matches!(design_decision, DesignDecision::NotOnTrack) {
-            ctx.note_audit_because(
-                AuditAction::new(
-                    AuditKind::AuthorizationDecision,
-                    if design_decision.allows_work() {
-                        AuditDecision::Granted
-                    } else {
-                        AuditDecision::Denied
-                    },
-                ),
-                self.redacted_reason(design::audit_reason(
-                    &design_decision,
-                    &issue_text,
-                    design_status,
-                )),
-            );
-        }
+        // Every judgement is on the record, also for an issue off the design track, because the
+        // comparison of the text of the job with the issue is made for every job (DG-3).
+        ctx.note_audit_because(
+            AuditAction::new(
+                AuditKind::AuthorizationDecision,
+                if design_decision.allows_work() {
+                    AuditDecision::Granted
+                } else {
+                    AuditDecision::Denied
+                },
+            ),
+            self.redacted_reason(design::audit_reason(
+                &design_decision,
+                &issue_text,
+                design_status,
+                text_check,
+            )),
+        );
         // The stored document, and the report that is made from it, show the labels with every
         // secret replaced. The audit line above is redacted as a whole, on its own.
         let design_document = design::document(
             &self.redact_labels(design_decision.clone()),
             design_rule.approved_label(),
             design_status,
+            text_check,
         );
         if !design_decision.allows_work() {
             // No sandbox was made and no agent ran, so there is no posture to verify. The engine
@@ -544,7 +560,15 @@ impl StageHandler for IntakeHandler {
                 tool_grants_recorded: true,
                 probe_satisfies_stage: true,
             });
-            return Self::refused_output(&ports, &snapshot, original, design_document).await;
+            let because = match &design_decision {
+                DesignDecision::Refused {
+                    reason: RefusalReason::TextNotTheIssue,
+                    ..
+                } => DeclineReason::TextNotTheIssue,
+                _ => DeclineReason::DesignNotApproved,
+            };
+            return Self::refused_output(&ports, &snapshot, original, design_document, because)
+                .await;
         }
 
         // 6. The prompt. The issue text is untrusted data.
@@ -886,7 +910,7 @@ impl StageHandler for IntakeHandler {
                     vec![(
                         word.clone(),
                         if design::is_refused(&design_document) {
-                            "The request does not go on until the design is approved.".to_owned()
+                            design::stop_sentence(&design_document).to_owned()
                         } else {
                             "The request does not go on without an operator.".to_owned()
                         },
@@ -943,88 +967,30 @@ impl StageHandler for IntakeHandler {
     }
 }
 
-/// Title and body as one text, the way the API stores a request: the title, a blank line, the body.
-/// A missing part leaves no separator.
-fn request_text(title: &str, body: &str) -> String {
-    match (title.is_empty(), body.is_empty()) {
-        (false, false) => format!("{title}\n\n{body}"),
-        (false, true) => title.to_owned(),
-        (true, _) => body.to_owned(),
-    }
-}
-
 fn slug(name: &str) -> Result<Slug, StageError> {
     Slug::parse(name).map_err(|_| StageError::Internal)
 }
 
-/// Why the design gate could not give a decision.
-enum DesignStop {
-    /// The rule cannot be read. The stage refuses the issue and blocks the run.
-    Unjudgeable,
-    /// A read failed or the answer cannot be trusted. The attempt fails and may be tried again.
-    Stage(StageError),
-}
-
 impl IntakeHandler {
-    /// Judges the design of the issue. The labels come from a live fetch of the issue and the
-    /// applier of the approved label from the timeline of the issue: nothing the webhook carried
-    /// is used. A read that fails, or an issue other than the one asked for, fails the attempt
-    /// (never a pass).
+    /// Judges the design of the issue, and compares the text of the job with the live issue. The
+    /// reading and the judging are those of [`DesignJudge`], which the delivery stage asks again
+    /// before it opens the pull request.
     async fn judge_design(
         &self,
         identity: &crate::handlers::RunIdentity,
-        issue: &IssueRef,
+        snapshot: &RequestSnapshot,
         allowlist: &Allowlist,
         now: Timestamp,
-    ) -> Result<(DesignGate, DesignDecision), DesignStop> {
-        let rule = self
-            .design
-            .current()
-            .await
-            .map_err(|_| DesignStop::Unjudgeable)?;
-        let scope = self.scope(identity, issue);
-        let fetched = self
-            .issues
-            .fetch_issue(&scope, issue)
-            .await
-            .map_err(|_| DesignStop::Stage(StageError::Tool))?;
-        if fetched.reference != *issue {
-            return Err(DesignStop::Stage(StageError::Tool));
-        }
-        let mut labels = rule.classify(&fetched.labels);
-        if labels == DesignLabels::NotOnTrack {
-            // No design label now. The track is sticky: a design label that was applied and taken
-            // off keeps the issue on it. That is in the events of the issue, which must be read to
-            // the end: a list that is cut is an error here, and never "nothing was applied".
-            let applied_before = self
-                .issues
-                .labels_ever_applied(&scope, issue)
-                .await
-                .map_err(|_| DesignStop::Stage(StageError::Tool))?;
-            labels = rule.classify_past(&applied_before);
-        }
-        let applied = if labels == DesignLabels::ApprovalLabelOnly {
-            self.issues
-                .label_application(&scope, issue, rule.approved_label())
-                .await
-                .map_err(|_| DesignStop::Stage(StageError::Tool))?
-        } else {
-            None
-        };
-        let repository = format!("{}/{}", issue.repo.owner(), issue.repo.name());
-        let decision = design::judge(
-            &Judging {
-                gate: &rule,
-                authority: &self.policy.authority,
+    ) -> Result<Judged, DesignStop> {
+        self.judge
+            .judge(Question {
+                scope: &self.scope(identity, &snapshot.issue),
+                issue: &snapshot.issue,
                 allowlist,
-                tenant: identity.tenant,
-                repository: &repository,
-                now: &now,
-            },
-            labels,
-            applied.as_ref().map(Labeller::of),
-        );
-        Ok((rule, decision))
+                now,
+                stored_text: Some(&snapshot.text),
+            })
+            .await
     }
 
     /// The text with every secret replaced. A label name is text of outside origin and could be
@@ -1093,6 +1059,7 @@ impl IntakeHandler {
         snapshot: &RequestSnapshot,
         original: factory_domain::contracts::ArtifactRef,
         design_document: Value,
+        because: DeclineReason,
     ) -> Result<StageOutput, StageError> {
         let json_type = MediaType::parse("application/json").map_err(|_| StageError::Internal)?;
         let normalized = serde_json::json!({
@@ -1106,7 +1073,7 @@ impl IntakeHandler {
                 "artifact_sha256": original.sha256,
             },
         });
-        let outcome = Outcome::Decline(DeclineReason::DesignNotApproved);
+        let outcome = Outcome::Decline(because);
         let mut stored = Vec::with_capacity(4);
         for (name, value) in [
             ("normalized-request", normalized),
@@ -1192,17 +1159,9 @@ impl IntakeHandler {
         // the artifact that keeps the original apart. What is kept is the text with each secret
         // replaced, and its hash is of that text (a hash of the original would let anyone who can
         // guess the rest of the sentence check a guess at the secret). A text the redactor cannot
-        // judge is not kept at all.
-        let (text, replaced) = {
-            let redacted = self
-                .redactor
-                .redact_str(&text)
-                .map_err(|_| StageError::Internal)?;
-            (
-                redacted.output.clone().into_owned(),
-                redacted.report.replacements(),
-            )
-        };
+        // judge is not kept at all. The design gate cleans the live text the same way (the same
+        // function) before it compares it with this one.
+        let (text, replaced) = redact_request(&self.redactor, &text)?;
         let snapshot = self
             .requests
             .record_first(
