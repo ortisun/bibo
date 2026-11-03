@@ -411,9 +411,25 @@ fn judge_reached_the_sandbox(o: &Observed, on_the_track: bool) -> Vec<String> {
             "no audit record says the design gate passed for an approver: {actions:?}"
         ));
     }
-    if !on_the_track && actions.iter().any(|(_, r)| r.contains("design gate")) {
+    // The gate says, for an issue off the track, that its rule does not apply. That is not a
+    // judgment. Any other record that names the gate is one (it passed or refused the issue).
+    if !on_the_track
+        && actions
+            .iter()
+            .any(|(_, r)| r.contains("design gate") && !r.contains("so the rule does not apply"))
+    {
         problems.push(format!(
             "the design gate judged an issue that is not on the design track: {actions:?}"
+        ));
+    }
+    // DG-3: for every job, on the track or off it, the text the job carries is compared with the
+    // live issue before the gate goes on, and the result is on the audit record.
+    if !actions
+        .iter()
+        .any(|(_, r)| r.contains("text of the job compared with the live issue: same"))
+    {
+        problems.push(format!(
+            "no audit record says the text of the job was compared with the live issue and found the same: {actions:?}"
         ));
     }
     if !actions.iter().any(|(a, r)| {

@@ -15,6 +15,8 @@
 
 The base is commit `3f3f205` of `feat/slice-0-foundation`. The design gate code (`judge_design`, the re-check at delivery) is used as it is on that commit and was not touched. The scenarios of the gate would need a second look if the work that changes it lands.
 
+That second look happened when the text check (DG-3) and the design re-check (DG-8) were merged. One scenario failed on the merge: the judgment for an issue off the design track treated any audit record that names the gate as a judgment, and the text check now writes a record for every job ("carries no design label, so the rule does not apply; text of the job compared with the live issue: same"). The judgment now accepts that record and asks for the text comparison on every job, on the track or off it. All 17 tests pass on the merged branch. The delivery re-check (DG-8) is not exercised here, because no job reaches delivery without the sandbox images.
+
 ### How to run it
 
 ```text
