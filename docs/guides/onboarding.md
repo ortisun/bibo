@@ -56,6 +56,8 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
 
 8. **Register the repository, confirm the map and enable it.** The engine accepts tickets from a repository only after these three commands, and the last one is refused until the second has been done. Each command needs the address of the API and the token file of a person who holds the right designation on the protected allowlist. The [commands reference](../reference/commands.md) lists the options.
 
+   **These three commands are requests that the worker applies.** The API records a signed request and answers `202`. The worker verifies the signature, asks the protected allowlist again whether you hold the designation, applies the change and records the result. The command waits for that, one second at a time, for at most 60 seconds (`--wait-seconds N` changes it, `0` does not wait), and prints the repository when the worker has applied the request. So a worker must be running for the commands to finish. If the worker is down or slow, the command ends with exit code 3 and prints the id of the request. Nothing is lost: the request stays until the worker settles it, and `factory-cli repository change REQUEST_ID` shows its state (`requested`, `applied` or `refused` with a code). A script that runs these commands, such as an installer step of your own, should treat exit code 3 as "not yet" and look again, and should treat exit code 2 as final. Disabling is not a request: the API does it at once.
+
    First, an operator registers the repository. The command needs the number of the GitHub App installation (it is in the address of the installation's settings page) and GitHub's numeric identifier of the repository (`gh api repos/OWNER/NAME --jq .id` prints it). The repository starts **disabled**, at autonomy level `L0`, with no project map. The command prints its identifier, which the next commands take.
 
    ```bash no-run reason="the address, the token files, the numbers and the names are placeholders for your own deployment"
@@ -77,6 +79,8 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
    ```bash no-run reason="the identifier and the commit are placeholders for your own repository"
    factory-cli repository enable --api https://factory.example.org --token-file approver.token REPOSITORY_ID 0123456789abcdef0123456789abcdef01234567
    ```
+
+   The worker checks the allowlist again, so a person who was taken off the list between the command and the worker's turn is refused (`not_permitted`), and so is a person who is no longer an active person of the tenant.
 
    A repository stays enabled only for the map it was enabled for. If an operator confirms another commit later, or the same commit by another person, the repository is switched off by that change. The audit log gets a `repository.disabled` record. An approver then reads the new map and enables the repository again with the new commit.
 
@@ -140,6 +144,8 @@ A project owner who works alone holds every designation and is the only person w
 | `factory-cli` says the request conflicts with a request already recorded, on `repository register` | That GitHub repository is already registered, by you or by someone else, or you reused a key for another request. | Run `repository show` with the identifier you were given. Use a new `--key` for a new request. |
 | `factory-cli` says you attested this repository's project map and another person enables it | The repository is strict (the default) and you confirmed the map. | Ask another person with the approver designation to enable it. If you are the only maintainer, see "A single-maintainer repository". |
 | `repository show` says the repository is enabled but not open for new jobs | The person who confirmed the map, or the person who enabled the repository, is no longer an active human of the tenant (they were switched off). Webhooks and job submissions are dropped, and jobs that exist go on. | Another operator confirms the map again, and another approver enables it for the new commit. |
+| `factory-cli` says the worker refused the request, with "checked the protected allowlist again" | Your entry held the designation when you asked and does not hold it, or does not reach this repository, when the worker applied the request. | Ask the owner of the allowlist. Narrowed entries list the GitHub id of the repository (RR-28). |
+| `factory-cli` ends with exit code 3 and "The worker had not applied it" | No worker is running, or it is busy or cannot read the allowlist. | Start or fix the worker, then `factory-cli repository change REQUEST_ID`. Do not send the request again with a new key. |
 | `factory-cli` says you are not permitted | Your allowlist entry does not hold the designation. The operator registers, confirms and disables. The approver enables. An entry narrowed to other repositories holds nothing here. | Ask the owner of the allowlist. |
 
 ## Where to read more

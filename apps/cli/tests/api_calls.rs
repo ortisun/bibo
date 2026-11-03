@@ -769,11 +769,27 @@ fn ack_translation_warning_names_the_approval_run_and_the_number() {
 const REPOSITORY: &str = "0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d";
 const MAP_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
+/// What the API answers to a request to register, confirm or enable: recorded, not applied yet (REG-2).
+const REQUESTED: &str = r#"{"request_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70","kind":"register","repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","state":"requested","changed":true}"#;
+/// The state of that request once the worker applied it.
+const APPLIED: &str = r#"{"request_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70","kind":"register","repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","state":"applied","code":null}"#;
+
+/// The repository alone, as `GET /v1/repositories/{id}` answers: the member `repository` of a body.
+fn the_repository(body: &str) -> &'static str {
+    let value: serde_json::Value = serde_json::from_str(body).expect("json");
+    let inner = value.get("repository").map_or(value.clone(), Clone::clone);
+    Box::leak(inner.to_string().into_boxed_str())
+}
+
 const REPOSITORY_BODY: &str = r#"{"repository":{"repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","full_name":"org/widgets","default_branch":"main","github_installation_id":7001,"github_repository_id":8001,"enabled":false,"protection_preflight_passed":false,"autonomy_ceiling":"L0","version":1,"project_map":null},"changed":true}"#;
 
 #[test]
 fn repository_register_sends_the_ids_the_name_and_a_key_and_says_what_comes_next() {
-    let api = fake(vec![(201, REPOSITORY_BODY)]);
+    let api = fake(vec![
+        (202, REQUESTED),
+        (200, APPLIED),
+        (200, the_repository(REPOSITORY_BODY)),
+    ]);
     let file = token_file(0o600);
     let ran = cli(&format!(
         "repository register --api http://{} --token-file {} --key k-r --installation 7001 --github-repository 8001 --name org/widgets",
@@ -827,7 +843,22 @@ fn repository_register_sends_the_ids_the_name_and_a_key_and_says_what_comes_next
         ));
         assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
     }
-    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+    assert_eq!(
+        api.requests.lock().expect("lock").len(),
+        3,
+        "the request, the state of the request and the repository: the refused lines sent nothing"
+    );
+    let sent = api.requests.lock().expect("lock").clone();
+    assert!(
+        sent[1].starts_with("GET /v1/repository-changes/0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70 "),
+        "{}",
+        sent[1]
+    );
+    assert!(
+        sent[2].starts_with("GET /v1/repositories/0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d "),
+        "{}",
+        sent[2]
+    );
 }
 
 #[test]
@@ -839,7 +870,11 @@ fn repository_confirm_map_sends_the_commit_and_the_reason_and_calls_it_a_stateme
         ),
     );
     let body: &'static str = Box::leak(body.into_boxed_str());
-    let api = fake(vec![(200, body)]);
+    let api = fake(vec![
+        (202, REQUESTED),
+        (200, APPLIED),
+        (200, the_repository(body)),
+    ]);
     let file = token_file(0o600);
     let ran = cli(&format!(
         "repository confirm-map --api http://{} --token-file {} --key k-m {REPOSITORY} {MAP_COMMIT} I read the map files in the merged pull request.",
@@ -888,7 +923,7 @@ fn repository_confirm_map_sends_the_commit_and_the_reason_and_calls_it_a_stateme
         ));
         assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
     }
-    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+    assert_eq!(api.requests.lock().expect("lock").len(), 3);
 }
 
 #[test]
@@ -901,7 +936,13 @@ fn repository_enable_disable_and_show_use_their_own_paths() {
     );
     let enabled: &'static str = Box::leak(enabled.into_boxed_str());
     let shown = r#"{"repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","full_name":"org/widgets","default_branch":"main","github_installation_id":7001,"github_repository_id":8001,"enabled":true,"protection_preflight_passed":false,"autonomy_ceiling":"L0","version":3,"project_map":null}"#;
-    let api = fake(vec![(200, enabled), (200, REPOSITORY_BODY), (200, shown)]);
+    let api = fake(vec![
+        (202, REQUESTED),
+        (200, APPLIED),
+        (200, the_repository(enabled)),
+        (200, REPOSITORY_BODY),
+        (200, shown),
+    ]);
     let file = token_file(0o600);
     let base = format!("--api http://{} --token-file {}", api.addr, file.display());
     let ran = cli(&format!(
@@ -944,19 +985,19 @@ fn repository_enable_disable_and_show_use_their_own_paths() {
         sent[0]
     );
     assert!(
-        sent[1].starts_with(&format!("POST /v1/repositories/{REPOSITORY}/disable ")),
+        sent[3].starts_with(&format!("POST /v1/repositories/{REPOSITORY}/disable ")),
         "{}",
-        sent[1]
+        sent[3]
     );
     assert!(
-        sent[1].contains(r#""reason":"Switching it off while the map is rewritten.""#),
+        sent[3].contains(r#""reason":"Switching it off while the map is rewritten.""#),
         "{}",
-        sent[1]
+        sent[3]
     );
     assert!(
-        sent[2].starts_with(&format!("GET /v1/repositories/{REPOSITORY} ")),
+        sent[4].starts_with(&format!("GET /v1/repositories/{REPOSITORY} ")),
         "{}",
-        sent[2]
+        sent[4]
     );
     // What the command refuses stops here.
     for line in [
@@ -975,7 +1016,7 @@ fn repository_enable_disable_and_show_use_their_own_paths() {
         let ran = cli(&format!("{line} {base}"));
         assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
     }
-    assert_eq!(api.requests.lock().expect("lock").len(), 3);
+    assert_eq!(api.requests.lock().expect("lock").len(), 5);
 }
 
 #[test]
@@ -1017,15 +1058,11 @@ fn enabling_a_map_that_moved_has_a_plain_refusal_and_exit_code_2() {
 
 #[test]
 fn repository_register_sends_the_rule_about_the_enabler_and_only_as_a_switch_at_registration() {
-    let api = fake(vec![
-        (201, REPOSITORY_BODY),
-        (201, REPOSITORY_BODY),
-        (201, REPOSITORY_BODY),
-    ]);
+    let api = fake(vec![(202, REQUESTED), (202, REQUESTED), (202, REQUESTED)]);
     let file = token_file(0o600);
     let base = format!("--api http://{} --token-file {}", api.addr, file.display());
-    let line =
-        "repository register --installation 7001 --github-repository 8001 --name org/widgets";
+    // The requests are not waited for here: this test is about what the body says.
+    let line = "repository register --wait-seconds 0 --installation 7001 --github-repository 8001 --name org/widgets";
     // The default is the strict rule, and the body says so.
     assert_eq!(cli(&format!("{line} {base}")).exit, Exit::Ok);
     // The switch alone, and the switch spelled out, both reach the body.
@@ -1128,4 +1165,87 @@ fn enabling_a_map_one_attested_has_a_plain_refusal_and_exit_code_2() {
         ran.err
     );
     assert!(ran.out.is_empty(), "{}", ran.out);
+}
+
+#[test]
+fn a_change_the_worker_has_not_applied_in_time_is_recorded_and_says_how_to_look_again() {
+    let pending = r#"{"request_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70","kind":"register","repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","state":"requested","code":null}"#;
+    let api = fake(vec![
+        (202, REQUESTED),
+        (202, REQUESTED),
+        (200, pending),
+        (200, pending),
+        (200, pending),
+    ]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository register --api http://{} --token-file {} --key k-w --wait-seconds 0 --installation 7001 --github-repository 8001 --name org/widgets",
+        api.addr,
+        file.display()
+    ));
+    // With a wait of zero the command sends the request and does not look at the state.
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    for part in [
+        "The request is recorded and signed.",
+        "The command did not wait.",
+        "factory-cli repository change 0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70",
+    ] {
+        assert!(ran.out.contains(part), "{part} in {}", ran.out);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+
+    // One second of patience: the worker has not settled it, and the command ends blocked (exit 3).
+    let ran = cli(&format!(
+        "repository confirm-map --api http://{} --token-file {} --key k-w2 --wait-seconds 1 {REPOSITORY} {MAP_COMMIT} I read the map files in the merged pull request.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Blocked, "{}", ran.err);
+    assert!(
+        ran.out
+            .contains("The worker had not applied it after 1 seconds."),
+        "{}",
+        ran.out
+    );
+    // The state of the request, read on its own.
+    let again = cli(&format!(
+        "repository change --api http://{} --token-file {} 0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(again.exit, Exit::Ok, "{}", again.err);
+}
+
+#[test]
+fn a_refused_change_says_the_code_in_plain_words_and_exits_2() {
+    let refused = r#"{"request_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a70","kind":"register","repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","state":"refused","code":"not_permitted"}"#;
+    let api = fake(vec![(202, REQUESTED), (200, refused)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository register --api http://{} --token-file {} --key k-x --installation 7001 --github-repository 8001 --name org/widgets",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Refused, "{}", ran.err);
+    assert!(
+        ran.err.contains("checked the protected allowlist again")
+            && ran.err.contains("Nothing changed."),
+        "{}",
+        ran.err
+    );
+    assert!(ran.out.is_empty(), "{}", ran.out);
+    // Bad waits stop before a request.
+    for line in [
+        "--wait-seconds -1",
+        "--wait-seconds soon",
+        "--wait-seconds 601",
+    ] {
+        let ran = cli(&format!(
+            "repository register {line} --api http://{} --token-file {} --installation 7001 --github-repository 8001 --name org/widgets",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 2);
 }

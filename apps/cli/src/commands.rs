@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use factory_composition::commands::{
     APPROVE_BUILD_CODE, APPROVE_DEPENDENCY, ParsedLine, parse_cli, parse_dependency_command,
@@ -36,11 +37,12 @@ usage: factory-cli <command> [options]
   approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
-  repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH] [--single-maintainer]
-  repository confirm-map  --api URL --token-file FILE [--key K] REPOSITORY COMMIT reason...
-  repository enable       --api URL --token-file FILE [--key K] REPOSITORY COMMIT [reason...]
+  repository register     --api URL --token-file FILE [--key K] [--wait-seconds N] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH] [--single-maintainer]
+  repository confirm-map  --api URL --token-file FILE [--key K] [--wait-seconds N] REPOSITORY COMMIT reason...
+  repository enable       --api URL --token-file FILE [--key K] [--wait-seconds N] REPOSITORY COMMIT [reason...]
   repository disable      --api URL --token-file FILE [--key K] REPOSITORY [reason...]
   repository show         --api URL --token-file FILE REPOSITORY
+  repository change       --api URL --token-file FILE REQUEST
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
 
 The address may also be set in FACTORY_API_URL. The token is read from a file, never from an argument
@@ -768,7 +770,137 @@ fn probe_command(args: &[String], ctx: &mut Context<'_>) -> Exit {
     result.exit
 }
 
+/// How long a command that asks for a change waits for the worker to apply it, unless told otherwise.
+const DEFAULT_WAIT_SECONDS: u64 = 60;
+/// The most a person may ask the command to wait. A longer wait is a reason to look at the worker.
+const MAX_WAIT_SECONDS: u64 = 600;
+/// The pause between two looks at the state of a request.
+const POLL: Duration = Duration::from_secs(1);
+
+/// The wait the person asked for, in seconds, or `None` for a word that is not a whole number within
+/// the bound.
+fn wait_of(options: &BTreeMap<String, String>) -> Option<Duration> {
+    let seconds = options
+        .get("wait-seconds")
+        .map_or(Some(DEFAULT_WAIT_SECONDS), |text| {
+            text.parse::<u64>().ok().filter(|n| *n <= MAX_WAIT_SECONDS)
+        })?;
+    Some(Duration::from_secs(seconds))
+}
+
+/// After the API answered `202` to a request to register, confirm or enable: waits, within a bound, for
+/// the worker to apply it, then says how it ended (finding REG-2). The API changes nothing itself for
+/// these three acts, so the answer to the command is the state of the request and then the repository.
+///
+/// * applied: the repository is read and printed, exit 0;
+/// * refused: the plain sentence for the code, exit 2;
+/// * not settled within the bound: the request is recorded, the id is printed and the way to look again,
+///   exit 3 (blocked: try later). Nothing was lost; the request is still there.
+fn wait_for_request(
+    client: &ApiClient,
+    accepted: &Answer,
+    wait: Duration,
+    done: &str,
+    key: &str,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let text = |name: &str| {
+        accepted
+            .body
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    let (Some(request), Some(repository)) = (text("request_id"), text("repository_id")) else {
+        ctx.complain("the API answered 202 without the identifiers of the request");
+        return Exit::Failed;
+    };
+    let started = Instant::now();
+    loop {
+        let state = match client.get(&format!("/v1/repository-changes/{request}")) {
+            Err(unreachable) => {
+                ctx.complain(&format!("{unreachable}."));
+                return Exit::Unreachable;
+            }
+            Ok(answer) if answer.status != 200 => {
+                ctx.complain(&render::refusal(answer.status, &answer.body));
+                return Exit::of_status(answer.status);
+            }
+            Ok(answer) => answer.body,
+        };
+        match state.get("state").and_then(Value::as_str) {
+            Some("applied") => {
+                return match client.get(&format!("/v1/repositories/{repository}")) {
+                    Err(unreachable) => {
+                        ctx.complain(&format!("{unreachable}."));
+                        Exit::Unreachable
+                    }
+                    Ok(answer) if answer.status != 200 => {
+                        ctx.complain(&render::refusal(answer.status, &answer.body));
+                        Exit::of_status(answer.status)
+                    }
+                    Ok(answer) => {
+                        ctx.say(&render::repository_changed(
+                            &json!({"repository": answer.body, "changed": true}),
+                            key,
+                            done,
+                        ));
+                        Exit::Ok
+                    }
+                };
+            }
+            Some("refused") => {
+                let code = state
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("refused");
+                ctx.complain(&render::change_refused(code));
+                return Exit::Refused;
+            }
+            _ => {}
+        }
+        if started.elapsed() >= wait {
+            ctx.say(&render::change_pending(
+                &request,
+                &repository,
+                wait.as_secs(),
+            ));
+            return Exit::Blocked;
+        }
+        std::thread::sleep(POLL.min(wait.saturating_sub(started.elapsed())));
+    }
+}
+
+/// `repository change REQUEST`: where a request to register, confirm or enable stands.
+fn repository_change_state(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file"]) {
+        Ok(parsed) if parsed.positional.len() == 1 && is_uuid(&parsed.positional[0]) => parsed,
+        Ok(_) => {
+            ctx.complain("repository change takes one request id (a UUID), as a change printed it");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let path = format!("/v1/repository-changes/{}", parsed.positional[0]);
+    finish(client.get(&path), ctx, render::change_state)
+}
+
 /// `repository`: register a repository, confirm its project map, enable it, disable it, or show it.
+///
+/// Registering, confirming and enabling are requests that the worker applies (finding REG-2): the
+/// command sends the request, waits for the worker within a bound and says how it ended. Disabling
+/// is direct.
 ///
 /// Confirming the map is a person's statement. The command says so in what it prints, and it sends
 /// the commit and the reason and nothing else: the engine holds no GitHub credential and does not
@@ -788,6 +920,7 @@ fn repository(
         "enable" => repository_change(rest, env, ctx, RepositoryChange::Enable),
         "disable" => repository_change(rest, env, ctx, RepositoryChange::Disable),
         "show" => repository_show(rest, env, ctx),
+        "change" => repository_change_state(rest, env, ctx),
         other => {
             ctx.complain(&format!(
                 "{other:?} is not a repository command; use register, confirm-map, enable, disable or show"
@@ -811,6 +944,7 @@ fn repository_register(
         "name",
         "default-branch",
         "single-maintainer",
+        "wait-seconds",
     ];
     let parsed = match split_with_switches(args, &allowed, &["single-maintainer"]) {
         Ok(parsed) if parsed.positional.is_empty() => parsed,
@@ -861,17 +995,71 @@ fn repository_register(
         "default_branch": branch,
         "single_maintainer": single_maintainer,
     });
+    let Some(wait) = wait_of(&parsed.options) else {
+        ctx.complain("--wait-seconds is a whole number of seconds, at most 600; 0 does not wait");
+        return Exit::Failed;
+    };
     let client = match client(&parsed.options, env, true, ctx) {
         Ok(client) => client,
         Err(exit) => return exit,
     };
     let key = idempotency_key(&parsed.options);
-    let shown = key.clone();
-    finish(
-        client.post("/v1/repositories", &key, &body),
+    request_and_wait(
+        &client,
+        "/v1/repositories",
+        &key,
+        &body,
+        wait,
+        "registered",
         ctx,
-        move |body| render::repository_changed(body, &shown, "registered"),
     )
+}
+
+/// Sends a request that the worker applies, and waits for it.
+fn request_and_wait(
+    client: &ApiClient,
+    path: &str,
+    key: &str,
+    body: &Value,
+    wait: Duration,
+    done: &str,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    match client.post(path, key, body) {
+        Err(unreachable) => {
+            ctx.complain(&format!("{unreachable}."));
+            Exit::Unreachable
+        }
+        Ok(answer) if answer.status != 202 => {
+            if Exit::of_status(answer.status) == Exit::Ok {
+                // A success that is not the answer this command waits for: say so and do not guess.
+                ctx.complain(&format!(
+                    "the API answered {}, not 202; the request may not be a request to the worker",
+                    answer.status
+                ));
+                return Exit::Failed;
+            }
+            ctx.complain(&render::refusal(answer.status, &answer.body));
+            Exit::of_status(answer.status)
+        }
+        Ok(answer) if wait.is_zero() => {
+            ctx.say(&render::change_pending(
+                answer
+                    .body
+                    .get("request_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                answer
+                    .body
+                    .get("repository_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                0,
+            ));
+            Exit::Ok
+        }
+        Ok(answer) => wait_for_request(client, &answer, wait, done, key, ctx),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -887,12 +1075,16 @@ fn repository_change(
     ctx: &mut Context<'_>,
     change: RepositoryChange,
 ) -> Exit {
-    let parsed = match split(args, &["api", "token-file", "key"]) {
+    let parsed = match split(args, &["api", "token-file", "key", "wait-seconds"]) {
         Ok(parsed) => parsed,
         Err(why) => {
             ctx.complain(&why);
             return Exit::Failed;
         }
+    };
+    let Some(wait) = wait_of(&parsed.options) else {
+        ctx.complain("--wait-seconds is a whole number of seconds, at most 600; 0 does not wait");
+        return Exit::Failed;
     };
     let words = &parsed.positional;
     let (path, body, done) = match change {
@@ -971,6 +1163,10 @@ fn repository_change(
         Err(exit) => return exit,
     };
     let key = idempotency_key(&parsed.options);
+    if change != RepositoryChange::Disable {
+        // Confirming a map and enabling are requests that the worker applies.
+        return request_and_wait(&client, &path, &key, &body, wait, done, ctx);
+    }
     let shown = key.clone();
     finish(client.post(&path, &key, &body), ctx, move |body| {
         render::repository_changed(body, &shown, done)

@@ -39,7 +39,10 @@
 -- (docs/reviews/authority-and-evidence-security-review.md, section 10) and the review of this change says so
 -- (docs/reviews/engine-registration-and-status-security-review.md, REG-2). The choice between a signed request
 -- for the acts that widen the factory's reach, a function owned by another role, or accepting the risk with an
--- owner and a date is open and belongs to the product owner.
+-- owner and a date belonged to the product owner. SUPERSEDED on 2026-11-03: migration 2026-11-03-002700 took
+-- register, attest and enable away from this login and made them signed requests that the worker applies, and
+-- left the API one write, the switch-off. What this comment says about the login is the state of this
+-- migration, not of the database now. (A comment only: no statement of this file changed.)
 --
 -- Expand only: nullable columns, and constraints that are added and then validated. The constraints are added
 -- NOT VALID and then validated in the same transaction. That two-step form lets reads and writes go on only when

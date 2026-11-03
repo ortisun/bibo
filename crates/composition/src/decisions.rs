@@ -103,6 +103,7 @@ use crate::decision_signing::{
 use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
 use crate::intake_rejections::IntakeRejections;
+use crate::repository_changes::{ChangeAuthority, RepositoryChanges};
 use crate::seams::{FileAllowlist, designation};
 use crate::stage_decisions::StageDecisions;
 use crate::telemetry::{job_span_of, job_stretch};
@@ -527,6 +528,24 @@ impl DecisionAuthority for AllowlistAuthority {
     }
 }
 
+#[async_trait(?Send)]
+impl ChangeAuthority for AllowlistAuthority {
+    async fn permits(
+        &self,
+        tenant: TenantId,
+        github_user_id: u64,
+        action: &str,
+        repository: &RepositoryIdentity<'_>,
+    ) -> Result<bool, Unreadable> {
+        let needed = self.needed_for(action);
+        let held = self
+            .allowlist
+            .designations_on(tenant, github_user_id, Some(repository), self.clock.now())
+            .map_err(|_| Unreadable)?;
+        Ok(held.iter().any(|designation| needed.contains(designation)))
+    }
+}
+
 /// Applies an approval, rejection or rework. The real one is the approval service, which judges
 /// the decision against the pull request as it is now and moves the stage run.
 #[async_trait(?Send)]
@@ -940,6 +959,7 @@ pub struct ClaimWork {
     stages: Option<Arc<StageDecisions>>,
     recorded: Option<Arc<dyn RecordedApprovals>>,
     rejections: Option<Arc<IntakeRejections>>,
+    repository_changes: Option<Arc<RepositoryChanges>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
     /// Where the next round of tenants starts, so that the same tenant is not always first.
@@ -995,6 +1015,7 @@ impl ClaimWork {
             stages: None,
             recorded: None,
             rejections: None,
+            repository_changes: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
             turn: AtomicUsize::new(0),
@@ -1047,6 +1068,15 @@ impl ClaimWork {
         self
     }
 
+    /// Lets the worker apply the signed requests to register, attest and enable a repository (REG-2).
+    /// The step verifies each request, asks the protected allowlist again and applies the change through
+    /// the Store. Without it those requests are left alone.
+    #[must_use]
+    pub fn with_repository_changes(mut self, changes: Arc<RepositoryChanges>) -> Self {
+        self.repository_changes = Some(changes);
+        self
+    }
+
     /// One pass for one tenant: admit, then decide. Public so a test can run a pass without a loop.
     pub async fn pass(&self, tenant: TenantId) {
         self.admit_received(tenant).await;
@@ -1059,6 +1089,9 @@ impl ClaimWork {
         }
         if let Some(rejections) = &self.rejections {
             rejections.pass(tenant).await;
+        }
+        if let Some(changes) = &self.repository_changes {
+            changes.pass(tenant).await;
         }
     }
 

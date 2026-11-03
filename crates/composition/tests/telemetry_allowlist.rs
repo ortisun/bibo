@@ -274,6 +274,21 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "a boolean: whether the one reply was posted",
     ),
     (
+        "crates/composition/src/repository_changes.rs",
+        "kind",
+        "one of three static words, register, attest or enable: the kind of a request to change a repository",
+    ),
+    (
+        "crates/composition/src/repository_changes.rs",
+        "code",
+        "the fixed refusal code of a request to change a repository, one of a closed set of static words written in this module",
+    ),
+    (
+        "crates/composition/src/repository_changes.rs",
+        "error",
+        "StoreError: a static sentence written by the code, as in the hook for the six verbs",
+    ),
+    (
         "crates/composition/src/seams.rs",
         "github_user_id",
         "the numeric GitHub id of a person whom an allowlist entry narrows by name alone: a number from the protected file",

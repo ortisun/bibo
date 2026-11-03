@@ -74,6 +74,7 @@ pub mod providers;
 pub mod reading;
 pub mod redaction;
 pub mod registry;
+pub mod repository_changes;
 pub mod risk;
 pub mod routing;
 pub mod runtimes;

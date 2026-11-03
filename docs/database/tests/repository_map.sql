@@ -42,16 +42,16 @@ BEGIN
     '23514', NULL, 'repositories_enabled_needs_project_map');
   PERFORM dbtest.expect_error('the worker role cannot enable a repository that has no project map', enable_it,
     '23514', 'factory_app', 'repositories_enabled_needs_project_map', NULL, 1);
-  PERFORM dbtest.expect_error('the login of the API cannot enable a repository that has no project map', enable_it,
-    '23514', 'factory_api_app', 'repositories_enabled_needs_project_map', NULL, 1);
+  PERFORM dbtest.expect_error('the login of the API cannot enable a repository that has no project map (it cannot enable at all: section 12)', enable_it,
+    '42501', 'factory_api_app', NULL, NULL, 1);
   PERFORM dbtest.expect_error('a row cannot be inserted enabled with no project map',
     format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, enabled)
               VALUES (%L, %L, 9101, 8101, 'org1/second', 'main', true)$q$, dbtest.u(1), dbtest.u(1010)),
     '23514', NULL, 'repositories_enabled_needs_project_map');
   PERFORM dbtest.expect_ok('the same update is accepted when it carries the map commit and its attestor (the sibling of the refusals)',
     enable_with_map);
-  PERFORM dbtest.expect_ok('the login of the API may enable a repository with a map commit',
-    enable_with_map, 'factory_api_app', 1);
+  PERFORM dbtest.expect_ok('the worker group may enable a repository with a map commit (the sibling of the refusals)',
+    enable_with_map, 'factory_app', 1);
   PERFORM dbtest.expect_ok('a repository can stay disabled with no map (the invariant is one way only)',
     format($q$UPDATE repositories SET enabled = false, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1001)));
 END
@@ -186,39 +186,30 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------------------------
--- 7. The login of the API: six columns to register, four columns to change, one tenant.
+-- 7. The login of the API after migration 2026-11-03-002700 (finding REG-2): it registers nothing, attests nothing
+--    and enables nothing. It may switch a repository off, and section 12 proves each of those, with its controls.
+--    What stays here is the part that does not depend on the login: the worker's group registers a repository with
+--    the defaults, changes the map by column grants, and cannot touch the other columns.
 
 DO $$
 DECLARE
   register text := format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
                               VALUES (%L, %L, 9201, 8201, 'org1/third', 'main')$q$, dbtest.u(1), dbtest.u(1011));
 BEGIN
-  PERFORM dbtest.expect_eq('the API login can register a repository for the tenant it named',
-    dbtest.run_as(register, 'factory_api_app', 1), 'rows=1');
-  PERFORM dbtest.expect_eq('what the six columns leave to the defaults is disabled, level L0 and no protection result',
+  PERFORM dbtest.expect_eq('the worker group can register a repository for the tenant it named',
+    dbtest.run_as(register, 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('what the columns leave to the defaults is disabled, level L0 and no protection result',
     (SELECT string_agg(column_name || '=' || column_default, ', ' ORDER BY column_name) FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'repositories'
         AND column_name IN ('enabled', 'autonomy_ceiling', 'protection_preflight_passed')),
     'autonomy_ceiling=''L0''::text, enabled=false, protection_preflight_passed=false');
-  PERFORM dbtest.expect_true('the API login cannot register a repository for another tenant than the one it named',
-    dbtest.run_as(replace(register, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_api_app', 1) LIKE 'ERR:42501:new row violates row-level security policy%');
-  PERFORM dbtest.expect_true('with no tenant named the API login registers nothing',
-    dbtest.run_as(register, 'factory_api_app', 0) LIKE 'ERR:42501:%');
-  PERFORM dbtest.expect_true('the API login cannot register a repository already enabled',
-    dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, enabled)
-        VALUES (%L, %L, 9201, 8201, 'org1/third', 'main', true)$q$, dbtest.u(1), dbtest.u(1011)), 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
-  PERFORM dbtest.expect_true('the API login cannot register a repository with a higher autonomy ceiling',
-    dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, autonomy_ceiling)
-        VALUES (%L, %L, 9201, 8201, 'org1/third', 'main', 'L3')$q$, dbtest.u(1), dbtest.u(1011)), 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
-  PERFORM dbtest.expect_true('the API login cannot register a repository with a passed protection result',
-    dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, protection_preflight_passed)
-        VALUES (%L, %L, 9201, 8201, 'org1/third', 'main', true)$q$, dbtest.u(1), dbtest.u(1011)), 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
-  PERFORM dbtest.expect_true('the API login cannot register a repository with the map already attested',
-    dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, project_map_attested_at)
-        VALUES (%L, %L, 9201, 8201, 'org1/third', 'main', now())$q$, dbtest.u(1), dbtest.u(1011)), 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
+  PERFORM dbtest.expect_true('the worker group cannot register a repository for another tenant than the one it named',
+    dbtest.run_as(replace(register, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_app', 1) LIKE 'ERR:42501:new row violates row-level security policy%');
+  PERFORM dbtest.expect_true('with no tenant named the worker group registers nothing',
+    dbtest.run_as(register, 'factory_app', 0) LIKE 'ERR:42501:%');
   PERFORM dbtest.expect_true('the GitHub repository of another tenant cannot be registered (the global key answers with a unique violation)',
     dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
-        VALUES (%L, %L, 9201, 8002, 'org1/stolen', 'main')$q$, dbtest.u(1), dbtest.u(1012)), 'factory_api_app', 1) LIKE 'ERR:23505:%');
+        VALUES (%L, %L, 9201, 8002, 'org1/stolen', 'main')$q$, dbtest.u(1), dbtest.u(1012)), 'factory_app', 1) LIKE 'ERR:23505:%');
 END
 $$;
 
@@ -228,20 +219,19 @@ DECLARE
                              WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1001));
   col text;
 BEGIN
-  PERFORM dbtest.expect_eq('the API login can attest a map on a repository of its tenant', dbtest.run_as(map_it, 'factory_api_app', 1), 'rows=1');
-  PERFORM dbtest.expect_eq('the API login attesting for a repository of another tenant changes nothing (the row is not visible)',
-    dbtest.run_as(replace(map_it, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_api_app', 1), 'rows=0');
-  PERFORM dbtest.expect_true('the API login cannot write the time of the attestation (the database does)',
+  PERFORM dbtest.expect_eq('the worker group can attest a map on a repository of its tenant', dbtest.run_as(map_it, 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the worker group attesting for a repository of another tenant changes nothing (the row is not visible)',
+    dbtest.run_as(replace(map_it, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_app', 1), 'rows=0');
+  PERFORM dbtest.expect_true('the worker group cannot write the time of the attestation (the database does)',
     dbtest.run_as(format($q$UPDATE repositories SET project_map_attested_at = now(), version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1001)),
-                  'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
-  FOREACH col IN ARRAY ARRAY['autonomy_ceiling', 'protection_preflight_passed', 'default_branch', 'full_name',
-                             'github_installation_id', 'github_repository_id', 'bypass_attested_by_principal_id', 'bypass_attested_at', 'tenant_id', 'id'] LOOP
-    PERFORM dbtest.expect_true('the API login cannot update ' || col,
+                  'factory_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
+  FOREACH col IN ARRAY ARRAY['full_name', 'github_installation_id', 'github_repository_id', 'tenant_id', 'id', 'single_maintainer'] LOOP
+    PERFORM dbtest.expect_true('the worker group cannot update ' || col,
       dbtest.run_as(format($q$UPDATE repositories SET %I = %I, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, col, col, dbtest.u(1), dbtest.u(1001)),
-                    'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories', col);
+                    'factory_app', 1) LIKE 'ERR:42501:permission denied for table repositories', col);
   END LOOP;
-  PERFORM dbtest.expect_true('the API login cannot delete a repository',
-    dbtest.run_as(format($q$DELETE FROM repositories WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1001)), 'factory_api_app', 1)
+  PERFORM dbtest.expect_true('the worker group cannot delete a repository',
+    dbtest.run_as(format($q$DELETE FROM repositories WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1001)), 'factory_app', 1)
       LIKE 'ERR:42501:permission denied for table repositories');
 END
 $$;
@@ -284,17 +274,17 @@ BEGIN
   PERFORM dbtest.expect_true('control: with the check and the record dropped, a repository with no map is enabled',
     dbtest.run_as(enable_it, 'factory_app', 2, 'ALTER TABLE repositories DROP CONSTRAINT repositories_enabled_needs_project_map; ALTER TABLE repositories DROP CONSTRAINT repositories_enabled_record_is_complete') = 'rows=1');
   PERFORM dbtest.expect_true('control: with the format check dropped, a branch name is taken for a commit',
-    dbtest.run_as(dbtest.set_map('main'), 'factory_api_app', 1, 'ALTER TABLE repositories DROP CONSTRAINT repositories_project_map_commit_check') = 'rows=1');
-  PERFORM dbtest.expect_true('control: with the guard dropped, a service principal attests a map and a caller writes the time',
+    dbtest.run_as(dbtest.set_map('main'), 'factory_app', 1, 'ALTER TABLE repositories DROP CONSTRAINT repositories_project_map_commit_check') = 'rows=1');
+  PERFORM dbtest.expect_true('control: with the guard dropped, a service principal attests a map and a caller writes the time (as the worker group)',
     dbtest.run_as(format($q$UPDATE repositories SET enabled = false, enabled_project_map_commit = NULL, enabled_by_principal_id = NULL, enabled_at = NULL,
                             version = version + 1 WHERE tenant_id = %1$L AND id = %2$L;
                             UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = %3$L,
                             project_map_attested_at = '2001-01-01T00:00:00Z', version = version + 1 WHERE tenant_id = %1$L AND id = %2$L$q$,
-                         dbtest.u(1), dbtest.u(1001), dbtest.u(1003)), 'factory_api_app', 1,
-                  'DROP TRIGGER repositories_project_map_guard ON repositories; GRANT UPDATE (project_map_attested_at, enabled_at) ON repositories TO factory_api_app') = 'rows=1');
-  PERFORM dbtest.expect_true('control: with the grant given back, the API login sets the autonomy ceiling',
+                         dbtest.u(1), dbtest.u(1001), dbtest.u(1003)), 'factory_app', 1,
+                  'DROP TRIGGER repositories_project_map_guard ON repositories; GRANT UPDATE (project_map_attested_at, enabled_at) ON repositories TO factory_app') = 'rows=1');
+  PERFORM dbtest.expect_true('control: with the grant given back, the worker group sets the autonomy ceiling',
     dbtest.run_as(format($q$UPDATE repositories SET autonomy_ceiling = 'L3', version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1001)),
-                  'factory_api_app', 1, 'GRANT UPDATE (autonomy_ceiling) ON repositories TO factory_api_app') = 'rows=1');
+                  'factory_app', 1, 'GRANT UPDATE (autonomy_ceiling) ON repositories TO factory_app') = 'rows=1');
 END
 $$;
 
@@ -354,35 +344,35 @@ DECLARE
   enable_for_a text := format($q$UPDATE repositories SET enabled = true, enabled_project_map_commit = repeat('a', 40), enabled_by_principal_id = %L,
                                   version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1020));
 BEGIN
-  PERFORM dbtest.expect_eq('the API login enables a repository for the commit it names; the database records who and when',
-    dbtest.after(enable_for_a, 'factory_api_app', 1, repo), format('enabled=true for=aaaa by=%s at=now', one));
+  PERFORM dbtest.expect_eq('the worker group enables a repository for the commit it names (the first writer); the database records who and when',
+    dbtest.after(enable_for_a, 'factory_app', 1, repo), format('enabled=true for=aaaa by=%s at=now', one));
   PERFORM dbtest.expect_eq('the worker group enables it the same way',
     dbtest.after(enable_for_a, 'factory_app', 1, repo), format('enabled=true for=aaaa by=%s at=now', one));
   PERFORM dbtest.expect_eq('a writer that names no commit is bound to the commit on file, and the enabler stays empty',
-    dbtest.after('UPDATE repositories SET enabled = true, version = version + 1 ' || scope, 'factory_api_app', 1, repo),
+    dbtest.after('UPDATE repositories SET enabled = true, version = version + 1 ' || scope, 'factory_app', 1, repo),
     'enabled=true for=aaaa by=- at=now');
   PERFORM dbtest.expect_eq('an enable that names another commit than the one on file is refused by the table',
     dbtest.after(replace(enable_for_a, 'enabled_project_map_commit = repeat(''a'', 40)', 'enabled_project_map_commit = repeat(''b'', 40)'),
-                 'factory_api_app', 1, repo),
+                 'factory_app', 1, repo),
     'ERR:23514:repositories_enabled_project_map_commit_matches');
   PERFORM dbtest.expect_eq('a service principal cannot be the enabler',
-    dbtest.after(replace(enable_for_a, one::text, dbtest.u(1003)::text), 'factory_api_app', 1, repo),
+    dbtest.after(replace(enable_for_a, one::text, dbtest.u(1003)::text), 'factory_app', 1, repo),
     'ERR:23514:repositories_enabler_is_an_active_human');
   PERFORM dbtest.expect_eq('a disabled person cannot be the enabler',
-    dbtest.after(replace(enable_for_a, one::text, dbtest.u(1005)::text), 'factory_api_app', 1, repo),
+    dbtest.after(replace(enable_for_a, one::text, dbtest.u(1005)::text), 'factory_app', 1, repo),
     'ERR:23514:repositories_enabler_is_an_active_human');
   PERFORM dbtest.expect_eq('a person of another tenant cannot be the enabler',
-    dbtest.after(replace(enable_for_a, one::text, dbtest.u(2002)::text), 'factory_api_app', 1, repo),
+    dbtest.after(replace(enable_for_a, one::text, dbtest.u(2002)::text), 'factory_app', 1, repo),
     'ERR:23514:repositories_enabler_is_an_active_human');
-  PERFORM dbtest.expect_true('the API login cannot write the time of the enabling (the database does)',
-    dbtest.run_as('UPDATE repositories SET enabled_at = now(), version = version + 1 ' || scope, 'factory_api_app', 1)
+  PERFORM dbtest.expect_true('the worker group cannot write the time of the enabling (the database does)',
+    dbtest.run_as('UPDATE repositories SET enabled_at = now(), version = version + 1 ' || scope, 'factory_app', 1)
       LIKE 'ERR:42501:permission denied for table repositories');
-  PERFORM dbtest.expect_true('the worker group cannot write it either',
+  PERFORM dbtest.expect_true('the worker group cannot write it either (again)',
     dbtest.run_as('UPDATE repositories SET enabled_at = now(), version = version + 1 ' || scope, 'factory_app', 1)
       LIKE 'ERR:42501:permission denied for table repositories');
   PERFORM dbtest.expect_eq('a repository that is disabled keeps no record, whatever the statement writes',
     dbtest.after(format($q$UPDATE repositories SET enabled_project_map_commit = repeat('a', 40), enabled_by_principal_id = %L,
-                            version = version + 1 %s$q$, one, scope), 'factory_api_app', 1, repo),
+                            version = version + 1 %s$q$, one, scope), 'factory_app', 1, repo),
     'enabled=false for=- by=- at=none');
 END
 $$;
@@ -402,48 +392,48 @@ DECLARE
   off text := 'enabled=false for=- by=- at=none';
 BEGIN
   PERFORM dbtest.expect_eq('a time written by the caller is replaced by the time of the database',
-    dbtest.after('SELECT 1', 'factory_api_app', 1, repo), kept);
+    dbtest.after('SELECT 1', 'factory_app', 1, repo), kept);
 
   -- The rule of REG-1: the map moves, the repository is switched off, and the record goes with it.
-  PERFORM dbtest.expect_eq('REG-1: attesting another commit on an enabled repository switches it off (API login)',
+  PERFORM dbtest.expect_eq('REG-1: attesting another commit on an enabled repository switches it off (worker group)',
     dbtest.after(format($q$UPDATE repositories SET project_map_commit = repeat('b', 40), project_map_attested_by_principal_id = %L,
-                            version = version + 1 %s$q$, one, scope), 'factory_api_app', 1, repo), off);
+                            version = version + 1 %s$q$, one, scope), 'factory_app', 1, repo), off);
   PERFORM dbtest.expect_eq('REG-1: the same, as the worker group',
     dbtest.after(format($q$UPDATE repositories SET project_map_commit = repeat('b', 40), project_map_attested_by_principal_id = %L,
                             version = version + 1 %s$q$, one, scope), 'factory_app', 1, repo), off);
   PERFORM dbtest.expect_eq('REG-1: another person attesting the same commit switches it off too',
     dbtest.after(format($q$UPDATE repositories SET project_map_attested_by_principal_id = %L, version = version + 1 %s$q$, two, scope),
-                 'factory_api_app', 1, repo), off);
+                 'factory_app', 1, repo), off);
   PERFORM dbtest.expect_eq('REG-1: a statement that says enabled = true with another commit is overruled',
     dbtest.after(format($q$UPDATE repositories SET enabled = true, project_map_commit = repeat('b', 40), enabled_project_map_commit = repeat('b', 40),
-                            project_map_attested_by_principal_id = %L, version = version + 1 %s$q$, one, scope), 'factory_api_app', 1, repo), off);
+                            project_map_attested_by_principal_id = %L, version = version + 1 %s$q$, one, scope), 'factory_app', 1, repo), off);
   PERFORM dbtest.expect_eq('REG-1: removing the map switches the repository off, and the attestation goes with it',
     dbtest.after(format($q$UPDATE repositories SET project_map_commit = NULL, project_map_attested_by_principal_id = NULL,
-                            version = version + 1 %s$q$, scope), 'factory_api_app', 1, repo), off);
+                            version = version + 1 %s$q$, scope), 'factory_app', 1, repo), off);
   PERFORM dbtest.expect_eq('the sibling: attesting the same commit by the same person changes nothing',
     dbtest.after(format($q$UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = %L,
-                            version = version + 1 %s$q$, one, scope), 'factory_api_app', 1, repo), kept);
+                            version = version + 1 %s$q$, one, scope), 'factory_app', 1, repo), kept);
   PERFORM dbtest.expect_eq('while it stays enabled, a writer cannot rewrite who or for which commit',
     dbtest.after(format($q$UPDATE repositories SET enabled_by_principal_id = %L, enabled_project_map_commit = repeat('a', 40),
-                            version = version + 1 %s$q$, two, scope), 'factory_api_app', 1, repo), kept);
+                            version = version + 1 %s$q$, two, scope), 'factory_app', 1, repo), kept);
 
   -- Disabling by hand empties the record, and nothing the statement writes keeps it.
   PERFORM dbtest.expect_eq('disabling empties the record of the enabling',
-    dbtest.after('UPDATE repositories SET enabled = false, version = version + 1 ' || scope, 'factory_api_app', 1, repo), off);
+    dbtest.after('UPDATE repositories SET enabled = false, version = version + 1 ' || scope, 'factory_app', 1, repo), off);
   PERFORM dbtest.expect_eq('a record written in the statement that disables is not kept',
     dbtest.after(format($q$UPDATE repositories SET enabled = false, enabled_by_principal_id = %L, version = version + 1 %s$q$, two, scope),
-                 'factory_api_app', 1, repo), off);
+                 'factory_app', 1, repo), off);
 
   -- A repository that is disabled may be mapped again and enabled again, in one statement or in two.
   PERFORM dbtest.expect_eq('the sibling: from disabled, another commit attested and enabled for in one statement is enabled for that commit',
     dbtest.after(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
                  format($q$UPDATE repositories SET enabled = true, project_map_commit = repeat('b', 40), enabled_project_map_commit = repeat('b', 40),
                             project_map_attested_by_principal_id = %L, enabled_by_principal_id = %L, version = version + 1 %s$q$, two, two, scope),
-                 'factory_api_app', 1, repo), format('enabled=true for=bbbb by=%s at=now', two));
+                 'factory_app', 1, repo), format('enabled=true for=bbbb by=%s at=now', two));
   PERFORM dbtest.expect_eq('the sibling: from disabled, attesting another commit leaves it disabled',
     dbtest.after(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
                  format($q$UPDATE repositories SET project_map_commit = repeat('b', 40), project_map_attested_by_principal_id = %L,
-                            version = version + 1 %s$q$, two, scope), 'factory_api_app', 1, repo), off);
+                            version = version + 1 %s$q$, two, scope), 'factory_app', 1, repo), off);
 END
 $$;
 
@@ -460,33 +450,33 @@ DECLARE
   -- With the trigger gone nothing empties the record, so the statement that disables does it by hand.
   disable_by_hand text := format($q$UPDATE repositories SET enabled = false, enabled_project_map_commit = NULL, enabled_by_principal_id = NULL,
                                    enabled_at = NULL, version = version + 1 %s$q$, format('WHERE tenant_id = %L AND id = %L', dbtest.u(1), dbtest.u(1020)));
-  grant_time text := 'GRANT UPDATE (enabled_at) ON repositories TO factory_api_app';
+  grant_time text := 'GRANT UPDATE (enabled_at) ON repositories TO factory_app';
   drop_guard text := 'DROP TRIGGER repositories_project_map_guard ON repositories';
   drop_matches text := 'ALTER TABLE repositories DROP CONSTRAINT repositories_enabled_project_map_commit_matches';
   drop_complete text := 'ALTER TABLE repositories DROP CONSTRAINT repositories_enabled_record_is_complete';
 BEGIN
   PERFORM dbtest.expect_eq('control: with the trigger dropped, the CHECK is the second guard and refuses the re-attestation of an enabled repository',
-    dbtest.after(re_attest, 'factory_api_app', 1, repo, drop_guard), 'ERR:23514:repositories_enabled_project_map_commit_matches');
+    dbtest.after(re_attest, 'factory_app', 1, repo, drop_guard), 'ERR:23514:repositories_enabled_project_map_commit_matches');
   PERFORM dbtest.expect_eq('control: with the trigger and that CHECK dropped, the repository stays enabled over a map nobody enabled it for (REG-1)',
-    dbtest.after(re_attest, 'factory_api_app', 1, repo, drop_guard || ';' || drop_matches), format('enabled=true for=aaaa by=%s at=now', one));
+    dbtest.after(re_attest, 'factory_app', 1, repo, drop_guard || ';' || drop_matches), format('enabled=true for=aaaa by=%s at=now', one));
   PERFORM dbtest.expect_eq('control: with the CHECK dropped, an enable that names another commit goes through',
     dbtest.after(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
                  format($q$UPDATE repositories SET enabled = true, project_map_commit = repeat('b', 40), project_map_attested_by_principal_id = %L,
                             enabled_project_map_commit = repeat('c', 40), version = version + 1 %s$q$, one, scope),
-                 'factory_api_app', 1, repo, drop_matches), 'enabled=true for=cccc by=- at=now');
+                 'factory_app', 1, repo, drop_matches), 'enabled=true for=cccc by=- at=now');
   PERFORM dbtest.expect_eq('control: with the trigger dropped, a service principal is accepted as the enabler',
     dbtest.after(disable_by_hand || ';' ||
                  format($q$UPDATE repositories SET enabled = true, enabled_project_map_commit = repeat('a', 40), enabled_at = now(),
                             enabled_by_principal_id = %L, version = version + 1 %s$q$, dbtest.u(1003), scope),
-                 'factory_api_app', 1, repo, drop_guard || ';' || grant_time),
+                 'factory_app', 1, repo, drop_guard || ';' || grant_time),
     format('enabled=true for=aaaa by=%s at=now', dbtest.u(1003)));
   PERFORM dbtest.expect_eq('control: with the trigger dropped, a plain enable leaves no record and the CHECK refuses it',
     dbtest.after(disable_by_hand || ';' ||
-                 format($q$UPDATE repositories SET enabled = true, version = version + 1 %s$q$, scope), 'factory_api_app', 1, repo, drop_guard || ';' || grant_time),
+                 format($q$UPDATE repositories SET enabled = true, version = version + 1 %s$q$, scope), 'factory_app', 1, repo, drop_guard || ';' || grant_time),
     'ERR:23514:repositories_enabled_record_is_complete');
   PERFORM dbtest.expect_eq('control: with the trigger and the completeness CHECK dropped, it is enabled with no record',
     dbtest.after(disable_by_hand || ';' ||
-                 format($q$UPDATE repositories SET enabled = true, version = version + 1 %s$q$, scope), 'factory_api_app', 1, repo, drop_guard || ';' || drop_complete || ';' || grant_time),
+                 format($q$UPDATE repositories SET enabled = true, version = version + 1 %s$q$, scope), 'factory_app', 1, repo, drop_guard || ';' || drop_complete || ';' || grant_time),
     'enabled=true for=- by=- at=none');
 END
 $$;
@@ -524,8 +514,8 @@ BEGIN
       WHERE table_schema = 'public' AND table_name = 'repositories' AND column_name = 'single_maintainer'), 'boolean:NO:false');
   PERFORM dbtest.expect_eq('a repository written without the flag is a strict one',
     (SELECT single_maintainer FROM repositories WHERE id = strict_repo), false);
-  PERFORM dbtest.expect_eq('REG-6: the person who attested the map cannot enable the repository (API login)',
-    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_api_app', 1, strict_repo), refused);
+  PERFORM dbtest.expect_eq('REG-6: the person who attested the map cannot enable the repository (worker group)',
+    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_app', 1, strict_repo), refused);
   PERFORM dbtest.expect_eq('REG-6: nor as the group of the worker',
     dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_app', 1, strict_repo), refused);
   PERFORM dbtest.expect_error('REG-6: nor as the table owner (the rule is in the table)',
@@ -537,9 +527,9 @@ BEGIN
                       dbtest.u(1), dbtest.u(1032), attestor, attestor),
     '23514', NULL, 'repositories_enabler_differs_from_attestor');
   PERFORM dbtest.expect_eq('the sibling: another active person of the tenant can enable it, and the record names them',
-    dbtest.after(dbtest.enable_by(strict_repo, other), 'factory_api_app', 1, strict_repo), format('enabled=true for=dddd by=%s at=now', other));
+    dbtest.after(dbtest.enable_by(strict_repo, other), 'factory_app', 1, strict_repo), format('enabled=true for=dddd by=%s at=now', other));
   PERFORM dbtest.expect_eq('the sibling: a single-maintainer repository can be enabled by the person who attested the map',
-    dbtest.after(dbtest.enable_by(single_repo, attestor), 'factory_api_app', 1, single_repo), format('enabled=true for=dddd by=%s at=now', attestor));
+    dbtest.after(dbtest.enable_by(single_repo, attestor), 'factory_app', 1, single_repo), format('enabled=true for=dddd by=%s at=now', attestor));
   PERFORM dbtest.expect_eq('the sibling: so can the group of the worker enable it',
     dbtest.after(dbtest.enable_by(single_repo, attestor), 'factory_app', 1, single_repo), format('enabled=true for=dddd by=%s at=now', attestor));
 END
@@ -554,26 +544,28 @@ DECLARE
   register text := format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, single_maintainer)
                               VALUES (%L, %L, 9404, 8404, 'org1/api-single_repo', 'main', true)$q$, dbtest.u(1), dbtest.u(1033));
 BEGIN
-  PERFORM dbtest.expect_eq('the API login registers a repository as a single-maintainer one', dbtest.run_as(register, 'factory_api_app', 1), 'rows=1');
-  PERFORM dbtest.expect_true('the API login cannot write the flag of another tenant than the one it named',
-    dbtest.run_as(replace(register, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_api_app', 1) LIKE 'ERR:42501:%');
+  PERFORM dbtest.expect_eq('the worker group registers a repository as a single-maintainer one (at registration, from a signed request)', dbtest.run_as(register, 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_true('the worker group cannot write the flag of another tenant than the one it named',
+    dbtest.run_as(replace(register, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_app', 1) LIKE 'ERR:42501:%');
+  PERFORM dbtest.expect_true('the API login cannot register a repository at all, with the flag or without it (section 12)',
+    dbtest.run_as(register, 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table repositories');
   PERFORM dbtest.expect_true('the API login cannot change the flag afterwards (no grant)',
     dbtest.run_as('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_api_app', 1)
       LIKE 'ERR:42501:permission denied for table repositories');
   PERFORM dbtest.expect_true('the group of the worker cannot change it either (no grant)',
     dbtest.run_as('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_app', 1)
       LIKE 'ERR:42501:permission denied for table repositories');
-  PERFORM dbtest.expect_eq('control: with the grant given, the trigger still refuses the API login (the second guard)',
+  PERFORM dbtest.expect_eq('control: with the grant given, a trigger still refuses the API login (the second guard; migration 2026-11-03-002700 refuses it first)',
     dbtest.after('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_api_app', 1, single_repo,
                  'GRANT UPDATE (single_maintainer) ON repositories TO factory_api_app'),
-    'ERR:23514:repositories_single_maintainer_is_set_at_registration');
+    'ERR:42501:');
   PERFORM dbtest.expect_eq('control: with the grant given, the trigger still refuses the group of the worker',
     dbtest.after('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_app', 1, single_repo,
                  'GRANT UPDATE (single_maintainer) ON repositories TO factory_app'),
     'ERR:23514:repositories_single_maintainer_is_set_at_registration');
-  PERFORM dbtest.expect_eq('control: with the grant given and the trigger dropped, the API login changes the flag',
+  PERFORM dbtest.expect_eq('control: with the grant given and both triggers dropped, the API login changes the flag',
     dbtest.run_as('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_api_app', 1,
-                  'GRANT UPDATE (single_maintainer) ON repositories TO factory_api_app; DROP TRIGGER repositories_project_map_guard ON repositories'),
+                  'GRANT UPDATE (single_maintainer) ON repositories TO factory_api_app; DROP TRIGGER repositories_project_map_guard ON repositories; DROP TRIGGER repositories_api_may_only_disable ON repositories'),
     'rows=1');
   PERFORM dbtest.expect_ok('the table owner, who is an administrator and not a login of the factory, can change the flag (the documented path)',
     'UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope);
@@ -589,16 +581,101 @@ DECLARE
   drop_guard text := 'DROP TRIGGER repositories_project_map_guard ON repositories';
   drop_check text := 'ALTER TABLE repositories DROP CONSTRAINT repositories_enabler_differs_from_attestor';
   -- With the trigger gone nothing stamps the time of the enabling, so the statement writes it and the grant is given.
-  grant_time text := 'GRANT UPDATE (enabled_at) ON repositories TO factory_api_app';
+  grant_time text := 'GRANT UPDATE (enabled_at) ON repositories TO factory_app';
   with_time text := replace(dbtest.enable_by(dbtest.u(1030), dbtest.u(1002)), 'enabled = true,', 'enabled = true, enabled_at = now(),');
 BEGIN
   PERFORM dbtest.expect_eq('control: with the trigger dropped, the CHECK refuses the attestor as the enabler',
-    dbtest.after(with_time, 'factory_api_app', 1, strict_repo, drop_guard || ';' || grant_time), 'ERR:23514:repositories_enabler_differs_from_attestor');
+    dbtest.after(with_time, 'factory_app', 1, strict_repo, drop_guard || ';' || grant_time), 'ERR:23514:repositories_enabler_differs_from_attestor');
   PERFORM dbtest.expect_eq('control: with the trigger and the CHECK dropped, the attestor enables a strict repository (REG-6)',
-    dbtest.after(with_time, 'factory_api_app', 1, strict_repo, drop_guard || ';' || drop_check || ';' || grant_time),
+    dbtest.after(with_time, 'factory_app', 1, strict_repo, drop_guard || ';' || drop_check || ';' || grant_time),
     format('enabled=true for=dddd by=%s at=now', attestor));
   PERFORM dbtest.expect_eq('control: with only the CHECK dropped, the trigger still refuses',
-    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_api_app', 1, strict_repo, drop_check), 'ERR:23514:repositories_enabler_differs_from_attestor');
+    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_app', 1, strict_repo, drop_check), 'ERR:23514:repositories_enabler_differs_from_attestor');
+END
+$$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 12. Register, attest and enable are signed requests that the worker applies (migration 2026-11-03-002700, finding
+--     REG-2). The login of the API can append the request and can switch a repository off, and it can do nothing else to
+--     the table. Each refusal has a sibling that is accepted and a control that drops the guard and shows the guard matters.
+
+INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
+                          project_map_commit, project_map_attested_by_principal_id, single_maintainer)
+  VALUES (dbtest.u(1), dbtest.u(1040), 9501, 8501, 'org1/api-guard', 'main', repeat('e', 40), dbtest.u(1002), true);
+SELECT dbtest.exec(format($q$UPDATE repositories SET enabled = true, enabled_by_principal_id = %L, version = version + 1
+                              WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1040)));
+
+CREATE FUNCTION dbtest.api_audit(p_action text) RETURNS text LANGUAGE sql AS $$
+  SELECT format($q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason,
+                       policy_hash, correlation_id)
+                       VALUES (%L, %L, 'human', 'p1', %L, 'subject', 'record', 'because', %L, %L)$q$,
+                dbtest.u(1), gen_random_uuid(), p_action, dbtest.sha('policy'), gen_random_uuid())
+$$;
+
+DO $$
+DECLARE
+  repo uuid := dbtest.u(1040);
+  scope text := format('WHERE tenant_id = %L AND id = %L', dbtest.u(1), dbtest.u(1040));
+  register text := format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
+                              VALUES (%L, %L, 9502, 8502, 'org1/api-register', 'main')$q$, dbtest.u(1), dbtest.u(1041));
+  col text;
+  denied text := 'ERR:42501:permission denied for table repositories';
+BEGIN
+  -- It cannot register, attest or enable: no grant.
+  PERFORM dbtest.expect_true('REG-2: the API login cannot register a repository', dbtest.run_as(register, 'factory_api_app', 1) LIKE denied);
+  FOREACH col IN ARRAY ARRAY['project_map_commit', 'project_map_attested_by_principal_id', 'enabled_project_map_commit',
+                             'enabled_by_principal_id', 'autonomy_ceiling', 'protection_preflight_passed', 'single_maintainer'] LOOP
+    PERFORM dbtest.expect_true('REG-2: the API login cannot update ' || col,
+      dbtest.run_as(format($q$UPDATE repositories SET %I = %I, version = version + 1 %s$q$, col, col, scope), 'factory_api_app', 1) LIKE denied, col);
+  END LOOP;
+  PERFORM dbtest.expect_true('REG-2: the API login cannot enable a repository that is off',
+    dbtest.run_as(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
+                  format($q$UPDATE repositories SET enabled = true, version = version + 1 %s$q$, scope), 'factory_api_app', 1)
+      LIKE 'ERR:42501:the API login may only switch a repository off');
+  -- It may switch a repository off, and a switch-off of a repository that is off.
+  PERFORM dbtest.expect_eq('the sibling: the API login switches an enabled repository off', dbtest.run_as(
+    format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope), 'factory_api_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the sibling: and the repository is off, with the record of the enabling emptied',
+    dbtest.after(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope), 'factory_api_app', 1, repo),
+    'enabled=false for=- by=- at=none');
+  PERFORM dbtest.expect_eq('the sibling: switching off a repository that is off is allowed and raises the version',
+    dbtest.after(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
+                 format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope), 'factory_api_app', 1, repo),
+    'enabled=false for=- by=- at=none');
+  -- The second guard: the grant of `enabled` alone would let it switch ON, and the trigger does not.
+  PERFORM dbtest.expect_true('control: with the trigger dropped, the grant of `enabled` alone lets the API login switch a repository on',
+    dbtest.run_as(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
+                  format($q$UPDATE repositories SET enabled = true, version = version + 1 %s$q$, scope), 'factory_api_app', 1,
+                  'DROP TRIGGER repositories_api_may_only_disable ON repositories') LIKE 'rows=%');
+  PERFORM dbtest.expect_true('control: with the column granted back, the trigger still refuses the API login a change of the map',
+    dbtest.run_as(format($q$UPDATE repositories SET project_map_commit = repeat('1', 40), version = version + 1 %s$q$, scope), 'factory_api_app', 1,
+                  'GRANT UPDATE (project_map_commit) ON repositories TO factory_api_app')
+      LIKE 'ERR:42501:the API login may only switch a repository off');
+  PERFORM dbtest.expect_true('control: with the column granted back and the trigger dropped, the API login changes the map (REG-2)',
+    dbtest.run_as(format($q$UPDATE repositories SET project_map_commit = repeat('1', 40), version = version + 1 %s$q$, scope), 'factory_api_app', 1,
+                  'GRANT UPDATE (project_map_commit) ON repositories TO factory_api_app; DROP TRIGGER repositories_api_may_only_disable ON repositories') LIKE 'rows=%');
+  PERFORM dbtest.expect_true('control: with the column granted back, the trigger refuses a change of the name as well (the whole row is compared)',
+    dbtest.run_as(format($q$UPDATE repositories SET full_name = 'org1/renamed', version = version + 1 %s$q$, scope), 'factory_api_app', 1,
+                  'GRANT UPDATE (full_name) ON repositories TO factory_api_app')
+      LIKE 'ERR:42501:the API login may only switch a repository off');
+  PERFORM dbtest.expect_true('a switch-off that also changes the name is refused (a change with the off, not an off alone)',
+    dbtest.run_as(format($q$UPDATE repositories SET enabled = false, full_name = 'org1/renamed', version = version + 1 %s$q$, scope), 'factory_api_app', 1,
+                  'GRANT UPDATE (full_name) ON repositories TO factory_api_app')
+      LIKE 'ERR:42501:the API login may only switch a repository off');
+  -- The worker's group and the owner are not bound by it: they apply the requests.
+  PERFORM dbtest.expect_eq('the worker group is not bound by the trigger of the API login: it enables a repository',
+    dbtest.after(format($q$UPDATE repositories SET enabled = false, version = version + 1 %s$q$, scope) || ';' ||
+                 format($q$UPDATE repositories SET enabled = true, enabled_project_map_commit = repeat('e', 40), enabled_by_principal_id = %L, version = version + 1 %s$q$, dbtest.u(1002), scope),
+                 'factory_app', 1, repo), format('enabled=true for=eeee by=%s at=now', dbtest.u(1002)));
+  -- The audit actions: the request, and the disable; not the three acts that widen the reach.
+  PERFORM dbtest.expect_ok('REG-2: the API login may append a repository.change_requested record',
+    dbtest.api_audit('repository.change_requested'), 'factory_api_app', 1);
+  PERFORM dbtest.expect_ok('and a repository.disabled record', dbtest.api_audit('repository.disabled'), 'factory_api_app', 1);
+  FOREACH col IN ARRAY ARRAY['repository.registered', 'repository.map_attested', 'repository.enabled', 'repository.change_applied'] LOOP
+    PERFORM dbtest.expect_error('REG-2: the API login may not write ' || col, dbtest.api_audit(col), '42501', 'factory_api_app', NULL, NULL, 1);
+  END LOOP;
+  PERFORM dbtest.expect_ok('the worker group writes the result of a request: ' || 'repository.registered',
+    dbtest.api_audit('repository.registered'), 'factory_app', 1);
 END
 $$;
 

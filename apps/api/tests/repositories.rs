@@ -42,7 +42,20 @@ fn attestation() -> Value {
     json!({"commit": COMMIT, "reason": REASON})
 }
 
+/// Posts a change. Register, attest and enable are signed requests (finding REG-2): the API answers `202`,
+/// and the worker applies them. So that the tests of the path read what a person reads once the worker has
+/// run, a `202` is followed by one pass of the worker's step and answered with the old status and body:
+/// `201` for a registration, `200` for the others, the repository and `changed`, or `409` and the code
+/// of a refusal. Use [`post_raw`] for the answer as the API gave it.
 async fn post(env: &Env, person: &Person, path: &str, key: &str, body: &Value) -> Reply {
+    let accepted = post_raw(env, person, path, key, body).await;
+    if accepted.status != 202 {
+        return accepted;
+    }
+    settled(env, person, accepted).await
+}
+
+async fn post_raw(env: &Env, person: &Person, path: &str, key: &str, body: &Value) -> Reply {
     env.send(
         Req::post(path)
             .bearer(&person.token)
@@ -50,6 +63,41 @@ async fn post(env: &Env, person: &Person, path: &str, key: &str, body: &Value) -
             .json(body),
     )
     .await
+}
+
+fn reply_of(status: u16, body: &Value) -> Reply {
+    Reply {
+        status,
+        headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+        body: serde_json::to_vec(body).expect("json"),
+    }
+}
+
+/// Lets the worker apply what was asked, and answers as the route did before the request existed.
+async fn settled(env: &Env, person: &Person, accepted: Reply) -> Reply {
+    let body = accepted.json();
+    env.apply_repository_changes().await;
+    let request = body["request_id"]
+        .as_str()
+        .expect("a request id")
+        .to_owned();
+    let state = get(env, person, &format!("/v1/repository-changes/{request}")).await;
+    assert_eq!(state.status, 200, "{}", state.text());
+    let state = state.json();
+    match state["state"].as_str() {
+        Some("applied") => {
+            let repository = body["repository_id"].as_str().expect("an id");
+            let shown = get(env, person, &format!("/v1/repositories/{repository}")).await;
+            assert_eq!(shown.status, 200, "{}", shown.text());
+            let created = body["kind"] == "register" && body["changed"] == true;
+            reply_of(
+                if created { 201 } else { 200 },
+                &json!({"repository": shown.json(), "changed": body["changed"]}),
+            )
+        }
+        Some("refused") => reply_of(409, &json!({"error": state["code"]})),
+        _ => accepted,
+    }
 }
 
 async fn get(env: &Env, person: &Person, path: &str) -> Reply {
@@ -148,7 +196,7 @@ async fn audit_actions(env: &Env) -> String {
     env.db
         .text(
             "SELECT coalesce(string_agg(action, ',' ORDER BY sequence), '') FROM audit_events \
-              WHERE action LIKE 'repository.%'",
+              WHERE action LIKE 'repository.%' AND action <> 'repository.change_requested'",
         )
         .await
         .unwrap_or_default()
@@ -700,8 +748,10 @@ async fn enabling_without_a_map_is_refused_by_the_database_itself() {
         ))
         .await;
     let message = format!("{refused:?}");
+    // Since migration 2026-11-03-002700 the API login may only switch a repository off (REG-2): a trigger
+    // refuses the statement before the CHECK is reached. The CHECK is still the guard for every other writer.
     assert!(
-        refused.is_err() && message.contains("repositories_enabled_needs_project_map"),
+        refused.is_err() && message.contains("the API login may only switch a repository off"),
         "{message}"
     );
     let _ = api.batch_execute("ROLLBACK").await;
@@ -714,9 +764,10 @@ async fn enabling_without_a_map_is_refused_by_the_database_itself() {
              UPDATE repositories SET enabled = true, version = version + 1 WHERE id = '{id}'; COMMIT;"
         ))
         .await;
+    let message = format!("{refused:?}");
     assert!(
-        refused.is_err(),
-        "the worker enabled a repository with no map"
+        refused.is_err() && message.contains("repositories_enabled_needs_project_map"),
+        "the worker enabled a repository with no map: {message}"
     );
     let _ = worker.batch_execute("ROLLBACK").await;
 
@@ -1037,7 +1088,7 @@ async fn attesting_another_map_switches_an_enabled_repository_off_and_it_must_be
     );
     let disabled = env
         .db
-        .text("SELECT reason || ' / ' || actor_id FROM audit_events WHERE action = 'repository.disabled'")
+        .text("SELECT reason || ' / ' || actor_type FROM audit_events WHERE action = 'repository.disabled'")
         .await
         .expect("the record of the switch-off");
     assert!(
@@ -1045,8 +1096,18 @@ async fn attesting_another_map_switches_an_enabled_repository_off_and_it_must_be
         "{disabled}"
     );
     assert!(
-        disabled.contains(&a.operator.principal.as_uuid().to_string()),
-        "the person who attested is the actor: {disabled}"
+        disabled.ends_with("/ system"),
+        "the switch-off the table made is recorded by the system that applied the request: {disabled}"
+    );
+    assert_eq!(
+        env.db
+            .number(&format!(
+                "SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested' AND actor_id = '{}'",
+                a.operator.principal.as_uuid()
+            ))
+            .await,
+        4,
+        "and the person's own acts are the four requests: register, attest, attest, and the attest of the same commit that changed nothing"
     );
     assert!(chain_is_sound(&env).await);
     let dropped = env
@@ -1205,15 +1266,15 @@ async fn control_without_the_table_rule_an_enabled_repository_stays_enabled_over
     env.stop().await;
 }
 
-/// The table holds the rule for a writer that is not the API: the login of the API, in raw SQL,
+/// The table holds the rule for a writer that is not the API: the login of the worker, in raw SQL,
 /// changes the commit of an enabled repository and the row comes back disabled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_raw_write_of_another_map_switches_an_enabled_repository_off_for_the_api_login_too() {
+async fn a_raw_write_of_another_map_switches_an_enabled_repository_off_for_the_workers_login_too() {
     let env = Env::start().await;
     let id = enabled_for_the_first_map(&env).await;
     let tenant = env.a.id.as_uuid();
     let logins = env.db.server.logins().await;
-    let mut api = env.db.connect_as(&logins.api).await;
+    let mut api = env.db.connect_as(&logins.worker).await;
     api.batch_execute(&format!(
         "BEGIN; SELECT set_config('factory.tenant_id', '{tenant}', true); \
          UPDATE repositories SET project_map_commit = '{OTHER_COMMIT}', \
@@ -1221,7 +1282,7 @@ async fn a_raw_write_of_another_map_switches_an_enabled_repository_off_for_the_a
         env.a.operator.principal.as_uuid()
     ))
     .await
-    .expect("the API login may attest a map");
+    .expect("the worker login may attest a map");
     assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
     assert_eq!(flag(&env, &id, "enabled_project_map_commit").await, None);
     assert_eq!(flag(&env, &id, "enabled_by_principal_id").await, None);
@@ -2008,4 +2069,326 @@ async fn a_requester_narrowed_by_the_github_id_starts_no_job_in_a_new_repository
 async fn submit(env: &Env, repository: &str, key: &str, issue: u64) -> Reply {
     let body = json!({"repository_id": repository, "text": "Add a word count command.", "source_ref": format!("org/new-1#{issue}")});
     post(env, &env.a.requester, "/v1/jobs", key, &body).await
+}
+
+/// REG-2: the login of the API can do nothing to a repository but switch it off. A holder of that login's
+/// credentials, in a session that names the tenant, cannot register, attest or enable, and cannot switch a
+/// repository on, with or without a signed request. The sibling: it can switch one off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_api_login_can_do_nothing_to_a_repository_but_switch_it_off() {
+    let env = Env::start().await;
+    let id = enabled_for_the_first_map(&env).await;
+    let tenant = env.a.id.as_uuid();
+    let logins = env.db.server.logins().await;
+    let raw = |statement: String| {
+        format!(
+            "BEGIN; SELECT set_config('factory.tenant_id', '{tenant}', true); {statement}; COMMIT;"
+        )
+    };
+    for (what, statement) in [
+        (
+            "register",
+            "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch) \
+             VALUES ('{tenant}', '0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6b', 1, 2, 'org/raw', 'main')"
+                .replace("{tenant}", &tenant.to_string()),
+        ),
+        (
+            "attest",
+            format!(
+                "UPDATE repositories SET project_map_commit = '{OTHER_COMMIT}', \
+                 project_map_attested_by_principal_id = '{}', version = version + 1 WHERE id = '{id}'",
+                env.a.operator.principal.as_uuid()
+            ),
+        ),
+        (
+            "name the enabler",
+            format!(
+                "UPDATE repositories SET enabled_by_principal_id = '{}', version = version + 1 WHERE id = '{id}'",
+                env.a.operator.principal.as_uuid()
+            ),
+        ),
+        (
+            "change the ceiling",
+            format!("UPDATE repositories SET autonomy_ceiling = 'L3', version = version + 1 WHERE id = '{id}'"),
+        ),
+    ] {
+        let mut api = env.db.connect_as(&logins.api).await;
+        let refused = api.batch_execute(&raw(statement)).await;
+        let message = format!("{refused:?}");
+        assert!(
+            refused.is_err() && message.contains("permission denied"),
+            "{what}: {message}"
+        );
+    }
+    // Switching on is the one thing the column grant of `enabled` would allow, and the trigger refuses it.
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("true"));
+    let mut api = env.db.connect_as(&logins.api).await;
+    api.batch_execute(&raw(format!(
+        "UPDATE repositories SET enabled = false, version = version + 1 WHERE id = '{id}'"
+    )))
+    .await
+    .expect("the API login may switch a repository off");
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
+    let mut api = env.db.connect_as(&logins.api).await;
+    let refused = api
+        .batch_execute(&raw(format!(
+            "UPDATE repositories SET enabled = true, version = version + 1 WHERE id = '{id}'"
+        )))
+        .await;
+    let message = format!("{refused:?}");
+    assert!(
+        refused.is_err() && message.contains("the API login may only switch a repository off"),
+        "{message}"
+    );
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
+    env.stop().await;
+}
+
+// ---- REG-2: register, attest and enable are signed requests that the worker applies ------------------------
+
+async fn change_state(env: &Env, person: &Person, request: &str) -> Reply {
+    get(env, person, &format!("/v1/repository-changes/{request}")).await
+}
+
+/// The API answers 202 and changes nothing; the worker applies the request and the answer to "where does
+/// it stand" follows. A repeat is a repeat and another request under the same key is a conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_that_widens_the_reach_is_a_signed_request_answered_202_and_applied_by_the_worker()
+{
+    let env = Env::start().await;
+    let a = &env.a;
+
+    // 1. Register: recorded, and not applied.
+    let accepted = post_raw(
+        &env,
+        &a.operator,
+        "/v1/repositories",
+        "register-1",
+        &registration(1),
+    )
+    .await;
+    assert_eq!(accepted.status, 202, "{}", accepted.text());
+    let body = accepted.json();
+    assert_eq!(body["state"], "requested");
+    assert_eq!(body["kind"], "register");
+    assert_eq!(body["changed"], true);
+    let request = body["request_id"]
+        .as_str()
+        .expect("a request id")
+        .to_owned();
+    let id = body["repository_id"].as_str().expect("an id").to_owned();
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM repositories WHERE github_repository_id = 8001")
+            .await,
+        0,
+        "the API changed nothing in the table"
+    );
+    assert_eq!(
+        get(&env, &a.operator, &format!("/v1/repositories/{id}"))
+            .await
+            .status,
+        404
+    );
+    let state = change_state(&env, &a.operator, &request).await;
+    assert_eq!(state.status, 200, "{}", state.text());
+    assert_eq!(state.json()["state"], "requested");
+    // The record is the person's own act, signed, and the detail is the name and the branch.
+    let row = env
+        .db
+        .text(&format!(
+            "SELECT actor_type || ' ' || actor_id || ' ' || reason || ' ' || subject FROM audit_events WHERE event_id = '{request}'"
+        ))
+        .await
+        .expect("the request is recorded");
+    assert!(
+        row.starts_with(&format!(
+            "human {} name=org/new-1 branch=main change kind=register ",
+            a.operator.principal.as_text()
+        )),
+        "{row}"
+    );
+    assert!(row.contains(" mac="), "{row}");
+
+    // A repeat of the same key and request is the same request; another request under the key is a conflict.
+    let again = post_raw(
+        &env,
+        &a.operator,
+        "/v1/repositories",
+        "register-1",
+        &registration(1),
+    )
+    .await;
+    assert_eq!(again.status, 202);
+    assert_eq!(again.json()["request_id"], request.as_str());
+    assert_eq!(again.json()["changed"], false);
+    let other = post_raw(
+        &env,
+        &a.operator,
+        "/v1/repositories",
+        "register-1",
+        &registration(2),
+    )
+    .await;
+    assert_eq!(other.status, 409, "{}", other.text());
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'repository.change_requested'"
+            )
+            .await,
+        1
+    );
+
+    // 2. The worker applies it. The result is the system's, and the state follows.
+    env.apply_repository_changes().await;
+    assert_eq!(
+        change_state(&env, &a.operator, &request).await.json()["state"],
+        "applied"
+    );
+    let shown = get(&env, &a.operator, &format!("/v1/repositories/{id}")).await;
+    assert_eq!(shown.status, 200, "{}", shown.text());
+    assert_eq!(shown.json()["enabled"], false);
+    assert_eq!(
+        env.db
+            .text("SELECT actor_type FROM audit_events WHERE action = 'repository.registered'")
+            .await
+            .as_deref(),
+        Some("system")
+    );
+
+    // 3. Attest and enable are the same: 202 and a request, applied later.
+    let attest_accepted = post_raw(
+        &env,
+        &a.operator,
+        &format!("/v1/repositories/{id}/project-map"),
+        "attest-1",
+        &attestation(),
+    )
+    .await;
+    assert_eq!(attest_accepted.status, 202, "{}", attest_accepted.text());
+    assert_eq!(attest_accepted.json()["kind"], "attest");
+    assert_eq!(
+        flag(&env, &id, "project_map_commit").await,
+        None,
+        "not applied yet"
+    );
+    env.apply_repository_changes().await;
+    assert_eq!(
+        flag(&env, &id, "project_map_commit").await.as_deref(),
+        Some(COMMIT)
+    );
+    let enable_accepted = post_raw(
+        &env,
+        &a.approver,
+        &format!("/v1/repositories/{id}/enable"),
+        "enable-1",
+        &json!({"commit": COMMIT}),
+    )
+    .await;
+    assert_eq!(enable_accepted.status, 202, "{}", enable_accepted.text());
+    assert_eq!(
+        flag(&env, &id, "enabled").await.as_deref(),
+        Some("false"),
+        "not applied yet"
+    );
+    env.apply_repository_changes().await;
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("true"));
+    let enabled_by = flag(&env, &id, "enabled_by_principal_id").await;
+    assert_eq!(
+        enabled_by.as_deref(),
+        Some(a.approver.principal.as_text().as_str())
+    );
+
+    // 4. Disabling is direct: 200, at once.
+    let off = post_raw(
+        &env,
+        &a.operator,
+        &format!("/v1/repositories/{id}/disable"),
+        "disable-1",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(off.status, 200, "{}", off.text());
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
+
+    // 5. A request is seen by its own tenant only.
+    let foreign = change_state(&env, &env.b.operator, &request).await;
+    assert_eq!(foreign.status, 404, "{}", foreign.text());
+    let nothing = change_state(&env, &a.operator, "0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6b").await;
+    assert_eq!(nothing.status, 404);
+    assert_eq!(change_state(&env, &a.outsider, &request).await.status, 403);
+    assert!(chain_is_sound(&env).await);
+    env.stop().await;
+}
+
+/// The worker asks the allowlist again when it applies a request (the R-4 rule). A person who was taken
+/// off between the request and the worker's turn changes nothing, and the state says why in a fixed code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_worker_asks_the_allowlist_again_and_a_person_removed_since_the_request_changes_nothing()
+ {
+    let env = Env::start().await;
+    let a = &env.a;
+    let accepted = post_raw(
+        &env,
+        &a.operator,
+        "/v1/repositories",
+        "register-1",
+        &registration(1),
+    )
+    .await;
+    assert_eq!(accepted.status, 202);
+    let request = accepted.json()["request_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    // The operator is taken off the list after the API accepted the request.
+    let plain = the_operators_entry(&env);
+    let all = allowlist_text(&[&env.a, &env.b]);
+    assert!(all.contains(&plain));
+    std::fs::write(
+        env.checkout.join("allowlist/allowlist.yaml"),
+        all.replacen(&plain, "", 1),
+    )
+    .expect("the allowlist without the operator");
+    env.apply_repository_changes().await;
+    let state = change_state(&env, &a.requester, &request).await.json();
+    assert_eq!(state["state"], "refused", "{state}");
+    assert_eq!(state["code"], "not_permitted");
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM repositories WHERE github_repository_id = 8001")
+            .await,
+        0
+    );
+    assert_eq!(
+        env.db
+            .text("SELECT actor_type FROM audit_events WHERE action = 'repository.change_refused'")
+            .await
+            .as_deref(),
+        Some("system")
+    );
+
+    // The sibling: with the entry back, the same operator's next request is applied.
+    std::fs::write(env.checkout.join("allowlist/allowlist.yaml"), all).expect("the allowlist");
+    let id = register(&env, 2).await;
+    assert!(flag(&env, &id, "full_name").await.is_some());
+
+    // A refusal of the worker for a rule of the map comes back in the same form.
+    let early = post_raw(
+        &env,
+        &a.approver,
+        &format!("/v1/repositories/{id}/enable"),
+        "enable-early",
+        &json!({"commit": COMMIT}),
+    )
+    .await;
+    assert_eq!(
+        early.status,
+        409,
+        "the API answers a map that was never attested at once: {}",
+        early.text()
+    );
+    assert_eq!(early.json(), json!({"error": "project_map_not_attested"}));
+    env.stop().await;
 }

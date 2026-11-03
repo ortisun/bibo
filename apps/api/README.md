@@ -49,11 +49,12 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /v1/jobs/{job_id}/gate-reports` | bearer token | any designation | read: the gate reports of the ledger of the job |
 | `GET /v1/jobs/{job_id}/artifacts/{sha256}` | bearer token | any designation | read: one stored document, as an attachment, at most 4 MiB, under a content type the API fixes |
 | `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume, cancel and `unblock`; `approver` for `approve-dependency` and a security approver for `approve-build-code` and `approve-project-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
-| `POST /v1/repositories` | bearer token | `operator` (the action `register_repository`) | `Idempotency-Key` required. Registers a repository of the tenant: disabled, at level `L0`, no project map, whatever the body says (unknown fields are `400`). `201` for a new one, `200` with `"changed": false` for the one the same key made, `409` for a second request under a taken key and for a GitHub repository that is already registered, here or by another tenant (the answer does not say whose) |
-| `GET /v1/repositories/{repository_id}` | bearer token | any designation | read: the repository, the attestation of its project map and what it was enabled for. Another tenant's repository, and one outside the repositories the caller's allowlist entry is narrowed to, have the answer of a missing one |
-| `POST /v1/repositories/{repository_id}/project-map` | bearer token | `operator` (`confirm_project_map`) | `Idempotency-Key` required. Takes `commit` (40 lowercase hexadecimal characters) and a `reason` of 10 to 500 characters. An attestation by a person, not a verification (see below) |
-| `POST /v1/repositories/{repository_id}/enable` | bearer token | `approver` (`enable_repository`) | `Idempotency-Key` required. Takes the `commit` of the map the approver read and an optional `reason`. `409` with the code `project_map_not_attested` until a map was attested, and with `project_map_changed` when the commit is not the one attested now |
-| `POST /v1/repositories/{repository_id}/disable` | bearer token | `operator` (`disable_repository`) | `Idempotency-Key` required. An optional `reason`. Webhooks and job submissions for the repository are dropped from then on |
+| `POST /v1/repositories` | bearer token | `operator` (the action `register_repository`) | `Idempotency-Key` required. Asks to register a repository of the tenant, as a signed request that the worker applies: it will be disabled, at level `L0`, no project map, whatever the body says (unknown fields are `400`). The optional `single_maintainer` (boolean, default false) is written here and never after. `202` with a `request_id`, and with `"changed": false` for the request the same key made; `409` for another request under a taken key. A GitHub repository that is already registered, here or by another tenant, is refused by the worker with the code `conflict` (the state of the request does not say whose) |
+| `GET /v1/repositories/{repository_id}` | bearer token | any designation | read: the repository, the rule about the enabler, whether its people still stand (`standing`), the attestation of its project map and what it was enabled for. Another tenant's repository, and one outside the repositories the caller's allowlist entry is narrowed to, have the answer of a missing one |
+| `POST /v1/repositories/{repository_id}/project-map` | bearer token | `operator` (`confirm_project_map`) | `Idempotency-Key` required. Takes `commit` (40 lowercase hexadecimal characters) and a `reason` of 10 to 500 characters. A signed request that the worker applies: `202`. An attestation by a person, not a verification (see below) |
+| `POST /v1/repositories/{repository_id}/enable` | bearer token | `approver` (`enable_repository`) | `Idempotency-Key` required. Takes the `commit` of the map the approver read and an optional `reason`. A signed request that the worker applies: `202`. `409` at once with the code `project_map_not_attested` until a map was attested, with `project_map_changed` when the commit is not the one attested now, and with `enabler_is_attestor` when the caller attested the map of a strict repository |
+| `POST /v1/repositories/{repository_id}/disable` | bearer token | `operator` (`disable_repository`) | `Idempotency-Key` required. An optional `reason`. The one change the API makes itself, because it only narrows: `200`. Webhooks and job submissions for the repository are dropped from then on |
+| `GET /v1/repository-changes/{request_id}` | bearer token | any designation | where a request to register, attest or enable stands: `requested`, `applied`, or `refused` with a fixed `code` (`not_permitted`, `not_an_active_person`, `not_found`, `conflict`, `project_map_not_attested`, `project_map_changed`, `enabler_is_attestor`, `malformed`, `not_settled`). The answer holds no text of the request. A request of another tenant has the answer of a missing one |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none (GitHub) | the delivery id, the body hash and the event on the same subject revision, in the store |
 
 There is no route that merges or deploys, and a test keeps the words out of the table (ST-05).
@@ -65,9 +66,14 @@ nothing else.
 ### Registering a repository and attesting its project map
 
 `repositories.rs` is the front door of the path in [ADR 0016](../../docs/adr/0016-design-phase-onboarding-and-issue-workflow.md):
-register, attest the map, enable, disable. Unlike a decision, a change to a repository is **applied here**, in the
-caller's transaction, together with its audit record (`repository.registered`, `repository.map_attested`,
-`repository.enabled`, `repository.disabled`). There is no signed request for a worker to apply.
+register, attest the map, enable, disable. Register, attest and enable are the acts that **widen** the factory's reach, so
+they are signed requests, as a decision is (finding REG-2): the API checks the designation and the narrowing, appends one
+`repository.change_requested` record that carries a keyed word, and answers `202`. The worker verifies the word, asks the
+allowlist again by the numeric GitHub id, applies the change through the Store and writes the result as the system
+(`repository.registered`, `repository.map_attested`, `repository.enabled`, or `repository.change_refused` with a fixed
+code). `GET /v1/repository-changes/{request_id}` says where a request stands: `requested`, `applied` or `refused`.
+**Disable** only narrows, so the API does it itself, in the caller's transaction with its record (`repository.disabled`),
+and the table lets the API login do nothing else to a repository (a trigger refuses any other change).
 
 **An attestation is not a verification.** The API holds no GitHub credential and cannot read a repository. It records that
 a person said commit `C` of the default branch holds the project map, with the reason they gave and the time from the
@@ -86,11 +92,13 @@ What keeps the path honest:
   submissions like a disabled one.
 * The database refuses an enabled repository without a map commit for every role (`repositories_enabled_needs_project_map`).
   The API answers the case first, with a typed code, and the table is the guard behind it.
-* The login of the API holds column grants on `repositories` and nothing wider: it inserts seven columns (so a new row is
-  always disabled, at level `L0`, with no protection result; the seventh is `single_maintainer`, which is written here and
-  never updated) and updates four (the enabled flag, the map commit, its attestor and the version). It cannot set the autonomy ceiling or the protection result. The time of the attestation is
-  stamped by a trigger. The suite `api_privileges` lists the grants both ways, and migration `2026-11-02-002400` has the
-  residual risk: whoever holds the credentials of that login can now enable a repository that has a map commit.
+* The login of the API holds two column grants on `repositories` and nothing else: `enabled` and `version`, which a disable
+  writes (migration `2026-11-03-002700`). It cannot insert a repository, write a map commit or an enabler, or set the autonomy
+  ceiling or the protection result, and a trigger refuses any change of a repository by it except one that sets `enabled`
+  to false. The suite `api_privileges` lists the grants both ways. The residual risk is written in the ADR note and in
+  threat T-38: the API process holds the decision key, so a compromise of the process (not a leak of the database
+  credential) can sign a request, and the worker still applies it only as far as the designation of the active person it
+  names allows.
 * The record id is derived from the tenant, the caller, the repository and the `Idempotency-Key`, so a retry finds its
   record and changes nothing, and the same key with another request is `409`. A registration derives its repository id
   from the caller and the key.

@@ -6,7 +6,7 @@
 
 ## Symptom
 
-You need a new key because the old one may have leaked, because a person who could read it has left, or because the schedule says so. A decision request is an audit record that ends with a keyed word. Only the API can make the word. The worker applies a request only when the word is right. A key that leaked lets someone forge a request, so rotate at once.
+You need a new key because the old one may have leaked, because a person who could read it has left, or because the schedule says so. A decision request is an audit record that ends with a keyed word. So is a request to register, confirm or enable a repository, since 2026-11-03 (`repository.change_requested`). Only the API can make the word. The worker applies a request only when the word is right. A key that leaked lets someone forge a request, so rotate at once.
 
 ## Before you begin
 
