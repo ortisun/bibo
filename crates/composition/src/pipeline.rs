@@ -54,7 +54,9 @@ use factory_workflow::stages::approval::{
     ApprovalConfig, ApprovalDeps, ApprovalHandler, ApprovalHandlerDeps, ApprovalService,
 };
 use factory_workflow::stages::architecture::{ArchitectureConfig, ArchitectureDeps};
-use factory_workflow::stages::delivery::{DeliveryConfig, DeliveryDeps, DeliveryHandler};
+use factory_workflow::stages::delivery::{
+    DeliveryConfig, DeliveryDeps, DeliveryHandler, DesignRecheck,
+};
 use factory_workflow::stages::documentation_review::{
     DocsToolchain, DocumentationReviewConfig, DocumentationReviewDeps, DocumentationReviewHandler,
 };
@@ -63,6 +65,7 @@ use factory_workflow::stages::domain_discovery::DomainDiscoveryHandler;
 use factory_workflow::stages::implementation::{
     CommitIdentity, ImplementationConfig, ImplementationDeps, ImplementationHandler, StageBudget,
 };
+use factory_workflow::stages::intake::judge::DesignJudge;
 use factory_workflow::stages::intake::seams::CapabilityProbes;
 use factory_workflow::stages::intake::{IntakeConfig, IntakeDeps, IntakeHandler};
 use factory_workflow::stages::planning::{PlanningConfig, PlanningDeps, PlanningHandler};
@@ -804,6 +807,25 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             host: host.clone(),
             sources: delivery.clone(),
             drift: drift_handle.clone(),
+            // The design is checked again right before the pull request is opened (DG-8): the
+            // same judge as intake, over the same code host, the same rule file (read at every
+            // attempt), the same allowlist and the same way of answering a person on the issue.
+            recheck: DesignRecheck::new(
+                DesignJudge::new(
+                    issues.clone(),
+                    Arc::new(crate::design_gate::FileDesignGatePolicy::new(
+                        policies.source.clone(),
+                    )),
+                    Arc::clone(&policies.engine),
+                    Arc::clone(&redactor),
+                ),
+                allowlist.clone(),
+                Arc::new(crate::design_gate::IssueRefusalReplies::new(
+                    Arc::clone(&host),
+                    Arc::clone(&ids),
+                )),
+                settings.label.clone(),
+            ),
         },
     )))?;
     register(Arc::new(ApprovalHandler::new(

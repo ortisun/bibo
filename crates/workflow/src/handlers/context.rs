@@ -188,6 +188,15 @@ impl Notes {
     pub(crate) fn take_facts(&self) -> Vec<(AuditAction, String)> {
         std::mem::take(&mut self.lock().facts)
     }
+
+    /// The reasons of the facts noted so far, in order, leaving them in place.
+    pub(crate) fn fact_reasons(&self) -> Vec<String> {
+        self.lock()
+            .facts
+            .iter()
+            .map(|(_, reason)| reason.clone())
+            .collect()
+    }
 }
 
 /// Everything `execute` receives.
@@ -314,6 +323,15 @@ impl<'a> StageContext<'a> {
     /// bytes. A reason never holds the text of an issue or of a comment.
     pub fn note_audit_because(&mut self, action: AuditAction, reason: String) {
         self.notes.note_fact(action, reason);
+    }
+
+    /// The reasons of the audit records the handler has noted with
+    /// [`note_audit_because`](Self::note_audit_because) so far, in order. The engine takes the
+    /// records itself when the attempt ends; this reads them without taking them, so that a test
+    /// of a handler can say what the handler put on the record.
+    #[must_use]
+    pub fn noted_reasons(&self) -> Vec<String> {
+        self.notes.fact_reasons()
     }
 }
 

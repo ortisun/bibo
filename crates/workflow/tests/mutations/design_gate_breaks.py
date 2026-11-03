@@ -20,6 +20,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 HANDLER = "crates/workflow/src/stages/intake/handler.rs"
+JUDGE = "crates/workflow/src/stages/intake/judge.rs"
 DESIGN = "crates/workflow/src/stages/intake/design.rs"
 DOMAIN = "crates/domain/src/policy/issue_workflow.rs"
 AUTHORIZE = "crates/workflow/src/stages/intake/authorize.rs"
@@ -33,11 +34,11 @@ BREAKS = [
     ),
     (
         "read no design labels at all, as if the issue were a small change",
-        [(HANDLER, "        let mut labels = rule.classify(&fetched.labels);", "        let mut labels = rule.classify(&[]);")],
+        [(JUDGE, "        let mut labels = rule.classify(&fetched.labels);", "        let mut labels = rule.classify(&[]);")],
     ),
     (
         "take the person who applied the approval from the factory label instead of from the approved label",
-        [(HANDLER, "                .label_application(&scope, issue, rule.approved_label())", "                .label_application(&scope, issue, &self.config.label)")],
+        [(JUDGE, "                .label_application(scope, issue, rule.approved_label())", "                .label_application(scope, issue, \"factory\")")],
     ),
     (
         "hold the person who applied the approval to the requester designation",
@@ -61,7 +62,7 @@ BREAKS = [
     ),
     (
         "the gate reports PASSED when the design is not approved",
-        [(DESIGN, "                \"BLOCKED\",\n                \"The design is not approved\",", "                \"PASSED\",\n                \"The design is not approved\",")],
+        [(DESIGN, "                \"BLOCKED\",\n                report_title(reason),", "                \"PASSED\",\n                report_title(reason),")],
     ),
     (
         "match the design prefix with the case of the letters",
@@ -81,11 +82,11 @@ BREAKS = [
     # ---- the fixes of the security review of the design gate (DG-1 to DG-7) ----
     (
         "DG-2: the track is not sticky, a design label taken off leaves the track",
-        [(HANDLER, "            labels = rule.classify_past(&applied_before);", "            let _ = &applied_before;")],
+        [(JUDGE, "            labels = rule.classify_past(&applied_before);", "            let _ = &applied_before;")],
     ),
     (
         "DG-2: a history that cannot be read counts as nothing ever applied",
-        [(HANDLER, "                .labels_ever_applied(&scope, issue)\n                .await\n                .map_err(|_| DesignStop::Stage(StageError::Tool))?;", "                .labels_ever_applied(&scope, issue)\n                .await\n                .unwrap_or_default();")],
+        [(JUDGE, "                .labels_ever_applied(scope, issue)\n                .await\n                .map_err(|_| DesignStop::Stage(StageError::Tool))?;", "                .labels_ever_applied(scope, issue)\n                .await\n                .unwrap_or_default();")],
     ),
     (
         "DG-1: a list of events that was cut still names the person who applied the label",
@@ -128,7 +129,7 @@ BREAKS = [
     ),
     (
         "DG-7: the audit line is stored without the secret redactor",
-        [(HANDLER, "        self.redacted(\n            &reason,\n            \"design gate: the reason was withheld because it could not be checked for secrets\",\n        )", "        reason")],
+        [(JUDGE, "        self.redacted(\n            &reason,\n            \"design gate: the reason was withheld because it could not be checked for secrets\",\n        )", "        reason")],
     ),
     (
         "DG-7: the stored document and the report show the labels without the secret redactor",

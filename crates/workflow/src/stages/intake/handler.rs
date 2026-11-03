@@ -997,18 +997,12 @@ impl IntakeHandler {
     /// shaped like a secret. A text the redactor cannot judge is not stored: `withheld` takes its
     /// place.
     fn redacted(&self, text: &str, withheld: &str) -> String {
-        match self.redactor.redact_str(text) {
-            Ok(redacted) => redacted.output.into_owned(),
-            Err(_) => withheld.to_owned(),
-        }
+        self.judge.redacted(text, withheld)
     }
 
     /// The reason line of an audit record, with every secret replaced.
     fn redacted_reason(&self, reason: String) -> String {
-        self.redacted(
-            &reason,
-            "design gate: the reason was withheld because it could not be checked for secrets",
-        )
+        self.judge.redacted_reason(reason)
     }
 
     /// The design labels seen, which the stored document and the report show, with every secret

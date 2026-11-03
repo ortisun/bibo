@@ -19,9 +19,12 @@
 //!    ([`manifest`]).
 //! 5. The title and body are written from typed evidence ([`pr`], [`text`]) and read by the
 //!    readability gate. Text that is refused stops the stage before the host is touched.
-//! 6. The branch is pushed, the draft pull request is opened and read back, and the check runs
+//! 6. Right before the first effect, the design of the issue is checked again with the code that
+//!    intake uses ([`design_recheck`], DG-8). An issue that is on the design track without an
+//!    approved design now, or whose issue cannot be read, opens nothing.
+//! 7. The branch is pushed, the draft pull request is opened and read back, and the check runs
 //!    are published ([`publish`], [`checks`]). Each step is safe to repeat.
-//! 7. `evaluate` reads the pull request back and checks the stored manifest and text ([`verify`]).
+//! 8. `evaluate` reads the pull request back and checks the stored manifest and text ([`verify`]).
 //!
 //! # Interfaces this stage needs from the others
 //!
@@ -40,6 +43,7 @@
 pub mod binding;
 pub mod checks;
 pub mod contract;
+pub mod design_recheck;
 pub mod documentation_gate;
 pub mod handler;
 pub mod input;
@@ -53,6 +57,7 @@ mod verify;
 
 pub use checks::{CHECK_REVIEW, CHECK_VALIDATION};
 pub use contract::{GATES, MANIFEST, MANIFEST_GATE, PULL_REQUEST_GATE, RESULT};
+pub use design_recheck::DesignRecheck;
 pub use handler::{DeliveryConfig, DeliveryDeps, DeliveryHandler};
 pub use seams::{
     CurrentValues, DeliverySources, DeliveryTarget, DocLink, EvidenceDrift, LedgerState, SeamError,

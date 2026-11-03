@@ -317,8 +317,12 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
     let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
     issues.put_issue(factory_ports::githost::Issue {
         reference: issue.clone(),
+        // The design gate compares the text of the job with the text of this issue (DG-3): the
+        // stored request below is this title, a blank line and this body.
         title: "Add a --json flag".to_owned(),
-        body: "Please add a --json flag to the word count tool.".to_owned(),
+        body:
+            "Please add a --json flag to the word count tool so other programs can read the counts."
+                .to_owned(),
         author: GithubActor {
             id: REQUESTER,
             login: ActorLogin::new("requester-one").expect("a login"),
@@ -587,7 +591,7 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
             source: StoreRequestSource::GithubIssue,
             source_ref: Some(format!("{REPOSITORY}#12")),
             author_github_user_id: Some(REQUESTER),
-            text: "Please add a --json flag to the word count tool so other programs can read the counts."
+            text: "Add a --json flag\n\nPlease add a --json flag to the word count tool so other programs can read the counts."
                 .to_owned(),
         })
         .await

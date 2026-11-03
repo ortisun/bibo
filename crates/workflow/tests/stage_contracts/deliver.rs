@@ -58,7 +58,10 @@ use factory_workflow::stages::validation::{
 use serde_json::Value;
 
 use crate::chain::{Output, Pipeline};
+use crate::design_fakes::{DesignWorld, LABEL, REQUESTER_ID, person};
 use crate::rig::{policy_engine, redactor, rules};
+use factory_workflow::stages::delivery::DesignRecheck;
+use factory_workflow::stages::intake::judge::DesignJudge;
 
 /// The real validation handler, built the way the validation tests build it. Its stage cannot run
 /// on the rig, which has a stand-in for it, but its contract can be resolved on the real job.
@@ -248,6 +251,9 @@ pub struct Delivery<'a> {
     router: StaticModelRouter,
     registry: InMemoryAgentRegistry,
     broker: Arc<FakeModelBroker>,
+    /// What the delivery stage reads to check the design again before it opens the pull request:
+    /// the issue the job came from, a small change with the factory label and no design label.
+    design: DesignWorld,
 }
 
 fn identity(pipeline: &Pipeline, kind: StageKind, n: u128) -> RunIdentity {
@@ -337,9 +343,27 @@ impl<'a> Delivery<'a> {
             tree: GitSha::parse(&"d".repeat(40)).expect("a tree"),
             trees_asked: Mutex::default(),
         });
+        let design = DesignWorld::new();
+        let now = world.clock.now();
+        design
+            .issues
+            .fake()
+            .put_issue(factory_ports::githost::Issue {
+                reference: IssueRef {
+                    repo: rig.repo.clone(),
+                    number: 12,
+                },
+                title: "Add a --json flag".to_owned(),
+                body: "Please let the word count tool print its counts as JSON.".to_owned(),
+                author: person(REQUESTER_ID, "requester-one"),
+                labels: vec![LABEL.to_owned()],
+                updated_at: now,
+                fetched_at: now,
+            });
         Self {
             pipeline,
             sources,
+            design,
             host: Arc::new(FakeChangeHost::sharing(rig.remote.clone())),
             drift: Arc::new(Drift::default()),
             policy_hash,
@@ -398,6 +422,17 @@ impl<'a> Delivery<'a> {
                 host: self.host.clone(),
                 sources: self.sources.clone(),
                 drift: self.drift.clone(),
+                recheck: DesignRecheck::new(
+                    DesignJudge::new(
+                        self.design.issues.clone(),
+                        self.design.rule.clone(),
+                        policy_engine(),
+                        redactor(),
+                    ),
+                    self.design.people.clone(),
+                    self.design.replies.clone(),
+                    LABEL.to_owned(),
+                ),
             },
         )
     }

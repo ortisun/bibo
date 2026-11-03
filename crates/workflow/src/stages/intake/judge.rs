@@ -17,6 +17,7 @@ use factory_domain::policy::authority::Allowlist;
 use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels};
 use factory_domain::redaction::Redactor;
 use factory_domain::values::Timestamp;
+use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{GitScope, IssueRef, IssueSource};
 
 use super::authorize::Labeller;
@@ -90,6 +91,37 @@ impl DesignJudge {
             design,
             policy,
             redactor,
+        }
+    }
+
+    /// Says whether the code host and the rule are real or fakes: the weakest of the two.
+    #[must_use]
+    pub fn fidelity(&self) -> Fidelity {
+        if [self.issues.fidelity(), self.design.fidelity()].contains(&Fidelity::Fake) {
+            Fidelity::Fake
+        } else {
+            Fidelity::Real
+        }
+    }
+
+    /// The reason line of an audit record with every secret replaced. A label name is text of
+    /// outside origin and could be shaped like a secret. A line the redactor cannot judge is not
+    /// stored: a sentence that says so takes its place.
+    #[must_use]
+    pub fn redacted_reason(&self, reason: String) -> String {
+        self.redacted(
+            &reason,
+            "design gate: the reason was withheld because it could not be checked for secrets",
+        )
+    }
+
+    /// The text with every secret replaced. A text the redactor cannot judge is not stored:
+    /// `withheld` takes its place.
+    #[must_use]
+    pub fn redacted(&self, text: &str, withheld: &str) -> String {
+        match self.redactor.redact_str(text) {
+            Ok(redacted) => redacted.output.into_owned(),
+            Err(_) => withheld.to_owned(),
         }
     }
 
