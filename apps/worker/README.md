@@ -163,6 +163,8 @@ test that cannot get a server panics with `BLOCKED:` and is never a pass. The su
 | `tests/smoke.rs` | the word-count job, stage by stage, and where it stops |
 | `tests/domain_discovery.rs` | what the engine does for a stage with no handler, and the real skip handler over PostgreSQL |
 | `tests/claim_work.rs` | the loop with the step before each claim: a received job is admitted and runs; without it, never (the break) |
+| `tests/loopback_e2e.rs` | the binary started from a configuration file whose GitHub, model providers and registry are loopback fakes, over PostgreSQL, judged from what the fake GitHub received and what the run left: a design issue without approval is refused with one comment, one approved by an approver passes the gate and stops at the sandbox with a named cause, transient GitHub failures answer the person once, no credential anywhere, and nine deliberate breaks; the test that probes in a real container is ignored and ends as `BLOCKED:` without the images |
+| `tests/loopback_status.rs` | the status write-back through the real GitHub adapter, built from the same file by the functions the binary calls and run in the worker's loop beside scripted stages: one label that follows the job, one comment made once and edited, tokens narrowed to one repository, and three deliberate breaks |
 | `tests/engine_scenarios_on_postgres.rs` | 13 of the engine scenarios, with the lease waits real |
 | `tests/engine_scenarios_all_on_postgres.rs` | the engine suite on PostgreSQL: 96 of 97 (from the parity work) |
 | `tests/known_defects.rs` | defects of the engine and the store, as tests that flip when fixed |
@@ -494,6 +496,8 @@ assembled from a configuration (`external_ports`), so the program has something 
    routing policy the owner has confirmed (production refuses it until then).
 
 Until then `scripts/e2e.sh --scenario E1 --scenario E2` is `BLOCKED` on its own prerequisites, as it was.
+
+**Status after the loopback end-to-end work.** The program is still not built. What exists is `tests/loopback_e2e.rs` and `tests/loopback_status.rs`, which start the real worker (or call the functions it calls) on a configuration file whose external endpoints are loopback fakes and judge the run from outside; the report is [`docs/reports/real-adapter-loopback-e2e.md`](../../docs/reports/real-adapter-loopback-e2e.md). They are not E1 or E2: they use no real key, and a job cannot pass intake without the Docker images.
 
 **Status after the live-adapters work: not started, and the rules do not forbid it.** What was learned about it:
 
