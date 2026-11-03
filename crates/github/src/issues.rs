@@ -20,15 +20,17 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::Clock;
 use factory_ports::githost::{
     Comment, CommentRef, CommentTarget, GitHostError, GitScope, GithubActor, Issue, IssueRef,
-    IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport,
+    IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport, TextEdit,
 };
 use factory_ports::paths::BranchName;
 
 use crate::client::Client;
+use crate::edits;
 use crate::encoding::percent_encode_component;
 use crate::parse::{actor, actor_type, repo_path, timestamp};
 use crate::protection::protection_from_rules;
 use crate::token::TokenClass;
+use crate::wire::Method;
 
 /// Issue text as read, next to the cleaned form that is safe to put in front of a model or a
 /// person. The original is the record; the cleaned form is never used to decide anything.
@@ -283,6 +285,50 @@ impl IssueSource for GithubIssueSource {
         self.label_timeline(scope, &base)
             .await?
             .labels_ever_applied()
+    }
+
+    async fn text_edit(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<TextEdit, GitHostError> {
+        same_repository(scope, &issue.repo)?;
+        // The body: the one read of GraphQL (see `edits`). A call that fails is an error of the
+        // host. An answer that is not a time or an explicit null is not an error of the host and
+        // retrying will not change it, so it is "unknown", which the gate refuses on.
+        let answer = self
+            .client
+            .call(
+                scope,
+                TokenClass::Stage,
+                Method::Post,
+                edits::ROUTE,
+                Some(&edits::request(issue)),
+                false,
+            )
+            .await?;
+        let Ok(body) = edits::body_edit(&answer.json) else {
+            return Ok(TextEdit::Unknown);
+        };
+        // The title: the `renamed` events of the issue, read to the end. A list that is cut may
+        // hide a later rename, so it answers nothing.
+        let base = format!("{}/issues/{}", repo_path(&issue.repo), issue.number);
+        let events = self
+            .client
+            .get_pages_up_to(
+                scope,
+                TokenClass::Stage,
+                &format!("{base}/events"),
+                self.client.event_pages(),
+            )
+            .await?;
+        if events.truncated {
+            return Ok(TextEdit::Unknown);
+        }
+        let Ok(title) = edits::title_edit(&events.items) else {
+            return Ok(TextEdit::Unknown);
+        };
+        Ok(edits::later_of(body, title))
     }
 
     async fn repository_protection(

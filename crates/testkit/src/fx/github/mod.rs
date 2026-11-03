@@ -33,8 +33,10 @@
 //!   adapter's own tests.
 //! * It does not speak the git smart-HTTP protocol. A "push" appears when the adapter uses the
 //!   refs API, or when a test calls [`FakeGithub::push_commit`].
-//! * It serves REST only. There is no GraphQL endpoint; use [`FakeGithub::mark_ready`] to flip a
-//!   draft in a test.
+//! * It serves REST, and one read of GraphQL: `POST /graphql` answers the query that asks for the
+//!   `lastEditedAt` of an issue (DR-1, the time the body was last edited) and nothing else; any
+//!   other query, a mutation above all, gets an `errors` body. Use [`FakeGithub::mark_ready`] to
+//!   flip a draft in a test.
 //! * Branch protection is read two ways, as in GitHub. The branch endpoint shows the summary a
 //!   token with push access sees. The protection endpoint needs the `administration` permission,
 //!   which the factory's App must not hold (`policies/security.yaml`, `credentials.github_app`),
@@ -436,6 +438,9 @@ pub(crate) struct Issue {
     pub labels: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When the body was last edited, as GraphQL's `lastEditedAt` says. `None` for a body never
+    /// edited. A title edit is a `renamed` event in `events`, not this.
+    pub body_edited_at: Option<i64>,
     pub comments: Vec<Comment>,
     /// The timeline GitHub serves at `/issues/{n}/events`: who labelled, unlabelled or closed.
     pub events: Vec<IssueEvent>,
@@ -748,6 +753,7 @@ impl FakeGithub {
                 labels: labels.iter().map(|l| (*l).to_owned()).collect(),
                 created_at: now,
                 updated_at: now,
+                body_edited_at: None,
                 comments: Vec::new(),
                 events,
                 events_newest_first: false,
@@ -771,6 +777,19 @@ impl FakeGithub {
             .expect("a known issue");
         issue.body = body.to_owned();
         issue.updated_at = now;
+        issue.body_edited_at = Some(now);
+    }
+
+    /// Changes the title of an issue, as its author editing it: the host records a `renamed`
+    /// event by `actor` (the only place the REST API shows a title edit).
+    ///
+    /// # Panics
+    /// Panics when the issue or the actor is not known.
+    pub fn rename_issue(&self, repo: &str, number: u64, title: &str, actor: &str) {
+        self.change_issue(repo, number, actor, |issue| {
+            title.clone_into(&mut issue.title);
+            ("renamed", None)
+        });
     }
 
     /// Adds a label to an issue, applied by `actor`. The issue's event list records who did it,

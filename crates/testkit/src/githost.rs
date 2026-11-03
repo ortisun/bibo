@@ -23,7 +23,7 @@ use factory_ports::githost::{
     CommentCap, CommentRef, CommentTarget, DraftPrRequest, GitHostError, GitScope, GithubActor,
     Issue, IssueRef, IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport,
     ProtectionSource, PullRequestLifecycle, PullRequestRef, PullRequestState, Rejection,
-    RequiredCheck,
+    RequiredCheck, TextEdit,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::workspace::{FetchCredential, FetchTarget, PushCredential, PushTarget};
@@ -949,6 +949,10 @@ struct IssueState {
     label_times: BTreeMap<(IssueRef, String), Timestamp>,
     timelines: BTreeMap<IssueRef, FakeTimeline>,
     history_unreadable: bool,
+    /// What `text_edit` answers for an issue. An issue with no entry was never edited.
+    text_edits: BTreeMap<IssueRef, TextEdit>,
+    /// Makes `text_edit` fail with `Unavailable`, as a host that is down does.
+    text_edit_read_fails: bool,
     comments: BTreeMap<CommentRef, Comment>,
     protection: BTreeMap<RepoRef, ProtectionReport>,
     permissions_asked: Vec<String>,
@@ -1071,6 +1075,22 @@ impl FakeIssueSource {
             .lock()
             .expect("the lock is never poisoned")
             .history_unreadable = unreadable;
+    }
+
+    /// Sets what `text_edit` answers for the issue: [`TextEdit::At`] a time, [`TextEdit::Never`],
+    /// or [`TextEdit::Unknown`] as a source does that cannot read the time (DR-1). An issue that
+    /// was never given an entry was never edited.
+    pub fn seed_text_edit(&self, issue: &IssueRef, edit: TextEdit) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        state.text_edits.insert(issue.clone(), edit);
+    }
+
+    /// Makes the read of the edit time fail with `Unavailable`, as a code host that is down does.
+    pub fn make_the_edit_read_fail(&self, fails: bool) {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .text_edit_read_fails = fails;
     }
 
     /// Lists the events of the issue newest first, which GitHub may or may not do. The answers
@@ -1279,6 +1299,26 @@ impl IssueSource for FakeIssueSource {
         Ok(names.into_iter().collect())
     }
 
+    async fn text_edit(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<TextEdit, GitHostError> {
+        self.in_scope(scope, &issue.repo)?;
+        let state = self.state.lock().expect("the lock is never poisoned");
+        if state.text_edit_read_fails {
+            return Err(GitHostError::Unavailable);
+        }
+        if !state.issues.contains_key(issue) {
+            return Err(GitHostError::NotFound);
+        }
+        Ok(state
+            .text_edits
+            .get(issue)
+            .copied()
+            .unwrap_or(TextEdit::Never))
+    }
+
     async fn repository_protection(
         &self,
         scope: &GitScope,
@@ -1328,8 +1368,14 @@ impl IssueSourceSubject for FakeIssueSource {
 
     async fn edit_issue_title(&self, issue: &IssueRef, title: &str) {
         let mut state = self.state.lock().expect("the lock is never poisoned");
+        let mut edited_at = None;
         if let Some(held) = state.issues.get_mut(issue) {
             title.clone_into(&mut held.title);
+            edited_at = Some(held.updated_at);
+        }
+        // An edit is an edit of the words: the host now knows a time for it.
+        if let Some(at) = edited_at {
+            state.text_edits.insert(issue.clone(), TextEdit::At(at));
         }
     }
 

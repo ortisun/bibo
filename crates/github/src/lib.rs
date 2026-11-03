@@ -54,6 +54,7 @@ mod adapter;
 mod changes;
 mod client;
 mod core;
+mod edits;
 mod encoding;
 mod issues;
 mod jwt;

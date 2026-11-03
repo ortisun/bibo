@@ -89,6 +89,14 @@ const fn conclusion_name(conclusion: CheckConclusion) -> &'static str {
     }
 }
 
+/// How many pages of 100 comments the look at a thread reads before a capped reply, at most
+/// (DG-9, DR-4). It is fixed here and not a setting: a number the operator could raise would be a
+/// number a thread of strangers could be made to pass. One page was enough for a stranger to
+/// silence every reply on an issue by filling it with comments; three make that cost three times
+/// as much and leave the look small. A look that still has more behind it is "not checked": nothing
+/// is posted, and the record says why.
+const CAPPED_LOOK_PAGES: u32 = 3;
+
 const CHECK_TITLE_LIMIT: usize = 100;
 const CHECK_SUMMARY_LIMIT: usize = 4000;
 
@@ -479,9 +487,10 @@ impl ChangeHost for GithubChangeHost {
         let cleaned = self.outbound.prepare(TextKind::Markdown, body)?;
         let marker = marker_for(idempotency_key);
         let family = family_marker_for(cap.family());
-        // Only the comments written or changed within the window, and only one page of them. A
-        // window that cannot be worked out (a clock at the start of time) reads as no window at
-        // all, which is `since` the epoch: the page then holds more, never less.
+        // Only the comments written or changed within the window, and only a few pages of them
+        // ([`CAPPED_LOOK_PAGES`]). A window that cannot be worked out (a clock at the start of
+        // time) reads as no window at all, which is `since` the epoch: the look then holds more,
+        // never less.
         let since = self.clock.now().checked_sub(cap.window()).map_or_else(
             || "1970-01-01T00:00:00Z".to_owned(),
             |at| whole_seconds(&at),
@@ -493,9 +502,9 @@ impl ChangeHost for GithubChangeHost {
         let bot = self.client.minter().app_identity().await?.bot_login;
         let page = self
             .client
-            .get_pages_up_to(scope, TokenClass::Comment, &path, 1)
+            .get_pages_up_to(scope, TokenClass::Comment, &path, CAPPED_LOOK_PAGES)
             .await?;
-        // A page that is not the whole of the window cannot say whether the factory answered, or
+        // A look that is not the whole of the window cannot say whether the factory answered, or
         // how often. Posting then could repeat an answer without end, so nothing is posted.
         if page.truncated {
             return Ok(CappedPost::NotChecked);
