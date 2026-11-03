@@ -178,11 +178,12 @@ pub async fn submit(
 
     let mut tx = state.ports.store.begin(caller.scope()).await?;
     let registered = tx.get_repository(repository).await?;
-    if !registered.value.enabled {
+    // A repository whose attestor or enabler is no longer an active human is not open (REG-6).
+    if !registered.value.open_for_new_jobs() {
         return Err(ApiError::NotFound);
     }
     // A requester narrowed to some repositories asks for work there and nowhere else (API-1).
-    require_repository(state, caller, &registered.value.full_name)?;
+    require_repository(state, caller, &registered.value)?;
     // The issue belongs to the repository the job is for. The worker fetches it with a token for
     // that repository, so a pointer to another one would ask the code host for something the job
     // has no right to.

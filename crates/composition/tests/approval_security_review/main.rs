@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use factory_composition::commands::{CommandError, parse_cli, parse_comment, parse_form};
 use factory_composition::seams::FileAllowlist;
 use factory_domain::ids::TenantId;
+use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::policy::decision::Designation;
 use factory_domain::values::Timestamp;
 use factory_workflow::stages::approval::Verb;
@@ -212,7 +213,12 @@ fn held_a_wrong_allowlist_file_grants_nobody_anything() {
     let allowlist = FileAllowlist::in_checkout(&checkout("good", &good));
     assert!(
         allowlist
-            .designations_on(tenant(), 2001, Some("acme/widgets"), now())
+            .designations_on(
+                tenant(),
+                2001,
+                Some(&RepositoryIdentity::by_name_only("acme/widgets")),
+                now()
+            )
             .unwrap()
             .contains(&Designation::Approver)
     );
@@ -237,7 +243,12 @@ fn held_a_wrong_allowlist_file_grants_nobody_anything() {
         );
         assert!(
             allowlist
-                .designations_on(tenant(), 2001, Some("acme/widgets"), now())
+                .designations_on(
+                    tenant(),
+                    2001,
+                    Some(&RepositoryIdentity::by_name_only("acme/widgets")),
+                    now()
+                )
                 .is_err()
                 || name == "duplicate",
             "{name}: the designation reader accepted a wrong file"
@@ -257,14 +268,35 @@ fn held_tenant_id_expiry_and_narrowing_each_take_authority_away() {
         "version: 1\nentries:\n  - tenant: {TENANT}\n    github_user_id: 2001\n    login: bob\n    designations: [approver]\n    repositories: [acme/widgets]\n  - tenant: {TENANT}\n    github_user_id: 2002\n    login: eve\n    designations: [approver]\n    expires_at: \"2026-10-28T11:59:59Z\"\n  - tenant: {OTHER}\n    github_user_id: 2003\n    login: carol\n    designations: [approver, org_admin]\n"
     );
     let allowlist = FileAllowlist::in_checkout(&checkout("rules", &text));
-    let held = |tenant: TenantId, id: u64, repository: Option<&str>| {
+    let held = |tenant: TenantId, id: u64, repository: Option<&RepositoryIdentity<'_>>| {
         allowlist
             .designations_on(tenant, id, repository, now())
             .unwrap()
     };
-    assert!(held(tenant(), 2001, Some("ACME/Widgets")).contains(&Designation::Approver));
-    assert!(held(tenant(), 2001, Some("acme/other")).is_empty());
-    assert!(held(tenant(), 2001, Some("acme/widget")).is_empty());
+    assert!(
+        held(
+            tenant(),
+            2001,
+            Some(&RepositoryIdentity::by_name_only("ACME/Widgets"))
+        )
+        .contains(&Designation::Approver)
+    );
+    assert!(
+        held(
+            tenant(),
+            2001,
+            Some(&RepositoryIdentity::by_name_only("acme/other"))
+        )
+        .is_empty()
+    );
+    assert!(
+        held(
+            tenant(),
+            2001,
+            Some(&RepositoryIdentity::by_name_only("acme/widget"))
+        )
+        .is_empty()
+    );
     assert!(held(tenant(), 2002, None).is_empty(), "expired");
     // Another tenant's person holds nothing here, and a login that equals a listed one grants
     // nothing: only the number counts.

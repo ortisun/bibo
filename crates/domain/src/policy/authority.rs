@@ -133,6 +133,91 @@ pub struct Actor<'a> {
     pub author_association: Option<&'a str>,
 }
 
+/// One repository an allowlist entry is narrowed to (finding RR-28).
+///
+/// A narrowing by name alone follows the name: a repository that is renamed or transferred leaves
+/// the grant behind, and a new repository created under the old name inherits it. So an entry may
+/// carry GitHub's numeric id of the repository, which never changes. When it does, the narrowing
+/// compares the id of the repository that is asked about, and the name is kept for people to read
+/// (it can be stale after a rename and nothing decides on it). An entry with no id compares the
+/// name, as before; it is the weaker form, and loading it produces a warning.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ListedRepository {
+    /// `owner/name`, as the person who wrote the entry knew it.
+    pub name: String,
+    /// GitHub's numeric id of the repository, when the entry carries it.
+    pub github_repository_id: Option<u64>,
+}
+
+impl ListedRepository {
+    /// A repository listed by name alone: the weaker form (RR-28).
+    #[must_use]
+    pub fn named(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            github_repository_id: None,
+        }
+    }
+
+    /// A repository listed by its numeric id, with the name it had when the entry was written.
+    #[must_use]
+    pub fn with_id(name: &str, github_repository_id: u64) -> Self {
+        Self {
+            name: name.to_owned(),
+            github_repository_id: Some(github_repository_id),
+        }
+    }
+
+    /// True when this listing is the repository that is asked about.
+    ///
+    /// * The listing has an id and the repository has one: the ids decide, and the names are not
+    ///   looked at. A renamed or transferred repository is the same repository, and a new one under
+    ///   the old name is not.
+    /// * The listing has an id and the question carries none (a layer that cannot know it, see
+    ///   [`RepositoryIdentity::by_name_only`]): the name recorded next to the id decides.
+    /// * The listing has no id: the name decides, without regard to case.
+    fn is(&self, asked: &RepositoryIdentity<'_>) -> bool {
+        match (self.github_repository_id, asked.github_repository_id) {
+            (Some(listed), Some(known)) => listed == known,
+            _ => self.name.eq_ignore_ascii_case(asked.name),
+        }
+    }
+}
+
+/// Which repository a question about authority is about: its name and, when the caller has the
+/// registered repository in hand, GitHub's numeric id of it (finding RR-28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepositoryIdentity<'a> {
+    /// `owner/name`, as registered.
+    pub name: &'a str,
+    /// GitHub's numeric id of the repository.
+    pub github_repository_id: Option<u64>,
+}
+
+impl<'a> RepositoryIdentity<'a> {
+    /// A registered repository: the name and the id of the registration. Every caller that has the
+    /// repository row uses this.
+    #[must_use]
+    pub const fn registered(name: &'a str, github_repository_id: u64) -> Self {
+        Self {
+            name,
+            github_repository_id: Some(github_repository_id),
+        }
+    }
+
+    /// A repository known by its name alone. Only a layer that cannot have the id uses this (the
+    /// stages of the workflow crate, whose inputs carry a name). An entry that lists the id then
+    /// falls back to the name recorded next to it. A caller that has the registered row must use
+    /// [`RepositoryIdentity::registered`].
+    #[must_use]
+    pub const fn by_name_only(name: &'a str) -> Self {
+        Self {
+            name,
+            github_repository_id: None,
+        }
+    }
+}
+
 /// One person on the allowlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AllowlistEntry {
@@ -144,27 +229,42 @@ pub struct AllowlistEntry {
     pub login: String,
     /// What they hold.
     pub designations: BTreeSet<Designation>,
-    /// The repositories (`owner/name`) the entry is narrowed to. `None` means all of the tenant's.
-    pub repositories: Option<BTreeSet<String>>,
+    /// The repositories the entry is narrowed to, by name or by GitHub's numeric id (RR-28).
+    /// `None` means all of the tenant's.
+    pub repositories: Option<BTreeSet<ListedRepository>>,
     /// When the entry stops granting authority.
     pub expires_at: Option<Timestamp>,
 }
 
 impl AllowlistEntry {
-    /// True when the entry's designations reach `repository` (`owner/name`).
+    /// True when the entry's designations reach `repository`.
     ///
     /// An entry with no `repositories` list covers every repository of the tenant. An entry with a
-    /// list covers exactly the repositories on it, compared whole and without regard to case (GitHub
-    /// names are case-insensitive), so `acme/rep` does not cover `acme/repo` and an empty list covers
-    /// none. This can only take authority away: it is asked in addition to the tenant, the numeric
-    /// id, the expiry and the designation, never instead of one of them.
+    /// list covers exactly the repositories on it. A listing with GitHub's numeric id compares the
+    /// id when the repository has one, so a renamed or transferred repository is covered and a new
+    /// repository under the old name is not (RR-28). A listing with a name only compares the whole
+    /// name without regard to case (GitHub names are case-insensitive), so `acme/rep` does not
+    /// cover `acme/repo`; it is the weaker form. An empty list covers none. This can only take
+    /// authority away: it is asked in addition to the tenant, the numeric id of the person, the
+    /// expiry and the designation, never instead of one of them.
     #[must_use]
-    pub fn covers_repository(&self, repository: &str) -> bool {
-        self.repositories.as_ref().is_none_or(|repositories| {
-            repositories
-                .iter()
-                .any(|listed| listed.eq_ignore_ascii_case(repository))
-        })
+    pub fn covers_repository(&self, repository: &RepositoryIdentity<'_>) -> bool {
+        self.repositories
+            .as_ref()
+            .is_none_or(|repositories| repositories.iter().any(|listed| listed.is(repository)))
+    }
+
+    /// The listings that carry a name and no id: the weaker form of the narrowing (RR-28), which a
+    /// renamed, transferred or re-created repository defeats. Empty when the entry is not narrowed
+    /// or every listing has an id.
+    #[must_use]
+    pub fn name_only_listings(&self) -> Vec<&str> {
+        self.repositories
+            .iter()
+            .flatten()
+            .filter(|listed| listed.github_repository_id.is_none())
+            .map(|listed| listed.name.as_str())
+            .collect()
     }
 }
 
@@ -960,7 +1060,10 @@ impl AuthorityPolicy {
         if entry.expires_at.as_ref().is_some_and(|end| end <= now) {
             return Err(AuthorityDenial::EntryExpired);
         }
-        if !entry.covers_repository(repository) {
+        // The workflow stages know a name and not an id (RR-28): an entry that lists the id is
+        // judged by the name recorded next to it. The layers that hold the registered repository
+        // have asked with the id before a job or a decision reaches here.
+        if !entry.covers_repository(&RepositoryIdentity::by_name_only(repository)) {
             return Err(AuthorityDenial::RepositoryNotListed);
         }
         if let Some(at_least) = self.permission_condition

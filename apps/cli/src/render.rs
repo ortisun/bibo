@@ -88,6 +88,9 @@ pub fn refusal(status: u16, body: &Value) -> String {
         "project_map_changed" => {
             "the project map was attested again since you read it; read the new commit with repository show and enable the repository for that one"
         }
+        "enabler_is_attestor" => {
+            "you attested this repository's project map, and the repository was not registered as a single-maintainer one; another person with the approver designation enables it"
+        }
         _ => "the API refused the request",
     };
     match field {
@@ -313,6 +316,99 @@ fn enabled_line(body: &Value) -> String {
     }
 }
 
+/// What a refused request to register, confirm or enable says, in plain words. The code is the one the worker
+/// recorded; nothing else of the request is shown.
+#[must_use]
+pub fn change_refused(code: &str) -> String {
+    let meaning = match code {
+        "not_permitted" => {
+            "the worker checked the protected allowlist again and your entry does not hold the designation for this repository now"
+        }
+        "not_an_active_person" => "you are not an active person of the tenant now",
+        "not_found" => "there is no such repository for you",
+        "conflict" => "that GitHub repository is already registered, by you or by someone else",
+        "project_map_not_attested" => {
+            "the repository has no project map that a person attested; run repository confirm-map first"
+        }
+        "project_map_changed" => {
+            "the project map was attested again since you read it; read the new commit with repository show and enable the repository for that one"
+        }
+        "enabler_is_attestor" => {
+            "you attested this repository's project map, and the repository was not registered as a single-maintainer one; another person with the approver designation enables it"
+        }
+        "malformed" => "the worker could not read the request",
+        "not_settled" => {
+            "the worker could not apply the request after many tries; look at the worker"
+        }
+        _ => "the worker did not apply the request",
+    };
+    format!("The worker refused the request: {meaning}. Nothing changed.")
+}
+
+/// What a person reads when the worker has not applied the request yet.
+#[must_use]
+pub fn change_pending(request: &str, repository: &str, waited: u64) -> String {
+    let waited = if waited == 0 {
+        "The command did not wait.".to_owned()
+    } else {
+        format!("The worker had not applied it after {waited} seconds.")
+    };
+    format!(
+        "The request is recorded and signed. {waited} Nothing is lost: the request stays until the worker settles it.\n  Request: {request}\n  Repository: {repository}\n  Look again with: factory-cli repository change {request}\n"
+    )
+}
+
+/// Where a request stands.
+#[must_use]
+pub fn change_state(body: &Value) -> String {
+    let state = text(body, "state");
+    let tail = match &*state {
+        "applied" => "The worker applied it. `repository show` prints the repository.".to_owned(),
+        "refused" => change_refused(&text(body, "code")),
+        _ => "The worker has not settled it yet.".to_owned(),
+    };
+    format!(
+        "Request {} ({}) for repository {}: {state}.\n{tail}\n",
+        text(body, "request_id"),
+        text(body, "kind"),
+        text(body, "repository_id"),
+    )
+}
+
+/// The rule about the enabler, and whether the people behind the repository still stand (finding
+/// REG-6). Nothing is printed for an answer from an older server that has neither field.
+fn standing_lines(body: &Value) -> String {
+    let mut out = String::new();
+    if let Some(single) = body.get("single_maintainer").and_then(Value::as_bool) {
+        out.push_str(if single {
+            "  Rule:               single maintainer: the person who attested the map may also enable the repository.\n"
+        } else {
+            "  Rule:               strict: the person who enables the repository is not the person who attested the map.\n"
+        });
+    }
+    if let Some(standing) = body.get("standing").filter(|value| value.is_object()) {
+        let flag = |key: &str| standing.get(key).and_then(Value::as_bool).unwrap_or(false);
+        if flag("open_for_new_jobs") {
+            out.push_str("  Open for new jobs:  yes\n");
+        } else if body.get("enabled").and_then(Value::as_bool) == Some(true) {
+            // Enabled on file and closed all the same: say why.
+            out.push_str("  Open for new jobs:  NO. The repository is enabled on file, but ");
+            out.push_str(match (
+                flag("attestor_is_active_human"),
+                flag("enabler_is_active_human"),
+            ) {
+                (false, false) => "the person who attested the map and the person who enabled it are no longer active humans of the tenant.\n",
+                (false, true) => "the person who attested the map is no longer an active human of the tenant.\n",
+                _ => "the person who enabled it is no longer an active human of the tenant.\n",
+            });
+            out.push_str("                      Webhooks and job submissions are dropped until a person attests the map and another enables it again.\n");
+        } else {
+            out.push_str("  Open for new jobs:  no (not enabled)\n");
+        }
+    }
+    out
+}
+
 /// One repository.
 #[must_use]
 pub fn repository(body: &Value) -> String {
@@ -324,7 +420,7 @@ pub fn repository(body: &Value) -> String {
         }
     };
     format!(
-        "Repository {}\n  Name:               {}\n  Default branch:     {}\n  GitHub installation {}, GitHub repository id {}\n  Enabled:            {}\n  Autonomy ceiling:   {} (protection preflight passed: {})\n  Version:            {}\n{}",
+        "Repository {}\n  Name:               {}\n  Default branch:     {}\n  GitHub installation {}, GitHub repository id {}\n  Enabled:            {}\n{}  Autonomy ceiling:   {} (protection preflight passed: {})\n  Version:            {}\n{}",
         text(body, "repository_id"),
         text(body, "full_name"),
         text(body, "default_branch"),
@@ -335,6 +431,7 @@ pub fn repository(body: &Value) -> String {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         enabled_line(body),
+        standing_lines(body),
         text(body, "autonomy_ceiling"),
         flag("protection_preflight_passed"),
         body.get("version").and_then(Value::as_u64).unwrap_or(0),

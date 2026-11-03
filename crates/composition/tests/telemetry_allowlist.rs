@@ -274,6 +274,36 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "a boolean: whether the one reply was posted",
     ),
     (
+        "crates/composition/src/repository_changes.rs",
+        "kind",
+        "one of three static words, register, attest or enable: the kind of a request to change a repository",
+    ),
+    (
+        "crates/composition/src/repository_changes.rs",
+        "code",
+        "the fixed refusal code of a request to change a repository, one of a closed set of static words written in this module",
+    ),
+    (
+        "crates/composition/src/repository_changes.rs",
+        "error",
+        "StoreError: a static sentence written by the code, as in the hook for the six verbs",
+    ),
+    (
+        "crates/composition/src/seams.rs",
+        "github_user_id",
+        "the numeric GitHub id of a person whom an allowlist entry narrows by name alone: a number from the protected file",
+    ),
+    (
+        "crates/composition/src/seams.rs",
+        "repositories",
+        "the owner/name of the repositories that an allowlist entry lists by name alone: text from the protected allowlist file, written by the person who owns it, never from an issue or a model",
+    ),
+    (
+        "crates/composition/src/seams.rs",
+        "tenant",
+        "the id of the tenant of an allowlist entry that narrows by name alone: a UUID that a person wrote in the protected file, as the tenant of every entry",
+    ),
+    (
         "crates/composition/src/issue_status.rs",
         "code",
         "the code of a failed try to write a job's state on its issue, `FailureCode::word`: one of seven static strings, never a message from GitHub",

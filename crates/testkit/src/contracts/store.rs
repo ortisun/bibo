@@ -160,6 +160,7 @@ pub fn checks() -> Vec<StoreCheck> {
         a_repository_with_no_project_map_cannot_be_enabled,
         an_attestation_of_another_map_switches_an_enabled_repository_off,
         enabling_names_the_commit_attested_now,
+        an_enabler_cannot_be_the_attestor_unless_the_repository_is_single_maintainer,
         the_record_of_the_enabling_is_set_on_enable_and_emptied_on_disable,
         only_an_active_person_of_the_tenant_can_attest_a_project_map,
         a_repository_change_needs_the_version_it_read,
@@ -3165,6 +3166,9 @@ async fn a_lookup_miss_is_none_for_every_reason(subject: &dyn StoreSubject) -> R
 // Registering a repository and attesting its project map (ADR 0016)
 // ---------------------------------------------------------------------------------------------
 
+/// A repository registered as a single-maintainer one, so that the tests which use one person for
+/// every act (attest and enable) keep working. The tests of the strict rule use
+/// [`strict_repository`].
 fn new_repository(w: &World<'_>, n: u64) -> NewRepository {
     NewRepository {
         id: RepositoryId::from_uuid(w.ids.job().as_uuid()),
@@ -3172,6 +3176,15 @@ fn new_repository(w: &World<'_>, n: u64) -> NewRepository {
         github_repository_id: GithubRepositoryId(8000 + n),
         full_name: format!("org/registered-{n}"),
         default_branch: "main".to_owned(),
+        single_maintainer: true,
+    }
+}
+
+/// A repository registered under the strict rule: the enabler is not the attestor (finding REG-6).
+fn strict_repository(w: &World<'_>, n: u64) -> NewRepository {
+    NewRepository {
+        single_maintainer: false,
+        ..new_repository(w, n)
     }
 }
 
@@ -3203,6 +3216,14 @@ async fn a_repository_is_registered_disabled_at_l0_with_no_map(
         "it starts at level L0"
     );
     ensure!(row.project_map.is_none(), "it starts with no project map");
+    ensure!(
+        row.single_maintainer,
+        "the single-maintainer flag the registration carried is kept"
+    );
+    ensure!(
+        row.attestor_is_active && row.enabler_is_active && !row.open_for_new_jobs(),
+        "nobody is named yet, so nobody stands in the way, and it is not open: it is disabled"
+    );
     ensure_eq!(
         read.version,
         Version::FIRST,
@@ -3234,12 +3255,23 @@ async fn a_repository_registration_is_idempotent_by_id_and_content(
     ensure_eq!(again.row, first.row, "and returns the first row");
     let other = NewRepository {
         full_name: "org/another-name".to_owned(),
-        ..new
+        ..new.clone()
     };
     ensure_err!(
         tx.register_repository(other).await,
         StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent),
         "the same id with other content"
+    );
+    // The rule about the enabler is part of the registration (finding REG-6): the same id with the
+    // other rule is another request, not a repeat.
+    let stricter = NewRepository {
+        single_maintainer: false,
+        ..new
+    };
+    ensure_err!(
+        tx.register_repository(stricter).await,
+        StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent),
+        "the same id with the other single-maintainer flag"
     );
     Ok(())
 }
@@ -3553,6 +3585,99 @@ async fn enabling_names_the_commit_attested_now(subject: &dyn StoreSubject) -> R
         read.value.enabled_for.map(|record| record.commit),
         Some(another_commit()),
         "for the commit on file"
+    );
+    Ok(())
+}
+
+async fn an_enabler_cannot_be_the_attestor_unless_the_repository_is_single_maintainer(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let attestor = w.principal(w.a).await?;
+    let colleague = w.principal(w.a).await?;
+    let new = strict_repository(&w, 20);
+    let mut tx = w.tx(w.a).await?;
+    let registered = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    ensure!(
+        !tx.get_repository(new.id)
+            .await
+            .ctx("read")?
+            .value
+            .single_maintainer,
+        "a strict registration reads back as strict"
+    );
+    let attested = tx
+        .attest_project_map(new.id, registered, a_commit(), attestor)
+        .await
+        .ctx("attest")?;
+
+    // The person who attested the map does not enable the repository.
+    ensure_err!(
+        tx.enable_repository(new.id, attested, a_commit(), attestor)
+            .await,
+        StoreError::Constraint(ConstraintRule::EnablerIsAttestor),
+        "the attestor enables a strict repository"
+    );
+    let unchanged = tx.get_repository(new.id).await.ctx("read")?;
+    ensure!(!unchanged.value.enabled, "the repository stays disabled");
+    ensure_eq!(unchanged.version, attested, "and its version did not move");
+
+    // The sibling: another active person of the tenant can, and the record names them.
+    let enabled = tx
+        .enable_repository(new.id, attested, a_commit(), colleague)
+        .await
+        .ctx("a colleague enables")?;
+    let read = tx.get_repository(new.id).await.ctx("read it back")?;
+    ensure!(read.value.open_for_new_jobs(), "it is open for new jobs");
+    ensure_eq!(
+        read.value.enabled_for.and_then(|record| record.enabled_by),
+        Some(colleague),
+        "the enabler is the colleague"
+    );
+
+    // A map attested again by the colleague switches it off; the attestor of the new map is now
+    // the colleague and the first person can enable it. The rule follows the attestor on file.
+    let off = tx
+        .attest_project_map(new.id, enabled, another_commit(), colleague)
+        .await
+        .ctx("the colleague attests another map")?;
+    ensure_err!(
+        tx.enable_repository(new.id, off, another_commit(), colleague)
+            .await,
+        StoreError::Constraint(ConstraintRule::EnablerIsAttestor),
+        "the new attestor enables"
+    );
+    tx.enable_repository(new.id, off, another_commit(), attestor)
+        .await
+        .ctx("the first person enables the colleague's map")?;
+
+    // A single-maintainer repository is the exception that was registered as one.
+    let single = new_repository(&w, 21);
+    let registered = tx
+        .register_repository(single.clone())
+        .await
+        .ctx("register a single-maintainer one")?
+        .row
+        .version;
+    let attested = tx
+        .attest_project_map(single.id, registered, a_commit(), attestor)
+        .await
+        .ctx("attest")?;
+    tx.enable_repository(single.id, attested, a_commit(), attestor)
+        .await
+        .ctx("the attestor enables a single-maintainer repository")?;
+    ensure!(
+        tx.get_repository(single.id)
+            .await
+            .ctx("read")?
+            .value
+            .open_for_new_jobs(),
+        "a single-maintainer repository is open for new jobs"
     );
     Ok(())
 }

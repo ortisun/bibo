@@ -24,6 +24,7 @@ use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::{LoadedPolicies, load_policy};
 use factory_composition::system::SystemClock;
 use factory_domain::ids::{AuditEventId, CausationId, JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus};
 use factory_domain::values::{Slug, Timestamp};
@@ -82,7 +83,13 @@ struct PermitsEveryone;
 
 #[async_trait(?Send)]
 impl DecisionAuthority for PermitsEveryone {
-    async fn permits(&self, _: TenantId, _: u64, _: Verb, _: &str) -> Result<bool, Unreadable> {
+    async fn permits(
+        &self,
+        _: TenantId,
+        _: u64,
+        _: Verb,
+        _: &RepositoryIdentity<'_>,
+    ) -> Result<bool, Unreadable> {
         Ok(true)
     }
 }
@@ -92,7 +99,13 @@ struct Unreadable_;
 
 #[async_trait(?Send)]
 impl DecisionAuthority for Unreadable_ {
-    async fn permits(&self, _: TenantId, _: u64, _: Verb, _: &str) -> Result<bool, Unreadable> {
+    async fn permits(
+        &self,
+        _: TenantId,
+        _: u64,
+        _: Verb,
+        _: &RepositoryIdentity<'_>,
+    ) -> Result<bool, Unreadable> {
         Err(Unreadable)
     }
 }
@@ -1674,5 +1687,70 @@ fn sf_02_the_lines_of_the_hook_about_a_job_carry_the_correlation_id_of_that_job(
     assert!(
         decision.starts_with(&format!("{{\"correlation_id\":\"{correlation}\"")),
         "the decision line carries the id of another job: {decision}"
+    );
+}
+
+// ---- RR-28: the hook asks about the repository of the job with GitHub's numeric id of it -------------
+
+/// An approver or an operator whose entry lists the repository by its GitHub id, under a name it does not
+/// have any more, still acts on it; one whose entry lists another id does not, although the name is the one
+/// the repository has. The hook is the layer that holds the registered row of the job's repository.
+#[tokio::test(flavor = "multi_thread")]
+async fn rr_28_the_hook_asks_with_the_github_id_of_the_jobs_repository() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let github = rig
+        ._db
+        .number(&format!(
+            "SELECT github_repository_id FROM repositories WHERE id = '{}'",
+            rig.world.repository.as_uuid()
+        ))
+        .await;
+    let name = rig
+        ._db
+        .text(&format!(
+            "SELECT full_name FROM repositories WHERE id = '{}'",
+            rig.world.repository.as_uuid()
+        ))
+        .await
+        .expect("a name");
+    let narrowed = |listing: &str| {
+        let mut text = allowlist_text(
+            rig.tenant,
+            &[
+                (REQUESTER, "requester-one", "requester"),
+                (APPROVER, "approver-one", "approver"),
+                (STRANGER, "stranger-one", "requester"),
+            ],
+        );
+        text.push_str(&format!(
+            "  - tenant: {}\n    github_user_id: {OPERATOR}\n    login: operator-one\n    designations: [operator]\n    repositories:\n{listing}",
+            rig.tenant.as_uuid()
+        ));
+        std::fs::write(rig.checkout.join("allowlist/allowlist.yaml"), text).expect("the file");
+    };
+
+    // The entry lists the id of the job's repository under a name it does not have: the grant stands.
+    narrowed(&format!(
+        "      - name: org/an-old-name\n        github_repository_id: {github}\n"
+    ));
+    rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Paused, "the id decides");
+
+    // The control: the name the repository has, with another id, is another repository.
+    let other = rig.active().await;
+    narrowed(&format!(
+        "      - name: {name}\n        github_repository_id: {}\n",
+        github + 1
+    ));
+    rig.request(rig.operator, other, Verb::Pause, None, None, "a short stop")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(
+        rig.status(other).await,
+        JobStatus::Active,
+        "the name alone decides nothing"
     );
 }

@@ -94,6 +94,7 @@ use crate::profile::Profile;
 use crate::providers::Providers;
 use crate::redaction::RegisteringBroker;
 use crate::registry::{PortRegistry, RegistryRefused, SeamsBuilder, SeamsIncomplete};
+use crate::repository_changes::{ChangeAuthority, RepositoryChanges, RepositoryChangesDeps};
 use crate::sandbox_specs::PolicySpecs;
 use crate::seams::{
     FileAllowlist, RefreshRequests, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
@@ -929,6 +930,20 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         policy_hash: policies.hash.clone(),
         keys: Arc::clone(&decision_keys),
     }));
+    // The one allowlist authority answers the decisions of people and the requests to change a
+    // repository: the same file, read at the moment of each answer, and the same action table.
+    let allowlist_authority = Arc::new(AllowlistAuthority::new(
+        Arc::clone(&allowlist),
+        Arc::clone(&policies.approval),
+        Arc::clone(&clock),
+    ));
+    // Register, attest and enable are signed requests that this process applies (REG-2).
+    let repository_changes = Arc::new(RepositoryChanges::new(RepositoryChangesDeps {
+        store: Arc::clone(&store),
+        authority: Arc::clone(&allowlist_authority) as Arc<dyn ChangeAuthority>,
+        policy_hash: policies.hash.clone(),
+        keys: Arc::clone(&decision_keys),
+    }));
     let hook = Arc::new(
         ClaimWork::new(ClaimWorkDeps {
             engine: Arc::clone(&engine),
@@ -936,11 +951,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             tenants: tenants.clone(),
             submitter: approval_service.clone(),
             approvals: approval_sources.clone(),
-            authority: Arc::new(AllowlistAuthority::new(
-                Arc::clone(&allowlist),
-                Arc::clone(&policies.approval),
-                Arc::clone(&clock),
-            )),
+            authority: allowlist_authority,
             markers: markers.unwrap_or_else(|| {
                 Arc::new(AuditMarkers::new(
                     Arc::clone(&store),
@@ -957,7 +968,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         .with_dependencies(dependency_decisions)
         .with_stage_decisions(stage_decisions)
         .with_recorded_decisions(Arc::clone(&dependency_approvals))
-        .with_rejections(rejections),
+        .with_rejections(rejections)
+        .with_repository_changes(repository_changes),
     );
     let check_names = [
         factory_workflow::stages::delivery::CHECK_VALIDATION,

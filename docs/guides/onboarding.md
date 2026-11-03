@@ -56,6 +56,8 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
 
 8. **Register the repository, confirm the map and enable it.** The engine accepts tickets from a repository only after these three commands, and the last one is refused until the second has been done. Each command needs the address of the API and the token file of a person who holds the right designation on the protected allowlist. The [commands reference](../reference/commands.md) lists the options.
 
+   **These three commands are requests that the worker applies.** The API records a signed request and answers `202`. The worker verifies the signature, asks the protected allowlist again whether you hold the designation, applies the change and records the result. The command waits for that, one second at a time, for at most 60 seconds (`--wait-seconds N` changes it, `0` does not wait), and prints the repository when the worker has applied the request. So a worker must be running for the commands to finish. If the worker is down or slow, the command ends with exit code 3 and prints the id of the request. Nothing is lost: the request stays until the worker settles it, and `factory-cli repository change REQUEST_ID` shows its state (`requested`, `applied` or `refused` with a code). A script that runs these commands, such as an installer step of your own, should treat exit code 3 as "not yet" and look again, and should treat exit code 2 as final. Disabling is not a request: the API does it at once.
+
    First, an operator registers the repository. The command needs the number of the GitHub App installation (it is in the address of the installation's settings page) and GitHub's numeric identifier of the repository (`gh api repos/OWNER/NAME --jq .id` prints it). The repository starts **disabled**, at autonomy level `L0`, with no project map. The command prints its identifier, which the next commands take.
 
    ```bash no-run reason="the address, the token files, the numbers and the names are placeholders for your own deployment"
@@ -70,17 +72,21 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
 
    **This is a statement by a person. The factory does not check it.** The engine holds no GitHub credential and does not read your repository, so it cannot tell whether the commit exists, whether it is on the default branch or whether the map is any good. It records who said so, when, and why. Check the map before you say so.
 
+   **Two different people.** The factory asks for two people. The person who confirms the map is not the person who enables the repository, and the database refuses the same person for every role (finding REG-6). If you work alone, you cannot meet that rule, so register the repository as a single-maintainer one: see "A single-maintainer repository" below. You say so once, when you register, and nothing changes it afterwards.
+
    Third, an approver enables the repository and names the commit they read. `repository show` prints the commit that was confirmed. The command is refused with the code `project_map_not_attested` while no map was confirmed. It is refused with the code `project_map_changed` when the commit you name is not the one confirmed now. The database refuses the same changes for every role.
 
    ```bash no-run reason="the identifier and the commit are placeholders for your own repository"
    factory-cli repository enable --api https://factory.example.org --token-file approver.token REPOSITORY_ID 0123456789abcdef0123456789abcdef01234567
    ```
 
+   The worker checks the allowlist again, so a person who was taken off the list between the command and the worker's turn is refused (`not_permitted`), and so is a person who is no longer an active person of the tenant.
+
    A repository stays enabled only for the map it was enabled for. If an operator confirms another commit later, or the same commit by another person, the repository is switched off by that change. The audit log gets a `repository.disabled` record. An approver then reads the new map and enables the repository again with the new commit.
 
    **An upgrade switches off the repositories that were enabled.** The database migrations that add the project map and the record of the enabling switch off every repository that was enabled before. They write no audit record, so the log does not say who or what switched them off. After such an upgrade, enable each repository again with this third command.
 
-   `factory-cli repository show REPOSITORY_ID` prints what is recorded, and `factory-cli repository disable REPOSITORY_ID` stops the repository from taking tickets again: its webhooks are dropped and no job can be submitted for it. Jobs that already exist are not touched, and their issues keep their last label. To stop the work in an incident, follow the [runbook](../runbooks/stop-work-on-a-repository.md). The commands that change something take `--key`, the idempotency key, so that a retry repeats nothing. Every change writes an audit record. The [production guide](production.md) lists the other inputs a live run needs.
+   `factory-cli repository show REPOSITORY_ID` prints what is recorded, the rule that applies to the repository (strict or single maintainer) and whether the repository is open for new jobs, and `factory-cli repository disable REPOSITORY_ID` stops the repository from taking tickets again: its webhooks are dropped and no job can be submitted for it. Jobs that already exist are not touched, and their issues keep their last label. To stop the work in an incident, follow the [runbook](../runbooks/stop-work-on-a-repository.md). The commands that change something take `--key`, the idempotency key, so that a retry repeats nothing. Every change writes an audit record. The [production guide](production.md) lists the other inputs a live run needs.
 
 From this point a named requester can apply the `factory` label. For a new solution, use the [design guide](design-with-egm.md) first.
 
@@ -97,6 +103,22 @@ From this point a named requester can apply the `factory` label. For a new solut
 | `SKIPPED` | The step needs a tool that is missing. | Fix the tool step first. |
 
 The exit codes are 0 ready, 1 a step failed, 2 wrong arguments, and 3 not finished. Code 3 covers `BLOCKED` and `NEEDS`, so an unmapped project is exit code 3 and not an error.
+
+## A single-maintainer repository
+
+A project owner who works alone holds every designation and is the only person who can attest a map or enable a repository. The strict rule would lock that owner out of their own project, so there is one explicit exception, and it is written down where it is made.
+
+- **How.** Register the repository with the switch `--single-maintainer`.
+
+  ```bash no-run reason="the address, the token file, the numbers and the name are placeholders for your own deployment"
+  factory-cli repository register --api https://factory.example.org --token-file operator.token --installation 123456 --github-repository 7890123 --name my-org/my-project --single-maintainer
+  ```
+
+  The same person may then run `confirm-map` and `enable`. `repository show` prints "Rule: single maintainer".
+- **Who and when.** Only an operator can say it, and only when registering. It is in the audit record of the registration (`repository.registered`, subject `single_maintainer=true`), so the log shows who chose it and when. The database refuses every change of the flag by the API login and by the worker, and no command changes it.
+- **What it gives up.** The second pair of eyes on the map. The person who reads the map and the person who lets the repository take tickets are the same, so nothing but that person's care stands between a wrong map and a running factory. Choose it for a project of one person. Do not choose it to save a step in a team.
+- **A repository registered before this rule.** The migration `2026-11-03-002600` switches off every enabled repository whose enabler is its attestor, with a `NOTICE`, and writes no audit record. Another person can enable it. A project owner who works alone cannot re-register it (a GitHub repository is registered once), so a database administrator sets the flag by hand with a statement such as `UPDATE repositories SET single_maintainer = true WHERE id = '...'` as the table owner, and writes an audit record that says who asked for it and why. Nobody else can: the API login and the worker have no grant on the column, and a trigger refuses them even if they had one.
+- **Not a tenant setting.** The flag is for one repository. Another repository of the same owner is strict unless it was registered with the switch too.
 
 ## What the installer does not do
 
@@ -120,6 +142,10 @@ The exit codes are 0 ready, 1 a step failed, 2 wrong arguments, and 3 not finish
 | `factory-cli` says the project map was attested again since you read it | An operator confirmed another commit after you ran `repository show`. | Run `repository show`, read the new map, and enable the repository with the new commit. |
 | A repository that took tickets stopped taking them | An operator confirmed the map again, or an upgrade switched off every enabled repository. | Run `repository show`. The enabled line says no. Enable it again with the commit that was read. |
 | `factory-cli` says the request conflicts with a request already recorded, on `repository register` | That GitHub repository is already registered, by you or by someone else, or you reused a key for another request. | Run `repository show` with the identifier you were given. Use a new `--key` for a new request. |
+| `factory-cli` says you attested this repository's project map and another person enables it | The repository is strict (the default) and you confirmed the map. | Ask another person with the approver designation to enable it. If you are the only maintainer, see "A single-maintainer repository". |
+| `repository show` says the repository is enabled but not open for new jobs | The person who confirmed the map, or the person who enabled the repository, is no longer an active human of the tenant (they were switched off). Webhooks and job submissions are dropped, and jobs that exist go on. | Another operator confirms the map again, and another approver enables it for the new commit. |
+| `factory-cli` says the worker refused the request, with "checked the protected allowlist again" | Your entry held the designation when you asked and does not hold it, or does not reach this repository, when the worker applied the request. | Ask the owner of the allowlist. Narrowed entries list the GitHub id of the repository (RR-28). |
+| `factory-cli` ends with exit code 3 and "The worker had not applied it" | No worker is running, or it is busy or cannot read the allowlist. | Start or fix the worker, then `factory-cli repository change REQUEST_ID`. Do not send the request again with a new key. |
 | `factory-cli` says you are not permitted | Your allowlist entry does not hold the designation. The operator registers, confirms and disables. The approver enables. An entry narrowed to other repositories holds nothing here. | Ask the owner of the allowlist. |
 
 ## Where to read more

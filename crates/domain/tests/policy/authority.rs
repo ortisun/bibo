@@ -10,7 +10,9 @@ use factory_domain::policy::authority::{
     AllowlistChange, AllowlistChangeDenial, AuthorityDenial, AuthorityPolicy, AutonomyLevel,
     ChangeFacts, GithubPermission, OverrideContext, OverrideDenial,
 };
-use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
+use factory_domain::policy::authority::{
+    Allowlist, AllowlistEntry, ListedRepository, RepositoryIdentity,
+};
 use factory_domain::policy::decision::{AuthorizedApproval, Designation, GithubUserId};
 use factory_domain::policy::paths::{ChangeEvidence, Operation, PathPolicy, PathVerdict};
 use factory_domain::policy::{PolicyEngine, RepoKind};
@@ -76,7 +78,7 @@ fn allowlist() -> Allowlist {
     let mut expired = entry(EXPIRED, "temp", &[Approver]);
     expired.expires_at = Some(Timestamp::parse("2026-10-27T11:59:59Z").expect("time"));
     let mut narrow = entry(OTHER_REPO_ONLY, "narrow", &[Approver]);
-    narrow.repositories = Some(BTreeSet::from(["acme/other".to_owned()]));
+    narrow.repositories = Some(BTreeSet::from([ListedRepository::named("acme/other")]));
     let mut future = entry(SECURITY_TWO, "sec2", &[SecurityApprover]);
     future.expires_at = Some(Timestamp::parse("2027-01-01T00:00:00Z").expect("time"));
     Allowlist::new(
@@ -1301,15 +1303,19 @@ fn override_and_dependency_rules_an_override_is_refused_for_the_gates_the_policy
 fn an_entry_covers_the_repositories_it_lists_and_no_others() {
     let plain = entry(APPROVER, "mallory", &[Designation::Approver]);
     for repository in ["acme/repo", "acme/other", "anything/at-all"] {
-        assert!(plain.covers_repository(repository), "{repository}");
+        assert!(
+            plain.covers_repository(&RepositoryIdentity::by_name_only(repository)),
+            "{repository}"
+        );
     }
     let mut narrow = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
-    narrow.repositories = Some(BTreeSet::from(["Acme/Other".to_owned()]));
+    narrow.repositories = Some(BTreeSet::from([ListedRepository::named("Acme/Other")]));
+    let named = RepositoryIdentity::by_name_only;
     assert!(
-        narrow.covers_repository("acme/other"),
+        narrow.covers_repository(&named("acme/other")),
         "case is not compared"
     );
-    assert!(narrow.covers_repository("ACME/OTHER"));
+    assert!(narrow.covers_repository(&named("ACME/OTHER")));
     for not_listed in [
         "acme/repo",
         "acme/othe",
@@ -1319,17 +1325,97 @@ fn an_entry_covers_the_repositories_it_lists_and_no_others() {
         "acme/other\n",
         "",
     ] {
-        assert!(!narrow.covers_repository(not_listed), "{not_listed:?}");
+        assert!(
+            !narrow.covers_repository(&named(not_listed)),
+            "{not_listed:?}"
+        );
     }
     // An empty list is a narrowing to nothing, not to everything.
     narrow.repositories = Some(BTreeSet::new());
-    assert!(!narrow.covers_repository("acme/other"));
+    assert!(!narrow.covers_repository(&named("acme/other")));
+}
+
+// ---- RR-28: the narrowing by the numeric id of the repository -------------------------------------
+
+const OLD_NAME: &str = "acme/old-name";
+const ITS_ID: u64 = 5_000;
+const SOMEONE_ELSES_ID: u64 = 9_000;
+
+fn narrowed_by_id() -> AllowlistEntry {
+    let mut narrow = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
+    narrow.repositories = Some(BTreeSet::from([ListedRepository::with_id(
+        OLD_NAME, ITS_ID,
+    )]));
+    narrow
+}
+
+#[test]
+fn rr_28_an_entry_with_an_id_follows_the_repository_through_a_rename_and_a_transfer() {
+    let narrow = narrowed_by_id();
+    // Renamed: the registered name is another, the id is the same.
+    assert!(narrow.covers_repository(&RepositoryIdentity::registered("acme/new-name", ITS_ID)));
+    // Transferred to another owner.
+    assert!(narrow.covers_repository(&RepositoryIdentity::registered(
+        "elsewhere/old-name",
+        ITS_ID
+    )));
+    // Not renamed at all.
+    assert!(narrow.covers_repository(&RepositoryIdentity::registered(OLD_NAME, ITS_ID)));
+}
+
+#[test]
+fn rr_28_a_new_repository_under_the_old_name_inherits_nothing_from_an_entry_with_an_id() {
+    let narrow = narrowed_by_id();
+    assert!(
+        !narrow.covers_repository(&RepositoryIdentity::registered(OLD_NAME, SOMEONE_ELSES_ID)),
+        "the name is the same and the repository is another: the id decides"
+    );
+    assert!(
+        !narrow.covers_repository(&RepositoryIdentity::registered(
+            "ACME/OLD-NAME",
+            SOMEONE_ELSES_ID
+        )),
+        "a different case of the same name changes nothing"
+    );
+    // The control: the same new repository is covered by an entry that lists the name alone. That
+    // is the defect, kept as the weaker form and warned about.
+    let mut by_name = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
+    by_name.repositories = Some(BTreeSet::from([ListedRepository::named(OLD_NAME)]));
+    assert!(by_name.covers_repository(&RepositoryIdentity::registered(OLD_NAME, SOMEONE_ELSES_ID)));
+    assert_eq!(by_name.name_only_listings(), vec![OLD_NAME]);
+    assert!(narrow.name_only_listings().is_empty());
+}
+
+#[test]
+fn rr_28_a_listing_with_an_id_falls_back_to_its_recorded_name_only_where_no_id_can_be_known() {
+    let narrow = narrowed_by_id();
+    assert!(narrow.covers_repository(&RepositoryIdentity::by_name_only(OLD_NAME)));
+    assert!(!narrow.covers_repository(&RepositoryIdentity::by_name_only("acme/new-name")));
+    let mixed = {
+        let mut entry = narrowed_by_id();
+        entry
+            .repositories
+            .as_mut()
+            .expect("a list")
+            .insert(ListedRepository::named("acme/by-name"));
+        entry
+    };
+    assert!(mixed.covers_repository(&RepositoryIdentity::registered(
+        "acme/by-name",
+        SOMEONE_ELSES_ID
+    )));
+    assert!(mixed.covers_repository(&RepositoryIdentity::registered("acme/other", ITS_ID)));
+    assert!(!mixed.covers_repository(&RepositoryIdentity::registered(
+        "acme/other",
+        SOMEONE_ELSES_ID
+    )));
+    assert_eq!(mixed.name_only_listings(), vec!["acme/by-name"]);
 }
 
 #[test]
 fn the_policy_and_the_entry_agree_on_which_repository_a_designation_reaches() {
     let mut narrow = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
-    narrow.repositories = Some(BTreeSet::from(["acme/other".to_owned()]));
+    narrow.repositories = Some(BTreeSet::from([ListedRepository::named("acme/other")]));
     let list = Allowlist::new("sha256:narrow", vec![narrow.clone()]).expect("list");
     let now = Timestamp::parse("2026-10-27T12:00:00Z").expect("time");
     for repository in ["acme/repo", "acme/other", "ACME/Other"] {
@@ -1344,7 +1430,7 @@ fn the_policy_and_the_entry_agree_on_which_repository_a_designation_reaches() {
             .is_ok();
         assert_eq!(
             reached,
-            narrow.covers_repository(repository),
+            narrow.covers_repository(&RepositoryIdentity::by_name_only(repository)),
             "{repository}"
         );
     }

@@ -250,6 +250,12 @@ fn check(name: Option<&str>) -> StoreError {
         "repositories_enabled_project_map_commit_matches" => {
             rule(ConstraintRule::ProjectMapChanged)
         }
+        // REG-6: the enabler is the attestor of the map, on a repository registered strict.
+        "repositories_enabler_differs_from_attestor" => rule(ConstraintRule::EnablerIsAttestor),
+        // REG-6: a login of the factory changed the flag after registration.
+        "repositories_single_maintainer_is_set_at_registration" => {
+            rule(ConstraintRule::ProjectMapRule)
+        }
         other if other.ends_with("_check") && TEXT_COLUMNS.iter().any(|c| other.contains(c)) => {
             rule(ConstraintRule::TextBounds)
         }

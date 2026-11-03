@@ -68,6 +68,7 @@ use crate::decisions::DecisionFields;
 use crate::dependency_decisions::DependencyFields;
 use crate::intake_rejections::RejectionFields;
 use crate::profile::Profile;
+use crate::repository_changes::RepositoryChangeFields;
 use crate::stage_decisions::StageFields;
 use crate::startup::StartupFailure;
 
@@ -112,6 +113,17 @@ const REJECTION_CONTEXT: &str = "factory-intake-rejection-request/1";
 
 /// The first line of what is hashed to make the id of the record that a rejection leaves.
 const REJECTION_ID_CONTEXT: &str = "factory-intake-rejection-id/1";
+
+/// The first line of what is signed for a request to register, attest or enable a repository (REG-2).
+/// It differs from the other contexts, so a word made for one kind of record is never the word of another.
+const REPOSITORY_CONTEXT: &str = "factory-repository-change-request/1";
+
+/// The first line of what is hashed to make the id of the record that ends a request to change a repository.
+const REPOSITORY_RESULT_CONTEXT: &str = "factory-repository-change-result-id/1";
+
+/// The first line of what is hashed to make the id of the second record of a request: the switch-off that
+/// the table made when the map was attested again.
+const REPOSITORY_EFFECT_CONTEXT: &str = "factory-repository-change-effect-id/1";
 
 /// Why a key cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -329,6 +341,36 @@ impl RejectionSigning<'_> {
         format!(
             "{REJECTION_CONTEXT}\ntenant={}\nevent={}\nat={}\n{}",
             self.tenant.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.requested_at,
+            self.fields.subject(),
+        )
+    }
+}
+
+/// What the signature of a request to register, attest or enable a repository covers besides the words of
+/// the subject (finding REG-2). The API writes the request and the worker reads it, so the one grammar is
+/// [`RepositoryChangeFields`].
+#[derive(Debug, Clone, Copy)]
+pub struct RepositoryChangeSigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The person the record names as its actor.
+    pub actor: PrincipalId,
+    /// The id of the audit record.
+    pub event: AuditEventId,
+    /// The time of the request, as the text written in the subject.
+    pub requested_at: &'a str,
+    /// The words of the subject.
+    pub fields: &'a RepositoryChangeFields,
+}
+
+impl RepositoryChangeSigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{REPOSITORY_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
+            self.tenant.as_text(),
+            self.actor.as_text(),
             self.event.as_uuid().hyphenated(),
             self.requested_at,
             self.fields.subject(),
@@ -720,6 +762,75 @@ impl DecisionKeys {
         )
     }
 
+    /// The word for a request to register, attest or enable a repository, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_repository_change(&self, signing: &RepositoryChangeSigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this request under the current key or the previous one, compared as
+    /// [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_repository_change(
+        &self,
+        signing: &RepositoryChangeSigning<'_>,
+        word: &str,
+    ) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed request to change a repository: the words, the time, the word.
+    #[must_use]
+    pub fn signed_repository_change_subject(
+        &self,
+        signing: &RepositoryChangeSigning<'_>,
+    ) -> String {
+        format!(
+            "{} at={} mac={}",
+            signing.fields.subject(),
+            signing.requested_at,
+            self.sign_repository_change(signing)
+        )
+    }
+
+    /// The id of the record that ends a request to change a repository (its result, applied or refused). It
+    /// is a keyed function of the id of the request, so that it is the same on every pass, in every worker
+    /// that holds the key and in the API, which uses it to tell whether a request was settled.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn repository_change_result_id(&self, request: AuditEventId) -> AuditEventId {
+        self.keyed_id(REPOSITORY_RESULT_CONTEXT, request)
+    }
+
+    /// The id of the second record of an applied request: the repository that the table switched off
+    /// because its map was attested again.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn repository_change_effect_id(&self, request: AuditEventId) -> AuditEventId {
+        self.keyed_id(REPOSITORY_EFFECT_CONTEXT, request)
+    }
+
+    fn keyed_id(&self, context: &str, request: AuditEventId) -> AuditEventId {
+        let word = self
+            .current
+            .word(format!("{context}\n{}", request.as_uuid().hyphenated()).as_bytes())
+            .expect("an HMAC key can have any length");
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&word[..16]);
+        AuditEventId::from_uuid(uuid::Builder::from_random_bytes(bytes).into_uuid())
+    }
+
     /// The id of the record that a rejection leaves, for a request. It is a keyed function of the
     /// id of the request, so that it is the same on every pass and in every worker that holds the
     /// key: a second write of the record is a repeat and not a second record.
@@ -1055,6 +1166,29 @@ pub struct RejectionSubject {
     pub requested_at: String,
     /// The word, as written. [`DecisionKeys::verify_rejection`] decides whether it is good.
     pub word: String,
+}
+
+/// What the subject of a request to change a repository holds, split but not believed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryChangeSubject {
+    /// The words.
+    pub fields: RepositoryChangeFields,
+    /// The time the API wrote.
+    pub requested_at: String,
+    /// The word, as written. [`DecisionKeys::verify_repository_change`] decides whether it is good.
+    pub word: String,
+}
+
+/// Reads the subject of a request to change a repository back. `None` when it does not have the shape of
+/// a signed one, including a subject that is the canonical words alone.
+#[must_use]
+pub fn read_repository_change_subject(subject: &str) -> Option<RepositoryChangeSubject> {
+    let (body, at, word) = split_signed(subject)?;
+    Some(RepositoryChangeSubject {
+        fields: RepositoryChangeFields::parse_canonical(body)?,
+        requested_at: at.to_owned(),
+        word: word.to_owned(),
+    })
 }
 
 /// Reads the subject of a request to answer a rejected label back. `None` when it does not have

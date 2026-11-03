@@ -167,6 +167,11 @@ pub enum StoreDefect {
     IgnoresEnableCommit,
     /// Switching a repository off leaves the record of what it was enabled for.
     KeepsEnableRecord,
+    /// The person who attested the map can enable a repository that was not registered as a
+    /// single-maintainer one (finding REG-6).
+    AllowsEnablerAttestor,
+    /// A registration repeated with the other single-maintainer flag is taken for a repeat.
+    IgnoresFlagOnReplay,
 }
 
 /// Each defect and the checks of `contracts::store` that must fail when the fake has it.
@@ -182,6 +187,14 @@ pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
     (
         StoreDefect::KeepsEnableRecord,
         &["the_record_of_the_enabling_is_set_on_enable_and_emptied_on_disable"],
+    ),
+    (
+        StoreDefect::AllowsEnablerAttestor,
+        &["an_enabler_cannot_be_the_attestor_unless_the_repository_is_single_maintainer"],
+    ),
+    (
+        StoreDefect::IgnoresFlagOnReplay,
+        &["a_repository_registration_is_idempotent_by_id_and_content"],
     ),
     (
         StoreDefect::ResolvesDisabledRepository,
@@ -588,6 +601,9 @@ impl InMemoryStore {
                 enabled_by: None,
                 enabled_at: Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time"),
             }),
+            single_maintainer: false,
+            attestor_is_active: true,
+            enabler_is_active: true,
         };
         g.committed.repositories.insert(
             id,
@@ -1589,12 +1605,26 @@ impl RepositoryOps for InMemoryTx {
         id: RepositoryId,
     ) -> Result<Versioned<Repository>, StoreError> {
         call!(self, {
-            self.work
+            let mut read = self
+                .work
                 .repositories
                 .get(&id)
                 .filter(|r| self.sees(r.value.tenant_id))
                 .map(Row::versioned)
-                .ok_or(StoreError::NotFound)
+                .ok_or(StoreError::NotFound)?;
+            // The standing of the people is worked out on every read, as the database does.
+            read.value.attestor_is_active = read
+                .value
+                .project_map
+                .as_ref()
+                .is_none_or(|map| self.is_active_human(map.attested_by));
+            read.value.enabler_is_active = read
+                .value
+                .enabled_for
+                .as_ref()
+                .and_then(|record| record.enabled_by)
+                .is_none_or(|who| self.is_active_human(who));
+            Ok(read)
         })
     }
 
@@ -1634,7 +1664,9 @@ impl RepositoryOps for InMemoryTx {
                 let same = existing.value.installation == new.installation
                     && existing.value.github_repository_id == new.github_repository_id
                     && existing.value.full_name == new.full_name
-                    && existing.value.default_branch == new.default_branch;
+                    && existing.value.default_branch == new.default_branch
+                    && (existing.value.single_maintainer == new.single_maintainer
+                        || self.has(StoreDefect::IgnoresFlagOnReplay));
                 return if same && !self.has(StoreDefect::DuplicatesOnReplay) {
                     Ok(Inserted {
                         row: existing.versioned(),
@@ -1747,6 +1779,18 @@ impl RepositoryOps for InMemoryTx {
             if !active_person && !self.has(StoreDefect::AcceptsAnyAttestor) {
                 return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
             }
+            // Finding REG-6: the person who attested the map does not enable the repository,
+            // unless it was registered as a single-maintainer one.
+            if !row.value.single_maintainer
+                && row
+                    .value
+                    .project_map
+                    .as_ref()
+                    .is_some_and(|map| map.attested_by == enabled_by)
+                && !self.has(StoreDefect::AllowsEnablerAttestor)
+            {
+                return Err(StoreError::Constraint(ConstraintRule::EnablerIsAttestor));
+            }
             let mut next = row;
             next.value.enabled = true;
             next.value.enabled_for = Some(EnabledFor {
@@ -1789,6 +1833,17 @@ impl RepositoryOps for InMemoryTx {
 }
 
 impl InMemoryTx {
+    /// True when `id` is not a person or service this store knows (a seeded repository names
+    /// made-up people), or is an active human of the tenant. A person who is switched off, a
+    /// service and a person of another tenant are not.
+    fn is_active_human(&self, id: PrincipalId) -> bool {
+        self.work.principals.get(&id).is_none_or(|p| {
+            p.tenant_id == self.tenant
+                && p.disabled_at.is_none()
+                && matches!(p.kind, PrincipalKind::Human { .. })
+        })
+    }
+
     /// A new repository, as registration makes it: disabled, at level L0, with no protection
     /// result and no project map. The defect makes it enabled at level L1.
     fn new_repository(&mut self, new: NewRepository) -> Inserted<Repository> {
@@ -1810,6 +1865,9 @@ impl InMemoryTx {
                 },
                 project_map: None,
                 enabled_for: None,
+                single_maintainer: new.single_maintainer,
+                attestor_is_active: true,
+                enabler_is_active: true,
             },
             version: Version::FIRST,
         };

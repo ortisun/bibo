@@ -76,7 +76,8 @@ impl SeededRepository<'_> {
     /// The commit a fixture attests.
     pub const MAP_COMMIT: &'static str = "0123456789abcdef0123456789abcdef01234567";
 
-    /// Two statements: the attesting person (once for each tenant) and the enabled repository.
+    /// Two statements: the attesting person (once for each tenant) and the enabled repository. The
+    /// one person attests and enables it, so it is a single-maintainer repository (finding REG-6).
     #[must_use]
     pub fn sql(&self) -> String {
         let tenant = self.tenant;
@@ -87,9 +88,9 @@ impl SeededRepository<'_> {
                ON CONFLICT (tenant_id, id) DO NOTHING; \
              INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
                     full_name, default_branch, autonomy_ceiling, enabled, project_map_commit, \
-                    project_map_attested_by_principal_id, enabled_by_principal_id) \
+                    project_map_attested_by_principal_id, enabled_by_principal_id, single_maintainer) \
                VALUES ('{tenant}', '{id}', {installation}, {github}, '{full_name}', '{branch}', \
-                    '{ceiling}', true, '{commit}', {attestor}, {attestor});",
+                    '{ceiling}', true, '{commit}', {attestor}, {attestor}, true);",
             user = Self::ATTESTOR_GITHUB_USER,
             id = self.id,
             installation = self.installation,

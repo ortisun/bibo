@@ -10,7 +10,8 @@
 -- shows up in review. The API writes four tables (jobs, original_requests, audit_events,
 -- webhook_deliveries) and reads a few more; it deletes nothing. Since migration 2026-11-02-002400 it also
 -- registers repositories and changes four columns of them (the project map and the enabled flag), by column
--- grants that this file lists on their own.
+-- grants that this file lists on their own. Since migration 2026-11-03-002600 the registration also writes the
+-- single_maintainer flag (REG-6), and nobody may update that column.
 
 -- ---------------------------------------------------------------------------------------------
 -- 1. The role itself.
@@ -66,13 +67,11 @@ INSERT INTO expected_api_grants VALUES
 -- enabled it; the database stamps that time as well), and the version, which every update of an aggregate raises by one. It cannot change the name, the installation,
 -- the default branch, the autonomy ceiling, the protection result or the bypass attestation.
 CREATE TEMP TABLE expected_api_column_grants (tbl text, col text, privilege text);
+-- Since migration 2026-11-03-002700 (finding REG-2) the API login registers, attests and enables nothing: those are signed
+-- requests that the worker applies. What is left is the switch-off, which only narrows: UPDATE of `enabled` and `version`,
+-- and a trigger that refuses any other change.
 INSERT INTO expected_api_column_grants VALUES
-  ('repositories', 'tenant_id', 'INSERT'), ('repositories', 'id', 'INSERT'),
-  ('repositories', 'github_installation_id', 'INSERT'), ('repositories', 'github_repository_id', 'INSERT'),
-  ('repositories', 'full_name', 'INSERT'), ('repositories', 'default_branch', 'INSERT'),
-  ('repositories', 'enabled', 'UPDATE'), ('repositories', 'project_map_commit', 'UPDATE'),
-  ('repositories', 'project_map_attested_by_principal_id', 'UPDATE'), ('repositories', 'version', 'UPDATE'),
-  ('repositories', 'enabled_project_map_commit', 'UPDATE'), ('repositories', 'enabled_by_principal_id', 'UPDATE');
+  ('repositories', 'enabled', 'UPDATE'), ('repositories', 'version', 'UPDATE');
 
 DO $$
 DECLARE
@@ -190,13 +189,18 @@ BEGIN
   PERFORM dbtest.expect_eq('the API login may write the four tables of the API and nothing else', coalesce(extra, ''), '');
   PERFORM dbtest.expect_true('the API login may write columns of repositories, and only by column grants',
     has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'UPDATE')
-    AND has_column_privilege('api_privileges_login', 'repositories', 'project_map_commit', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'project_map_commit', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'project_map_attested_by_principal_id', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'enabled_by_principal_id', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'autonomy_ceiling', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'protection_preflight_passed', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'default_branch', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'bypass_attested_by_principal_id', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'autonomy_ceiling', 'INSERT')
-    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'INSERT'));
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'INSERT')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'single_maintainer', 'INSERT')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'full_name', 'INSERT')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'single_maintainer', 'UPDATE'));
   PERFORM dbtest.expect_true('the API login is not a member of factory_app, factory_system or factory_lookup',
     NOT pg_has_role('api_privileges_login', 'factory_app', 'MEMBER')
     AND NOT pg_has_role('api_privileges_login', 'factory_system', 'MEMBER')
@@ -332,8 +336,9 @@ DECLARE
     'decision.denied_summary', 'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
     'webhook.duplicate_delivery', 'webhook.rejected', 'webhook.unbound', 'webhook.audit_dropped',
     'webhook_accepted_or_rejected.granted', 'webhook_accepted_or_rejected.denied',
-    -- Since migration 2026-11-02-002400: what the API writes when a person changes a repository.
-    'repository.registered', 'repository.map_attested', 'repository.enabled', 'repository.disabled'];
+    -- Since migration 2026-11-03-002700: the signed request for a repository change, and the switch-off, which the
+    -- API still writes. The three acts that widen the reach (registered, map_attested, enabled) are the worker's.
+    'repository.change_requested', 'repository.disabled'];
   refused text[] := ARRAY[
     -- What the worker writes: a marker that ends a request, and the record that a marker was ignored.
     'decision.applied', 'decision.rejected', 'decision.marker_ignored',
@@ -343,7 +348,8 @@ DECLARE
     'decision.requested2', 'decision.request', 'decision', 'job.submitted.extra', 'webhook.accepted_by_worker',
     'webhook_accepted_or_rejected', 'webhook_accepted_or_rejected.noted',
     'decision.dependency_requested_', 'decision.stage_requested_', 'decision.stage_request', 'x',
-    'repository', 'repository.register', 'repository.enable', 'repository.registered_by_worker', 'repository.map_attested.extra'];
+    'repository', 'repository.register', 'repository.enable', 'repository.registered_by_worker', 'repository.map_attested.extra',
+    'repository.registered', 'repository.map_attested', 'repository.enabled', 'repository.change_applied', 'repository.change_refused'];
   a text;
   msg text;
 BEGIN

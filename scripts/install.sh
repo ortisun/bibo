@@ -1151,7 +1151,7 @@ step_uncommitted() {
   changed=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" status --porcelain -- .github .mcp.json .codex '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$changed" -gt 0 ]; then
     report NEEDS uncommitted "$changed installed or generated path(s) are not committed"
-    needs_you "Review the changes in $checkout and merge them by pull request, so that the map is on the default branch before a person attests it. The engine cannot see your repository: it records the commit that you attest and does not check that the commit exists."
+    needs_you "Review the changes in $checkout and merge them by pull request, so that the map is on the default branch before a person attests it. The engine cannot see your repository: it records the commit that you attest and does not check that the commit exists. A second person enables the repository after the one who attested the map; if you are the only maintainer, register the repository with 'factory-cli repository register --single-maintainer' (see the onboarding guide, 'A single-maintainer repository'). Registering, confirming and enabling are requests that the worker applies: each command waits up to 60 seconds for it (exit code 3 means the worker had not applied it yet; look again with 'factory-cli repository change REQUEST', do not send it again)."
   fi
 }
 

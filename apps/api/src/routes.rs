@@ -86,6 +86,8 @@ pub enum Op {
     EnableRepository,
     /// `POST /v1/repositories/{repository_id}/disable`.
     DisableRepository,
+    /// `GET /v1/repository-changes/{request_id}`.
+    GetRepositoryChange,
     /// `POST /v1/webhooks/github`.
     GithubWebhook,
 }
@@ -247,6 +249,14 @@ pub const ROUTES: &[RouteSpec] = &[
         operation_id: "disableRepository",
         auth: Auth::Token,
         has_body: true,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/v1/repository-changes/{request_id}",
+        op: Op::GetRepositoryChange,
+        operation_id: "getRepositoryChange",
+        auth: Auth::Token,
+        has_body: false,
     },
     RouteSpec {
         method: "POST",
@@ -428,6 +438,9 @@ async fn run(
         (Op::DisableRepository, Some(caller)) => {
             repositories::switch(state, &caller, job_id, &parts.headers, &bytes, false).await
         }
+        (Op::GetRepositoryChange, Some(caller)) => {
+            repositories::change_status(state, &caller, job_id).await
+        }
         // A token route without a caller cannot happen: authentication ran first.
         (_, None) => Err(ApiError::Unauthorized),
     }
@@ -492,10 +505,11 @@ pub fn declared_statuses(op: Op) -> &'static [StatusCode] {
         | Op::GateReports
         | Op::Artifact => &[StatusCode::OK],
         Op::Decide => &[StatusCode::ACCEPTED],
-        Op::RegisterRepository => &[StatusCode::OK, StatusCode::CREATED],
-        Op::GetRepository | Op::AttestProjectMap | Op::EnableRepository | Op::DisableRepository => {
-            &[StatusCode::OK]
+        // Register, attest and enable are signed requests that the worker applies (REG-2).
+        Op::RegisterRepository | Op::AttestProjectMap | Op::EnableRepository => {
+            &[StatusCode::ACCEPTED]
         }
+        Op::GetRepository | Op::GetRepositoryChange | Op::DisableRepository => &[StatusCode::OK],
         Op::GithubWebhook => &[StatusCode::ACCEPTED],
     }
 }

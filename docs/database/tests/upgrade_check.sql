@@ -19,6 +19,8 @@ BEGIN
     (SELECT min(version) FROM repositories), 2::bigint);
   PERFORM dbtest.expect_eq('an old repository keeps its name, its installation and its autonomy ceiling',
     (SELECT count(*) FROM repositories WHERE full_name = 'org1/repo' AND github_installation_id = 9001 AND autonomy_ceiling = 'L0'), 1::bigint);
+  -- Migration 2026-11-03-002600: the strict rule is the default, so no old repository is a single-maintainer one.
+  PERFORM dbtest.expect_eq('no old repository is a single-maintainer one', (SELECT count(*) FROM repositories WHERE single_maintainer), 0::bigint);
   PERFORM dbtest.expect_eq('the old ledger chain still verifies against the old head', coalesce(ledger_verify_chain(dbtest.u(1), dbtest.u(1101))::text, 'ok'), 'ok');
   PERFORM dbtest.expect_eq('the old audit chain still verifies', coalesce(audit_verify_chain(dbtest.u(1))::text, 'ok'), 'ok');
   PERFORM dbtest.expect_eq('the old rows are still isolated by row-level security: a tenant 2 session sees none of them',

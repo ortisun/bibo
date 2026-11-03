@@ -799,17 +799,34 @@ struct RepositoryRow {
     enabled_by_principal_id: Option<Uuid>,
     #[diesel(sql_type = Nullable<Timestamptz>)]
     enabled_at: Option<OffsetDateTime>,
+    #[diesel(sql_type = Bool)]
+    single_maintainer: bool,
+    #[diesel(sql_type = Bool)]
+    attestor_is_active: bool,
+    #[diesel(sql_type = Bool)]
+    enabler_is_active: bool,
 }
 
 /// The columns of a repository as the domain reads them. The ceiling an organization admin set is
 /// one fact, the result of the preflight another. The level the repository may run at is the lower
 /// of the two, computed here on every read, so a later passing preflight gives back what the admin
 /// set (ADR 0009).
+///
+/// `attestor_is_active` and `enabler_is_active` are computed on every read too (finding REG-6): a
+/// person who attested the map or enabled the repository and is no longer an active human principal
+/// of the tenant makes the repository fail the standing test, whatever the stored flag says. A
+/// column that is empty is not judged: nobody is named.
 const REPOSITORY_COLUMNS: &str = "tenant_id, id, github_installation_id, github_repository_id, \
     full_name, default_branch, enabled, protection_preflight_passed, \
     CASE WHEN protection_preflight_passed THEN autonomy_ceiling ELSE 'L0' END AS effective_ceiling, \
     version, project_map_commit, project_map_attested_by_principal_id, project_map_attested_at, \
-    enabled_project_map_commit, enabled_by_principal_id, enabled_at";
+    enabled_project_map_commit, enabled_by_principal_id, enabled_at, single_maintainer, \
+    (project_map_attested_by_principal_id IS NULL OR EXISTS (SELECT 1 FROM principals p \
+        WHERE p.tenant_id = repositories.tenant_id AND p.id = project_map_attested_by_principal_id \
+          AND p.kind = 'human' AND p.disabled_at IS NULL)) AS attestor_is_active, \
+    (enabled_by_principal_id IS NULL OR EXISTS (SELECT 1 FROM principals p \
+        WHERE p.tenant_id = repositories.tenant_id AND p.id = enabled_by_principal_id \
+          AND p.kind = 'human' AND p.disabled_at IS NULL)) AS enabler_is_active";
 
 fn repository_from_row(row: RepositoryRow) -> Result<Versioned<Repository>, StoreError> {
     // The three columns of the attestation are all set or all empty (a CHECK says so). A row that
@@ -859,6 +876,9 @@ fn repository_from_row(row: RepositoryRow) -> Result<Versioned<Repository>, Stor
                 .map_err(|_| corrupt("autonomy ceiling"))?,
             project_map,
             enabled_for,
+            single_maintainer: row.single_maintainer,
+            attestor_is_active: row.attestor_is_active,
+            enabler_is_active: row.enabler_is_active,
         },
         version: version_from_column(row.version)?,
     })
@@ -894,16 +914,19 @@ async fn get_repository(
 }
 
 /// True when the stored repository is the one the caller offered to register. The flags, the
-/// version and the project map move after the insert and are not compared.
+/// version and the project map move after the insert and are not compared. The single-maintainer
+/// flag is part of the registration and is compared: the same id with the other rule is another
+/// request.
 fn same_registration(stored: &Repository, new: &NewRepository) -> bool {
     stored.installation == new.installation
         && stored.github_repository_id == new.github_repository_id
         && stored.full_name == new.full_name
         && stored.default_branch == new.default_branch
+        && stored.single_maintainer == new.single_maintainer
 }
 
 /// Registers a repository. The row starts disabled, at level L0, with no protection result and no
-/// map, because the statement names six columns and the API's grant allows no more.
+/// map, because the statement names seven columns and the API's grant allows no more.
 async fn register_repository(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
@@ -916,8 +939,8 @@ async fn register_repository(
     // rolls back; nothing is written.
     let inserted = sql_query(format!(
         "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
-                full_name, default_branch) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+                full_name, default_branch, single_maintainer) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (tenant_id, id) DO NOTHING RETURNING {REPOSITORY_COLUMNS}"
     ))
     .bind::<SqlUuid, _>(tenant.as_uuid())
@@ -926,6 +949,7 @@ async fn register_repository(
     .bind::<BigInt, _>(hosted)
     .bind::<Text, _>(new.full_name.as_str())
     .bind::<Text, _>(new.default_branch.as_str())
+    .bind::<Bool, _>(new.single_maintainer)
     .get_result::<RepositoryRow>(connection)
     .await
     .optional()
@@ -958,6 +982,10 @@ struct Standing {
     map_commit: Option<String>,
     #[diesel(sql_type = Bool)]
     person_ok: bool,
+    #[diesel(sql_type = Bool)]
+    single_maintainer: bool,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    attested_by: Option<Uuid>,
 }
 
 /// What a change of a repository was, for the answer when it changed no row.
@@ -998,7 +1026,8 @@ async fn repository_not_changed(
         "SELECT r.version, r.project_map_commit AS map_commit, \
                 EXISTS (SELECT 1 FROM principals p \
                          WHERE p.tenant_id = r.tenant_id AND p.id = $3 AND p.kind = 'human' \
-                           AND p.disabled_at IS NULL) AS person_ok \
+                           AND p.disabled_at IS NULL) AS person_ok, \
+                r.single_maintainer, r.project_map_attested_by_principal_id AS attested_by \
            FROM repositories r WHERE r.tenant_id = $1 AND r.id = $2",
     )
     .bind::<SqlUuid, _>(tenant.as_uuid())
@@ -1014,12 +1043,17 @@ async fn repository_not_changed(
         (Some(row), RepositoryChange::Attest(_)) if !row.person_ok => {
             StoreError::Constraint(ConstraintRule::ProjectMapRule)
         }
-        (Some(row), RepositoryChange::Enable { commit, .. }) => match row.map_commit {
+        (Some(row), RepositoryChange::Enable { commit, by }) => match row.map_commit {
             None => StoreError::Constraint(ConstraintRule::ProjectMapRule),
             Some(on_file) if on_file != commit.as_str() => {
                 StoreError::Constraint(ConstraintRule::ProjectMapChanged)
             }
             Some(_) if !row.person_ok => StoreError::Constraint(ConstraintRule::ProjectMapRule),
+            // The enabler is the attestor of this map and the repository is not a single-maintainer
+            // one (finding REG-6).
+            Some(_) if !row.single_maintainer && row.attested_by == Some(by.as_uuid()) => {
+                StoreError::Constraint(ConstraintRule::EnablerIsAttestor)
+            }
             // The version is current and the rules hold: a concurrent change slipped in between.
             Some(_) => StoreError::Conflict,
         },
@@ -1071,7 +1105,9 @@ async fn attest_project_map(
 }
 
 /// Switches the repository on for `commit`. The statement names the commit and the person, so the
-/// table holds them to the map on file (REG-1) and a refusal does not abort the transaction.
+/// table holds them to the map on file (REG-1) and a refusal does not abort the transaction. It also
+/// leaves a strict repository alone when the person is the one who attested the map (REG-6), for the
+/// same reason: the table refuses it too, with an error that would abort the transaction.
 async fn enable_repository(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
@@ -1084,6 +1120,7 @@ async fn enable_repository(
         "UPDATE repositories SET enabled = true, enabled_project_map_commit = $4, \
                 enabled_by_principal_id = $5, version = version + 1 \
           WHERE tenant_id = $1 AND id = $2 AND version = $3 AND project_map_commit = $4 \
+            AND (single_maintainer OR project_map_attested_by_principal_id IS DISTINCT FROM $5) \
             AND EXISTS (SELECT 1 FROM principals p \
                          WHERE p.tenant_id = $1 AND p.id = $5 AND p.kind = 'human' \
                            AND p.disabled_at IS NULL) \

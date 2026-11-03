@@ -1709,6 +1709,14 @@ pub trait RepositoryOps {
         commit: ProjectMapCommit,
         attested_by: PrincipalId,
     ) -> Result<Version, StoreError>;
+    // Changed on 2026-11-03 (review findings REG-6 and RR-28): `NewRepository` and `Repository` gained
+    // `single_maintainer: bool`; `Repository` gained `attestor_is_active` and `enabler_is_active`, worked out on
+    // every read, and the methods `identity()` (the registered name and GitHub's numeric id, which every
+    // question about authority on a registered repository carries) and `open_for_new_jobs()` (enabled, and both
+    // people still active humans of the tenant). `ConstraintRule` gained `EnablerIsAttestor`: the person who
+    // attested the map cannot enable a repository that was not registered as a single-maintainer one.
+    // Register, attest and enable are called by the worker from a signed request (REG-2); the API calls only
+    // `disable_repository` and the reads.
     // Changed on 2026-11-02 (review finding REG-1): `set_repository_enabled(id, expected, enabled)`
     // became the two methods below, and `Repository` gained `enabled_for: Option<EnabledFor>`.
     // Enabling names the map commit the approver read and the person who enables. Attesting another

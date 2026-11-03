@@ -240,7 +240,7 @@
         "operationId": "registerRepository",
         "tags": ["repositories"],
         "summary": "Registers a repository of the caller's tenant. It starts disabled, at autonomy level L0, with no project map.",
-        "description": "Needs the designation that the action register_repository names in policies/approval.yaml (the operator). The engine holds no GitHub credential and does not look at the repository: the installation, the GitHub repository id and the name are what the person says they are. A GitHub repository belongs to one registration in the whole factory, so a second registration of it is a conflict. A repeat of the same Idempotency-Key with the same request finds the first repository with 200; the same key with a different request is a conflict. The change and its audit record are written in one transaction.",
+        "description": "Needs the designation that the action register_repository names in policies/approval.yaml (the operator). The engine holds no GitHub credential and does not look at the repository: the installation, the GitHub repository id and the name are what the person says they are. This route changes nothing in the table. It appends one signed request (the action repository.change_requested) and answers 202. The worker verifies the keyed word, asks the protected allowlist again by the numeric GitHub id, registers the repository and records the result as the system; a GitHub repository that another registration holds is refused there, with the code conflict, and never says whose it is. A repeat of the same Idempotency-Key with the same request answers 202 with changed false; the same key with a different request is a conflict.",
         "security": [{ "bearerToken": [] }],
         "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": {
@@ -248,8 +248,7 @@
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterRepository" } } }
         },
         "responses": {
-          "201": { "description": "A new repository, disabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
-          "200": { "description": "The repository this key registered before.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "202": { "description": "The request to register the repository is recorded and signed. The worker has not necessarily applied it: read it with getRepositoryChange. A repeat of the same key with the same request answers 202 again, with changed false.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeRequested" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
@@ -286,7 +285,7 @@
         "operationId": "attestProjectMap",
         "tags": ["repositories"],
         "summary": "Records that the caller attests the project map: the commit of the default branch that holds it.",
-        "description": "Needs the designation that the action confirm_project_map names (the operator). This is an ATTESTATION BY A PERSON and not a verification: the engine holds no GitHub credential, does not read the repository and does not check that the commit exists or that the map is good. It records the commit, the person, the reason and the time. A later attestation replaces the earlier one. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "description": "Needs the designation that the action confirm_project_map names (the operator). This is an ATTESTATION BY A PERSON and not a verification: the engine holds no GitHub credential, does not read the repository and does not check that the commit exists or that the map is good. This route appends one signed request and answers 202; the worker applies it as the system and records the commit, the person, the reason and the time. A later attestation replaces the earlier one. A repeat of the same Idempotency-Key with the same request changes nothing.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/RepositoryId" },
@@ -297,7 +296,7 @@
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AttestProjectMap" } } }
         },
         "responses": {
-          "200": { "description": "The repository with the new attestation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "202": { "description": "The request to attest the map is recorded and signed. The worker has not necessarily applied it: read it with getRepositoryChange, then the repository with getRepository.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeRequested" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
@@ -316,7 +315,7 @@
         "operationId": "enableRepository",
         "tags": ["repositories"],
         "summary": "Lets the repository take tickets, for the project map commit the approver names. It needs a project map that a person attested.",
-        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The database refuses the same changes for every role. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The person who attested the map cannot enable a repository that was not registered with single_maintainer: that is refused with 409 and the code enabler_is_attestor (finding REG-6). The database refuses the same changes for every role. These refusals are made here, from the row as it is, and made again by the worker, which applies the request. This route appends one signed request and answers 202. A repeat of the same Idempotency-Key with the same request changes nothing.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/RepositoryId" },
@@ -327,7 +326,7 @@
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EnableRepository" } } }
         },
         "responses": {
-          "200": { "description": "The repository, enabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "202": { "description": "The request to enable the repository is recorded and signed. The worker has not necessarily applied it: read it with getRepositoryChange.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeRequested" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
@@ -346,7 +345,7 @@
         "operationId": "disableRepository",
         "tags": ["repositories"],
         "summary": "Stops the repository from taking tickets: its webhooks are dropped and no job can be submitted for it.",
-        "description": "Needs the designation that the action disable_repository names (the operator). It works with or without a project map. Jobs that already exist are not touched. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "description": "Needs the designation that the action disable_repository names (the operator). It works with or without a project map. Jobs that already exist are not touched. Disabling only narrows what the factory reaches, so this is the one change the API makes itself and not as a signed request: it answers 200 with the repository. The database lets the API login do nothing else to a repository. A repeat of the same Idempotency-Key with the same request changes nothing.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/RepositoryId" },
@@ -366,6 +365,24 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "413": { "$ref": "#/components/responses/PayloadTooLarge" },
           "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repository-changes/{request_id}": {
+      "get": {
+        "operationId": "getRepositoryChange",
+        "tags": ["repositories"],
+        "summary": "Where a request to register, attest or enable a repository stands.",
+        "description": "requested until the worker settles the request, then applied, or refused with the fixed code of the refusal (not_permitted, not_an_active_person, not_found, conflict, project_map_not_attested, project_map_changed, enabler_is_attestor, malformed or not_settled). A request of another tenant and one that does not exist have the same answer. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. The answer holds no text of the request.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "The request_id that the change returned." }],
+        "responses": {
+          "200": { "description": "The state of the request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeState" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
@@ -440,7 +457,7 @@
         "required": ["error"],
         "additionalProperties": false,
         "properties": {
-          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed"] }
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed", "enabler_is_attestor"] }
         }
       },
       "FieldError": {
@@ -666,7 +683,8 @@
           "installation_id": { "type": "integer", "minimum": 1, "description": "The GitHub App installation that covers the repository." },
           "github_repository_id": { "type": "integer", "minimum": 1, "description": "GitHub's numeric id of the repository." },
           "full_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", "maxLength": 140, "description": "owner/name." },
-          "default_branch": { "type": "string", "minLength": 1, "maxLength": 255 }
+          "default_branch": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "single_maintainer": { "type": "boolean", "default": false, "description": "True lets the same person attest the project map and enable the repository, for a project owner who works alone. False, the default, is the strict rule: the person who enables the repository is another than the person who attested its map (finding REG-6). It is written here, at registration, and nowhere else, and the audit record of the registration says which it was." }
         }
       },
       "AttestProjectMap": {
@@ -713,21 +731,55 @@
           "verified_by_engine": { "type": "boolean", "enum": [false], "description": "Always false. The engine holds no GitHub credential and did not read the repository." }
         }
       },
+      "Standing": {
+        "type": "object",
+        "required": ["attestor_is_active_human", "enabler_is_active_human", "open_for_new_jobs"],
+        "description": "Whether the people behind the repository still stand (finding REG-6). A repository whose attestor or enabler is no longer an active human principal of the tenant is treated as not enabled for new jobs, whatever the stored flag says. Jobs that exist go on.",
+        "properties": {
+          "attestor_is_active_human": { "type": "boolean", "description": "False when a person attested the map and has since been switched off or is not a human. True when nobody attested it." },
+          "enabler_is_active_human": { "type": "boolean", "description": "False when a person enabled the repository and has since been switched off or is not a human. True when nobody is named as the enabler." },
+          "open_for_new_jobs": { "type": "boolean", "description": "True only when the repository is enabled and both are true. Webhooks and job submissions are dropped when it is false." }
+        }
+      },
       "Repository": {
         "type": "object",
-        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "enabled", "enabled_for", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
+        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "single_maintainer", "enabled", "standing", "enabled_for", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
         "properties": {
           "repository_id": { "type": "string", "format": "uuid" },
           "full_name": { "type": "string" },
           "default_branch": { "type": "string" },
           "github_installation_id": { "type": "integer" },
           "github_repository_id": { "type": "integer" },
-          "enabled": { "type": "boolean" },
+          "single_maintainer": { "type": "boolean", "description": "True when the repository was registered so that the same person may attest its project map and enable it." },
+          "enabled": { "type": "boolean", "description": "The stored flag. A repository can be enabled and still closed to new jobs: see standing." },
+          "standing": { "$ref": "#/components/schemas/Standing" },
           "enabled_for": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/EnabledFor" }], "description": "What the repository was enabled for. Present exactly while enabled is true. Attesting another project map commit, or the same commit by another person, switches an enabled repository off." },
           "protection_preflight_passed": { "type": "boolean" },
           "autonomy_ceiling": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },
           "version": { "type": "integer", "minimum": 1 },
           "project_map": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/ProjectMapAttestation" }] }
+        }
+      },
+      "RepositoryChangeRequested": {
+        "type": "object",
+        "required": ["request_id", "kind", "repository_id", "state", "changed"],
+        "properties": {
+          "request_id": { "type": "string", "format": "uuid", "description": "The id of the signed request. getRepositoryChange reports its state." },
+          "kind": { "type": "string", "enum": ["register", "attest", "enable"] },
+          "repository_id": { "type": "string", "format": "uuid", "description": "The repository the request is about. For a registration it is the id the repository will have; getRepository answers 404 until the worker has registered it." },
+          "state": { "type": "string", "enum": ["requested"] },
+          "changed": { "type": "boolean", "description": "False when the Idempotency-Key was used before: the earlier request is the one that stands." }
+        }
+      },
+      "RepositoryChangeState": {
+        "type": "object",
+        "required": ["request_id", "kind", "repository_id", "state", "code"],
+        "properties": {
+          "request_id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "enum": ["register", "attest", "enable"] },
+          "repository_id": { "type": "string", "format": "uuid" },
+          "state": { "type": "string", "enum": ["requested", "applied", "refused"] },
+          "code": { "type": "string", "nullable": true, "description": "The fixed code of a refusal. Empty unless the state is refused." }
         }
       },
       "RepositoryChanged": {

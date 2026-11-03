@@ -32,8 +32,10 @@ use factory_api::state::{ApiPorts, ApiState};
 use factory_api::tokens;
 use factory_composition::authority::StoreAuthority;
 use factory_composition::config::SecretFile;
+use factory_composition::decisions::AllowlistAuthority;
 use factory_composition::profile::Profile;
 use factory_composition::redaction::{FactorySecrets, redactor_from_policy};
+use factory_composition::repository_changes::{RepositoryChanges, RepositoryChangesDeps};
 use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::load_policy;
 use factory_composition::system::{RandomIds, Shutdown, SystemClock};
@@ -306,6 +308,26 @@ impl Env {
             artifacts_root,
             server,
             writer,
+        }
+    }
+
+    /// Runs, once for each tenant, the step of the worker that applies the signed requests to register,
+    /// attest and enable a repository (finding REG-2). The API only records those requests and answers
+    /// `202`; this is what a worker does with them, on the worker's login and with the allowlist file the
+    /// API reads, the action table of the real policy and the key the API signs with.
+    pub async fn apply_repository_changes(&self) {
+        let step = RepositoryChanges::new(RepositoryChangesDeps {
+            store: self.worker.clone(),
+            authority: Arc::new(AllowlistAuthority::new(
+                Arc::clone(&self.state.allowlist_file),
+                Arc::clone(&self.state.policies.approval),
+                Arc::new(SystemClock),
+            )),
+            policy_hash: self.state.policy_hash(),
+            keys: Arc::clone(&self.state.decision_keys),
+        });
+        for tenant in [self.a.id, self.b.id] {
+            step.pass(tenant).await;
         }
     }
 
