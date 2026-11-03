@@ -7,10 +7,13 @@
 //!
 //! The answer is a list of active rules from every ruleset that applies to the branch. Each rule
 //! has a `type` and, for most, `parameters`. The types used here are `pull_request`
-//! (`dismiss_stale_reviews_on_push`, `require_code_owner_review`), `required_status_checks`
+//! (`dismiss_stale_reviews_on_push`, `require_code_owner_review`, `required_approving_review_count`),
+//! `required_status_checks`
 //! (`required_status_checks`: a list of `context` and `integration_id`), `non_fast_forward` and
 //! `deletion`. Rules of other types are ignored. When several rules speak to the same setting the
-//! strictest wins, as on GitHub.
+//! strictest wins, as on GitHub: for the number of approving reviews, the largest count. A count
+//! that is missing, is not a whole number or does not fit a `u32` is not read, and a report that
+//! read none says `None`, which the preflight takes as not enough (SF-07).
 //!
 //! UNVERIFIED against the real GitHub: the exact type names and parameter names. The fixtures in
 //! `tests/fixtures/` are written from the documented shape, not recorded, and say so. Before the
@@ -42,6 +45,7 @@ pub fn protection_from_rules(
         dismisses_stale_approvals: false,
         blocks_force_push: false,
         blocks_deletion: false,
+        required_approving_reviews: None,
         required_checks: Vec::new(),
     };
     for rule in list {
@@ -53,6 +57,16 @@ pub fn protection_from_rules(
                     parameters["require_code_owner_review"].as_bool() == Some(true);
                 report.dismisses_stale_approvals |=
                     parameters["dismiss_stale_reviews_on_push"].as_bool() == Some(true);
+                if let Some(count) = parameters["required_approving_review_count"]
+                    .as_u64()
+                    .and_then(|count| u32::try_from(count).ok())
+                {
+                    report.required_approving_reviews = Some(
+                        report
+                            .required_approving_reviews
+                            .map_or(count, |held| held.max(count)),
+                    );
+                }
             }
             Some("required_status_checks") => {
                 for check in parameters["required_status_checks"]
@@ -142,6 +156,86 @@ mod tests {
             protection_from_rules(branch(), &rules)
                 .unwrap()
                 .requires_code_owner_review
+        );
+    }
+
+    #[test]
+    fn the_count_of_approving_reviews_is_read_from_the_pull_request_rule() {
+        let rules =
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": 2}}]);
+        let report = protection_from_rules(branch(), &rules).unwrap();
+        assert_eq!(report.required_approving_reviews, Some(2));
+        // Zero is a count too: the rule exists and asks for no review.
+        let rules =
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": 0}}]);
+        assert_eq!(
+            protection_from_rules(branch(), &rules)
+                .unwrap()
+                .required_approving_reviews,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn the_largest_count_of_several_pull_request_rules_wins() {
+        let rules = json!([
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 3}},
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 2}}
+        ]);
+        assert_eq!(
+            protection_from_rules(branch(), &rules)
+                .unwrap()
+                .required_approving_reviews,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_count_that_cannot_be_read_is_unknown_and_never_zero_or_enough() {
+        // No pull request rule, a rule without the parameter, and values that are not a whole
+        // number that fits: all unknown. (A string is not a count, whatever it spells.)
+        let unreadable = [
+            json!([]),
+            json!([{"type": "deletion"}]),
+            json!([{"type": "pull_request", "parameters": {}}]),
+            json!([{"type": "pull_request"}]),
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": "2"}}]),
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": -1}}]),
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": 1.5}}]),
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": 4_294_967_296_u64}}]),
+            json!([{"type": "pull_request", "parameters": {"required_approving_review_count": null}}]),
+        ];
+        for rules in unreadable {
+            assert_eq!(
+                protection_from_rules(branch(), &rules)
+                    .unwrap()
+                    .required_approving_reviews,
+                None,
+                "{rules}"
+            );
+        }
+        // A rule that gives no count does not hide the count of another rule.
+        let rules = json!([
+            {"type": "pull_request", "parameters": {}},
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 2}}
+        ]);
+        assert_eq!(
+            protection_from_rules(branch(), &rules)
+                .unwrap()
+                .required_approving_reviews,
+            Some(2)
+        );
+        // A count on a rule of another type is not the count of a pull request.
+        let rules = json!([
+            {"type": "pull_request", "parameters": {}},
+            {"type": "creation", "parameters": {"required_approving_review_count": 5}}
+        ]);
+        assert_eq!(
+            protection_from_rules(branch(), &rules)
+                .unwrap()
+                .required_approving_reviews,
+            None
         );
     }
 

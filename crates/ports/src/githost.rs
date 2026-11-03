@@ -460,6 +460,12 @@ pub struct ProtectionReport {
     pub blocks_force_push: bool,
     /// A rule blocks deletion of the branch.
     pub blocks_deletion: bool,
+    /// How many approving reviews a pull request needs before it can be merged: the largest
+    /// `required_approving_review_count` of the pull request rules that apply (SF-07). `None` means
+    /// unknown: no pull request rule gave a count that could be read, and the preflight does not
+    /// take an unknown count for enough. It is read from rulesets only; classic branch protection
+    /// is never read (it needs the Administration permission).
+    pub required_approving_reviews: Option<u32>,
     /// The required status checks.
     pub required_checks: Vec<RequiredCheck>,
 }
@@ -486,6 +492,17 @@ pub enum PreflightFailure {
     CodeOwnerReviewMissing,
     /// Approvals are kept when new commits are pushed.
     StaleApprovalsKept,
+    /// A pull request is required, and the number of approving reviews it needs could not be read
+    /// (SF-07). An unknown count is never enough.
+    ApprovingReviewsUnknown,
+    /// A pull request is required, and the rules ask for fewer approving reviews than the policy
+    /// says a pull request needs (SF-07).
+    ApprovingReviewsBelowPolicy {
+        /// What the rules require.
+        found: u32,
+        /// What the policy needs.
+        needed: u32,
+    },
     /// Force pushes are allowed.
     ForcePushAllowed,
     /// Deleting the branch is allowed.
@@ -510,15 +527,21 @@ pub enum PreflightVerdict {
 impl ProtectionReport {
     /// Pure. `Pass` only when every item of `policies/security.yaml`
     /// `credentials.repository_requirements` holds: rules apply to the default branch, a pull
-    /// request is required, code owner review is required, stale approvals are dismissed, force
-    /// pushes and deletion are blocked, every name in `factory_checks` is required and pinned to
-    /// `app`, and `attestation` is present. Every failure is listed, not only the first.
+    /// request is required, code owner review is required, stale approvals are dismissed, the rules
+    /// require at least `required_approvals` approving reviews (the number that
+    /// `policies/approval.yaml` says every pull request needs; a count that is not known fails),
+    /// force pushes and deletion are blocked, every name in `factory_checks` is required and pinned
+    /// to `app`, and `attestation` is present. Every failure is listed, not only the first.
+    ///
+    /// The count is judged only when a pull request is required: without that rule there is no
+    /// review to count, and the repository is capped for that reason already.
     #[must_use]
     pub fn evaluate(
         &self,
         app: AppId,
         factory_checks: &[Slug],
         attestation: Option<&BypassAttestation>,
+        required_approvals: u32,
     ) -> PreflightVerdict {
         let mut failures = Vec::new();
         if self.source == ProtectionSource::NoRulesetRules {
@@ -532,6 +555,18 @@ impl ProtectionReport {
         }
         if !self.dismisses_stale_approvals {
             failures.push(PreflightFailure::StaleApprovalsKept);
+        }
+        if self.requires_pull_request {
+            match self.required_approving_reviews {
+                None => failures.push(PreflightFailure::ApprovingReviewsUnknown),
+                Some(found) if found < required_approvals => {
+                    failures.push(PreflightFailure::ApprovingReviewsBelowPolicy {
+                        found,
+                        needed: required_approvals,
+                    });
+                }
+                Some(_) => {}
+            }
         }
         if !self.blocks_force_push {
             failures.push(PreflightFailure::ForcePushAllowed);
@@ -1071,6 +1106,8 @@ mod tests {
     }
 
     const APP: AppId = AppId(4242);
+    /// What the policy says a pull request needs, in these tests.
+    const APPROVALS: u32 = 1;
 
     fn slug(text: &str) -> Slug {
         Slug::parse(text).unwrap()
@@ -1085,6 +1122,7 @@ mod tests {
             dismisses_stale_approvals: true,
             blocks_force_push: true,
             blocks_deletion: true,
+            required_approving_reviews: Some(APPROVALS),
             required_checks: vec![
                 RequiredCheck {
                     context: "factory-validation".to_owned(),
@@ -1113,7 +1151,7 @@ mod tests {
         report: &ProtectionReport,
         attestation: Option<&BypassAttestation>,
     ) -> Vec<PreflightFailure> {
-        match report.evaluate(APP, &checks(), attestation) {
+        match report.evaluate(APP, &checks(), attestation, APPROVALS) {
             PreflightVerdict::Pass => Vec::new(),
             PreflightVerdict::CapAtL0(list) => list,
         }
@@ -1122,8 +1160,59 @@ mod tests {
     #[test]
     fn a_strong_pinned_and_attested_repository_passes() {
         assert_eq!(
-            strong().evaluate(APP, &checks(), Some(&attested())),
+            strong().evaluate(APP, &checks(), Some(&attested()), APPROVALS),
             PreflightVerdict::Pass
+        );
+    }
+
+    #[test]
+    fn an_unknown_count_of_approving_reviews_is_never_enough() {
+        // SF-07. The count is unknown when no pull request rule gave one that could be read.
+        let mut report = strong();
+        report.required_approving_reviews = None;
+        assert_eq!(
+            failures(&report, Some(&attested())),
+            vec![PreflightFailure::ApprovingReviewsUnknown]
+        );
+    }
+
+    #[test]
+    fn fewer_approving_reviews_than_the_policy_needs_cap_the_repository_and_say_how_many() {
+        let mut report = strong();
+        report.required_approving_reviews = Some(0);
+        assert_eq!(
+            failures(&report, Some(&attested())),
+            vec![PreflightFailure::ApprovingReviewsBelowPolicy {
+                found: 0,
+                needed: APPROVALS,
+            }]
+        );
+        // The sibling: the number the policy needs, and more, passes.
+        for enough in [APPROVALS, APPROVALS + 1, 10] {
+            report.required_approving_reviews = Some(enough);
+            assert_eq!(failures(&report, Some(&attested())), vec![], "{enough}");
+        }
+        // The policy decides the number: the same report is short of a policy that needs two.
+        report.required_approving_reviews = Some(1);
+        assert_eq!(
+            report.evaluate(APP, &checks(), Some(&attested()), 2),
+            PreflightVerdict::CapAtL0(vec![PreflightFailure::ApprovingReviewsBelowPolicy {
+                found: 1,
+                needed: 2,
+            }])
+        );
+    }
+
+    #[test]
+    fn the_count_is_not_judged_when_no_pull_request_is_required() {
+        // There is no review to count, and the repository is capped for the missing rule already:
+        // one reason, not two.
+        let mut report = strong();
+        report.requires_pull_request = false;
+        report.required_approving_reviews = None;
+        assert_eq!(
+            failures(&report, Some(&attested())),
+            vec![PreflightFailure::PullRequestNotRequired]
         );
     }
 

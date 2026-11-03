@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use factory_domain::contracts::{AgentManifest, SchemaRef, Violation};
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::approval::ApprovalPolicy;
-use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
+use factory_domain::policy::authority::{Allowlist, AllowlistEntry, ListedRepository};
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::policy::issue_workflow::{DesignGate, ReplyCap};
 use factory_domain::policy::{PolicyEngine, SecurityPolicy};
@@ -255,8 +255,9 @@ impl RequestSource for StoreRequests {
 pub struct FixedAllowlist {
     tenant: TenantId,
     people: Mutex<Vec<(u64, &'static str, Vec<Designation>)>>,
-    /// Entries narrowed to the repositories on the list (`owner/name`).
-    narrowed: Mutex<BTreeMap<u64, Vec<String>>>,
+    /// Entries narrowed to the repositories on the list: by name (`owner/name`), or by GitHub's
+    /// numeric id with the name recorded next to it (RR-28).
+    narrowed: Mutex<BTreeMap<u64, Vec<ListedRepository>>>,
     unreadable: Mutex<bool>,
 }
 
@@ -274,11 +275,29 @@ impl FixedAllowlist {
         }
     }
 
-    /// Narrows the entry of a person to these repositories (`owner/name`) and no others.
+    /// Narrows the entry of a person to these repositories (`owner/name`) and no others, by name
+    /// alone: the weaker form of RR-28.
     pub fn narrow(&self, id: u64, repositories: &[&str]) {
         self.narrowed.lock().expect("lock").insert(
             id,
-            repositories.iter().map(|name| (*name).to_owned()).collect(),
+            repositories
+                .iter()
+                .map(|name| ListedRepository::named(name))
+                .collect(),
+        );
+    }
+
+    /// Narrows the entry of a person to these repositories, each listed by GitHub's numeric id with
+    /// the name it had when the entry was written (RR-28).
+    pub fn narrow_by_id(&self, id: u64, repositories: &[(&str, u64)]) {
+        self.narrowed.lock().expect("lock").insert(
+            id,
+            repositories
+                .iter()
+                .map(|(name, github_repository_id)| {
+                    ListedRepository::with_id(name, *github_repository_id)
+                })
+                .collect(),
         );
     }
 
@@ -319,13 +338,12 @@ impl AllowlistSource for FixedAllowlist {
                 github_user_id: GithubUserId::new(*id).expect("a numeric id"),
                 login: (*login).to_owned(),
                 designations: designations.iter().copied().collect(),
-                repositories: self.narrowed.lock().expect("lock").get(id).map(|list| {
-                    list.iter()
-                        .map(|name| {
-                            factory_domain::policy::authority::ListedRepository::named(name)
-                        })
-                        .collect()
-                }),
+                repositories: self
+                    .narrowed
+                    .lock()
+                    .expect("lock")
+                    .get(id)
+                    .map(|list| list.iter().cloned().collect()),
                 expires_at: None,
             })
             .collect();
@@ -644,6 +662,9 @@ pub struct Rig {
     pub cargo: CargoBehavior,
     pub commit: CommitSha,
     pub repo: RepoRef,
+    /// The registered row of the repository, which a test edits to show a repository that was
+    /// renamed, transferred or re-created, or a store that cannot be read (RH-3).
+    pub registered: Arc<FixedRepository>,
 }
 
 /// What differs from one test to the next.
@@ -707,6 +728,7 @@ impl Rig {
             repo: repo.clone(),
             number: 12,
         };
+        let registered = Arc::new(FixedRepository::new(repo.clone()));
         let issues = Arc::new(options.issue_source.unwrap_or_default());
         let requests = Arc::new(StoreRequests::new(world.memory_store(), world.ids.clone()));
         let allowlist = Arc::new(FixedAllowlist::new(world.tenant));
@@ -743,6 +765,7 @@ impl Rig {
                     Arc::new(TestSpecs)
                 },
                 probes: Arc::new(FixedProbes),
+                repositories: registered.clone(),
             },
         );
         let mut handlers = HandlerRegistry::new();
@@ -784,7 +807,7 @@ impl Rig {
                     },
                     RepoIntelDeps {
                         changes: Arc::new(FakeChangeHost::sharing(remote.clone())),
-                        repos: Arc::new(FixedRepository { repo: repo.clone() }),
+                        repos: registered.clone(),
                         specs: Arc::new(TestVerifySpecs),
                         manifests: Arc::new(JsonManifests),
                         policy: policy_engine(),
@@ -823,6 +846,7 @@ impl Rig {
             cargo,
             commit,
             repo,
+            registered,
         }
     }
 

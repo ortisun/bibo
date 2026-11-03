@@ -23,6 +23,16 @@
 //!   people, and the Action only checks that a design document exists, so the label alone proves
 //!   nothing about who decided.
 //!
+//!   "Not narrowed away from this repository" is judged by the **registered row** of the job's
+//!   repository (finding RH-3): an allowlist entry that lists GitHub's numeric id of the repository
+//!   is judged by the id, so a repository that was renamed or transferred keeps its approvers and a
+//!   new repository under the old name does not; an entry that lists a name only is judged by the
+//!   registered name, without regard to case (the weaker form, which the allowlist reader warns
+//!   about). Before this, the stage knew a name and no id, and the design approval was the one
+//!   place with no gate in front of it that asked with the id. The row is read only for an issue
+//!   whose one design label is the approving label, and a row that cannot be read fails the
+//!   attempt: the name of the live issue is never a fallback.
+//!
 //! # The approval covers the words as they were when it was applied (DR-1)
 //!
 //! `design: approved` is a label, and a label says nothing about the words of the issue. An author
@@ -82,7 +92,7 @@
 //! the composition root logs why, and the health line of the rule fails.
 
 use factory_domain::ids::TenantId;
-use factory_domain::policy::authority::{Allowlist, AuthorityPolicy};
+use factory_domain::policy::authority::{Allowlist, AuthorityPolicy, RepositoryIdentity};
 use factory_domain::policy::issue_workflow::{
     DesignGate, DesignLabels, ReplyCap, ReplyKind, printable_label,
 };
@@ -288,8 +298,13 @@ pub struct Judging<'a> {
     pub allowlist: &'a Allowlist,
     /// The tenant.
     pub tenant: TenantId,
-    /// The repository, as `owner/name`.
-    pub repository: &'a str,
+    /// The registered repository: its name and GitHub's numeric id, as the registered row holds
+    /// them (finding RH-3). An allowlist entry that lists the id is judged by the id, and one that
+    /// lists a name only by this name. The caller reads the row only for an issue whose one design
+    /// label is the approving label, which is the only case that asks; for every other issue it is
+    /// `None`. An approval that is asked about without it is refused as not listed for this
+    /// repository, never judged by a name taken from somewhere else.
+    pub repository: Option<RepositoryIdentity<'a>>,
     /// The time.
     pub now: &'a Timestamp,
 }
@@ -331,12 +346,19 @@ pub fn judge(
         }
         DesignLabels::ApprovalLabelOnly => {
             let seen = vec![printable_label(judging.gate.approved_label())];
+            let Some(repository) = &judging.repository else {
+                return refused(
+                    RefusalReason::NotAnApprover(DenialReason::RepositoryNotListed),
+                    seen,
+                    applied_by.map(|who| who.id),
+                );
+            };
             match authorize_designation(
                 judging.gate.approved_by(),
                 judging.authority,
                 judging.allowlist,
                 judging.tenant,
-                judging.repository,
+                repository,
                 applied_by,
                 judging.now,
             ) {

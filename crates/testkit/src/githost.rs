@@ -1349,6 +1349,7 @@ fn strong_protection() -> ProtectionReport {
         dismisses_stale_approvals: true,
         blocks_force_push: true,
         blocks_deletion: true,
+        required_approving_reviews: Some(1),
         required_checks: vec![RequiredCheck {
             context: "factory-validation".to_owned(),
             integration_id: Some(FAKE_APP_ID.0),

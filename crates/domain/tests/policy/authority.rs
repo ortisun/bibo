@@ -823,6 +823,19 @@ fn separation_of_duties_follows_the_change_and_the_designation() {
 }
 
 #[test]
+fn sf_07_the_rules_of_a_branch_are_held_to_the_smallest_number_of_approvals_of_the_tiers() {
+    // The rules of one branch cannot tell the tiers apart, so a repository is held to the number
+    // that every pull request needs: the smallest of the tiers (1), not the largest (2, the critical
+    // tier, which the approval stage holds to by counting the approvals of people itself).
+    let a = authority();
+    assert_eq!(a.required_approvals(RiskTier::Critical), 2);
+    assert_eq!(a.approvals_every_pull_request_needs(), 1);
+    for tier in [RiskTier::Low, RiskTier::Medium, RiskTier::High] {
+        assert!(a.approvals_every_pull_request_needs() <= a.required_approvals(tier));
+    }
+}
+
+#[test]
 fn a_critical_change_needs_two_distinct_security_approvers() {
     let list = allowlist();
     use AutonomyLevel::L1;
@@ -1460,4 +1473,56 @@ fn rh_2_a_registration_typed_under_another_name_is_not_covered_by_an_entry_with_
     assert!(!by_name.covers_repository(&RepositoryIdentity::typed("victim/secrets", ITS_ID)));
     let wide = entry(OTHER_REPO_ONLY, "wide", &[Designation::Approver]);
     assert!(wide.covers_repository(&RepositoryIdentity::typed("any/thing", 7)));
+}
+
+#[test]
+fn rh_3_the_policy_asks_an_entry_with_the_id_by_the_id_when_it_is_given_the_registered_repository()
+{
+    let list = Allowlist::new("sha256:narrow", vec![narrowed_by_id()]).expect("list");
+    let (tenant, now) = (tenant(), now());
+    let person = human(OTHER_REPO_ONLY, "narrow");
+    let held = |repository: &RepositoryIdentity<'_>| {
+        authority().designations_for(&list, &tenant, repository, &person, &now)
+    };
+
+    // A renamed or transferred repository is the same id: the person keeps the designation.
+    assert!(held(&RepositoryIdentity::registered("acme/new-name", ITS_ID)).is_ok());
+    assert!(
+        held(&RepositoryIdentity::registered(
+            "another-owner/moved",
+            ITS_ID
+        ))
+        .is_ok()
+    );
+    // A new repository under the old name is another id: the entry does not reach it.
+    assert_eq!(
+        held(&RepositoryIdentity::registered(OLD_NAME, SOMEONE_ELSES_ID)),
+        Err(AuthorityDenial::RepositoryNotListed)
+    );
+    // The control, which is the whole of the finding: asked by the name alone, the same entry reaches
+    // the new repository, because the name recorded next to the id is the old name.
+    assert!(
+        authority()
+            .designations(&list, &tenant, OLD_NAME, &person, &now)
+            .is_ok(),
+        "a name-only question is the weaker form"
+    );
+    // An entry that lists a name only is judged by the registered name, in any case.
+    let mut by_name = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
+    by_name.repositories = Some(BTreeSet::from([ListedRepository::named("Acme/Old-Name")]));
+    let list = Allowlist::new("sha256:by-name", vec![by_name]).expect("list");
+    let by_name_held = |name: &str, id: u64| {
+        authority().designations_for(
+            &list,
+            &tenant,
+            &RepositoryIdentity::registered(name, id),
+            &person,
+            &now,
+        )
+    };
+    assert!(by_name_held(OLD_NAME, SOMEONE_ELSES_ID).is_ok());
+    assert_eq!(
+        by_name_held("acme/renamed", ITS_ID),
+        Err(AuthorityDenial::RepositoryNotListed)
+    );
 }

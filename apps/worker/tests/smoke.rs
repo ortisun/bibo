@@ -440,6 +440,7 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
                 schemas: checker.clone(),
                 sandboxes: specs.clone(),
                 probes: probes.clone(),
+                repositories: Arc::new(StoreRepositories::new(store_dyn.clone())),
             },
         )))))
         .expect("one handler per stage");

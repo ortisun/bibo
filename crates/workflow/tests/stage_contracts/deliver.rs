@@ -428,6 +428,7 @@ impl<'a> Delivery<'a> {
                         self.design.rule.clone(),
                         policy_engine(),
                         redactor(),
+                        self.design.repository.clone(),
                     ),
                     self.design.people.clone(),
                     self.design.replies.clone(),

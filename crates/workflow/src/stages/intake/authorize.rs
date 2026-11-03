@@ -11,7 +11,7 @@
 
 use factory_domain::ids::TenantId;
 use factory_domain::policy::authority::{
-    Actor, ActorKind, Allowlist, AuthorityDenial, AuthorityPolicy,
+    Actor, ActorKind, Allowlist, AuthorityDenial, AuthorityPolicy, RepositoryIdentity,
 };
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::values::Timestamp;
@@ -129,12 +129,14 @@ pub fn authorize(
     labelled_by: Option<Labeller<'_>>,
     now: &Timestamp,
 ) -> Authorization {
+    // The requester is judged by the name: the webhook and the API asked with the id before a job
+    // reached this stage, so the stage is the second, conjunctive check (finding RH-3).
     authorize_designation(
         Designation::Requester,
         policy,
         allowlist,
         tenant,
-        repository,
+        &RepositoryIdentity::by_name_only(repository),
         labelled_by,
         now,
     )
@@ -145,6 +147,12 @@ pub fn authorize(
 /// which asks it for the `requester` designation; the design gate asks it for the designation
 /// that approves a design.
 ///
+/// `repository` is how the caller knows the repository. The design gate holds the registered row
+/// and asks with [`RepositoryIdentity::registered`], so an entry that lists GitHub's numeric id
+/// follows the repository through a rename or a transfer and does not reach a new repository
+/// under the old name (finding RH-3); an entry that lists a name only is judged by the registered
+/// name.
+///
 /// `labelled_by` is who applied the label, as the code host reports it now, or `None` when the
 /// label is not on the issue.
 #[must_use]
@@ -153,7 +161,7 @@ pub fn authorize_designation(
     policy: &AuthorityPolicy,
     allowlist: &Allowlist,
     tenant: TenantId,
-    repository: &str,
+    repository: &RepositoryIdentity<'_>,
     labelled_by: Option<Labeller<'_>>,
     now: &Timestamp,
 ) -> Authorization {
@@ -179,7 +187,7 @@ pub fn authorize_designation(
         github_permission: None,
         author_association: None,
     };
-    match policy.designations(allowlist, &tenant, repository, &actor, now) {
+    match policy.designations_for(allowlist, &tenant, repository, &actor, now) {
         Ok(held) if held.contains(&designation) => Authorization::Authorized {
             actor: id,
             allowlist_version: version,

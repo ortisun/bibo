@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use factory_domain::policy::PolicyEngine;
-use factory_domain::policy::authority::Allowlist;
+use factory_domain::policy::authority::{Allowlist, RepositoryIdentity};
 use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels};
 use factory_domain::redaction::Redactor;
 use factory_domain::values::Timestamp;
@@ -26,6 +26,7 @@ use super::authorize::Labeller;
 use super::design::{self, ApprovalCoverage, DesignDecision, Judging, TextCheck};
 use super::seams::DesignGatePolicy;
 use crate::handlers::StageError;
+use crate::stages::repo_intel::seams::JobRepository;
 
 /// Why the design could not be judged.
 #[derive(Debug)]
@@ -33,6 +34,9 @@ pub enum DesignStop {
     /// The rule cannot be read. The caller refuses the issue and blocks the run.
     Unjudgeable,
     /// A read failed or the answer cannot be trusted. The attempt fails and may be tried again.
+    /// This is also the answer when the registered row of the job's repository cannot be read, or
+    /// the job has none: the approval is then not judged by a name taken from somewhere else
+    /// (finding RH-3).
     Stage(StageError),
 }
 
@@ -71,6 +75,7 @@ pub struct DesignJudge {
     design: Arc<dyn DesignGatePolicy>,
     policy: Arc<PolicyEngine>,
     redactor: Arc<Redactor>,
+    repositories: Arc<dyn JobRepository>,
 }
 
 impl std::fmt::Debug for DesignJudge {
@@ -80,26 +85,37 @@ impl std::fmt::Debug for DesignJudge {
 }
 
 impl DesignJudge {
-    /// A judge over the code host, the rule, the authority rules and the redactor of the job.
+    /// A judge over the code host, the rule, the authority rules, the redactor of the job and the
+    /// registered repository of a job. The last one gives the name and GitHub's numeric id that
+    /// the person who approved a design is judged by (finding RH-3).
     #[must_use]
     pub fn new(
         issues: Arc<dyn IssueSource>,
         design: Arc<dyn DesignGatePolicy>,
         policy: Arc<PolicyEngine>,
         redactor: Arc<Redactor>,
+        repositories: Arc<dyn JobRepository>,
     ) -> Self {
         Self {
             issues,
             design,
             policy,
             redactor,
+            repositories,
         }
     }
 
-    /// Says whether the code host and the rule are real or fakes: the weakest of the two.
+    /// Says whether the code host, the rule and the registered repository are real or fakes: the
+    /// weakest of the three.
     #[must_use]
     pub fn fidelity(&self) -> Fidelity {
-        if [self.issues.fidelity(), self.design.fidelity()].contains(&Fidelity::Fake) {
+        if [
+            self.issues.fidelity(),
+            self.design.fidelity(),
+            self.repositories.fidelity(),
+        ]
+        .contains(&Fidelity::Fake)
+        {
             Fidelity::Fake
         } else {
             Fidelity::Real
@@ -203,14 +219,33 @@ impl DesignJudge {
         } else {
             ApprovalCoverage::NotAsked
         };
-        let repository = format!("{}/{}", issue.repo.owner(), issue.repo.name());
+        // The person who applied the approving label is judged by the registered row of the job's
+        // repository: its GitHub id first, the way the claim hook and the API judge a person
+        // (RR-28, finding RH-3), and the registered name for an entry that lists no id. The row
+        // is read only when an approval is asked about. A row that cannot be read, or that the job
+        // does not have, is an error of the attempt and never a pass.
+        let registered = if labels == DesignLabels::ApprovalLabelOnly {
+            let target = self
+                .repositories
+                .of(scope.tenant, scope.job)
+                .await
+                .map_err(|_| DesignStop::Stage(StageError::Tool))?;
+            Some((
+                format!("{}/{}", target.repo.owner(), target.repo.name()),
+                target.github_repository_id,
+            ))
+        } else {
+            None
+        };
         let decision = design::judge(
             &Judging {
                 gate: &rule,
                 authority: &self.policy.authority,
                 allowlist,
                 tenant: scope.tenant,
-                repository: &repository,
+                repository: registered
+                    .as_ref()
+                    .map(|(name, id)| RepositoryIdentity::registered(name, *id)),
                 now: &now,
             },
             labels,

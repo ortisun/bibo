@@ -20,6 +20,7 @@ mod durable_record;
 mod harness;
 mod intake;
 mod pair;
+mod registered_identity;
 mod repo_intel;
 mod repo_rig;
 mod webhook;

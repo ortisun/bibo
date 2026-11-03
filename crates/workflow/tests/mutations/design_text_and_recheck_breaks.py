@@ -1,7 +1,7 @@
 """Deliberate breaks of the two decisions of the product owner of 2026-11-02 (ADR 0016), each of
 which a test must catch.
 
-    python3 -I crates/workflow/tests/mutations/design_text_and_recheck_breaks.py [WORD ...]
+    python3 -I crates/workflow/tests/mutations/design_text_and_recheck_breaks.py [--check] [WORD ...]
 
 * DG-3: the text a job carries must be the text of the live issue (`design.rs`, `judge.rs`).
 * DG-8: the design is checked again right before the pull request is opened
@@ -14,13 +14,21 @@ when the tests fail, MISSED when they pass, and INVALID when the changed source 
 The script exits with 1 if any break is MISSED or INVALID. It leaves the working tree as it found
 it, also when it is interrupted, but run it on a clean tree.
 
+`--check` runs nothing and changes nothing: it reports every break whose old text does not occur
+exactly once in its file, which is a break that proves nothing, and exits with 1 if there is one.
+Run it after any change to the sources named here.
+
 Words after the script name select the breaks whose name contains one of them. The breaks of the
 older fixes of the design gate (DG-1 to DG-7) are in `design_gate_breaks.py`.
 """
 
+import os
 import pathlib
+import signal
 import subprocess
 import sys
+import threading
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 DESIGN = "crates/workflow/src/stages/intake/design.rs"
@@ -118,19 +126,22 @@ BREAKS = [
         [(RECHECK, "        let Ok(allowlist) = self.allowlists.current(scope.tenant).await else {\n            return self.cannot_judge(ctx, scope, issue, &issue_text).await;\n        };", "        let Ok(allowlist) = self.allowlists.current(scope.tenant).await else {\n            return Ok(());\n        };")],
     ),
     (
-        "DG-8: nothing is written on the record when the design is refused",
+        "DG-8: nothing is written on the record when the design is refused (neither the decision nor the reply)",
         RECHECKING,
-        [(RECHECK, "                    ctx.note_audit_because(\n                        AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),\n                        self.judge.redacted_reason(design::recheck_audit_reason(\n                            &decision,\n                            &issue_text,\n                            Some(status),\n                        )),\n                    );", "                    let _ = status;")],
+        [
+            (RECHECK, "                    ctx.record_now(\n                        AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),\n                        self.judge.redacted_reason(design::recheck_audit_reason(\n                            &decision,\n                            &issue_text,\n                            Some(ReplyStatus::ToFollow),\n                        )),\n                    )\n                    .await?;", "                    let _ = &decision;"),
+            (RECHECK, "                    ctx.note_audit_because(\n                        AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),\n                        design::reply_reason(design::RECHECK_REPLY_LEAD, &issue_text, status, &cap),\n                    );", "                    let _ = status;"),
+        ],
     ),
     (
         "DG-8: the audit line of the re-check is stored without the secret redactor",
         RECHECKING,
-        [(RECHECK, "                        self.judge.redacted_reason(design::recheck_audit_reason(\n                            &decision,\n                            &issue_text,\n                            Some(status),\n                        )),", "                        design::recheck_audit_reason(&decision, &issue_text, Some(status)),")],
+        [(RECHECK, "                        self.judge.redacted_reason(design::recheck_audit_reason(\n                            &decision,\n                            &issue_text,\n                            Some(ReplyStatus::ToFollow),\n                        )),", "                        design::recheck_audit_reason(&decision, &issue_text, Some(ReplyStatus::ToFollow)),")],
     ),
     (
         "DG-8: the person is not told that no pull request was opened",
         RECHECKING,
-        [(RECHECK, "        let text = reply.text(&self.trigger_label, approved_label);\n        match self.replies.post(scope.tenant, issue, &key, &text).await {", "        let text = reply.text(&self.trigger_label, approved_label);\n        let _ = (&key, &text);\n        match Ok::<(), crate::stages::intake::seams::ReplyError>(()) {")],
+        [(RECHECK, "        ReplyStatus::of(\n            self.replies\n                .post(scope.tenant, issue, &key, &text, cap)\n                .await,\n        )", "        let _ = (&key, &text, cap);\n        ReplyStatus::of(Ok(()))")],
     ),
     (
         "DG-8: a code host that is down is reported as a pass by the judge (the shared reader forgets the failed fetch)",
@@ -140,13 +151,61 @@ BREAKS = [
 ]
 
 
+def run_cargo(command):
+    """Runs the tests and returns (exit code, output).
+
+    A break can leave a test waiting for something that never happens (a reply that is never
+    posted, so the test that waits for it never starts). libtest says so after 60 seconds with
+    "has been running for over 60 seconds". The run is then given 20 seconds to finish the other
+    tests and is ended with SIGTERM, never SIGKILL, and the tests that finished and failed are the
+    catch. The hung tests are named in the verdict.
+    """
+    process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    lines = []
+    reader = threading.Thread(target=lambda: lines.extend(process.stdout), daemon=True)
+    reader.start()
+    seen_hung = None
+    while process.poll() is None:
+        time.sleep(2)
+        if seen_hung is None and any("has been running for over" in line for line in lines):
+            seen_hung = time.monotonic()
+        if seen_hung is not None and time.monotonic() - seen_hung > 20:
+            os.killpg(process.pid, signal.SIGTERM)
+            break
+    process.wait()
+    reader.join(timeout=10)
+    return process.returncode, "".join(lines)
+
+
+def hung_tests(output):
+    """The names of the tests that libtest reported as running for over 60 seconds."""
+    return sorted({line.split()[1] for line in output.splitlines() if line.startswith("test ") and "has been running for over" in line})
+
+
 def run(targets):
-    command = ["cargo", "test", "-p", "factory-workflow", "--offline", "--no-fail-fast", *targets]
-    done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    return done.returncode, done.stdout + done.stderr
+    return run_cargo(["cargo", "test", "-p", "factory-workflow", "--offline", "--no-fail-fast", *targets])
+
+
+def check():
+    """Reports every break whose old text does not occur exactly once in its file. Runs nothing."""
+    bad = 0
+    for name, targets, edits in BREAKS:
+        texts = {}
+        for file, old, new in edits:
+            text = texts.get(file) or (ROOT / file).read_text()
+            count = text.count(old)
+            if count != 1:
+                print(f"CANNOT APPLY ({count} matches in {file}): {name}")
+                bad += 1
+            else:
+                texts[file] = text.replace(old, new)
+    print(f"{len(BREAKS) - bad} of {len(BREAKS)} breaks apply")
+    sys.exit(1 if bad else 0)
 
 
 def main():
+    if "--check" in sys.argv[1:]:
+        check()
     originals = {}
     outcomes = []
     only = sys.argv[1:]
@@ -175,6 +234,8 @@ def main():
                 failed = sorted({line.split()[1] for line in output.splitlines() if line.startswith("test ") and line.endswith("FAILED")})
                 shown = "; ".join(failed[:4]) + (f"; and {len(failed) - 4} more" if len(failed) > 4 else "")
                 verdict = "CAUGHT by " + shown
+                if hung_tests(output):
+                    verdict += " (the run also hung on " + "; ".join(hung_tests(output)) + " and was ended with SIGTERM)"
             outcomes.append((name, verdict))
             print(f"{name}: {verdict}", flush=True)
     finally:

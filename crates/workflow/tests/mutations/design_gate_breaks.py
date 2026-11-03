@@ -1,6 +1,6 @@
 """Deliberate breaks of the design gate at intake (ADR 0016), each of which a test must catch.
 
-    python3 -I crates/workflow/tests/mutations/design_gate_breaks.py [WORD ...]
+    python3 -I crates/workflow/tests/mutations/design_gate_breaks.py [--check] [WORD ...]
 
 For each break the script changes one or two places in the sources of the gate (the old text must
 occur exactly once in its file), runs `cargo test -p factory-workflow --offline --test intake_repo`,
@@ -9,14 +9,22 @@ when the changed source does not compile. The script exits with 1 if any break i
 INVALID. It leaves the working tree as it found it, also when it is interrupted, but run it on a
 clean tree.
 
+`--check` runs nothing and changes nothing: it reports every break whose old text does not occur
+exactly once in its file, which is a break that proves nothing, and exits with 1 if there is one.
+Run it after any change to the sources named here.
+
 The tests that catch a break are in `crates/workflow/tests/intake_repo/design.rs`. Each of them has
 a sibling that passes on the unbroken code, so a break that is CAUGHT is caught for the reason in
 its name and not because the setup is wrong.
 """
 
+import os
 import pathlib
+import signal
 import subprocess
 import sys
+import threading
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 HANDLER = "crates/workflow/src/stages/intake/handler.rs"
@@ -50,11 +58,11 @@ BREAKS = [
     ),
     (
         "do not post the comment",
-        [(HANDLER, "        match self.replies.post(identity.tenant, issue, &key, &text).await {", "        let _ = (&key, &text);\n        match Ok::<(), ReplyError>(()) {")],
+        [(HANDLER, "        ReplyStatus::of(\n            self.replies\n                .post(identity.tenant, issue, &key, &text, cap)\n                .await,\n        )", "        let _ = (&key, &text, cap);\n        ReplyStatus::of(Ok(()))")],
     ),
     (
         "a comment that cannot be posted now is forgotten instead of tried again",
-        [(HANDLER, "            Err(ReplyError::Later) => Err(StageError::Tool),", "            Err(ReplyError::Later) => Ok(ReplyStatus::NotSent),")],
+        [(HANDLER, "            if status == ReplyStatus::Later && i64::from(ctx.attempt_number) < attempts {", "            if false && status == ReplyStatus::Later && i64::from(ctx.attempt_number) < attempts {")],
     ),
     (
         "a rule that cannot be read fails the attempt as a tool error instead of blocking the run",
@@ -138,13 +146,61 @@ BREAKS = [
 ]
 
 
+def run_cargo(command):
+    """Runs the tests and returns (exit code, output).
+
+    A break can leave a test waiting for something that never happens (a reply that is never
+    posted, so the test that waits for it never starts). libtest says so after 60 seconds with
+    "has been running for over 60 seconds". The run is then given 20 seconds to finish the other
+    tests and is ended with SIGTERM, never SIGKILL, and the tests that finished and failed are the
+    catch. The hung tests are named in the verdict.
+    """
+    process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    lines = []
+    reader = threading.Thread(target=lambda: lines.extend(process.stdout), daemon=True)
+    reader.start()
+    seen_hung = None
+    while process.poll() is None:
+        time.sleep(2)
+        if seen_hung is None and any("has been running for over" in line for line in lines):
+            seen_hung = time.monotonic()
+        if seen_hung is not None and time.monotonic() - seen_hung > 20:
+            os.killpg(process.pid, signal.SIGTERM)
+            break
+    process.wait()
+    reader.join(timeout=10)
+    return process.returncode, "".join(lines)
+
+
+def hung_tests(output):
+    """The names of the tests that libtest reported as running for over 60 seconds."""
+    return sorted({line.split()[1] for line in output.splitlines() if line.startswith("test ") and "has been running for over" in line})
+
+
 def run():
-    command = ["cargo", "test", "-p", "factory-workflow", "--offline", "--test", "intake_repo"]
-    done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    return done.returncode, done.stdout + done.stderr
+    return run_cargo(["cargo", "test", "-p", "factory-workflow", "--offline", "--test", "intake_repo"])
+
+
+def check():
+    """Reports every break whose old text does not occur exactly once in its file. Runs nothing."""
+    bad = 0
+    for name, edits in BREAKS:
+        texts = {}
+        for file, old, new in edits:
+            text = texts.get(file) or (ROOT / file).read_text()
+            count = text.count(old)
+            if count != 1:
+                print(f"CANNOT APPLY ({count} matches in {file}): {name}")
+                bad += 1
+            else:
+                texts[file] = text.replace(old, new)
+    print(f"{len(BREAKS) - bad} of {len(BREAKS)} breaks apply")
+    sys.exit(1 if bad else 0)
 
 
 def main():
+    if "--check" in sys.argv[1:]:
+        check()
     originals = {}
     outcomes = []
     # Words after the script name select the breaks whose name contains one of them.
@@ -173,6 +229,8 @@ def main():
             else:
                 failed = sorted({line.split()[1] for line in output.splitlines() if line.startswith("test ") and line.endswith("FAILED")})
                 verdict = "CAUGHT by " + "; ".join(failed)
+                if hung_tests(output):
+                    verdict += " (the run also hung on " + "; ".join(hung_tests(output)) + " and was ended with SIGTERM)"
             outcomes.append((name, verdict))
             print(f"{name}: {verdict}", flush=True)
     finally:

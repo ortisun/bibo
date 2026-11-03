@@ -247,9 +247,14 @@ impl IssueSourceSubject for IssueSourceWorld {
     async fn seed_protection(&self, repo: &RepoRef, report: ProtectionReport) {
         let mut rules = Vec::new();
         if report.requires_pull_request {
-            rules.push(json!({"type": "pull_request", "parameters": {
+            let mut parameters = json!({
                 "dismiss_stale_reviews_on_push": report.dismisses_stale_approvals,
-                "require_code_owner_review": report.requires_code_owner_review}}));
+                "require_code_owner_review": report.requires_code_owner_review});
+            // A report with an unknown count seeds a rule that carries none (SF-07).
+            if let Some(count) = report.required_approving_reviews {
+                parameters["required_approving_review_count"] = count.into();
+            }
+            rules.push(json!({"type": "pull_request", "parameters": parameters}));
         }
         if !report.required_checks.is_empty() {
             let checks: Vec<Value> = report

@@ -19,7 +19,9 @@
 //! 2. asks for the recorded statement of an administrator that the App is on no bypass list
 //!    ([`BypassAttestations`]), which the App cannot read for itself;
 //! 3. judges both against the policy with [`ProtectionReport::evaluate`], which lists every missing
-//!    item and not only the first;
+//!    item and not only the first. That includes the number of approving reviews the rules require:
+//!    it must be at least the number every pull request needs (`policies/approval.yaml`,
+//!    `risk_tiers`), and a count that could not be read is not enough (SF-07);
 //! 4. records the result with `RepositoryOps::record_protection_preflight`, and writes an audit
 //!    record when the result is a refusal or changed.
 //!
@@ -102,6 +104,10 @@ pub struct PreflightDeps {
     pub app: AppId,
     /// The names of the checks the factory posts and the ruleset must require.
     pub checks: Vec<Slug>,
+    /// The approving reviews the rules must require at least: the number every pull request needs
+    /// by the policy (`AuthorityPolicy::approvals_every_pull_request_needs`). The composition root
+    /// takes it from the policy; there is no default (SF-07).
+    pub required_approvals: u32,
     /// The administrator's statement about the bypass list.
     pub attestations: Arc<dyn BypassAttestations>,
     /// The tenants this worker serves.
@@ -138,6 +144,13 @@ fn sentence(failure: &PreflightFailure) -> String {
         PreflightFailure::StaleApprovalsKept => {
             "Approvals are kept when new commits are pushed.".to_owned()
         }
+        PreflightFailure::ApprovingReviewsUnknown => {
+            "The number of approving reviews that the rules require could not be read.".to_owned()
+        }
+        PreflightFailure::ApprovingReviewsBelowPolicy { found, needed } => format!(
+            "The rules require {found} approving {}, and the policy needs at least {needed}.",
+            if *found == 1 { "review" } else { "reviews" }
+        ),
         PreflightFailure::ForcePushAllowed => "Force pushes are allowed.".to_owned(),
         PreflightFailure::DeletionAllowed => "The branch can be deleted.".to_owned(),
         PreflightFailure::FactoryCheckNotRequired(name) => {
@@ -157,6 +170,13 @@ impl ProtectionPreflight {
     #[must_use]
     pub fn new(deps: PreflightDeps) -> Self {
         Self { deps }
+    }
+
+    /// The approving reviews the rules of a repository must require at least, as this recorder
+    /// judges them (SF-07).
+    #[must_use]
+    pub const fn required_approvals(&self) -> u32 {
+        self.deps.required_approvals
     }
 
     /// One pass for one tenant. Public so a test can run it without a loop. The results are those
@@ -226,7 +246,12 @@ impl ProtectionPreflight {
         let attestation = self.deps.attestations.attestation(tenant, &repo).await;
         let missing: Vec<String> = match self.deps.source.repository_protection(&scope).await {
             Ok(report) => {
-                match report.evaluate(self.deps.app, &self.deps.checks, attestation.as_ref()) {
+                match report.evaluate(
+                    self.deps.app,
+                    &self.deps.checks,
+                    attestation.as_ref(),
+                    self.deps.required_approvals,
+                ) {
                     PreflightVerdict::Pass => Vec::new(),
                     PreflightVerdict::CapAtL0(failures) => failures.iter().map(sentence).collect(),
                 }

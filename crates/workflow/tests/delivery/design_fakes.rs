@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use factory_domain::ids::TenantId;
-use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
+use factory_domain::ids::{JobId, TenantId};
+use factory_domain::policy::authority::{Allowlist, AllowlistEntry, ListedRepository};
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::policy::issue_workflow::{DesignGate, ReplyCap};
 use factory_domain::vocabulary::Fidelity;
@@ -18,10 +18,12 @@ use factory_ports::githost::{
     ActorLogin, Comment, CommentRef, GitHostError, GitScope, GithubActor, Issue, IssueRef,
     IssueSource, LabelApplication, ProtectionReport,
 };
+use factory_ports::paths::{BranchName, RepoRef};
 use factory_testkit::githost::FakeIssueSource;
 use factory_workflow::stages::intake::{
     AllowlistSource, DesignGatePolicy, RefusalReplies, ReplyError, SeamError,
 };
+use factory_workflow::stages::repo_intel::{JobRepository, TargetRepository};
 
 /// The trigger label.
 pub const LABEL: &str = "factory";
@@ -187,10 +189,73 @@ impl DesignGatePolicy for Rule {
     }
 }
 
+/// GitHub's numeric id of the repository the world registers.
+pub const REGISTERED_ID: u64 = 4242;
+
+/// What the registered row of the job's repository answers.
+#[derive(Clone)]
+enum Row {
+    Registered(String, u64),
+    Gone,
+    Down,
+}
+
+/// The registered row of the job's repository (finding RH-3): the name and GitHub's numeric id the
+/// re-check judges the approver by, which a test edits to show a renamed, transferred or
+/// re-created repository, or a store that cannot be read.
+pub struct Registered {
+    row: Mutex<Row>,
+}
+
+impl Registered {
+    pub fn new() -> Self {
+        Self {
+            row: Mutex::new(Row::Registered(
+                "example-org/word-count".to_owned(),
+                REGISTERED_ID,
+            )),
+        }
+    }
+
+    pub fn register_as(&self, name: &str, github_repository_id: u64) {
+        *self.row.lock().expect("lock") = Row::Registered(name.to_owned(), github_repository_id);
+    }
+
+    pub fn gone(&self) {
+        *self.row.lock().expect("lock") = Row::Gone;
+    }
+
+    pub fn down(&self) {
+        *self.row.lock().expect("lock") = Row::Down;
+    }
+}
+
+#[async_trait]
+impl JobRepository for Registered {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn of(&self, _tenant: TenantId, _job: JobId) -> Result<TargetRepository, SeamError> {
+        let row = self.row.lock().expect("lock").clone();
+        match row {
+            Row::Registered(name, github_repository_id) => Ok(TargetRepository {
+                repo: RepoRef::parse(&name).expect("a repository name"),
+                branch: BranchName::new("main").map_err(|_| SeamError::Unavailable)?,
+                github_repository_id,
+            }),
+            Row::Gone => Err(SeamError::NotFound),
+            Row::Down => Err(SeamError::Unavailable),
+        }
+    }
+}
+
 /// The allowlist: a requester, and an approver who can be taken off the list.
 pub struct People {
     approver_listed: AtomicBool,
     unreadable: AtomicBool,
+    /// The repositories the approver is narrowed to, when a test narrows them.
+    approver_narrowed: Mutex<Option<Vec<ListedRepository>>>,
 }
 
 impl People {
@@ -198,7 +263,15 @@ impl People {
         Self {
             approver_listed: AtomicBool::new(true),
             unreadable: AtomicBool::new(false),
+            approver_narrowed: Mutex::new(None),
         }
+    }
+
+    /// Narrows the approver to one repository, listed by GitHub's numeric id with the name it had
+    /// when the entry was written (RR-28).
+    pub fn narrow_the_approver_by_id(&self, name: &str, github_repository_id: u64) {
+        *self.approver_narrowed.lock().expect("lock") =
+            Some(vec![ListedRepository::with_id(name, github_repository_id)]);
     }
 
     pub fn remove_the_approver(&self) {
@@ -230,7 +303,14 @@ impl AllowlistSource for People {
         };
         let mut entries = vec![entry(REQUESTER_ID, "requester-one", Designation::Requester)];
         if self.approver_listed.load(Ordering::SeqCst) {
-            entries.push(entry(APPROVER_ID, "approver-one", Designation::Approver));
+            let mut approver = entry(APPROVER_ID, "approver-one", Designation::Approver);
+            approver.repositories = self
+                .approver_narrowed
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .map(|listed| listed.iter().cloned().collect());
+            entries.push(approver);
         }
         Allowlist::new("allowlist-v1-test", entries).map_err(|_| SeamError::Unavailable)
     }
@@ -384,6 +464,8 @@ pub struct DesignWorld {
     pub rule: Arc<Rule>,
     pub people: Arc<People>,
     pub replies: Arc<Replies>,
+    /// The registered row of the job's repository.
+    pub repository: Arc<Registered>,
 }
 
 impl DesignWorld {
@@ -393,6 +475,7 @@ impl DesignWorld {
             rule: Arc::new(Rule::new()),
             people: Arc::new(People::new()),
             replies: Arc::new(Replies::new()),
+            repository: Arc::new(Registered::new()),
         }
     }
 }

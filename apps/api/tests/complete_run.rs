@@ -453,6 +453,7 @@ async fn worker(env: &Env, markers: Option<Arc<dyn DecisionMarkers>>) -> Worker 
                 schemas: checker,
                 sandboxes: specs.clone(),
                 probes,
+                repositories: Arc::new(StoreRepositories::new(store_dyn.clone())),
             },
         )))
         .expect("one handler per stage");
