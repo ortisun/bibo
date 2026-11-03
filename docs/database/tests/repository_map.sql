@@ -12,6 +12,10 @@
 
 SELECT dbtest.mk_tenant(1), dbtest.mk_tenant(2);
 
+-- A second active person in tenant 1 from the start. Since migration 2026-11-03-002800 a login of the factory cannot enable a
+-- strict repository without naming an enabler (finding RH-8), and the enabler is not the attestor (1002) in these tests.
+INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1004), 'human', 7104, 'person-two');
+
 -- ---------------------------------------------------------------------------------------------
 -- 1. What a new row looks like.
 
@@ -50,8 +54,8 @@ BEGIN
     '23514', NULL, 'repositories_enabled_needs_project_map');
   PERFORM dbtest.expect_ok('the same update is accepted when it carries the map commit and its attestor (the sibling of the refusals)',
     enable_with_map);
-  PERFORM dbtest.expect_ok('the worker group may enable a repository with a map commit (the sibling of the refusals)',
-    enable_with_map, 'factory_app', 1);
+  PERFORM dbtest.expect_ok('the worker group may enable a repository with a map commit and an enabler who is not the attestor (the sibling of the refusals)',
+    replace(enable_with_map, 'enabled = true,', format('enabled = true, enabled_by_principal_id = %L,', dbtest.u(1004))), 'factory_app', 1);
   PERFORM dbtest.expect_ok('a repository can stay disabled with no map (the invariant is one way only)',
     format($q$UPDATE repositories SET enabled = false, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1001)));
 END
@@ -59,7 +63,8 @@ $$;
 
 -- Take the map away from a repository that is enabled: the same invariant, from the other side.
 SELECT dbtest.exec(format($q$UPDATE repositories SET enabled = true, project_map_commit = repeat('c', 40),
-  project_map_attested_by_principal_id = %L, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1001)));
+  project_map_attested_by_principal_id = %L, enabled_by_principal_id = %L, version = version + 1 WHERE tenant_id = %L AND id = %L$q$,
+  dbtest.u(1002), dbtest.u(1004), dbtest.u(1), dbtest.u(1001)));
 
 DO $$
 BEGIN
@@ -240,7 +245,7 @@ $$;
 -- 8. Another tenant sees nothing of the map, and a disabled repository is not found by its installation.
 
 SELECT dbtest.exec(format($q$UPDATE repositories SET enabled = true, project_map_commit = repeat('7', 40), project_map_attested_by_principal_id = %L,
-  version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1001)));
+  enabled_by_principal_id = %L, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1004), dbtest.u(1), dbtest.u(1001)));
 
 DO $$
 BEGIN
@@ -324,8 +329,7 @@ BEGIN
 END
 $$;
 
--- Tenant 1 gets a second person and a disabled one. Repository 1020 has the map 'aaaa...' attested by person 1002.
-INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1004), 'human', 7104, 'person-two');
+-- Tenant 1 gets a disabled person (the second person is made at the top of this file). Repository 1020 has the map 'aaaa...' attested by person 1002.
 INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1005), 'human', 7105, 'person-gone');
 UPDATE principals SET disabled_at = now() WHERE id = dbtest.u(1005);
 -- It is a single-maintainer repository, because sections 10a to 10c enable it by the person who attested the map and
@@ -605,11 +609,22 @@ INSERT INTO repositories (tenant_id, id, github_installation_id, github_reposito
 SELECT dbtest.exec(format($q$UPDATE repositories SET enabled = true, enabled_by_principal_id = %L, version = version + 1
                               WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1040)));
 
-CREATE FUNCTION dbtest.api_audit(p_action text) RETURNS text LANGUAGE sql AS $$
+CREATE FUNCTION dbtest.api_audit(p_action text, p_subject text DEFAULT 'subject') RETURNS text LANGUAGE sql AS $$
   SELECT format($q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason,
                        policy_hash, correlation_id)
-                       VALUES (%L, %L, 'human', 'p1', %L, 'subject', 'record', 'because', %L, %L)$q$,
-                dbtest.u(1), gen_random_uuid(), p_action, dbtest.sha('policy'), gen_random_uuid())
+                       VALUES (%L, %L, 'human', 'p1', %L, %L, 'record', 'because', %L, %L)$q$,
+                dbtest.u(1), gen_random_uuid(), p_action, p_subject, dbtest.sha('policy'), gen_random_uuid())
+$$;
+
+-- The words the API writes, as migration 2026-11-03-002800 judges them (finding RH-5).
+CREATE FUNCTION dbtest.disabled_words(p_repository uuid) RETURNS text LANGUAGE sql AS $$
+  SELECT 'repository ' || p_repository::text || ' disabled'
+$$;
+CREATE FUNCTION dbtest.request_words(p_kind text, p_repository uuid) RETURNS text LANGUAGE sql AS $$
+  SELECT 'change kind=' || p_kind || ' repository=' || p_repository::text
+      || CASE p_kind WHEN 'register' THEN ' installation=7001 github_repository=8001 single_maintainer=false'
+                     ELSE ' commit=' || repeat('a', 40) END
+      || ' payload=' || dbtest.sha('detail') || ' at=2026-11-03T10:00:00.123456789Z mac=' || repeat('b', 64)
 $$;
 
 DO $$
@@ -669,8 +684,8 @@ BEGIN
                  'factory_app', 1, repo), format('enabled=true for=eeee by=%s at=now', dbtest.u(1002)));
   -- The audit actions: the request, and the disable; not the three acts that widen the reach.
   PERFORM dbtest.expect_ok('REG-2: the API login may append a repository.change_requested record',
-    dbtest.api_audit('repository.change_requested'), 'factory_api_app', 1);
-  PERFORM dbtest.expect_ok('and a repository.disabled record', dbtest.api_audit('repository.disabled'), 'factory_api_app', 1);
+    dbtest.api_audit('repository.change_requested', dbtest.request_words('enable', repo)), 'factory_api_app', 1);
+  PERFORM dbtest.expect_ok('and a repository.disabled record', dbtest.api_audit('repository.disabled', dbtest.disabled_words(repo)), 'factory_api_app', 1);
   FOREACH col IN ARRAY ARRAY['repository.registered', 'repository.map_attested', 'repository.enabled', 'repository.change_applied'] LOOP
     PERFORM dbtest.expect_error('REG-2: the API login may not write ' || col, dbtest.api_audit(col), '42501', 'factory_api_app', NULL, NULL, 1);
   END LOOP;
@@ -679,3 +694,127 @@ BEGIN
 END
 $$;
 
+
+-- ---------------------------------------------------------------------------------------------
+-- 13. The audit rows of the API login are a person's, in the API's words (migration 2026-11-03-002800, finding RH-5).
+--     Before it, the login could write a `repository.disabled` row as the system or as anyone, with any words, and an
+--     unsigned `repository.change_requested` row. Each refusal has a sibling that is accepted and a control that drops the
+--     trigger and shows the refused row then goes through. The keyed word is the worker's and the status route's to check:
+--     SQL has no key, so a well-formed row with a made-up word is accepted here by design.
+
+DO $$
+DECLARE
+  repo uuid := dbtest.u(1040);
+  as_actor text;
+  kind text;
+  words text;
+  refused text := 'ERR:42501:the API login may write a repository audit record only as a person and in the words the API writes';
+  listed text := 'ERR:42501:the API login may not write an audit record with this action or this actor';
+  write_as text := $q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason,
+                          policy_hash, correlation_id)
+                          VALUES (%L, %L, %L, 'p1', %L, %L, %L, 'because', %L, %L)$q$;
+BEGIN
+  -- repository.disabled
+  PERFORM dbtest.expect_eq('RH-5: the API login writes repository.disabled as a person, in the words the API writes',
+    dbtest.run_as(dbtest.api_audit('repository.disabled', dbtest.disabled_words(repo)), 'factory_api_app', 1), 'rows=1');
+  FOREACH as_actor IN ARRAY ARRAY['system', 'service', 'anonymous'] LOOP
+    PERFORM dbtest.expect_eq('RH-5: it cannot write repository.disabled as ' || as_actor,
+      dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), as_actor, 'repository.disabled',
+                           dbtest.disabled_words(repo), 'record', dbtest.sha('policy'), gen_random_uuid()), 'factory_api_app', 1), refused);
+  END LOOP;
+  FOREACH words IN ARRAY ARRAY[
+      'subject', 'repository ' || repo::text, 'repository ' || repo::text || ' disabled and more',
+      'request=' || repo::text || ' repository ' || repo::text || ' disabled', upper(dbtest.disabled_words(repo)),
+      'repository not-a-uuid disabled', dbtest.disabled_words(repo) || E'\n'] LOOP
+    PERFORM dbtest.expect_eq('RH-5: it cannot write repository.disabled with the words ' || quote_literal(words),
+      dbtest.run_as(dbtest.api_audit('repository.disabled', words), 'factory_api_app', 1), refused);
+  END LOOP;
+  PERFORM dbtest.expect_eq('RH-5: it cannot write repository.disabled with the decision deny',
+    dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), 'human', 'repository.disabled',
+                         dbtest.disabled_words(repo), 'deny', dbtest.sha('policy'), gen_random_uuid()), 'factory_api_app', 1), refused);
+
+  -- repository.change_requested
+  FOREACH kind IN ARRAY ARRAY['register', 'attest', 'enable'] LOOP
+    PERFORM dbtest.expect_eq('RH-5: the API login writes a ' || kind || ' request in the words the API writes',
+      dbtest.run_as(dbtest.api_audit('repository.change_requested', dbtest.request_words(kind, repo)), 'factory_api_app', 1), 'rows=1');
+  END LOOP;
+  FOREACH as_actor IN ARRAY ARRAY['system', 'service', 'anonymous'] LOOP
+    PERFORM dbtest.expect_eq('RH-5: it cannot write a request as ' || as_actor,
+      dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), as_actor, 'repository.change_requested',
+                           dbtest.request_words('enable', repo), 'record', dbtest.sha('policy'), gen_random_uuid()), 'factory_api_app', 1), refused);
+  END LOOP;
+  FOREACH words IN ARRAY ARRAY[
+      'subject', replace(dbtest.request_words('enable', repo), 'kind=enable', 'kind=delete'),
+      replace(dbtest.request_words('enable', repo), ' mac=' || repeat('b', 64), ''),
+      replace(dbtest.request_words('enable', repo), repeat('b', 64), repeat('b', 63)),
+      replace(dbtest.request_words('enable', repo), repeat('b', 64), repeat('B', 64)),
+      replace(dbtest.request_words('enable', repo), repeat('a', 40), repeat('a', 39)),
+      replace(dbtest.request_words('enable', repo), ' at=2026-11-03T10:00:00.123456789Z', ''),
+      dbtest.request_words('enable', repo) || ' extra=words',
+      replace(dbtest.request_words('register', repo), 'single_maintainer=false', 'single_maintainer=maybe'),
+      replace(dbtest.request_words('enable', repo), 'payload=sha256:', 'payload=sha1:')] LOOP
+    PERFORM dbtest.expect_eq('RH-5: it cannot write a request with the words ' || left(quote_literal(words), 70),
+      dbtest.run_as(dbtest.api_audit('repository.change_requested', words), 'factory_api_app', 1), refused);
+  END LOOP;
+
+  -- The worker's own effect record is not the API's, and the group of the worker is not bound by the guard.
+  PERFORM dbtest.expect_eq('RH-5: the API login cannot write repository.disabled_by_attestation, the worker''s record of an effect',
+    dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), 'system', 'repository.disabled_by_attestation',
+                         'request=' || repo::text || ' repository ' || repo::text || ' disabled', 'record', dbtest.sha('policy'), gen_random_uuid()),
+                  'factory_api_app', 1), listed);
+  PERFORM dbtest.expect_eq('the sibling: the worker group writes repository.disabled_by_attestation as the system',
+    dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), 'system', 'repository.disabled_by_attestation',
+                         'request=' || repo::text || ' repository ' || repo::text || ' disabled', 'record', dbtest.sha('policy'), gen_random_uuid()),
+                  'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the sibling: the worker group is not bound by the guard of the API login',
+    dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), 'system', 'repository.disabled',
+                         'anything', 'record', dbtest.sha('policy'), gen_random_uuid()), 'factory_app', 1), 'rows=1');
+
+  -- Controls: the trigger is the only thing that stops these rows.
+  PERFORM dbtest.expect_eq('control: with the trigger dropped, the API login writes repository.disabled as the system (RH-5)',
+    dbtest.run_as(format(write_as, dbtest.u(1), gen_random_uuid(), 'system', 'repository.disabled',
+                         'request=' || repo::text || ' repository ' || repo::text || ' disabled', 'record', dbtest.sha('policy'), gen_random_uuid()),
+                  'factory_api_app', 1, 'DROP TRIGGER audit_events_api_actions ON audit_events'), 'rows=1');
+  PERFORM dbtest.expect_eq('control: with the trigger dropped, it writes a request with no word (RH-5)',
+    dbtest.run_as(dbtest.api_audit('repository.change_requested', 'subject'), 'factory_api_app', 1,
+                  'DROP TRIGGER audit_events_api_actions ON audit_events'), 'rows=1');
+END
+$$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 14. A strict repository that is enabled names its enabler (migration 2026-11-03-002800, finding RH-8). The guard binds
+--     the logins of the factory (the API group, the worker group); the table owner and a superuser are administrators, as for
+--     the flag single_maintainer (section 11b). Before it, one INSERT by the group of the worker enabled a strict repository
+--     with no enabler.
+
+DO $$
+DECLARE
+  attestor uuid := dbtest.u(1002);
+  other uuid := dbtest.u(1004);
+  insert_enabled text := $q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
+                          project_map_commit, project_map_attested_by_principal_id, enabled, enabled_by_principal_id, single_maintainer)
+                          VALUES (%L, %L, %s, %s, %L, 'main', repeat('f', 40), %L, true, %s, %s)$q$;
+  rejected text := 'ERR:23514:%strict%must say who enabled it%';
+BEGIN
+  PERFORM dbtest.expect_true('RH-8: the group of the worker cannot insert an enabled strict repository with no enabler',
+    dbtest.run_as(format(insert_enabled, dbtest.u(1), dbtest.u(1050), 9601, 8601, 'org1/no-enabler', attestor, 'NULL', 'false'), 'factory_app', 1) LIKE rejected);
+  PERFORM dbtest.expect_eq('the sibling: with an enabler who is not the attestor it is accepted',
+    dbtest.run_as(format(insert_enabled, dbtest.u(1), dbtest.u(1051), 9602, 8602, 'org1/with-enabler', attestor, quote_literal(other), 'false'), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the sibling: a single-maintainer repository may be enabled with no recorded enabler (the strict rule is the one that needs it)',
+    dbtest.run_as(format(insert_enabled, dbtest.u(1), dbtest.u(1052), 9603, 8603, 'org1/single-no-enabler', attestor, 'NULL', 'true'), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the sibling: a strict repository that is not enabled needs no enabler',
+    dbtest.run_as(replace(format(insert_enabled, dbtest.u(1), dbtest.u(1053), 9604, 8604, 'org1/off', attestor, 'NULL', 'false'), 'true, NULL', 'false, NULL'), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the table owner, an administrator and not a login of the factory, is not bound by it (the documented path, as for the flag)',
+    dbtest.try_stmt(format(insert_enabled, dbtest.u(1), dbtest.u(1055), 9606, 8606, 'org1/owner-no-enabler', attestor, 'NULL', 'false')), 'ok');
+  -- The update path: enabling a registered strict repository without naming the enabler.
+  PERFORM dbtest.expect_true('RH-8: an UPDATE that enables a strict repository and names no enabler is refused (worker group)',
+    dbtest.run_as(format($q$UPDATE repositories SET enabled = true, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), dbtest.u(1030)),
+                  'factory_app', 1) LIKE rejected);
+  PERFORM dbtest.expect_eq('the sibling: the same UPDATE naming a person who is not the attestor is accepted',
+    dbtest.run_as(format($q$UPDATE repositories SET enabled = true, enabled_by_principal_id = %L, version = version + 1 WHERE tenant_id = %L AND id = %L$q$,
+                         other, dbtest.u(1), dbtest.u(1030)), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('control: with the trigger dropped, the worker group inserts an enabled strict repository with no enabler (RH-8)',
+    dbtest.run_as(format(insert_enabled, dbtest.u(1), dbtest.u(1054), 9605, 8605, 'org1/no-enabler-2', attestor, 'NULL', 'false'), 'factory_app', 1,
+                  'DROP TRIGGER repositories_strict_enabler_guard ON repositories'), 'rows=1');
+END
+$$;

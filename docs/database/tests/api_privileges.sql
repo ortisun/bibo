@@ -322,11 +322,20 @@ $$;
 --    decision.rejected that ends a signed request unseen) or a queue of junk. Now the login writes the
 --    actions the API writes, and no other.
 
+-- Since migration 2026-11-03-002800 the two repository actions the login may write are judged by their words as well
+-- (finding RH-5; repository_map.sql, section 13, has the refusals). So the subject is the words the API writes for them.
 CREATE FUNCTION dbtest.api_audit_stmt(p_actor_type text, p_action text) RETURNS text LANGUAGE sql AS $$
   SELECT format($q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason,
                        policy_hash, correlation_id)
-                       VALUES (%L, %L, %L, 'p1', %L, 'subject', 'record', 'because', %L, %L)$q$,
-                dbtest.u(1), gen_random_uuid(), p_actor_type, p_action, dbtest.sha('policy'), gen_random_uuid())
+                       VALUES (%L, %L, %L, 'p1', %L, %L, 'record', 'because', %L, %L)$q$,
+                dbtest.u(1), gen_random_uuid(), p_actor_type, p_action,
+                CASE p_action
+                  WHEN 'repository.disabled' THEN 'repository ' || dbtest.u(1001)::text || ' disabled'
+                  WHEN 'repository.change_requested' THEN 'change kind=enable repository=' || dbtest.u(1001)::text
+                       || ' commit=' || repeat('a', 40) || ' payload=' || dbtest.sha('detail')
+                       || ' at=2026-11-03T10:00:00.123456789Z mac=' || repeat('b', 64)
+                  ELSE 'subject' END,
+                dbtest.sha('policy'), gen_random_uuid())
 $$;
 
 DO $$

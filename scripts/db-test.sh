@@ -5,6 +5,9 @@
 #   scripts/db-test.sh SUITE [SUITE..] run the named suites (see --list)
 #   scripts/db-test.sh --list          print the suite names and what each one proves
 #   scripts/db-test.sh write-schema    regenerate crates/storage/src/schema.rs with diesel print-schema
+#   scripts/db-test.sh check-migrations  fail when the bytes of a migration listed in docs/database/applied-migrations.sha256
+#                                      changed (no database needed; the migrations suite runs the same check first)
+#   scripts/db-test.sh freeze-migrations  append the migrations that are not listed yet to that file (never rewrites a line)
 #   scripts/db-test.sh plans --rows N  the plans suite at N rows in each large table (a multiple of 10,000; 100000 is the
 #                                      done criterion of s1-database-review). The same as FACTORY_DB_PLANS_SCALE=N/10000.
 #
@@ -38,6 +41,7 @@ MIGRATIONS="$ROOT/migrations"
 DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
+MIGRATION_SUMS="$ROOT/docs/database/applied-migrations.sha256"
 
 SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges api_privileges repository_map contracts store_model compat"
 
@@ -69,7 +73,7 @@ blocked() {
 }
 
 usage() {
-  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 list_suites() {
@@ -456,6 +460,7 @@ race_errors_mention() { (cat "$WORK"/race.*.err 2>/dev/null || true) | grep -c -
 # suites
 
 suite_migrations() {
+  check_applied_migrations || return 1
   require_diesel
   local db="factory_t_${RUN_ID}_migrations" out="$WORK/migrations.out" cfg
   cfg="$(plain_diesel_config)"
@@ -1247,6 +1252,63 @@ suite_contracts() {
   return "$rc"
 }
 
+# ---------------------------------------------------------------------------------------------
+# applied migrations are never edited (docs/database/migration-safety.md, rule 1). Diesel keeps no checksum, so a changed
+# file would pass every other check. docs/database/applied-migrations.sha256 lists "<sha256>  <directory>/<file>" for
+# every up.sql and down.sql of a migration that is merged. A migration that is not listed yet may still be edited; one that
+# sorts before the newest listed migration and is not listed is refused, because nothing new belongs in the past.
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+check_applied_migrations() {
+  local sum path name newest="" bad=0 count=0 d listed
+  if [ ! -f "$MIGRATION_SUMS" ]; then
+    not_ok "the list of applied migrations is missing: $MIGRATION_SUMS (scripts/db-test.sh freeze-migrations writes it)"
+    return 1
+  fi
+  while read -r sum path; do
+    [ -n "$sum" ] || continue
+    name="${path%%/*}"
+    if [ -z "$newest" ] || [[ "$name" > "$newest" ]]; then newest="$name"; fi
+    if [ ! -f "$MIGRATIONS/$path" ]; then
+      not_ok "migrations/$path is listed as applied and is missing"
+      bad=1
+    elif [ "$(sha256_of "$MIGRATIONS/$path")" != "$sum" ]; then
+      not_ok "migrations/$path changed after it was listed as applied. An applied migration is never edited: put the change in a new migration"
+      bad=1
+    else
+      count=$((count + 1))
+    fi
+  done <"$MIGRATION_SUMS"
+  for d in "$MIGRATIONS"/*/; do
+    name="$(basename "${d%/}")"
+    listed=0
+    grep -q "  $name/" "$MIGRATION_SUMS" && listed=1
+    if [ "$listed" = 0 ] && [ -n "$newest" ] && [[ "$name" < "$newest" ]]; then
+      not_ok "migrations/$name sorts before the newest applied migration ($newest) and is not listed: a migration is added after the last one"
+      bad=1
+    fi
+  done
+  [ "$bad" = 0 ] || return 1
+  ok "applied migrations: $count files match docs/database/applied-migrations.sha256 byte for byte"
+}
+
+freeze_migrations() {
+  local d name f
+  touch "$MIGRATION_SUMS"
+  for d in "$MIGRATIONS"/*/; do
+    name="$(basename "${d%/}")"
+    grep -q "  $name/" "$MIGRATION_SUMS" && continue
+    for f in up.sql down.sql; do
+      [ -f "$d$f" ] || continue
+      printf '%s  %s/%s\n' "$(sha256_of "$d$f")" "$name" "$f" >>"$MIGRATION_SUMS"
+    done
+    say "listed $name"
+  done
+}
+
 write_schema() {
   require_diesel
   ensure_template || return 1
@@ -1284,6 +1346,8 @@ main() {
         export FACTORY_DB_PLANS_SCALE=$((rows / 10000))
         ;;
       write-schema) do_write=1 ;;
+      check-migrations) check_applied_migrations; exit $? ;;
+      freeze-migrations) freeze_migrations; exit $? ;;
       all) read -r -a selected <<< "$SUITES" ;;
       *)
         case " $SUITES " in
