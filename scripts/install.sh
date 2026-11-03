@@ -28,6 +28,12 @@
 #   --update                                           Replace a project file that differs from the factory's copy.
 #                                                      Without it a differing file is reported as DRIFT and kept.
 #   --no-mcp                                           Skip the GitHub MCP server entry.
+#   --no-speckit                                       Do not look at the project's Spec Kit installation.
+#   --allow-missing-bot-login                          Go on although the repository variable FACTORY_BOT_LOGIN is not set
+#                                                      on --repo (or cannot be read). Without this flag a run with --repo
+#                                                      that is not --check stops before it changes anything: until the
+#                                                      variable names the factory's GitHub App, the Action does nothing and
+#                                                      says so in its log. Use it only when the App does not exist yet.
 #   --help                                             Show this text.
 #
 # What each step does
@@ -45,6 +51,24 @@
 #                  for a project that the person trusts.
 #   workflow-files The issue forms, the Action that keeps labels consistent, and its two helper files, copied into
 #                  the project's .github/. They are files in the working tree. A person commits them by pull request.
+#   speckit        The project's Spec Kit installation (ADR 0019), when it has a .specify/. The factory pins one release of Spec
+#                  Kit (this repository's own .specify/), and its worker refuses a Spec Kit skill that is not that release's
+#                  file. The step makes the installation cover Claude Code and Codex alike, whatever --agent says: the files
+#                  belong to the project, not to the person who runs this script. An integration that is missing is added with
+#                  `specify integration install claude|codex` (no network, no --force), and afterwards every skill file of
+#                  the project is compared with the pinned hash. A skill that differs is reported as DRIFT and kept: it is
+#                  never overwritten. A project with no .specify/ is not initialised (ADR 0006 keeps `init` for the control
+#                  plane). A .gitignore that would hide the new files stops the step before it writes them.
+#   bot-login      With --repo: whether the repository variable FACTORY_BOT_LOGIN exists (PL-21). Names only: a value is never
+#                  read. A missing or unreadable variable is BLOCKED and, in a run that is not --check, ends the run before
+#                  any other step changes anything. --allow-missing-bot-login turns it into a NOTE. A variable set only on
+#                  the organization is not listed by `gh variable list --repo`, so such a repository needs the flag.
+#   review-rule    With --repo: whether the default branch requires a pull request with an approving review (PL-12). The
+#                  design gate takes a merged design document as the approval of the design, which is true only then. It
+#                  asks GitHub three read-only questions with `gh api` (the default branch, the rules that apply to it,
+#                  its branch protection). PRESENT when a review is required, NEEDS when it read the settings and none
+#                  is, BLOCKED when it cannot read them (branch protection needs the right to administer the repository).
+#                  Who may bypass the rule is not examined.
 #   labels         The labels of policies/issue-workflow.yaml, created or corrected with `gh label create --force`.
 #   project-board  A GitHub Projects board that mirrors the labels (ADR 0018). A board that already exists is ADAPTED
 #                  TO: the stages are mapped onto its existing options and written to .github/project-board.json for
@@ -86,6 +110,8 @@ unset "$MCP_TOKEN_VAR"
 
 WORKFLOW_TOOL="$SELF_DIR/lib/issue_workflow.py"
 CODEX_CONFIG_TOOL="$SELF_DIR/lib/codex_config.py"
+SPECKIT_TOOL="$SELF_DIR/lib/speckit_integration.py"
+REVIEW_TOOL="$SELF_DIR/lib/branch_reviews.py"
 BOARD_TOOL="$SELF_DIR/lib/project_board.py"
 BOARD_POLICY="$ROOT/onboarding/github/project-board-policy.json"
 BOARD_CONFIG_REL=".github/project-board.json"
@@ -96,6 +122,10 @@ check_only=0
 update=0
 agent="auto"
 want_mcp=1
+want_speckit=1
+allow_missing_bot=0
+# Set to 1 by the gate on FACTORY_BOT_LOGIN: the steps that change things do not run.
+HALT=0
 want_board=1
 checkout=""
 repo=""
@@ -113,6 +143,8 @@ while [ $# -gt 0 ]; do
     --check) check_only=1 ;;
     --update) update=1 ;;
     --no-mcp) want_mcp=0 ;;
+    --no-speckit) want_speckit=0 ;;
+    --allow-missing-bot-login) allow_missing_bot=1 ;;
     --agent)
       [ $# -ge 2 ] || usage_error "--agent needs auto, claude, codex or both"
       agent=$2
@@ -822,6 +854,167 @@ step_files() {
 }
 
 # ---------------------------------------------------------------------------------------------------------------
+# Step 4b: the project's Spec Kit installation, for Claude Code and for Codex alike (ADR 0019)
+# ---------------------------------------------------------------------------------------------------------------
+# The facts come from scripts/lib/speckit_integration.py, which only reads: one per line, fields separated by a tab.
+SPECKIT_FACTS=""
+
+speckit_field() { # KIND [COLUMN]: the values of every fact of that kind (column 2 unless given)
+  printf '%s\n' "$SPECKIT_FACTS" | awk -F'\t' -v kind="$1" -v col="${2:-2}" '$1 == kind { print $col }'
+}
+
+speckit_has() { # KIND
+  printf '%s\n' "$SPECKIT_FACTS" | awk -F'\t' -v kind="$1" '$1 == kind { found = 1 } END { exit !found }'
+}
+
+speckit_read() { # sets SPECKIT_FACTS; returns 1 and reports when the factory's own pin cannot be read
+  local rc=0
+  SPECKIT_FACTS=$(python3 -I "$SPECKIT_TOOL" inspect --reference "$ROOT" --project "$checkout" 2>"$WORK_DIR/speckit.err") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    report BLOCKED speckit "$(head -n 1 "$WORK_DIR/speckit.err")"
+    FAILED=1
+    return 1
+  fi
+}
+
+# Reports each path of one kind of fact, at most eight, and returns 0 when there was any.
+speckit_report_paths() { # KIND STATE WORDS [COLUMN]
+  local value any=1
+  while IFS= read -r value; do
+    [ -n "$value" ] || continue
+    report "$2" speckit "$value $3"
+    any=0
+  done <<EOF
+$(speckit_field "$1" "${4:-2}" | head -n 8)
+EOF
+  return "$any"
+}
+
+# True when git, asked as step_uncommitted asks it, says that a path of the project is ignored.
+path_is_ignored() { # RELATIVE PATH
+  GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" check-ignore -q -- "$1" 2>/dev/null
+}
+
+# Spec Kit runs without a GitHub token in its environment. The ones the person's shell holds are not its business.
+run_specify() { env -u GH_TOKEN -u GITHUB_TOKEN NO_COLOR=1 specify "$@"; }
+
+step_speckit() {
+  [ -n "$checkout" ] || return 0
+  if [ "$want_speckit" -eq 0 ]; then
+    report SKIPPED speckit "--no-speckit"
+    return
+  fi
+  speckit_read || return
+  local pinned
+  pinned=$(speckit_field reference)
+  if speckit_has absent; then
+    report SKIPPED speckit "the project has no .specify/, so there is no Spec Kit installation to extend"
+    remember "The specification stage needs Spec Kit $pinned in the project (.specify/). This script does not run 'specify init': ADR 0006 leaves that to the control plane or to the repository owner. Once the project has it, run this script again and it adds whichever of Claude Code and Codex is missing."
+    return
+  fi
+  if speckit_has invalid; then
+    report NEEDS speckit "$(speckit_field invalid | head -n 1)"
+    needs_you "Fix .specify/integration.json, or restore it from version control, and run this script again. The installer reads that file and never rewrites it."
+    return
+  fi
+  if speckit_has linked; then
+    speckit_report_paths linked BLOCKED "is, or goes through, a symbolic link; nothing was written" || true
+    needs_you "Replace the symbolic links named above with real files or folders, or remove them, and run this script again. The installer does not write through a link."
+    return
+  fi
+  if speckit_has version-mismatch; then
+    report DRIFT speckit "the project records Spec Kit $(speckit_field version-mismatch | head -n 1); the factory pins $pinned. Nothing was changed"
+    needs_you "The factory's worker accepts only Spec Kit $pinned. Bring the project's Spec Kit to $pinned (read its release notes first), or leave the project out of the factory. The installer does not upgrade or downgrade it."
+    return
+  fi
+
+  # What is there must be the pinned release before anything is added next to it.
+  local drift=0
+  speckit_report_paths modified DRIFT "is not the pinned Spec Kit file; kept" && drift=1
+  speckit_report_paths missing DRIFT "is missing from an installed integration; kept" && drift=1
+  speckit_report_paths unknown DRIFT "is an installed integration the factory has no pin for; the worker refuses a project that lists it" && drift=1
+  speckit_report_paths unlisted-files DRIFT "is there but its integration is not listed in .specify/integration.json; it was not overwritten" 3 && drift=1
+  if [ "$drift" -eq 1 ]; then
+    needs_you "Read the Spec Kit DRIFT lines above. The factory's worker refuses a Spec Kit skill that is not the pinned file. To go back to the pinned file, restore it from version control or run 'specify integration upgrade KEY' in the project after reading the difference. The installer never overwrites a skill, and it adds nothing while the installation is off the pin."
+    return
+  fi
+
+  local missing_keys key path count
+  missing_keys=$(speckit_field to-add)
+  if [ -z "$missing_keys" ]; then
+    report PRESENT speckit "claude and codex are installed (Spec Kit $pinned) and every skill is the pinned file"
+    return
+  fi
+
+  # A file that git would ignore is a file that is never committed, so the integration would exist only on this machine.
+  if git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local blocked=0
+    while IFS=$'\t' read -r key path; do
+      [ -n "$path" ] || continue
+      if path_is_ignored "$path"; then
+        report NEEDS speckit "$key: git ignores $path, so the $key integration would never be committed; nothing was written"
+        blocked=1
+        break
+      fi
+    done <<EOF
+$(printf '%s\n' "$SPECKIT_FACTS" | awk -F'\t' '$1 == "will-write" { print $2 "\t" $3 }')
+EOF
+    if [ "$blocked" -eq 1 ]; then
+      needs_you "Make the Spec Kit files trackable in .gitignore, then run this script again. For Codex: ignore '.agents/*', then re-include '.agents/skills/', ignore '.agents/skills/*' and re-include '.agents/skills/speckit-*/' (docs/spec-kit/integration-guide.md, section 11.9). Git cannot re-include a file whose folder is ignored, so the plain line '.agents/' has to go."
+      return
+    fi
+  fi
+
+  if [ "$check_only" -eq 1 ]; then
+    for key in $missing_keys; do
+      count=$(printf '%s\n' "$SPECKIT_FACTS" | awk -F'\t' -v key="$key" '$1 == "will-write" && $2 == key { n++ } END { print n + 0 }')
+      report WOULD_ADD speckit "$key: 'specify integration install $key' would add $count skill files and its manifest"
+    done
+    return
+  fi
+
+  if ! command -v specify >/dev/null 2>&1; then
+    report BLOCKED speckit "specify (Spec Kit $pinned) is not installed, so the integration cannot be added"
+    needs_you "Install Spec Kit $pinned, for example with 'uv tool install specify-cli==$pinned' (the pinned form of that command is unverified, see docs/spec-kit/integration-guide.md section 2), and run this script again. The installer does not install it."
+    return
+  fi
+  local have
+  have=$(run_specify --version 2>/dev/null | awk '{print $NF; exit}')
+  if [ "$have" != "$pinned" ]; then
+    report BLOCKED speckit "specify is ${have:-of unknown version}; the factory pins $pinned, and another release writes other skills"
+    needs_you "Install Spec Kit $pinned and run this script again."
+    return
+  fi
+
+  for key in $missing_keys; do
+    count=$(printf '%s\n' "$SPECKIT_FACTS" | awk -F'\t' -v key="$key" '$1 == "will-write" && $2 == key { n++ } END { print n + 0 }')
+    # No network and no --force: the command is the offline one, and it refuses what it does not know to be safe. The
+    # tokens are not in its environment. It runs in the project, which is not trusted, so it gets no more than it needs.
+    if ! (cd "$checkout" && run_specify integration install "$key") >"$WORK_DIR/specify.out" 2>&1; then
+      report BLOCKED speckit "$key: 'specify integration install $key' failed"
+      head -n 6 "$WORK_DIR/specify.out" | indent_clean
+      FAILED=1
+      return
+    fi
+    speckit_read || return
+    local wrong=0 kind
+    for kind in modified missing unknown linked unlisted-files; do
+      if speckit_has "$kind"; then wrong=1; fi
+    done
+    if speckit_field to-add | grep -qx "$key"; then wrong=1; fi
+    if [ "$wrong" -eq 1 ]; then
+      report BLOCKED speckit "$key: the files that specify wrote are not the pinned ones"
+      { speckit_field modified; speckit_field missing; } | head -n 6 | indent_clean
+      FAILED=1
+      return
+    fi
+    report ADDED speckit "$key: specify integration install $key (Spec Kit $pinned), $count files, each one the pinned file"
+    done_for_you "Added the $key integration to the project's Spec Kit installation ($count files)."
+  done
+  remember "Review the Spec Kit files that were added (.specify/ and .agents/skills, or .claude/skills) in the pull request. Both tools now find the skills (/speckit-specify in Claude Code, \$speckit-specify in Codex)."
+}
+
+# ---------------------------------------------------------------------------------------------------------------
 # Step 5: the labels in the GitHub repository
 # ---------------------------------------------------------------------------------------------------------------
 # Prints "name<TAB>color<TAB>description" for every label that is missing or different on GitHub.
@@ -910,21 +1103,103 @@ print({"owner": board["project"]["owner"], "number": board["project"]["number"],
 }
 
 # Says whether the repository has a credential for the board, by NAME only. Values are never read.
-# The Action reverts a `factory:` label unless the App named in FACTORY_BOT_LOGIN set it (PL-21). Without the variable it
-# would revert the factory's own status labels, and say so in a comment each time. Names only; a value is never read.
-step_bot_variable() {
+# The gate on FACTORY_BOT_LOGIN (PL-21). The Action tells the factory's own `factory:` labels from a person's by the login
+# in that variable. While it is unset the Action does nothing and says so in its log (it used to take the factory's status
+# labels away and comment each time). A repository that has the Action and no variable has a silent workflow, so a run that
+# installs it stops BEFORE it changes anything, unless the variable is there or the person says that the App does not exist
+# yet. Names only; a value is never read. A variable that lives on the organization is not listed by `gh variable list
+# --repo`, so such a repository needs --allow-missing-bot-login. Without --repo, or without gh, there is nothing to read
+# here: the labels step reports a missing gh.
+step_bot_gate() {
   [ -n "$repo" ] && [ "$HAVE_GH" -eq 1 ] || return 0
-  local listing
-  listing=$(gh variable list --repo "$repo" --json name 2>/dev/null) || return 0
-  if ! printf '%s' "$listing" | python3 -I -c '
+  local listing state=0 text
+  if ! listing=$(gh variable list --repo "$repo" --json name 2>/dev/null); then
+    state=2
+  else
+    printf '%s' "$listing" | python3 -I -c '
 import json, sys
 try:
     names = {item.get("name") for item in json.load(sys.stdin)}
-except ValueError:
-    names = set()
-sys.exit(0 if "FACTORY_BOT_LOGIN" in names else 1)'; then
-    remember "The repository variable FACTORY_BOT_LOGIN is not set on $repo. Set it to the login of the factory's GitHub App (for example my-factory[bot]) before the factory runs there, or the Action will remove the factory's own status labels."
+except (ValueError, AttributeError, TypeError):
+    sys.exit(2)
+sys.exit(0 if "FACTORY_BOT_LOGIN" in names else 1)' || state=$?
   fi
+  case "$state" in
+    0)
+      report PRESENT bot-login "FACTORY_BOT_LOGIN is set on $repo (checked by name; its value was not read)"
+      return
+      ;;
+    1) text="FACTORY_BOT_LOGIN is not set on $repo" ;;
+    *) text="could not read the variables of $repo, so FACTORY_BOT_LOGIN could not be checked" ;;
+  esac
+  if [ "$allow_missing_bot" -eq 1 ]; then
+    report NOTE bot-login "$text; going on because of --allow-missing-bot-login"
+    remember "Until the repository variable FACTORY_BOT_LOGIN names the factory's GitHub App (for example my-factory[bot]), the Action does nothing and says so in its log, and its board steps wait: it cannot tell the factory's own status labels from a person's. Set it with 'gh variable set FACTORY_BOT_LOGIN --repo $repo --body LOGIN' when the App exists."
+    return
+  fi
+  report BLOCKED bot-login "$text"
+  if [ "$check_only" -eq 1 ]; then
+    needs_you "Set the repository variable FACTORY_BOT_LOGIN on $repo to the login of the factory's GitHub App, for example my-factory[bot]: 'gh variable set FACTORY_BOT_LOGIN --repo $repo --body LOGIN'. If the App does not exist yet, run this script with --allow-missing-bot-login: the Action then does nothing until the variable is set. A run without --check stops here, before it changes anything, until you do one of the two."
+  else
+    HALT=1
+    needs_you "Nothing was installed or changed. Set the repository variable FACTORY_BOT_LOGIN on $repo to the login of the factory's GitHub App, for example my-factory[bot]: 'gh variable set FACTORY_BOT_LOGIN --repo $repo --body LOGIN'. If the App does not exist yet, run this script again with --allow-missing-bot-login: the Action then does nothing until the variable is set."
+  fi
+}
+
+# Whether the default branch requires a pull request with an approving review (PL-12). The design gate takes a merged pull
+# request that holds the design document as the approval of the design (ADR 0016), which is true only if nobody can change
+# the default branch without a review. Three read-only `gh api` GETs: the default branch, the rules that apply to it, and its
+# classic branch protection. scripts/lib/branch_reviews.py judges the answers. What cannot be read is BLOCKED, not "fine".
+step_review_rule() {
+  [ -n "$repo" ] || return 0
+  if [ "$HAVE_GH" -ne 1 ]; then
+    report BLOCKED review-rule "gh is not installed, so the installer cannot tell whether the default branch of $repo requires reviewed pull requests"
+    needs_you "Install gh (https://cli.github.com), sign in, and run this script again. It must read whether the default branch of $repo requires a pull request with an approving review."
+    return
+  fi
+  local branch rules_rc=0 protection_rc=0 verdict kind rest count source
+  branch=$(gh api "repos/$repo" --jq .default_branch 2>/dev/null) || branch=""
+  case "$branch" in
+    "")
+      report BLOCKED review-rule "could not read the default branch of $repo"
+      needs_you "Run 'gh auth status' and check that you may read $repo. The installer must read whether its default branch requires reviewed pull requests."
+      return
+      ;;
+    -* | *[!A-Za-z0-9._-]*)
+      report BLOCKED review-rule "the default branch of $repo has a name that this script will not put in a request"
+      needs_you "Check by hand that the default branch of $repo requires a pull request with an approving review. The installer reads only branch names made of letters, digits, dots, dashes and underscores."
+      return
+      ;;
+  esac
+  gh api "repos/$repo/rules/branches/$branch" >"$WORK_DIR/rules.json" 2>/dev/null || rules_rc=$?
+  gh api "repos/$repo/branches/$branch/protection" >"$WORK_DIR/protection.json" 2>/dev/null || protection_rc=$?
+  verdict=$(python3 -I "$REVIEW_TOOL" judge "$WORK_DIR/rules.json" "$rules_rc" "$WORK_DIR/protection.json" "$protection_rc") || verdict=""
+  kind=${verdict%%$'\t'*}
+  rest=${verdict#*$'\t'}
+  case "$kind" in
+    required)
+      count=${rest%%$'\t'*}
+      source=${rest#*$'\t'}
+      report PRESENT review-rule "$branch of $repo requires $count approving review(s) before a merge (from $source)"
+      remember "The review rule of $branch was read, not tested: who may bypass it (administrators, bypass lists) is not examined."
+      ;;
+    weak | none)
+      if [ "$kind" = weak ]; then
+        report NEEDS review-rule "$branch of $repo requires pull requests but no approving review"
+      else
+        report NEEDS review-rule "$branch of $repo does not require a pull request with an approving review"
+      fi
+      needs_you "Require a pull request with at least one approving review on $branch of $repo (Settings, Branches or Rules). Without it a merged design document is not an approval: anybody who can push can approve a design by pushing the file. See step 6 of docs/guides/onboarding.md."
+      ;;
+    unreadable)
+      report BLOCKED review-rule "could not tell whether $branch of $repo requires reviewed pull requests ($rest)"
+      needs_you "Run 'gh auth status'. Reading branch protection needs the right to administer $repo; a person who has it can check the setting, or run this script. The install is not ready until the rule can be read."
+      ;;
+    *)
+      report BLOCKED review-rule "the check gave an answer this script does not understand"
+      FAILED=1
+      ;;
+  esac
 }
 
 step_board_credential() {
@@ -1148,7 +1423,7 @@ step_uncommitted() {
   local changed
   # Only the paths that this script and EGM's bootstrap write. Other work in progress is the person's business.
   # The checkout is not trusted: its .git/config could name a command (core.fsmonitor) that git would run.
-  changed=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" status --porcelain -- .github .mcp.json .codex '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
+  changed=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" status --porcelain -- .github .mcp.json .codex .specify .agents .claude/skills '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$changed" -gt 0 ]; then
     report NEEDS uncommitted "$changed installed or generated path(s) are not committed"
     needs_you "Review the changes in $checkout and merge them by pull request, so that the map is on the default branch before a person attests it. The engine cannot see your repository: it records the commit that you attest and does not check that the commit exists. A second person enables the repository after the one who attested the map; if you are the only maintainer, register the repository with 'factory-cli repository register --single-maintainer' (see the onboarding guide, 'A single-maintainer repository'). Registering, confirming and enabling are requests that the worker applies: each command waits up to 60 seconds for it (exit code 3 means the worker had not applied it yet; look again with 'factory-cli repository change REQUEST', do not send it again)."
@@ -1160,14 +1435,18 @@ step_uncommitted() {
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$check_only" -eq 1 ]; then printf 'Checking only. Nothing will be changed.\n'; fi
 step_tools
-step_egm
-step_mcp
-step_files
-step_labels
-step_board
-step_bot_variable
-step_map
-step_uncommitted
+step_bot_gate
+if [ "$HALT" -eq 0 ]; then
+  step_egm
+  step_mcp
+  step_files
+  step_speckit
+  step_labels
+  step_board
+  step_review_rule
+  step_map
+  step_uncommitted
+fi
 
 printf '\n'
 if [ -n "$DONE_LINES" ]; then printf 'Done for you\n%s\n' "$DONE_LINES"; fi

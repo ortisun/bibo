@@ -58,6 +58,10 @@ Run the installer once. It writes `.mcp.json` and `.codex/config.toml`, copies t
 scripts/install.sh --checkout ../my-project --repo my-org/my-project --agent both
 ```
 
+## Spec Kit for both tools
+
+A project that uses the factory's specification stage has Spec Kit installed once, and its skills are files in the project: `.claude/skills/speckit-*` for Claude Code and `.agents/skills/speckit-*` for Codex. `scripts/install.sh --checkout PATH` makes the installation cover both, whatever `--agent` says, because the files belong to the project and not to the person who runs the script. It adds the missing integration with `specify integration install claude` or `codex` (no network, no `--force`), then compares every skill file with the hash the factory pins. A file that differs is `DRIFT` and is kept. The skills are written `/speckit-specify` in Claude Code and `$speckit-specify` in Codex; the separator comes from `.specify/integration.json`, where the install records `-` for both. Codex puts its skills in `.agents/skills`, so a project whose ignore rules hide `.agents/` needs the exception in `docs/spec-kit/integration-guide.md`, section 11.9, and the installer stops until it has it.
+
 ## What the factory itself never does
 
 For both tools the factory treats the project's own copies as data. A factory run never edits `.mcp.json`, `.claude/**`, `CLAUDE.md`, `.codex/**` or `AGENTS.md`, and it never honors `.mcp.json`, `.codex/config.toml`, `CLAUDE.md` or `AGENTS.md` from a repository. A person changes those files by pull request.
