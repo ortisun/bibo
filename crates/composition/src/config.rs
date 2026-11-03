@@ -289,7 +289,9 @@ fn docker_host_problem(host: &str, allow_remote: bool) -> Option<&'static str> {
             && path.len() > 1
             && !path.ends_with('/')
             && path.split('/').all(|part| part != "..");
-        return (!usable).then_some("a unix address must name a socket by an absolute path with no .. part, such as unix:///var/run/docker.sock");
+        return (!usable).then_some(
+            "a unix address must be unix:// followed by an absolute socket path with no .. part",
+        );
     }
     let Some(rest) = host.strip_prefix("tcp://") else {
         return Some(SHAPE);
