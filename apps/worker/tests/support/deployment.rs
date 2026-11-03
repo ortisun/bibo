@@ -39,6 +39,20 @@ pub async fn deployment(
     listen: &str,
     extra: impl FnOnce(&Path) -> String,
 ) -> Deployment {
+    deployment_in(profile, same_login, provider_url, listen, None, extra).await
+}
+
+/// Like [`deployment`], and `protected` names the protected checkout when the test makes its own
+/// (the repository itself when it is `None`). `extra` is given the scratch directory, which holds
+/// nothing of the checkout.
+pub async fn deployment_in(
+    profile: &str,
+    same_login: bool,
+    provider_url: &str,
+    listen: &str,
+    protected: Option<&Path>,
+    extra: impl FnOnce(&Path) -> String,
+) -> Deployment {
     let db = server().clone_database().await;
     // A login is a role of the whole server, and tests of one process run at the same time, so the
     // name carries a number that no other call of this process has.
@@ -93,9 +107,10 @@ pub async fn deployment(
     );
     let extra = extra(&dir);
     let root = repository_root();
+    let protected = protected.map_or_else(|| root.clone(), Path::to_path_buf);
     let text = format!(
         "profile: {profile}\n\
-         protected_checkout: {root}\n\
+         protected_checkout: {protected}\n\
          definitions_root: {root}\n\
          database:\n  tenant: {{ url_file: {dir}/tenant.url, login: {worker} }}\n  system: {{ url_file: {dir}/system.url, login: {engine} }}\n\
          artifacts: {{ root: {dir}/artifacts }}\n\
@@ -103,6 +118,7 @@ pub async fn deployment(
          broker:\n  listen: '{listen}'\n  upstreams:\n    - {{ provider: anthropic, base_url: '{provider_url}', key_file: {dir}/provider.key }}\n\
          {extra}",
         root = root.display(),
+        protected = protected.display(),
         dir = dir.display(),
     );
     let config_path = dir.join("worker.yaml");
