@@ -90,6 +90,10 @@ struct RegisterBody {
     github_repository_id: u64,
     full_name: String,
     default_branch: String,
+    /// True when one person may both attest the project map and enable the repository (finding
+    /// REG-6). False, the default, is the strict rule. It is written here and nowhere else.
+    #[serde(default)]
+    single_maintainer: bool,
 }
 
 /// The body of `POST /v1/repositories/{id}/project-map`.
@@ -225,12 +229,18 @@ fn repository_json(row: &Versioned<Repository>) -> Value {
         "default_branch": repository.default_branch,
         "github_installation_id": repository.installation.0,
         "github_repository_id": repository.github_repository_id.0,
+        "single_maintainer": repository.single_maintainer,
         "enabled": repository.enabled,
         "enabled_for": enabled_for,
         "protection_preflight_passed": repository.protection_preflight_passed,
         "autonomy_ceiling": repository.autonomy_ceiling.as_str(),
         "version": row.version.get(),
         "project_map": map,
+        "standing": {
+            "attestor_is_active_human": repository.attestor_is_active,
+            "enabler_is_active_human": repository.enabler_is_active,
+            "open_for_new_jobs": repository.open_for_new_jobs(),
+        },
     })
 }
 
@@ -370,6 +380,7 @@ fn same_request(stored: &Repository, parsed: &RegisterBody) -> bool {
         && stored.github_repository_id.0 == parsed.github_repository_id
         && stored.full_name == parsed.full_name
         && stored.default_branch == parsed.default_branch
+        && stored.single_maintainer == parsed.single_maintainer
 }
 
 /// `POST /v1/repositories`.
@@ -413,9 +424,18 @@ pub async fn register(
         &key,
         "repository.registered",
         id,
-        format!("repository {} {}", id.as_text(), parsed.full_name),
-        "A person registered the repository. It starts disabled, at autonomy level L0, with no project map. The engine did not look at the repository: the installation, the GitHub repository id and the name are what the person gave."
-            .to_owned(),
+        format!(
+            "repository {} {} single_maintainer={}",
+            id.as_text(),
+            parsed.full_name,
+            parsed.single_maintainer
+        ),
+        if parsed.single_maintainer {
+            "A person registered the repository as a single-maintainer one: the person who attests its project map may also enable it. It starts disabled, at autonomy level L0, with no project map. The engine did not look at the repository: the installation, the GitHub repository id and the name are what the person gave."
+        } else {
+            "A person registered the repository under the strict rule: the person who enables it is another than the person who attests its project map. It starts disabled, at autonomy level L0, with no project map. The engine did not look at the repository: the installation, the GitHub repository id and the name are what the person gave."
+        }
+        .to_owned(),
     )?;
     if is_replay(&mut *tx, &audit).await? {
         let row = tx.get_repository(id).await?;
@@ -434,6 +454,7 @@ pub async fn register(
             github_repository_id: GithubRepositoryId(parsed.github_repository_id),
             full_name: parsed.full_name,
             default_branch: parsed.default_branch,
+            single_maintainer: parsed.single_maintainer,
         })
         .await
         .map_err(|error| match error {
@@ -576,6 +597,15 @@ pub async fn switch(
     let row = found.ok_or(ApiError::NotFound)?;
     let fixed = match &meant {
         Some(meant) => match &row.value.project_map {
+            // The clear answer for the strict rule (finding REG-6). The store and the table refuse it
+            // as well.
+            Some(map)
+                if map.commit == *meant
+                    && !row.value.single_maintainer
+                    && map.attested_by == caller.principal =>
+            {
+                return Err(ApiError::EnablerIsAttestor);
+            }
             Some(map) if map.commit == *meant => format!(
                 "A person enabled the repository for the project map at commit {}, which a person attested. The engine did not verify that map.",
                 meant.as_str()
@@ -623,6 +653,7 @@ fn refusal_of_store(error: StoreError) -> ApiError {
     match error {
         StoreError::Constraint(ConstraintRule::ProjectMapRule) => ApiError::ProjectMapNotAttested,
         StoreError::Constraint(ConstraintRule::ProjectMapChanged) => ApiError::ProjectMapChanged,
+        StoreError::Constraint(ConstraintRule::EnablerIsAttestor) => ApiError::EnablerIsAttestor,
         other => other.into(),
     }
 }

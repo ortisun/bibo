@@ -338,9 +338,11 @@ $$;
 INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1004), 'human', 7104, 'person-two');
 INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1005), 'human', 7105, 'person-gone');
 UPDATE principals SET disabled_at = now() WHERE id = dbtest.u(1005);
+-- It is a single-maintainer repository, because sections 10a to 10c enable it by the person who attested the map and
+-- test the rule of REG-1, not the rule of REG-6 (section 11 tests that one on repositories of its own).
 INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
-                          project_map_commit, project_map_attested_by_principal_id)
-  VALUES (dbtest.u(1), dbtest.u(1020), 9301, 8301, 'org1/enabled-for-a-map', 'main', repeat('a', 40), dbtest.u(1002));
+                          project_map_commit, project_map_attested_by_principal_id, single_maintainer)
+  VALUES (dbtest.u(1), dbtest.u(1020), 9301, 8301, 'org1/enabled-for-a-map', 'main', repeat('a', 40), dbtest.u(1002), true);
 
 -- 10a. What enabling records, on the repository that is still disabled.
 
@@ -488,3 +490,115 @@ BEGIN
     'enabled=true for=- by=- at=none');
 END
 $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 11. The enabler of a repository is not the attestor of its map, unless the repository is a single-maintainer one
+--     (migration 2026-11-03-002600, finding REG-6). The flag is written at registration and never after. Every
+--     statement is raw SQL as the login of the API, the group of the worker or the owner, and dbtest.after reports
+--     what the row looks like afterwards (see section 10 for the format).
+
+INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
+                          project_map_commit, project_map_attested_by_principal_id)
+  VALUES (dbtest.u(1), dbtest.u(1030), 9401, 8401, 'org1/strict', 'main', repeat('d', 40), dbtest.u(1002));
+INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
+                          project_map_commit, project_map_attested_by_principal_id, single_maintainer)
+  VALUES (dbtest.u(1), dbtest.u(1031), 9402, 8402, 'org1/single-maintainer', 'main', repeat('d', 40), dbtest.u(1002), true);
+
+CREATE FUNCTION dbtest.enable_by(p_repository uuid, p_by uuid) RETURNS text LANGUAGE sql AS $$
+  SELECT format($q$UPDATE repositories SET enabled = true, enabled_project_map_commit = repeat('d', 40), enabled_by_principal_id = %L,
+                          version = version + 1 WHERE tenant_id = %L AND id = %L$q$, p_by, dbtest.u(1), p_repository)
+$$;
+
+-- 11a. The flag, and the rule.
+
+DO $$
+DECLARE
+  strict_repo uuid := dbtest.u(1030);
+  single_repo uuid := dbtest.u(1031);
+  attestor uuid := dbtest.u(1002);
+  other uuid := dbtest.u(1004);
+  refused text := 'ERR:23514:repositories_enabler_differs_from_attestor';
+BEGIN
+  PERFORM dbtest.expect_eq('the flag is a boolean that cannot be empty and is false unless a registration says otherwise',
+    (SELECT data_type || ':' || is_nullable || ':' || column_default FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'repositories' AND column_name = 'single_maintainer'), 'boolean:NO:false');
+  PERFORM dbtest.expect_eq('a repository written without the flag is a strict one',
+    (SELECT single_maintainer FROM repositories WHERE id = strict_repo), false);
+  PERFORM dbtest.expect_eq('REG-6: the person who attested the map cannot enable the repository (API login)',
+    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_api_app', 1, strict_repo), refused);
+  PERFORM dbtest.expect_eq('REG-6: nor as the group of the worker',
+    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_app', 1, strict_repo), refused);
+  PERFORM dbtest.expect_error('REG-6: nor as the table owner (the rule is in the table)',
+    dbtest.enable_by(strict_repo, attestor), '23514', NULL, 'repositories_enabler_differs_from_attestor');
+  PERFORM dbtest.expect_error('REG-6: nor in the statement that inserts the row already enabled (as the owner, because the logins cannot insert these columns)',
+    format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
+                          project_map_commit, project_map_attested_by_principal_id, enabled, enabled_by_principal_id)
+                       VALUES (%L, %L, 9403, 8403, 'org1/strict-insert', 'main', repeat('d', 40), %L, true, %L)$q$,
+                      dbtest.u(1), dbtest.u(1032), attestor, attestor),
+    '23514', NULL, 'repositories_enabler_differs_from_attestor');
+  PERFORM dbtest.expect_eq('the sibling: another active person of the tenant can enable it, and the record names them',
+    dbtest.after(dbtest.enable_by(strict_repo, other), 'factory_api_app', 1, strict_repo), format('enabled=true for=dddd by=%s at=now', other));
+  PERFORM dbtest.expect_eq('the sibling: a single-maintainer repository can be enabled by the person who attested the map',
+    dbtest.after(dbtest.enable_by(single_repo, attestor), 'factory_api_app', 1, single_repo), format('enabled=true for=dddd by=%s at=now', attestor));
+  PERFORM dbtest.expect_eq('the sibling: so can the group of the worker enable it',
+    dbtest.after(dbtest.enable_by(single_repo, attestor), 'factory_app', 1, single_repo), format('enabled=true for=dddd by=%s at=now', attestor));
+END
+$$;
+
+-- 11b. Who may write the flag. The API login inserts it at registration and updates it never.
+
+DO $$
+DECLARE
+  single_repo uuid := dbtest.u(1031);
+  scope text := format('WHERE tenant_id = %L AND id = %L', dbtest.u(1), dbtest.u(1031));
+  register text := format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, single_maintainer)
+                              VALUES (%L, %L, 9404, 8404, 'org1/api-single_repo', 'main', true)$q$, dbtest.u(1), dbtest.u(1033));
+BEGIN
+  PERFORM dbtest.expect_eq('the API login registers a repository as a single-maintainer one', dbtest.run_as(register, 'factory_api_app', 1), 'rows=1');
+  PERFORM dbtest.expect_true('the API login cannot write the flag of another tenant than the one it named',
+    dbtest.run_as(replace(register, dbtest.u(1)::text, dbtest.u(2)::text), 'factory_api_app', 1) LIKE 'ERR:42501:%');
+  PERFORM dbtest.expect_true('the API login cannot change the flag afterwards (no grant)',
+    dbtest.run_as('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_api_app', 1)
+      LIKE 'ERR:42501:permission denied for table repositories');
+  PERFORM dbtest.expect_true('the group of the worker cannot change it either (no grant)',
+    dbtest.run_as('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_app', 1)
+      LIKE 'ERR:42501:permission denied for table repositories');
+  PERFORM dbtest.expect_eq('control: with the grant given, the trigger still refuses the API login (the second guard)',
+    dbtest.after('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_api_app', 1, single_repo,
+                 'GRANT UPDATE (single_maintainer) ON repositories TO factory_api_app'),
+    'ERR:23514:repositories_single_maintainer_is_set_at_registration');
+  PERFORM dbtest.expect_eq('control: with the grant given, the trigger still refuses the group of the worker',
+    dbtest.after('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_app', 1, single_repo,
+                 'GRANT UPDATE (single_maintainer) ON repositories TO factory_app'),
+    'ERR:23514:repositories_single_maintainer_is_set_at_registration');
+  PERFORM dbtest.expect_eq('control: with the grant given and the trigger dropped, the API login changes the flag',
+    dbtest.run_as('UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope, 'factory_api_app', 1,
+                  'GRANT UPDATE (single_maintainer) ON repositories TO factory_api_app; DROP TRIGGER repositories_project_map_guard ON repositories'),
+    'rows=1');
+  PERFORM dbtest.expect_ok('the table owner, who is an administrator and not a login of the factory, can change the flag (the documented path)',
+    'UPDATE repositories SET single_maintainer = false, version = version + 1 ' || scope);
+END
+$$;
+
+-- 11c. Controls: the CHECK is the second guard behind the trigger, and without both the pair goes through.
+
+DO $$
+DECLARE
+  strict_repo uuid := dbtest.u(1030);
+  attestor uuid := dbtest.u(1002);
+  drop_guard text := 'DROP TRIGGER repositories_project_map_guard ON repositories';
+  drop_check text := 'ALTER TABLE repositories DROP CONSTRAINT repositories_enabler_differs_from_attestor';
+  -- With the trigger gone nothing stamps the time of the enabling, so the statement writes it and the grant is given.
+  grant_time text := 'GRANT UPDATE (enabled_at) ON repositories TO factory_api_app';
+  with_time text := replace(dbtest.enable_by(dbtest.u(1030), dbtest.u(1002)), 'enabled = true,', 'enabled = true, enabled_at = now(),');
+BEGIN
+  PERFORM dbtest.expect_eq('control: with the trigger dropped, the CHECK refuses the attestor as the enabler',
+    dbtest.after(with_time, 'factory_api_app', 1, strict_repo, drop_guard || ';' || grant_time), 'ERR:23514:repositories_enabler_differs_from_attestor');
+  PERFORM dbtest.expect_eq('control: with the trigger and the CHECK dropped, the attestor enables a strict repository (REG-6)',
+    dbtest.after(with_time, 'factory_api_app', 1, strict_repo, drop_guard || ';' || drop_check || ';' || grant_time),
+    format('enabled=true for=dddd by=%s at=now', attestor));
+  PERFORM dbtest.expect_eq('control: with only the CHECK dropped, the trigger still refuses',
+    dbtest.after(dbtest.enable_by(strict_repo, attestor), 'factory_api_app', 1, strict_repo, drop_check), 'ERR:23514:repositories_enabler_differs_from_attestor');
+END
+$$;
+

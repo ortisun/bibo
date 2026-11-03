@@ -64,6 +64,10 @@ pub enum ApiError {
     /// map on file.
     #[error("the project map was attested again")]
     ProjectMapChanged,
+    /// The person who would enable the repository attested its project map, and the repository was
+    /// not registered as a single-maintainer one (finding REG-6).
+    #[error("the person who attested the project map cannot enable the repository")]
+    EnablerIsAttestor,
 }
 
 impl ApiError {
@@ -82,7 +86,9 @@ impl ApiError {
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ProjectMapNotAttested | Self::ProjectMapChanged => StatusCode::CONFLICT,
+            Self::ProjectMapNotAttested | Self::ProjectMapChanged | Self::EnablerIsAttestor => {
+                StatusCode::CONFLICT
+            }
         }
     }
 
@@ -103,6 +109,7 @@ impl ApiError {
             Self::Unavailable => "unavailable",
             Self::ProjectMapNotAttested => "project_map_not_attested",
             Self::ProjectMapChanged => "project_map_changed",
+            Self::EnablerIsAttestor => "enabler_is_attestor",
         }
     }
 

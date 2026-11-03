@@ -36,7 +36,7 @@ usage: factory-cli <command> [options]
   approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
-  repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH]
+  repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH] [--single-maintainer]
   repository confirm-map  --api URL --token-file FILE [--key K] REPOSITORY COMMIT reason...
   repository enable       --api URL --token-file FILE [--key K] REPOSITORY COMMIT [reason...]
   repository disable      --api URL --token-file FILE [--key K] REPOSITORY [reason...]
@@ -57,6 +57,16 @@ struct Parsed {
 
 /// Splits `--name value`, `--name=value` and positional words. Everything after `--` is positional.
 fn split(args: &[String], allowed: &[&str]) -> Result<Parsed, String> {
+    split_with_switches(args, allowed, &[])
+}
+
+/// The same, with some options that are switches: `--name` alone says `true`, and `--name=false`
+/// says `false`. A switch never takes the next word.
+fn split_with_switches(
+    args: &[String],
+    allowed: &[&str],
+    switches: &[&str],
+) -> Result<Parsed, String> {
     let mut options = BTreeMap::new();
     let mut positional = Vec::new();
     let mut words = args.iter();
@@ -71,6 +81,7 @@ fn split(args: &[String], allowed: &[&str]) -> Result<Parsed, String> {
         };
         let (name, value) = match name.split_once('=') {
             Some((name, value)) => (name.to_owned(), value.to_owned()),
+            None if switches.contains(&name) => (name.to_owned(), "true".to_owned()),
             None => {
                 let value = words
                     .next()
@@ -799,8 +810,9 @@ fn repository_register(
         "github-repository",
         "name",
         "default-branch",
+        "single-maintainer",
     ];
-    let parsed = match split(args, &allowed) {
+    let parsed = match split_with_switches(args, &allowed, &["single-maintainer"]) {
         Ok(parsed) if parsed.positional.is_empty() => parsed,
         Ok(_) => {
             ctx.complain("repository register takes options only");
@@ -832,11 +844,22 @@ fn repository_register(
         .options
         .get("default-branch")
         .map_or("main", String::as_str);
+    // The rule about the enabler (finding REG-6). Strict unless the operator says otherwise, and
+    // said here, at registration, because nothing changes it afterwards.
+    let single_maintainer = match parsed.options.get("single-maintainer").map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            ctx.complain("--single-maintainer is a switch: give it alone, or as =true or =false");
+            return Exit::Failed;
+        }
+    };
     let body = json!({
         "installation_id": installation,
         "github_repository_id": github_repository,
         "full_name": name,
         "default_branch": branch,
+        "single_maintainer": single_maintainer,
     });
     let client = match client(&parsed.options, env, true, ctx) {
         Ok(client) => client,

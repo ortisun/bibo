@@ -79,11 +79,16 @@ What keeps the path honest:
 * The designation each action needs comes from the `actions` table of `policies/approval.yaml`, by the numeric GitHub id,
   and an entry narrowed to other repositories holds nothing here (API-1). A refusal is `403` with no reason, audited within
   the bound of API-8, and changes nothing.
+* The person who enables a repository is not the person who attested its map, unless the repository was registered with
+  `"single_maintainer": true` (finding REG-6). The answer is `409` with the code `enabler_is_attestor`, and the table
+  refuses the same pair for every role. `GET /v1/repositories/{id}` says which rule applies and, in `standing`, whether the
+  attestor and the enabler are still active humans of the tenant; a repository whose either is not drops webhooks and job
+  submissions like a disabled one.
 * The database refuses an enabled repository without a map commit for every role (`repositories_enabled_needs_project_map`).
   The API answers the case first, with a typed code, and the table is the guard behind it.
-* The login of the API holds column grants on `repositories` and nothing wider: it inserts six columns (so a new row is
-  always disabled, at level `L0`, with no protection result) and updates four (the enabled flag, the map commit, its
-  attestor and the version). It cannot set the autonomy ceiling or the protection result. The time of the attestation is
+* The login of the API holds column grants on `repositories` and nothing wider: it inserts seven columns (so a new row is
+  always disabled, at level `L0`, with no protection result; the seventh is `single_maintainer`, which is written here and
+  never updated) and updates four (the enabled flag, the map commit, its attestor and the version). It cannot set the autonomy ceiling or the protection result. The time of the attestation is
   stamped by a trigger. The suite `api_privileges` lists the grants both ways, and migration `2026-11-02-002400` has the
   residual risk: whoever holds the credentials of that login can now enable a repository that has a map commit.
 * The record id is derived from the tenant, the caller, the repository and the `Idempotency-Key`, so a retry finds its

@@ -9,4 +9,6 @@ These files are not part of this repository's own build. `scripts/install.sh` co
 | `github/project-board-policy.json` | The nine board stages, the names they match on an existing board, and the rules that choose a stage, rendered from [`policies/project-board.yaml`](../policies/project-board.yaml). Do not edit it by hand. |
 | `github/ISSUE_TEMPLATE/` | The two issue forms: propose a new solution, and request a small, clear change. |
 
+The installer does not register the repository with the factory. A person does, with `factory-cli repository register`, `confirm-map` and `enable`, and the person who enables a repository is not the person who confirmed its map. A project owner who works alone registers the repository with `--single-maintainer`, once, and the audit log records it: see "A single-maintainer repository" in the onboarding guide.
+
 Read the [onboarding guide](../docs/guides/onboarding.md) for how to install them, the [board guide](../docs/guides/project-board.md) for the board, and the decision records [0016](../docs/adr/0016-design-phase-onboarding-and-issue-workflow.md) and [0018](../docs/adr/0018-project-board-mirror-that-adapts.md) for why they are built this way.

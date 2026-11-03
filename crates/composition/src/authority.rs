@@ -134,9 +134,11 @@ impl Authority for StoreAuthority {
             // A repository the tenant does not have is not registered. Only a store that cannot
             // answer is an error.
             match row {
+                // A repository whose attestor or enabler is no longer an active human of the
+                // tenant is not enabled for new work (finding REG-6).
                 Ok(found) => (
                     active,
-                    found.value.enabled,
+                    found.value.open_for_new_jobs(),
                     found.value.protection_preflight_passed,
                     Some(found.value.full_name),
                 ),

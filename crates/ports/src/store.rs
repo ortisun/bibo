@@ -368,6 +368,10 @@ pub enum ConstraintRule {
     /// An enable named a map commit other than the one attested now. The approver meant another
     /// map than the one on file, so nothing changes (finding REG-1).
     ProjectMapChanged,
+    /// The person who would enable the repository is the person who attested its map, and the
+    /// repository was not registered as a single-maintainer one, so nothing changes (finding
+    /// REG-6).
+    EnablerIsAttestor,
 }
 
 /// Why a start was refused although the stage run looked ready.
@@ -743,6 +747,11 @@ pub struct NewRepository {
     pub full_name: String,
     /// The default branch name.
     pub default_branch: String,
+    /// True when one person may both attest the project map and enable the repository (finding
+    /// REG-6). It is a statement made at registration by an operator, it is recorded in the audit
+    /// trail, and nothing changes it afterwards. False is the strict rule: the enabler is another
+    /// person than the attestor.
+    pub single_maintainer: bool,
 }
 
 /// A repository registered for the tenant.
@@ -771,6 +780,34 @@ pub struct Repository {
     pub project_map: Option<ProjectMapAttestation>,
     /// What the repository was enabled for. `Some` exactly while `enabled` is true.
     pub enabled_for: Option<EnabledFor>,
+    /// True when the repository was registered as a single-maintainer one (finding REG-6): the
+    /// person who attests its map may also enable it.
+    pub single_maintainer: bool,
+    /// False when a person attested the map and is no longer an active human principal of the
+    /// tenant (a disabled person, or a service). True when nobody attested it.
+    pub attestor_is_active: bool,
+    /// False when a person enabled the repository and is no longer an active human principal of
+    /// the tenant. True when nobody is named as the enabler.
+    pub enabler_is_active: bool,
+}
+
+impl Repository {
+    /// True when the people behind the repository still stand: the attestor of its map and its
+    /// enabler are active human principals of the tenant (finding REG-6).
+    #[must_use]
+    pub const fn standing_holds(&self) -> bool {
+        self.attestor_is_active && self.enabler_is_active
+    }
+
+    /// True when a new job may start for this repository: it is enabled and the people who
+    /// attested its map and enabled it are still active humans of the tenant. A repository that is
+    /// enabled but fails the second test is treated as not enabled for new work, and fails
+    /// closed. The flag `enabled` alone is the stored fact, not the answer to "may a new job
+    /// start".
+    #[must_use]
+    pub const fn open_for_new_jobs(&self) -> bool {
+        self.enabled && self.standing_holds()
+    }
 }
 
 /// The fixed knobs of a stage run at creation.
@@ -1871,6 +1908,12 @@ pub trait DeliveryOps {
 ///   the new commit (finding REG-1).
 /// * The project map is an attestation by a person. The store records the commit, the principal
 ///   and the database time. It does not look at the repository and cannot.
+/// * The person who enables a repository is not the person who attested its map, unless the
+///   repository was registered with `single_maintainer` (finding REG-6). The flag is written at
+///   registration and no method changes it.
+/// * `get_repository` says whether the attestor and the enabler are still active human principals
+///   of the tenant (`attestor_is_active`, `enabler_is_active`). A caller that decides whether a new
+///   job may start asks `Repository::open_for_new_jobs`, not `enabled` alone.
 ///
 /// # Cancellation and timeouts
 /// If a method future is dropped before it completes, the transaction is poisoned: every later call
@@ -1913,7 +1956,9 @@ pub trait RepositoryOps {
     /// Switches a repository on for the map commit `commit`, on the word of `enabled_by`. Without a
     /// map commit the call is `Constraint(ProjectMapRule)`, and so it is when `enabled_by` is not
     /// an active human principal of the tenant. When `commit` is not the commit attested now it is
-    /// `Constraint(ProjectMapChanged)`. Nothing changes in either case.
+    /// `Constraint(ProjectMapChanged)`. When `enabled_by` is the person who attested the map and
+    /// the repository is not a single-maintainer one, it is `Constraint(EnablerIsAttestor)`
+    /// (finding REG-6). Nothing changes in any of these cases.
     async fn enable_repository(
         &mut self,
         id: RepositoryId,

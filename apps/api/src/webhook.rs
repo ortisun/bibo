@@ -204,7 +204,10 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
             None => false,
         };
         let authorized = requester.filter(|_| in_reach);
-        if registered.value.enabled && authorized.is_none() {
+        // A repository whose attestor or enabler is no longer an active human takes no label, as a
+        // disabled one does not (REG-6).
+        let open = registered.value.open_for_new_jobs();
+        if open && authorized.is_none() {
             // Someone who may not ask applied the factory label (FR-002, SC-002). No job. The
             // API holds no GitHub credential, so it cannot answer; it leaves one signed request
             // in the same transaction, which the worker answers and records.
@@ -228,7 +231,7 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
             )
             .await?;
         }
-        if let (true, Some(requester)) = (registered.value.enabled, authorized) {
+        if let (true, Some(requester)) = (open, authorized) {
             let job_id = JobId::from_uuid(ids.new_uuid());
             // The record of the job is written under the job's own correlation id, as every record
             // of a job is, so that one search finds all of them.

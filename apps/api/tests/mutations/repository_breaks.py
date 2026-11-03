@@ -1,9 +1,11 @@
-"""Deliberate breaks of the repository routes (REG-1, REG-4, REG-5), each of which a test must catch.
+"""Deliberate breaks of the repository routes (REG-1, REG-4, REG-5, REG-6), each of which a test must catch.
 
     FACTORY_DB_PROVISION=local python3 -I apps/api/tests/mutations/repository_breaks.py
 
-For each break the script changes one place in `apps/api/src/repositories.rs` (the old text must
-occur exactly once), runs `cargo test -p factory-api --test repositories`, and puts the file back.
+For each break the script changes one or more places in the files it names (each old text must
+occur exactly once in its file), runs `cargo test -p factory-api --test repositories`, and puts every
+file back. A break of REG-6 may change `apps/api/src/jobs.rs`, `apps/api/src/webhook.rs`, the
+composition crate or the storage crate, because the rule has consumers in all of them.
 A break is CAUGHT when the tests fail, MISSED when they pass, and INVALID when the changed source
 does not compile. The script exits with 1 if any break is MISSED or INVALID. It leaves the working
 tree as it found it, also when it is interrupted, but run it on a clean tree.
@@ -19,9 +21,14 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
-FILE = ROOT / "apps" / "api" / "src" / "repositories.rs"
+REPOSITORIES = "apps/api/src/repositories.rs"
+JOBS = "apps/api/src/jobs.rs"
+WEBHOOK = "apps/api/src/webhook.rs"
+AUTHORITY = "crates/composition/src/authority.rs"
+STORAGE = "crates/storage/src/pg/jobs.rs"
+ERROR = "crates/storage/src/pg/error.rs"
 
-# (name, [(old, new)])
+# (name, [(old, new)]) for REPOSITORIES, or (name, [(old, new, file)]) for another file
 BREAKS = [
     (
         "REG-5: a replay compares the name only, not the whole registration",
@@ -50,6 +57,38 @@ BREAKS = [
         [("        StoreError::Constraint(ConstraintRule::ProjectMapChanged) => ApiError::ProjectMapChanged,\n", ""),
          ("            Some(_) => return Err(ApiError::ProjectMapChanged),", "            Some(_) => return Err(ApiError::ProjectMapNotAttested),")],
     ),
+    (
+        "REG-6: the registration forgets the single-maintainer flag the operator sent",
+        [("            single_maintainer: parsed.single_maintainer,\n        })", "            single_maintainer: false,\n        })")],
+    ),
+    (
+        "REG-6: every registration is a single-maintainer one (the strict rule is never applied)",
+        [("            single_maintainer: parsed.single_maintainer,\n        })", "            single_maintainer: true,\n        })")],
+    ),
+    (
+        "REG-6: the strict rule has no typed answer at any layer (API check, store statement and the mapping of the table's error)",
+        [
+            ("            Some(map)\n                if map.commit == *meant\n                    && !row.value.single_maintainer\n                    && map.attested_by == caller.principal =>\n            {\n                return Err(ApiError::EnablerIsAttestor);\n            }\n", ""),
+            ("            AND (single_maintainer OR project_map_attested_by_principal_id IS DISTINCT FROM $5) \\\n", "", STORAGE),
+            ("        \"repositories_enabler_differs_from_attestor\" => rule(ConstraintRule::EnablerIsAttestor),\n", "", ERROR),
+        ],
+    ),
+    (
+        "REG-6: show hides that the people behind a repository are gone (standing reported as good)",
+        [("            \"open_for_new_jobs\": repository.open_for_new_jobs(),", "            \"open_for_new_jobs\": repository.enabled,")],
+    ),
+    (
+        "REG-6: the job route opens a repository whose attestor or enabler is gone",
+        [("    if !registered.value.open_for_new_jobs() {", "    if !registered.value.enabled {", JOBS)],
+    ),
+    (
+        "REG-6: the webhook binds a repository whose attestor or enabler is gone",
+        [("        let open = registered.value.open_for_new_jobs();", "        let open = registered.value.enabled;", WEBHOOK)],
+    ),
+    (
+        "REG-6: the standing of the enabler is never judged (computed as always active)",
+        [("(enabled_by_principal_id IS NULL OR EXISTS (SELECT 1 FROM principals p \\\n        WHERE p.tenant_id = repositories.tenant_id AND p.id = enabled_by_principal_id \\\n          AND p.kind = 'human' AND p.disabled_at IS NULL)) AS enabler_is_active", "true AS enabler_is_active", STORAGE)],
+    ),
 ]
 
 
@@ -60,17 +99,32 @@ def run():
 
 
 def main():
-    original = FILE.read_text()
+    originals = {}
     outcomes = []
     try:
         for name, edits in BREAKS:
-            text = original
-            for old, new in edits:
+            # `repository_breaks.py WORDS...` runs only the breaks whose name holds one of the words.
+            if sys.argv[1:] and not any(word in name for word in sys.argv[1:]):
+                continue
+            changed = {}
+            for edit in edits:
+                old, new = edit[0], edit[1]
+                relative = edit[2] if len(edit) > 2 else REPOSITORIES
+                path = ROOT / relative
+                text = changed.get(path)
+                if text is None:
+                    originals.setdefault(path, path.read_text())
+                    text = originals[path]
                 if text.count(old) != 1:
-                    raise SystemExit(f"{name}: the text to change occurs {text.count(old)} times")
-                text = text.replace(old, new)
-            FILE.write_text(text)
-            code, output = run()
+                    raise SystemExit(f"{name}: the text to change occurs {text.count(old)} times in {relative}")
+                changed[path] = text.replace(old, new)
+            for path, text in changed.items():
+                path.write_text(text)
+            try:
+                code, output = run()
+            finally:
+                for path in changed:
+                    path.write_text(originals[path])
             if "could not compile" in output or "error[E" in output:
                 verdict = "INVALID (does not compile)"
             elif code == 0:
@@ -81,7 +135,8 @@ def main():
             outcomes.append((name, verdict))
             print(f"{name}: {verdict}", flush=True)
     finally:
-        FILE.write_text(original)
+        for path, text in originals.items():
+            path.write_text(text)
     bad = [o for o in outcomes if not o[1].startswith("CAUGHT")]
     print(f"{len(outcomes) - len(bad)} of {len(outcomes)} breaks caught")
     sys.exit(1 if bad else 0)

@@ -237,6 +237,7 @@ diesel::table! {
         enabled_project_map_commit -> Nullable<Text>,
         enabled_by_principal_id -> Nullable<Uuid>,
         enabled_at -> Nullable<Timestamptz>,
+        single_maintainer -> Bool,
     }
 }
 

@@ -178,7 +178,8 @@ pub async fn submit(
 
     let mut tx = state.ports.store.begin(caller.scope()).await?;
     let registered = tx.get_repository(repository).await?;
-    if !registered.value.enabled {
+    // A repository whose attestor or enabler is no longer an active human is not open (REG-6).
+    if !registered.value.open_for_new_jobs() {
         return Err(ApiError::NotFound);
     }
     // A requester narrowed to some repositories asks for work there and nowhere else (API-1).

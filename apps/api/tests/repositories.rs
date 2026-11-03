@@ -1518,3 +1518,254 @@ async fn the_repository_of_the_fixtures_is_in_the_state_the_path_reaches() {
     assert_eq!(made.json()["project_map"]["commit"], COMMIT);
     env.stop().await;
 }
+
+// ---- REG-6: the enabler is not the attestor, unless the repository is single-maintainer -----------
+
+/// Gives tenant A's operator the approver designation too: the one person who can do every act.
+fn the_operator_also_approves(env: &Env) {
+    let operator = &env.a.operator;
+    let line = format!(
+        "    github_user_id: {}\n    login: {}\n    designations: [operator]\n",
+        operator.github_id, operator.login
+    );
+    let path = env.checkout.join("allowlist/allowlist.yaml");
+    let text = std::fs::read_to_string(&path).expect("the allowlist file");
+    assert_eq!(
+        text.matches(&line).count(),
+        1,
+        "the operator's entry is in the file once"
+    );
+    std::fs::write(
+        &path,
+        text.replace(&line, &line.replace("[operator]", "[operator, approver]")),
+    )
+    .expect("the allowlist file");
+}
+
+/// The operator (who is also an approver) enables the repository for the commit on file.
+async fn enable_as_operator(env: &Env, id: &str, key: &str) -> Reply {
+    let on_file = flag(env, id, "project_map_commit")
+        .await
+        .unwrap_or_else(|| COMMIT.to_owned());
+    post(
+        env,
+        &env.a.operator,
+        &format!("/v1/repositories/{id}/enable"),
+        key,
+        &json!({"commit": on_file}),
+    )
+    .await
+}
+
+fn single_maintainer_registration(n: u64) -> Value {
+    let mut body = registration(n);
+    body["single_maintainer"] = json!(true);
+    body
+}
+
+/// REG-6: the person who attested the map cannot enable a strict repository, whoever they are and
+/// whatever they hold. A repository registered as a single-maintainer one lets the same person do
+/// both, and the audit record of its registration says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_person_who_attested_the_map_cannot_enable_a_strict_repository_but_can_enable_a_single_maintainer_one()
+ {
+    let env = Env::start().await;
+    the_operator_also_approves(&env);
+
+    // A strict repository (the default): the operator attests, then cannot enable.
+    let strict = register(&env, 1).await;
+    let shown = get(
+        &env,
+        &env.a.requester,
+        &format!("/v1/repositories/{strict}"),
+    )
+    .await;
+    assert_eq!(
+        shown.json()["single_maintainer"],
+        false,
+        "strict is the default"
+    );
+    assert_eq!(attest(&env, &strict, "attest-1").await.status, 200);
+    let refused = enable_as_operator(&env, &strict, "enable-1").await;
+    assert_eq!(refused.status, 409, "{}", refused.text());
+    assert_eq!(refused.json(), json!({"error": "enabler_is_attestor"}));
+    assert_eq!(
+        flag(&env, &strict, "enabled").await.as_deref(),
+        Some("false")
+    );
+    assert_eq!(flag(&env, &strict, "version").await.as_deref(), Some("2"));
+    assert!(
+        !audit_actions(&env).await.contains("repository.enabled"),
+        "a refusal leaves no record of an enabling"
+    );
+    // The sibling: another person with the approver designation can.
+    let enabled = enable(&env, &strict, "enable-2").await;
+    assert_eq!(enabled.status, 200, "{}", enabled.text());
+    assert_eq!(
+        enabled.json()["repository"]["enabled_for"]["enabled_by"],
+        env.a.approver.principal.as_text()
+    );
+
+    // A single-maintainer repository: the same person does it all, and the registration says so.
+    let made = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-2",
+        &single_maintainer_registration(2),
+    )
+    .await;
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert_eq!(made.json()["repository"]["single_maintainer"], true);
+    let single = made.json()["repository"]["repository_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    assert_eq!(attest(&env, &single, "attest-2").await.status, 200);
+    let both = enable_as_operator(&env, &single, "enable-3").await;
+    assert_eq!(both.status, 200, "{}", both.text());
+    assert_eq!(
+        both.json()["repository"]["enabled_for"]["enabled_by"],
+        env.a.operator.principal.as_text(),
+        "the operator attested and enabled it"
+    );
+    let subjects = env
+        .db
+        .text(
+            "SELECT string_agg(subject, ' | ' ORDER BY sequence) FROM audit_events WHERE action = 'repository.registered'",
+        )
+        .await
+        .expect("the registration records");
+    assert_eq!(
+        subjects.matches("single_maintainer=false").count(),
+        1,
+        "{subjects}"
+    );
+    assert_eq!(
+        subjects.matches("single_maintainer=true").count(),
+        1,
+        "{subjects}"
+    );
+
+    // The same key with the other rule is another request (REG-5 for the new field).
+    let replay = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-2",
+        &registration(2),
+    )
+    .await;
+    assert_eq!(replay.status, 409, "{}", replay.text());
+    // A flag that is not a boolean is a malformed body.
+    let mut body = registration(3);
+    body["single_maintainer"] = json!("yes");
+    let bad = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-3",
+        &body,
+    )
+    .await;
+    assert_eq!(bad.status, 400, "{}", bad.text());
+    // Nobody changes the flag after registration: the routes take no such field.
+    let mut change = attestation();
+    change["single_maintainer"] = json!(false);
+    let late = post(
+        &env,
+        &env.a.operator,
+        &format!("/v1/repositories/{single}/project-map"),
+        "attest-late",
+        &change,
+    )
+    .await;
+    assert_eq!(late.status, 400, "{}", late.text());
+    assert_eq!(
+        flag(&env, &single, "single_maintainer").await.as_deref(),
+        Some("true")
+    );
+    assert!(chain_is_sound(&env).await);
+    env.stop().await;
+}
+
+/// REG-6: a repository whose attestor or enabler is no longer an active human principal of the tenant
+/// is listed as such by `show` and is treated as not enabled for new jobs. The stored flag is
+/// unchanged, so a person can see what happened. The controls enable the check: the same repository
+/// takes the label while both people stand.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_repository_whose_attestor_or_enabler_is_gone_is_not_open_for_new_jobs_and_show_says_so()
+{
+    for who in ["attestor", "enabler"] {
+        let env = Env::start().await;
+        let a = &env.a;
+        let id = enabled_repository(&env, 1).await;
+        let path = format!("/v1/repositories/{id}");
+
+        // The control: both stand, the repository takes a label and a job.
+        let shown = get(&env, &a.requester, &path).await.json();
+        assert_eq!(shown["standing"]["attestor_is_active_human"], true);
+        assert_eq!(shown["standing"]["enabler_is_active_human"], true);
+        assert_eq!(shown["standing"]["open_for_new_jobs"], true);
+        let label = env
+            .send(env.delivery(
+                "issues",
+                &delivery_id(1),
+                &label_payload(1, a.requester.github_id, 21),
+            ))
+            .await;
+        assert_eq!(label.status, 202);
+        assert_eq!(jobs_of(&env, &id).await, 1);
+
+        // The person is switched off as a principal of the tenant.
+        let gone = if who == "attestor" {
+            &a.operator
+        } else {
+            &a.approver
+        };
+        env.db
+            .run(&format!(
+                "UPDATE principals SET disabled_at = now() WHERE id = '{}'",
+                gone.principal.as_uuid()
+            ))
+            .await;
+        let shown = get(&env, &a.requester, &path).await.json();
+        assert_eq!(
+            shown["enabled"], true,
+            "{who}: the stored flag is what it was"
+        );
+        assert_eq!(
+            shown["standing"]["attestor_is_active_human"],
+            who != "attestor",
+            "{who}"
+        );
+        assert_eq!(
+            shown["standing"]["enabler_is_active_human"],
+            who != "enabler",
+            "{who}"
+        );
+        assert_eq!(shown["standing"]["open_for_new_jobs"], false, "{who}");
+
+        // A new job does not start: not by a webhook, not by a request through the API.
+        let dropped = env
+            .send(env.delivery(
+                "issues",
+                &delivery_id(2),
+                &label_payload(1, a.requester.github_id, 22),
+            ))
+            .await;
+        assert_eq!(dropped.status, 202, "the answer to GitHub does not change");
+        assert_eq!(jobs_of(&env, &id).await, 1, "{who}: no job was made");
+        let refused = post(
+            &env,
+            &a.requester,
+            "/v1/jobs",
+            "job-gone",
+            &json!({"repository_id": id, "text": "Add a word count command.", "source_ref": "org/new-1#23"}),
+        )
+        .await;
+        assert_eq!(refused.status, 404, "{who}: {}", refused.text());
+        assert_eq!(jobs_of(&env, &id).await, 1);
+        env.stop().await;
+    }
+}

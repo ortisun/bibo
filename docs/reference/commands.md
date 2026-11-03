@@ -40,7 +40,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli approve-project-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB PATH SHA256 reason...` | Approves one file of build code that the change itself adds, with the exact content the person read. |
 | `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
 | `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
-| `factory-cli repository` | `--api`, `--token-file`, `--key`, `--installation`, `--github-repository`, `--name`, `--default-branch` | `register`, `confirm-map`, `enable`, `disable` or `show`, then its own arguments (see below) | Registers a repository, records that a person confirmed its project map, enables it, disables it, or shows it. The subcommands are in the table after the options. |
+| `factory-cli repository` | `--api`, `--token-file`, `--key`, `--installation`, `--github-repository`, `--name`, `--default-branch`, `--single-maintainer` | `register`, `confirm-map`, `enable`, `disable` or `show`, then its own arguments (see below) | Registers a repository, records that a person confirmed its project map, enables it, disables it, or shows it. The subcommands are in the table after the options. |
 | `factory-cli probe` | `--protected-checkout`, `--images-catalog`, `--profile` | none | Runs the start-up checks that need no credential and lists what cannot be checked. |
 
 `factory-cli help`, `factory-cli --help` and `factory-cli -h` print the usage text. With no command the usage goes to standard error and the exit code is 1.
@@ -64,6 +64,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `--github-repository` | With `repository register`: GitHub's numeric identifier of the repository. A positive whole number. One GitHub repository can be registered once in the whole factory. |
 | `--name` | With `repository register`: the repository's name, written `OWNER/NAME`. |
 | `--default-branch` | With `repository register`: the name of the default branch. Without it, `main`. |
+| `--single-maintainer` | With `repository register`: a switch with no value (`--single-maintainer=false` is the default). The person who confirms the project map may also enable the repository. Only for a project owner who works alone. It is written at registration, recorded in the audit log, and cannot be changed afterwards. |
 
 The identifiers `JOB` and `STAGE_RUN` are UUIDs. A word that is not a UUID is not sent.
 
@@ -73,11 +74,11 @@ A repository takes tickets only after a person has registered it, confirmed its 
 
 | Subcommand | Arguments | Who may run it | What it does |
 |---|---|---|---|
-| `register` | `--installation`, `--github-repository`, `--name`, optionally `--default-branch` | `operator` | Registers the repository. It starts disabled, at autonomy level `L0`, with no project map. Prints its identifier. |
+| `register` | `--installation`, `--github-repository`, `--name`, optionally `--default-branch` and `--single-maintainer` | `operator` | Registers the repository. It starts disabled, at autonomy level `L0`, with no project map, under the strict rule (the person who enables it is not the person who confirmed the map) unless `--single-maintainer` is given. Prints its identifier. |
 | `confirm-map` | `REPOSITORY COMMIT reason...` | `operator` | Records that the person attests that `COMMIT` (40 lowercase hexadecimal characters) of the default branch holds the project map. The reason has 10 to 500 characters. This is a statement by a person: the engine holds no GitHub credential, does not read the repository and does not check the commit. |
-| `enable` | `REPOSITORY COMMIT [reason...]` | `approver` | Lets the repository take tickets, for the map at `COMMIT`, the commit you read. Refused with the code `project_map_not_attested` until a map was confirmed. Refused with the code `project_map_changed` when `COMMIT` is not the commit confirmed now. |
+| `enable` | `REPOSITORY COMMIT [reason...]` | `approver` | Lets the repository take tickets, for the map at `COMMIT`, the commit you read. Refused with the code `project_map_not_attested` until a map was confirmed. Refused with the code `project_map_changed` when `COMMIT` is not the commit confirmed now. Refused with the code `enabler_is_attestor` when you confirmed the map and the repository is not a single-maintainer one. |
 | `disable` | `REPOSITORY [reason...]` | `operator` | Stops the repository from taking tickets. Its webhooks are dropped and no job can be submitted for it. Existing jobs are not touched: they run on, and their issue keeps its last label. To stop one, cancel it. |
-| `show` | `REPOSITORY` | any designation | Prints the repository: whether it is enabled and for which map commit, its autonomy ceiling, its version and the attestation of its map. |
+| `show` | `REPOSITORY` | any designation | Prints the repository: whether it is enabled and for which map commit, the rule about the enabler, whether it is open for new jobs (an enabled repository whose attestor or enabler is no longer an active human is not), its autonomy ceiling, its version and the attestation of its map. |
 
 The `REPOSITORY` argument is the identifier that `register` printed. Confirming a map again on an enabled repository switches it off, and you enable it again with the new commit. A reason on `enable` or `disable` is optional and, when given, has 10 to 500 characters. The role is a designation on the protected allowlist, read from the `actions` table of `policies/approval.yaml`: `register_repository`, `confirm_project_map`, `enable_repository` and `disable_repository`. These four are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 

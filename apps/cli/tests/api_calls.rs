@@ -1014,3 +1014,118 @@ fn enabling_a_map_that_moved_has_a_plain_refusal_and_exit_code_2() {
     );
     assert!(ran.out.is_empty(), "{}", ran.out);
 }
+
+#[test]
+fn repository_register_sends_the_rule_about_the_enabler_and_only_as_a_switch_at_registration() {
+    let api = fake(vec![
+        (201, REPOSITORY_BODY),
+        (201, REPOSITORY_BODY),
+        (201, REPOSITORY_BODY),
+    ]);
+    let file = token_file(0o600);
+    let base = format!("--api http://{} --token-file {}", api.addr, file.display());
+    let line =
+        "repository register --installation 7001 --github-repository 8001 --name org/widgets";
+    // The default is the strict rule, and the body says so.
+    assert_eq!(cli(&format!("{line} {base}")).exit, Exit::Ok);
+    // The switch alone, and the switch spelled out, both reach the body.
+    assert_eq!(
+        cli(&format!("{line} --single-maintainer {base}")).exit,
+        Exit::Ok
+    );
+    assert_eq!(
+        cli(&format!("{line} --single-maintainer=false {base}")).exit,
+        Exit::Ok
+    );
+    let sent = api.requests.lock().expect("lock").clone();
+    assert!(
+        sent[0].contains(r#""single_maintainer":false"#),
+        "{}",
+        sent[0]
+    );
+    assert!(
+        sent[1].contains(r#""single_maintainer":true"#),
+        "{}",
+        sent[1]
+    );
+    assert!(
+        sent[2].contains(r#""single_maintainer":false"#),
+        "{}",
+        sent[2]
+    );
+    // A switch that is not true or false stops before a request, and so does the switch on another
+    // command: the rule is written at registration and nowhere else.
+    for refused in [
+        format!("{line} --single-maintainer=maybe {base}"),
+        format!("repository enable --single-maintainer {base} {REPOSITORY} {MAP_COMMIT}"),
+        format!(
+            "repository confirm-map --single-maintainer {base} {REPOSITORY} {MAP_COMMIT} I read the map."
+        ),
+    ] {
+        let ran = cli(&refused);
+        assert_eq!(ran.exit, Exit::Failed, "{refused}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 3);
+}
+
+#[test]
+fn repository_show_names_the_rule_and_says_why_an_enabled_repository_is_closed() {
+    let strict_open = r#"{"repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","full_name":"org/widgets","default_branch":"main","github_installation_id":7001,"github_repository_id":8001,"single_maintainer":false,"enabled":true,"standing":{"attestor_is_active_human":true,"enabler_is_active_human":true,"open_for_new_jobs":true},"protection_preflight_passed":false,"autonomy_ceiling":"L0","version":3,"project_map":null}"#;
+    let closed = strict_open
+        .replace(
+            r#""single_maintainer":false"#,
+            r#""single_maintainer":true"#,
+        )
+        .replace(
+            r#""attestor_is_active_human":true"#,
+            r#""attestor_is_active_human":false"#,
+        )
+        .replace(
+            r#""open_for_new_jobs":true"#,
+            r#""open_for_new_jobs":false"#,
+        );
+    let closed: &'static str = Box::leak(closed.into_boxed_str());
+    let api = fake(vec![(200, strict_open), (200, closed)]);
+    let file = token_file(0o600);
+    let base = format!("--api http://{} --token-file {}", api.addr, file.display());
+    let open = cli(&format!("repository show {base} {REPOSITORY}"));
+    assert_eq!(open.exit, Exit::Ok, "{}", open.err);
+    assert!(
+        open.out.contains("Rule:               strict"),
+        "{}",
+        open.out
+    );
+    assert!(open.out.contains("Open for new jobs:  yes"), "{}", open.out);
+    let shut = cli(&format!("repository show {base} {REPOSITORY}"));
+    assert_eq!(shut.exit, Exit::Ok, "{}", shut.err);
+    assert!(
+        shut.out.contains("Rule:               single maintainer"),
+        "{}",
+        shut.out
+    );
+    assert!(
+        shut.out.contains("Open for new jobs:  NO. The repository is enabled on file, but the person who attested the map is no longer an active human"),
+        "{}",
+        shut.out
+    );
+}
+
+#[test]
+fn enabling_a_map_one_attested_has_a_plain_refusal_and_exit_code_2() {
+    let api = fake(vec![(409, r#"{"error":"enabler_is_attestor"}"#)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository enable --api http://{} --token-file {} {REPOSITORY} {MAP_COMMIT}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Refused, "{}", ran.err);
+    assert!(
+        ran.err
+            .contains("you attested this repository's project map")
+            && ran.err.contains("another person"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.out.is_empty(), "{}", ran.out);
+}

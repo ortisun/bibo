@@ -39,6 +39,7 @@ The constitution of this repository, `.specify/memory/constitution.md`, carries 
 - **Autonomy level.** The default level is `L1`: the factory makes branches and draft pull requests, and a person decides every promotion. Do not raise it. Raising a level needs an `org_admin`.
 - **Tenants.** `worker.tenants` is empty by default. An empty list means the worker admits no received job.
 - **Profile.** Run `production`. It refuses a fake for any port. The scenario E9 shows that refusal for the API's ports (six, and a seventh when it has an artifact root) and the worker's ports, in test mode.
+- **Who enables a repository.** The person who enables a repository is not the person who confirmed its project map, unless the repository was registered with `--single-maintainer` (finding REG-6). Register a repository as a single-maintainer one only when one person really is the only maintainer, and read the `repository.registered` row in the audit log to see which rule each repository has. `repository show` also says whether the attestor and the enabler are still active humans of the tenant: if either is switched off, the repository is closed to new jobs until a new pair confirms and enables it. There is no list of such repositories yet, so look at each repository after you switch a person off.
 - **First job.** Run it at `L1` with a person reading the audit log. Check that every `decision.applied` and `decision.rejected` row was written by the worker's decision step and carries the allowlist hash. This is condition 9 of the re-review.
 
 ## Before a second tenant

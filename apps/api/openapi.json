@@ -316,7 +316,7 @@
         "operationId": "enableRepository",
         "tags": ["repositories"],
         "summary": "Lets the repository take tickets, for the project map commit the approver names. It needs a project map that a person attested.",
-        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The database refuses the same changes for every role. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The person who attested the map cannot enable a repository that was not registered with single_maintainer: that is refused with 409 and the code enabler_is_attestor (finding REG-6). The database refuses the same changes for every role. A repeat of the same Idempotency-Key with the same request changes nothing.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/RepositoryId" },
@@ -440,7 +440,7 @@
         "required": ["error"],
         "additionalProperties": false,
         "properties": {
-          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed"] }
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed", "enabler_is_attestor"] }
         }
       },
       "FieldError": {
@@ -666,7 +666,8 @@
           "installation_id": { "type": "integer", "minimum": 1, "description": "The GitHub App installation that covers the repository." },
           "github_repository_id": { "type": "integer", "minimum": 1, "description": "GitHub's numeric id of the repository." },
           "full_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", "maxLength": 140, "description": "owner/name." },
-          "default_branch": { "type": "string", "minLength": 1, "maxLength": 255 }
+          "default_branch": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "single_maintainer": { "type": "boolean", "default": false, "description": "True lets the same person attest the project map and enable the repository, for a project owner who works alone. False, the default, is the strict rule: the person who enables the repository is another than the person who attested its map (finding REG-6). It is written here, at registration, and nowhere else, and the audit record of the registration says which it was." }
         }
       },
       "AttestProjectMap": {
@@ -713,16 +714,28 @@
           "verified_by_engine": { "type": "boolean", "enum": [false], "description": "Always false. The engine holds no GitHub credential and did not read the repository." }
         }
       },
+      "Standing": {
+        "type": "object",
+        "required": ["attestor_is_active_human", "enabler_is_active_human", "open_for_new_jobs"],
+        "description": "Whether the people behind the repository still stand (finding REG-6). A repository whose attestor or enabler is no longer an active human principal of the tenant is treated as not enabled for new jobs, whatever the stored flag says. Jobs that exist go on.",
+        "properties": {
+          "attestor_is_active_human": { "type": "boolean", "description": "False when a person attested the map and has since been switched off or is not a human. True when nobody attested it." },
+          "enabler_is_active_human": { "type": "boolean", "description": "False when a person enabled the repository and has since been switched off or is not a human. True when nobody is named as the enabler." },
+          "open_for_new_jobs": { "type": "boolean", "description": "True only when the repository is enabled and both are true. Webhooks and job submissions are dropped when it is false." }
+        }
+      },
       "Repository": {
         "type": "object",
-        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "enabled", "enabled_for", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
+        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "single_maintainer", "enabled", "standing", "enabled_for", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
         "properties": {
           "repository_id": { "type": "string", "format": "uuid" },
           "full_name": { "type": "string" },
           "default_branch": { "type": "string" },
           "github_installation_id": { "type": "integer" },
           "github_repository_id": { "type": "integer" },
-          "enabled": { "type": "boolean" },
+          "single_maintainer": { "type": "boolean", "description": "True when the repository was registered so that the same person may attest its project map and enable it." },
+          "enabled": { "type": "boolean", "description": "The stored flag. A repository can be enabled and still closed to new jobs: see standing." },
+          "standing": { "$ref": "#/components/schemas/Standing" },
           "enabled_for": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/EnabledFor" }], "description": "What the repository was enabled for. Present exactly while enabled is true. Attesting another project map commit, or the same commit by another person, switches an enabled repository off." },
           "protection_preflight_passed": { "type": "boolean" },
           "autonomy_ceiling": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },

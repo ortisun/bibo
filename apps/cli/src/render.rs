@@ -88,6 +88,9 @@ pub fn refusal(status: u16, body: &Value) -> String {
         "project_map_changed" => {
             "the project map was attested again since you read it; read the new commit with repository show and enable the repository for that one"
         }
+        "enabler_is_attestor" => {
+            "you attested this repository's project map, and the repository was not registered as a single-maintainer one; another person with the approver designation enables it"
+        }
         _ => "the API refused the request",
     };
     match field {
@@ -313,6 +316,40 @@ fn enabled_line(body: &Value) -> String {
     }
 }
 
+/// The rule about the enabler, and whether the people behind the repository still stand (finding
+/// REG-6). Nothing is printed for an answer from an older server that has neither field.
+fn standing_lines(body: &Value) -> String {
+    let mut out = String::new();
+    if let Some(single) = body.get("single_maintainer").and_then(Value::as_bool) {
+        out.push_str(if single {
+            "  Rule:               single maintainer: the person who attested the map may also enable the repository.\n"
+        } else {
+            "  Rule:               strict: the person who enables the repository is not the person who attested the map.\n"
+        });
+    }
+    if let Some(standing) = body.get("standing").filter(|value| value.is_object()) {
+        let flag = |key: &str| standing.get(key).and_then(Value::as_bool).unwrap_or(false);
+        if flag("open_for_new_jobs") {
+            out.push_str("  Open for new jobs:  yes\n");
+        } else if body.get("enabled").and_then(Value::as_bool) == Some(true) {
+            // Enabled on file and closed all the same: say why.
+            out.push_str("  Open for new jobs:  NO. The repository is enabled on file, but ");
+            out.push_str(match (
+                flag("attestor_is_active_human"),
+                flag("enabler_is_active_human"),
+            ) {
+                (false, false) => "the person who attested the map and the person who enabled it are no longer active humans of the tenant.\n",
+                (false, true) => "the person who attested the map is no longer an active human of the tenant.\n",
+                _ => "the person who enabled it is no longer an active human of the tenant.\n",
+            });
+            out.push_str("                      Webhooks and job submissions are dropped until a person attests the map and another enables it again.\n");
+        } else {
+            out.push_str("  Open for new jobs:  no (not enabled)\n");
+        }
+    }
+    out
+}
+
 /// One repository.
 #[must_use]
 pub fn repository(body: &Value) -> String {
@@ -324,7 +361,7 @@ pub fn repository(body: &Value) -> String {
         }
     };
     format!(
-        "Repository {}\n  Name:               {}\n  Default branch:     {}\n  GitHub installation {}, GitHub repository id {}\n  Enabled:            {}\n  Autonomy ceiling:   {} (protection preflight passed: {})\n  Version:            {}\n{}",
+        "Repository {}\n  Name:               {}\n  Default branch:     {}\n  GitHub installation {}, GitHub repository id {}\n  Enabled:            {}\n{}  Autonomy ceiling:   {} (protection preflight passed: {})\n  Version:            {}\n{}",
         text(body, "repository_id"),
         text(body, "full_name"),
         text(body, "default_branch"),
@@ -335,6 +372,7 @@ pub fn repository(body: &Value) -> String {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         enabled_line(body),
+        standing_lines(body),
         text(body, "autonomy_ceiling"),
         flag("protection_preflight_passed"),
         body.get("version").and_then(Value::as_u64).unwrap_or(0),

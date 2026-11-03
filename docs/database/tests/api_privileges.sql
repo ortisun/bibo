@@ -10,7 +10,8 @@
 -- shows up in review. The API writes four tables (jobs, original_requests, audit_events,
 -- webhook_deliveries) and reads a few more; it deletes nothing. Since migration 2026-11-02-002400 it also
 -- registers repositories and changes four columns of them (the project map and the enabled flag), by column
--- grants that this file lists on their own.
+-- grants that this file lists on their own. Since migration 2026-11-03-002600 the registration also writes the
+-- single_maintainer flag (REG-6), and nobody may update that column.
 
 -- ---------------------------------------------------------------------------------------------
 -- 1. The role itself.
@@ -70,6 +71,7 @@ INSERT INTO expected_api_column_grants VALUES
   ('repositories', 'tenant_id', 'INSERT'), ('repositories', 'id', 'INSERT'),
   ('repositories', 'github_installation_id', 'INSERT'), ('repositories', 'github_repository_id', 'INSERT'),
   ('repositories', 'full_name', 'INSERT'), ('repositories', 'default_branch', 'INSERT'),
+  ('repositories', 'single_maintainer', 'INSERT'),
   ('repositories', 'enabled', 'UPDATE'), ('repositories', 'project_map_commit', 'UPDATE'),
   ('repositories', 'project_map_attested_by_principal_id', 'UPDATE'), ('repositories', 'version', 'UPDATE'),
   ('repositories', 'enabled_project_map_commit', 'UPDATE'), ('repositories', 'enabled_by_principal_id', 'UPDATE');
@@ -196,7 +198,9 @@ BEGIN
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'default_branch', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'bypass_attested_by_principal_id', 'UPDATE')
     AND NOT has_column_privilege('api_privileges_login', 'repositories', 'autonomy_ceiling', 'INSERT')
-    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'INSERT'));
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'INSERT')
+    AND has_column_privilege('api_privileges_login', 'repositories', 'single_maintainer', 'INSERT')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'single_maintainer', 'UPDATE'));
   PERFORM dbtest.expect_true('the API login is not a member of factory_app, factory_system or factory_lookup',
     NOT pg_has_role('api_privileges_login', 'factory_app', 'MEMBER')
     AND NOT pg_has_role('api_privileges_login', 'factory_system', 'MEMBER')
