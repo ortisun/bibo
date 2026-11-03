@@ -19,7 +19,7 @@
 //! override it is not working, and its read token is of no use to anybody. With
 //! [`RevokeEndedJobs::revoking_blocked_after`] the step also revokes the tokens of a job that has
 //! been `BLOCKED` for longer than the bound of `credentials.github_app.installation_token`
-//! (`revoke_when_blocked_after_s` of `policies/security.yaml`, one hour). The job is **not** ended:
+//! (`revoke_when_blocked_after_s` of `policies/security.yaml`, 15 minutes). The job is **not** ended:
 //! `ChangeHost::revoke_job_tokens` refuses every later call for the job, and an unblocked job has
 //! to go on, so the release only revokes (`GithubAdapter::release_idle_after`) and the next call of
 //! the job mints a new token. Only `BLOCKED` counts. A job that waits for a person to answer or

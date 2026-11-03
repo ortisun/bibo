@@ -556,7 +556,7 @@ fn negative_nt_pol_03_a_file_over_the_size_limit_is_refused() {
 #[test]
 fn lb_04_the_bound_on_a_blocked_jobs_token_is_required_and_has_to_make_sense() {
     let text = real(SECURITY_FILE);
-    let line = "      revoke_when_blocked_after_s: 3600";
+    let line = "      revoke_when_blocked_after_s: 900";
     assert!(text.contains(line), "the real policy states the bound");
     // Absent: the loader refuses the file, so the worker cannot start without the bound.
     let without = replace_once(&text, &format!("{line}\n"), "");

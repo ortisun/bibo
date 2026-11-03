@@ -478,7 +478,7 @@
         "persisted_to_disk": false,
         "repositories": "exactly_one",
         "revoke_on_job_end": true,
-        "revoke_when_blocked_after_s": 3600,
+        "revoke_when_blocked_after_s": 900,
         "visible_to_sandbox": false
       },
       "permissions_forbidden": [
