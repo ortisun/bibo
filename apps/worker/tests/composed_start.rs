@@ -15,6 +15,7 @@ mod gh;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use factory_domain::ids::TenantId;
@@ -41,6 +42,11 @@ fn free_port() -> u16 {
 /// A running worker and everything that keeps it alive.
 struct Running {
     child: Child,
+    /// What the worker wrote to standard error, read as it is written by `stderr_reader`. A pipe
+    /// that nobody reads fills up, and the worker, which writes its log from the thread that runs
+    /// its loop, then waits inside `write` until somebody reads it.
+    stderr_bytes: Arc<Mutex<Vec<u8>>>,
+    stderr_reader: Option<std::thread::JoinHandle<()>>,
     port: u16,
     made: Deployment,
     _world: World,
@@ -49,11 +55,14 @@ struct Running {
 
 impl Running {
     fn stderr_so_far(&mut self) -> String {
-        let mut text = String::new();
-        if let Some(mut pipe) = self.child.stderr.take() {
-            let _ = pipe.read_to_string(&mut text);
+        // Once the process has ended the reader reaches the end of the pipe. Wait for it, so that
+        // the last lines are not lost. While the process runs, return what was read so far.
+        if matches!(self.child.try_wait(), Ok(Some(_)))
+            && let Some(reader) = self.stderr_reader.take()
+        {
+            let _ = reader.join();
         }
-        text
+        String::from_utf8_lossy(&self.stderr_bytes.lock().expect("the text")).into_owned()
     }
 }
 
@@ -109,14 +118,30 @@ async fn start(change: impl FnOnce(String) -> String) -> Running {
     support::seed_tenant(&made.db, tenant, 0, FIXTURE).await;
     let text = std::fs::read_to_string(&made.config_path).expect("the configuration");
     std::fs::write(&made.config_path, change(text)).expect("the changed configuration");
-    let child = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
         .env("FACTORY_CONFIG", &made.config_path)
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .expect("the binary starts");
+    let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
+    let mut pipe = child.stderr.take().expect("standard error is piped");
+    let sink = Arc::clone(&stderr_bytes);
+    let stderr_reader = std::thread::spawn(move || {
+        let mut chunk = [0_u8; 4096];
+        while let Ok(read) = pipe.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            sink.lock()
+                .expect("the text")
+                .extend_from_slice(&chunk[..read]);
+        }
+    });
     Running {
         child,
+        stderr_bytes,
+        stderr_reader: Some(stderr_reader),
         port,
         made,
         _world: world,
@@ -183,7 +208,8 @@ async fn a_complete_loopback_configuration_serves_the_broker_runs_the_loop_and_s
             }
             assert!(
                 Instant::now() < deadline,
-                "the worker did not stop on SIGTERM"
+                "the worker did not stop on SIGTERM; what it wrote so far:\n{}",
+                running.stderr_so_far()
             );
             std::thread::sleep(Duration::from_millis(100));
         };
