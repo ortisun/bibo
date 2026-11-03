@@ -47,8 +47,10 @@ use factory_ports::store::{
     JobOrigin, NewAuditEvent, NewJob, NewWebhookDelivery, PipelineScope, Store,
 };
 use factory_storage::pg::{PgStore, PgStoreConfig, TenantLogin};
+use factory_testkit::fx::canary::{Canary, CanarySet, Sweeper};
 use factory_testkit::fx::github::{FakeGithub, User};
 use factory_testkit::fx::http::{HttpRequest, HttpResponse, HttpServer};
+use factory_testkit::fx::sinks::{SinkCollector, SinkKind};
 use factory_workflow::engine::config::SLICE_ONE_SCOPE;
 use serde_json::{Value, json};
 
@@ -137,6 +139,9 @@ pub struct Options {
     pub config: Option<Box<dyn FnOnce(String) -> String>>,
     /// Changes the protected checkout (a policy file, say) before the worker reads it.
     pub checkout: Option<Box<dyn FnOnce(&Path)>>,
+    /// Does not register the two people as principals of the tenant, for a test whose engine rig
+    /// registers its own.
+    pub without_people: bool,
 }
 
 /// The values the run must never leak. They are made when the test runs.
@@ -327,6 +332,9 @@ impl Lab {
         // under test cannot insert tenants or principals).
         seed_tenant(&deployment.db, tenant, 0, REPO).await;
         for person in [REQUESTER, APPROVER] {
+            if options.without_people {
+                break;
+            }
             deployment
                 .db
                 .run(&format!(
@@ -398,6 +406,9 @@ impl Lab {
     /// Asks the worker to stop as a container runtime does, waits for it and returns its exit code.
     pub fn stop_worker(&mut self) -> Option<i32> {
         let mut child = self.worker.take()?;
+        if let Ok(Some(status)) = child.try_wait() {
+            return status.code();
+        }
         let _ = Command::new("kill")
             .args(["-TERM", &child.id().to_string()])
             .status();
@@ -610,4 +621,128 @@ impl Lab {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
+
+    /// Where a credential of this run was found, with no value: in the worker's output, any row the
+    /// run left in the database, a stored artifact, or anything the fake GitHub received or that
+    /// was posted on `issue`. The values searched for are every token the fake minted, the App's
+    /// key, the provider key, the key that signs decisions and the database passwords. All were
+    /// made when the test ran.
+    pub async fn credential_leaks(&self, issue: u64) -> Vec<String> {
+        let mut sweeper = Sweeper::new(&CanarySet::generate());
+        for canary in self.fake.minted_secrets() {
+            sweeper.add(&canary);
+        }
+        let body: String = self
+            .credentials
+            .app_key
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        sweeper.add(&Canary::custom("app-private-key-body", &body));
+        sweeper.add(&Canary::custom(
+            "provider-key",
+            &self.credentials.provider_key,
+        ));
+        sweeper.add(&Canary::custom(
+            "decision-signing-key",
+            &self.credentials.decision_key,
+        ));
+        for file in ["tenant.url", "system.url"] {
+            if let Some(password) = password_in(&self.deployment.dir.join(file)) {
+                sweeper.add(&Canary::custom(
+                    &format!("database-password-{file}"),
+                    &password,
+                ));
+            }
+        }
+
+        let sinks = SinkCollector::new();
+        let (stdout, stderr) = self.logs();
+        sinks.record(SinkKind::Stdout, "worker", stdout);
+        sinks.record(SinkKind::Stderr, "worker", &stderr);
+        for line in stderr.lines() {
+            sinks.record(SinkKind::LogLine, "worker", line);
+        }
+        // Every row of the tenant, and not only of the job.
+        for (kind, table) in [
+            (SinkKind::AuditRow, "audit_events"),
+            (SinkKind::OutboxRow, "outbox"),
+            (SinkKind::DatabaseDump, "ledger_entries"),
+            (SinkKind::DatabaseDump, "jobs"),
+            (SinkKind::DatabaseDump, "stage_runs"),
+            (SinkKind::DatabaseDump, "attempts"),
+            (SinkKind::DatabaseDump, "original_requests"),
+            (SinkKind::DatabaseDump, "stage_run_artifacts"),
+            (SinkKind::DatabaseDump, "webhook_deliveries"),
+            (SinkKind::DatabaseDump, "principals"),
+        ] {
+            for row in self.rows(&format!("SELECT * FROM {table}")).await {
+                sinks.record(kind, table, row.to_string());
+            }
+        }
+        let mut files = Vec::new();
+        read_files(&self.deployment.dir.join("artifacts"), &mut files);
+        for (path, bytes) in &files {
+            sinks.record(SinkKind::Artifact, &path.display().to_string(), bytes);
+        }
+        sinks.ingest_github(&self.fake);
+        for comment in self.fake.comments(REPO, issue) {
+            sinks.record(SinkKind::PullRequestText, "comment", comment);
+        }
+        let report = sinks.sweep(&sweeper);
+        assert!(
+            report.sinks_scanned > 20,
+            "the sweep looked at {} sinks only",
+            report.sinks_scanned
+        );
+        report.hits.iter().map(|hit| format!("{hit}")).collect()
+    }
+
+    /// How many entries the job's evidence ledger has, and the first thing wrong with its chain
+    /// (or with its head, which the job row records apart from the entries), if anything is.
+    pub async fn ledger_check(&self, job: JobId) -> (usize, Option<String>) {
+        let logins = self.deployment.db.server.logins().await;
+        let store = PgStore::connect(factory_composition::database::pools(
+            small_pool(self.deployment.db.url(&logins.worker)),
+            small_pool(self.deployment.db.url(&logins.engine)),
+        ))
+        .await
+        .expect("a store");
+        let mut tx = store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a transaction");
+        let entries = tx.read_ledger(job, 1, 10_000).await.expect("the ledger");
+        let head = tx.ledger_head(job).await.expect("a head");
+        let _ = tx.rollback().await;
+        let problem = match head {
+            None if entries.is_empty() => None,
+            None => Some("the ledger has entries and the job has no head".to_owned()),
+            Some(head) => factory_domain::ledger::verify_chain_against_head(&entries, &head)
+                .err()
+                .map(|error| error.to_string()),
+        };
+        (entries.len(), problem)
+    }
+}
+
+fn read_files(dir: &Path, into: &mut Vec<(PathBuf, Vec<u8>)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            read_files(&path, into);
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            into.push((path, bytes));
+        }
+    }
+}
+
+/// The password a connection string in a URL file holds.
+fn password_in(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.split_whitespace()
+        .find_map(|word| word.strip_prefix("password=").map(str::to_owned))
 }

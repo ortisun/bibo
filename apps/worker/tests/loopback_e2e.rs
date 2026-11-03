@@ -49,6 +49,8 @@ struct Observed {
     stages: BTreeMap<String, String>,
     /// `METHOD /route/template` of each request the fake GitHub received, and how many.
     routes: BTreeMap<String, usize>,
+    /// The same, for the requests it answered with a success.
+    done: BTreeMap<String, usize>,
     comments: Vec<String>,
     labels: Vec<String>,
     mints: Vec<MintRecord>,
@@ -91,130 +93,13 @@ const INTAKE_ROUTES: [&str; 8] = [
     "POST /repos/{owner}/{repo}/issues/{number}/comments",
 ];
 
-fn read_files(dir: &Path, into: &mut Vec<(PathBuf, Vec<u8>)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            read_files(&path, into);
-        } else if let Ok(bytes) = std::fs::read(&path) {
-            into.push((path, bytes));
-        }
-    }
-}
-
-/// The password a connection string in a URL file holds.
-fn password_in(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    text.split_whitespace()
-        .find_map(|word| word.strip_prefix("password=").map(str::to_owned))
-}
-
-async fn sweep_for_credentials(lab: &Lab, job: JobId, issue: u64) -> Vec<String> {
-    // The values that must never appear: every token the fake minted, the App key, the provider
-    // key, the key that signs decisions and the database passwords. All were made at run time.
-    let mut sweeper = Sweeper::new(&CanarySet::generate());
-    for canary in lab.fake.minted_secrets() {
-        sweeper.add(&canary);
-    }
-    let body: String = lab
-        .credentials
-        .app_key
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect();
-    sweeper.add(&Canary::custom("app-private-key-body", &body));
-    sweeper.add(&Canary::custom(
-        "provider-key",
-        &lab.credentials.provider_key,
-    ));
-    sweeper.add(&Canary::custom(
-        "decision-signing-key",
-        &lab.credentials.decision_key,
-    ));
-    for file in ["tenant.url", "system.url"] {
-        if let Some(password) = password_in(&lab.deployment.dir.join(file)) {
-            sweeper.add(&Canary::custom(
-                &format!("database-password-{file}"),
-                &password,
-            ));
-        }
-    }
-
-    let sinks = SinkCollector::new();
-    let (stdout, stderr) = lab.logs();
-    sinks.record(SinkKind::Stdout, "worker", stdout);
-    sinks.record(SinkKind::Stderr, "worker", &stderr);
-    for line in stderr.lines() {
-        sinks.record(SinkKind::LogLine, "worker", line);
-    }
-    // Every row the run left, of the tenant and not only of the job.
-    for (kind, table) in [
-        (SinkKind::AuditRow, "audit_events"),
-        (SinkKind::OutboxRow, "outbox"),
-        (SinkKind::DatabaseDump, "ledger_entries"),
-        (SinkKind::DatabaseDump, "jobs"),
-        (SinkKind::DatabaseDump, "stage_runs"),
-        (SinkKind::DatabaseDump, "attempts"),
-        (SinkKind::DatabaseDump, "original_requests"),
-        (SinkKind::DatabaseDump, "stage_run_artifacts"),
-        (SinkKind::DatabaseDump, "webhook_deliveries"),
-        (SinkKind::DatabaseDump, "principals"),
-    ] {
-        for row in lab.rows(&format!("SELECT * FROM {table}")).await {
-            sinks.record(kind, table, row.to_string());
-        }
-    }
-    let mut files = Vec::new();
-    read_files(&lab.deployment.dir.join("artifacts"), &mut files);
-    for (path, bytes) in &files {
-        sinks.record(SinkKind::Artifact, &path.display().to_string(), bytes);
-    }
-    sinks.ingest_github(&lab.fake);
-    for comment in lab.fake.comments(REPO, issue) {
-        sinks.record(SinkKind::PullRequestText, "comment", comment);
-    }
-    let _ = job;
-    let report = sinks.sweep(&sweeper);
-    assert!(
-        report.sinks_scanned > 20,
-        "the sweep looked at {} sinks only",
-        report.sinks_scanned
-    );
-    report.hits.iter().map(|hit| format!("{hit}")).collect()
-}
-
-async fn ledger_problem(lab: &Lab, job: JobId) -> (usize, Option<String>) {
-    use factory_ports::store::Store;
-    let logins = lab.deployment.db.server.logins().await;
-    let store = factory_storage::pg::PgStore::connect(factory_composition::database::pools(
-        support::small_pool(lab.deployment.db.url(&logins.worker)),
-        support::small_pool(lab.deployment.db.url(&logins.engine)),
-    ))
-    .await
-    .expect("a store");
-    let mut tx = store
-        .begin(factory_domain::scope::TenantScope::new(lab.tenant))
-        .await
-        .expect("a transaction");
-    let entries = tx.read_ledger(job, 1, 10_000).await.expect("the ledger");
-    let head = tx.ledger_head(job).await.expect("a head");
-    let _ = tx.rollback().await;
-    let problem = match head {
-        None if entries.is_empty() => None,
-        None => Some("the ledger has entries and the job has no head".to_owned()),
-        Some(head) => factory_domain::ledger::verify_chain_against_head(&entries, &head)
-            .err()
-            .map(|error| error.to_string()),
-    };
-    (entries.len(), problem)
-}
-
 async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
     let mut routes = BTreeMap::new();
+    let mut done = BTreeMap::new();
     for request in lab.fake.requests() {
+        if request.status < 300 {
+            *done.entry(request.route.clone()).or_insert(0) += 1;
+        }
         *routes.entry(request.route).or_insert(0) += 1;
     }
     let stages = lab
@@ -239,13 +124,14 @@ async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
         .unwrap_or_default();
     let policies = factory_composition::startup::load_policy(&lab.protected, &[]).expect("policy");
     let app = &policies.security.credentials.github_app;
-    let (ledger_entries, ledger_problem) = ledger_problem(lab, job).await;
+    let (ledger_entries, ledger_problem) = lab.ledger_check(job).await;
     Observed {
         job: job.as_uuid().to_string(),
         job_status: lab.job_status(job).await,
         job_correlation: correlation,
         stages,
         routes,
+        done,
         comments: lab.fake.comments(REPO, issue),
         labels: lab.fake.labels_of(REPO, issue),
         mints: lab.fake.mints(),
@@ -260,7 +146,7 @@ async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
         outbox: lab.outbox(job).await,
         ledger_entries,
         ledger_problem,
-        leaks: sweep_for_credentials(lab, job, issue).await,
+        leaks: lab.credential_leaks(issue).await,
         required: app.permissions_required.clone(),
         forbidden: app.permissions_forbidden.clone(),
     }
@@ -468,7 +354,7 @@ fn judge_refusal(o: &Observed, reason: &str) -> Vec<String> {
         ));
     }
     // The only writes to GitHub are the one comment, and the only calls made are the intake's.
-    if o.routes
+    if o.done
         .get("POST /repos/{owner}/{repo}/issues/{number}/comments")
         .copied()
         != Some(1)
@@ -953,6 +839,236 @@ async fn break_the_credential_sweep_finds_a_token_planted_in_a_log_an_audit_row_
     assert!(observed.leaks.is_empty(), "{:?}", observed.leaks);
 }
 
+/// GitHub fails the way it does: a token request answered 502, the issue read answered 429 with a
+/// `Retry-After`, and the one comment post answered 502. The test doubles never fail like this. The
+/// adapter retries the first two inside the call; the failed post fails the attempt, and the engine
+/// runs it again. The person is answered exactly once.
+#[tokio::test(flavor = "multi_thread")]
+async fn transient_github_failures_are_retried_and_the_person_is_answered_exactly_once() {
+    let mut lab = Lab::start(Options::default()).await;
+    let issue = design_issue(&lab, "design: in review", REQUESTER);
+    lab.fake.fail_next(
+        "POST /app/installations/{id}/access_tokens",
+        502,
+        "Bad Gateway",
+    );
+    lab.fake
+        .rate_limit_next("GET /repos/{owner}/{repo}/issues/{number}", 1);
+    lab.fake.fail_next(
+        "POST /repos/{owner}/{repo}/issues/{number}/comments",
+        502,
+        "Bad Gateway",
+    );
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(
+        &mut lab,
+        job,
+        "intake to refuse the issue after the failures",
+    )
+    .await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    assert!(problems.is_empty(), "{problems:#?}");
+    let statuses: Vec<u16> = lab.fake.requests().iter().map(|r| r.status).collect();
+    for failed in [502, 429] {
+        assert!(
+            statuses.contains(&failed),
+            "the fault {failed} never happened: {statuses:?}"
+        );
+    }
+    let events: Vec<&str> = observed
+        .outbox
+        .iter()
+        .filter_map(|r| r["event_type"].as_str())
+        .collect();
+    assert!(
+        events.contains(&"attempt.failed"),
+        "the failed attempt is in the events: {events:?}"
+    );
+    assert_eq!(observed.comments.len(), 1);
+}
+
+// ---- the real start-up probe ----------------------------------------------------------------
+
+/// The scenarios above declare the capabilities of the agent tools (`declare_capabilities`), as the
+/// local profile allows, because the real probe runs both tools in a container of the agent image.
+/// Without the image the probe cannot run, and the worker must say so and not start. This is the
+/// one place where the real-adapter path differs most from the declared one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_must_probe_its_tools_is_blocked_and_says_why_when_the_agent_image_is_missing()
+ {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(|text| {
+            without_the_agent_image(text.replace("runtimes: { declare_capabilities: true }\n", ""))
+        })),
+        ..Options::default()
+    })
+    .await;
+    assert!(
+        !std::fs::read_to_string(&lab.deployment.config_path)
+            .expect("config")
+            .contains("declare_capabilities"),
+        "the configuration still declares the capabilities"
+    );
+    lab.spawn_worker(&[]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = lab.worker_ended() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker neither started nor stopped"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let (_, stderr) = lab.logs();
+    assert_eq!(status.code(), Some(3), "{stderr}");
+    let blocked: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("BLOCKED: "))
+        .collect();
+    assert!(
+        blocked
+            .iter()
+            .any(|l| l.starts_with("BLOCKED: CapabilityProbes: runtimes: ")),
+        "the BLOCKED line names the port and the key: {blocked:?}"
+    );
+    assert!(stderr.contains("BLOCKED is not a pass"), "{stderr}");
+    // It claimed no work and spoke to nobody.
+    assert_eq!(
+        lab.fake.requests().len(),
+        0,
+        "GitHub was not asked anything"
+    );
+    assert!(lab.provider_seen.all().is_empty() && lab.registry_seen.all().is_empty());
+}
+
+// ---- what needs the Docker daemon and the pinned images -------------------------------------------
+
+/// The cross-process lock of the real-Docker tests that make a network, shared with the sandbox,
+/// runtime and live-run tests, so that they wait for each other.
+#[allow(dead_code)]
+#[path = "../../../crates/sandbox/tests/support/docker_lock.rs"]
+mod docker_lock;
+
+/// The reference of an image of the catalog, or a `BLOCKED:` panic when the catalog does not name
+/// it, says it is not ready, or this host does not have it. Images are never pulled.
+fn require_image(kind: &str) -> String {
+    let root = support::deployment::repository_root();
+    let text = std::fs::read_to_string(root.join("infra/sandbox-images/images.json"))
+        .expect("the catalog");
+    let catalog: Value = serde_json::from_str(&text).expect("a JSON catalog");
+    let entry = &catalog["platforms"]["linux/arm64"]["images"][kind];
+    let reference = entry["reference"]
+        .as_str()
+        .unwrap_or_else(|| panic!("BLOCKED: the catalog names no {kind} image"));
+    assert!(
+        entry["status"] == "ready",
+        "BLOCKED: the {kind} image is not ready in the catalog"
+    );
+    let found = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", reference])
+        .output()
+        .is_ok_and(|out| out.status.success());
+    assert!(
+        found,
+        "BLOCKED: the image {reference} is not on this host (images are never pulled), so the {kind} sandbox cannot be made"
+    );
+    reference.to_owned()
+}
+
+/// The worker started from the file, with the capabilities of its agent tools probed in a real
+/// container of the real `agent` image, behind the real egress sidecar, as a deployment does.
+/// The probe asks no model anything, so the provider fake must see no request.
+///
+/// **Not run on a host without the images, and not run by this work at all:** this host has none,
+/// so the test ends at the first line below with `BLOCKED:`, which is never a pass. The part after
+/// the check was written from `apps/api/tests/live/mod.rs` (which has run the same probe against the
+/// images) and has not been run.
+///
+/// ```text
+/// cargo nextest run -p factory-worker --run-ignored only --test loopback_e2e
+/// ```
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the Docker daemon, the pinned images and the shared network lock; see the head of the test"]
+async fn the_worker_probes_both_agent_tools_in_a_real_container_when_it_starts() {
+    use factory_testkit::fx::docker::DockerGuard;
+    let docker = DockerGuard::from_environment();
+    let scope = docker.require_or_block();
+    let verify = require_image("verify");
+    let _agent = require_image("agent");
+    let _sidecar = require_image("egress-sidecar");
+    let _lock = docker_lock::DockerLock::take();
+    // Where the host is, as a container on the default bridge sees it. The sidecar is the one
+    // container with a way out, and the worker's broker is the only place it relays to.
+    let [label_key, label_value] = scope.label_args();
+    let resolved = scope
+        .cli()
+        .run(&[
+            "run",
+            "--rm",
+            "--pull=never",
+            &label_key,
+            &label_value,
+            &verify,
+            "getent",
+            "hosts",
+            "host.docker.internal",
+        ])
+        .unwrap_or_else(|error| panic!("BLOCKED: the docker client could not run: {error}"));
+    assert!(
+        resolved.success(),
+        "BLOCKED: host.docker.internal does not resolve in the verify image"
+    );
+    let host_ip = resolved
+        .stdout
+        .split_whitespace()
+        .next()
+        .expect("an address")
+        .to_owned();
+    let run = scope.label().value().to_owned();
+
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(move |text| {
+            let port = text
+                .split("listen: '127.0.0.1:")
+                .nth(1)
+                .and_then(|rest| rest.split('\'').next())
+                .expect("the broker port")
+                .to_owned();
+            text.replace("runtimes: { declare_capabilities: true }\n", "")
+                .replace(&format!("listen: '127.0.0.1:{port}'"), &format!("listen: '0.0.0.0:{port}'"))
+                .replace(
+                    "/remote } }",
+                    &format!(
+                        "/remote }}, labels: {{ factory.test: 'true', factory.test.owner: loopback-e2e, factory.test.run: '{run}' }}, sidecar_command: [--mode, broker, --listen, '0.0.0.0:8443', --upstream, '{host_ip}:{port}', --job, loopback-e2e] }}"
+                    ),
+                )
+        })),
+        ..Options::default()
+    })
+    .await;
+    lab.spawn_worker(&[]);
+    let started = lab
+        .wait_for(
+            "the worker to start its loop after the probe",
+            180,
+            async |lab: &Lab| lab.logs().1.contains("worker loop started").then_some(()),
+        )
+        .await;
+    let _ = started;
+    let (_, stderr) = lab.logs();
+    assert!(!stderr.contains("BLOCKED"), "{stderr}");
+    assert!(
+        lab.provider_seen.all().is_empty(),
+        "a version probe asks no model: {:?}",
+        lab.provider_seen.all()
+    );
+    assert_eq!(lab.stop_worker(), Some(0), "{}", lab.logs().1);
+}
+
 impl Observed {
     fn clone_view(&self) -> Self {
         Self {
@@ -961,6 +1077,7 @@ impl Observed {
             job_correlation: self.job_correlation.clone(),
             stages: self.stages.clone(),
             routes: self.routes.clone(),
+            done: self.done.clone(),
             comments: self.comments.clone(),
             labels: self.labels.clone(),
             mints: self.mints.clone(),
