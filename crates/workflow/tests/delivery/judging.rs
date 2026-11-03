@@ -316,6 +316,55 @@ fn each_part_of_the_binding_must_be_the_one_in_the_request() {
     }
 }
 
+/// NT-MRG-02. Two checks stand between a person who saw something else and an approval: what the
+/// person saw is compared with what the request holds (the binding), and then with the world as it
+/// is now (the head, the tree, the base, the ledger). A person who saw an old head is refused by
+/// both, so a test that asks only whether the approval was refused cannot tell the binding check is
+/// gone. This one asks for the refusal that names the binding, part by part, with the world as the
+/// request holds it, so the second check has nothing to refuse and the first stands alone.
+#[test]
+fn negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such()
+ {
+    type Change = fn(&mut Seen);
+    let parts: [(&str, Change); 5] = [
+        ("pr_head", |s| s.pr_head = sha('1')),
+        ("tree", |s| s.tree = sha('2')),
+        ("base", |s| s.base = sha('3')),
+        ("manifest", |s| s.manifest = Sha256Digest::of(b"another")),
+        ("spec_version", |s| s.spec_version = 2),
+    ];
+    // The control: what the person saw is what the request holds, and the approval is accepted.
+    let control = Setup::new();
+    assert_eq!(
+        control.judge(&command(Verb::Approve, APPROVER, &control.request)),
+        Ok(())
+    );
+    for (part, change) in parts {
+        let setup = Setup::new();
+        let mut cmd = command(Verb::Approve, APPROVER, &setup.request);
+        change(cmd.seen.as_mut().expect("seen"));
+        assert_eq!(
+            setup.judge(&cmd),
+            Err(Refusal::StaleBinding(part)),
+            "{part}: refused for the binding, not for what moved in the world"
+        );
+    }
+}
+
+/// NT-MRG-02. The other check, on its own: the person saw exactly what the request holds, and the
+/// ledger of evidence has taken an entry since. The approval is refused for the ledger and for
+/// nothing else, and the refusal is audited under its own code.
+#[test]
+fn negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved() {
+    let mut setup = Setup::new();
+    let cmd = command(Verb::Approve, APPROVER, &setup.request);
+    assert_eq!(setup.judge(&cmd), Ok(()), "the control");
+    setup.ledger = Sha256Digest::of(b"an entry that came after the person looked");
+    let refusal = setup.judge(&cmd).expect_err("the ledger moved");
+    assert_eq!(refusal, Refusal::EvidenceMoved);
+    assert_eq!(refusal.code(), "evidence_moved");
+}
+
 #[test]
 fn the_world_moving_after_the_person_looked_refuses_the_approval() {
     let mut setup = Setup::new();

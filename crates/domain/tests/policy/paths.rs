@@ -570,6 +570,51 @@ fn negative_nt_tool_04_path_policy_refuses_traversal_encoding_and_hidden_files()
     }
 }
 
+/// Two checks look at a component made of dots: the one that names `..` for what it is, and the one
+/// that refuses every component of dots and blanks. A path of `..` is refused by both, so the first
+/// cannot be seen by a test that asks only whether the path was refused. This test asks for the
+/// reason and the rule that is named, so that each check is held on its own: with the first gone,
+/// `..` is still refused, as dot-like, and the rule that is audited is another.
+#[test]
+fn negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason() {
+    for path in [
+        "..",
+        "../x",
+        "a/../b",
+        "a/b/..",
+        "\u{ff0e}\u{ff0e}/x",
+        ".\u{200b}./x",
+    ] {
+        for op in [Operation::Read, Operation::Add, WRITE] {
+            let (reason, rule) =
+                denied_by(&check(path, op)).unwrap_or_else(|| panic!("{path:?} {op:?}"));
+            assert_eq!(
+                reason,
+                PathDenialReason::Unnormalizable(PathRefusal::ParentComponent),
+                "{path:?} {op:?}"
+            );
+            assert_eq!(rule, "reject_dotdot", "{path:?} {op:?}");
+        }
+    }
+    // A component of dots and blanks that is not `..` is refused for being dot-like, under the
+    // rule of normalization, and not as a parent component.
+    for path in ["...", "a/. /b", "a/.../b", "\u{ff0e}/x", "a/\u{200b}/b"] {
+        let (reason, rule) =
+            denied_by(&check(path, Operation::Read)).unwrap_or_else(|| panic!("{path:?}"));
+        assert_eq!(
+            reason,
+            PathDenialReason::Unnormalizable(PathRefusal::DotLike),
+            "{path:?}"
+        );
+        assert_eq!(rule, "normalization", "{path:?}");
+    }
+    // The control: a path whose components are ordinary is not refused for either.
+    assert!(
+        denied_by(&check("src/a.b/c..d/e.rs", Operation::Read)).is_none(),
+        "dots inside a name are not traversal"
+    );
+}
+
 fn diff_blocked_by(entries: &[DiffEntry]) -> Option<Vec<(String, String)>> {
     match policy().check_diff(RepoKind::Target, entries, None, &ChangeEvidence::default()) {
         DiffVerdict::Allowed { .. } => None,

@@ -828,6 +828,14 @@ fn owned_by_the_process(file_owner: u32, process: Option<u32>) -> bool {
     process == Some(file_owner)
 }
 
+/// True when a key file owned by `file_owner` sits in a directory owned by `directory_owner`
+/// without a second user who could replace it: the file and the directory have one owner, or the
+/// directory is root's. A directory of another user than the file's owner lets that user rename
+/// the file out and put another in its place, whatever the mode of the file says.
+fn goes_with_its_directory(file_owner: u32, directory_owner: u32) -> bool {
+    file_owner == directory_owner || directory_owner == 0
+}
+
 /// The place of a key file, in the production profile (RR-25). The file is looked at as the
 /// operating system resolves it, and every directory above it must not be writable by group or
 /// others unless it is sticky (a writer there can replace the file), and the file belongs to the
@@ -859,7 +867,7 @@ fn check_key_location(path: &Path) -> Result<(), KeyError> {
     let file = std::fs::metadata(&resolved).map_err(|_| unreadable())?;
     if let Some(parent) = resolved.parent() {
         let owner = std::fs::metadata(parent).map_err(|_| unreadable())?.uid();
-        if file.uid() != owner && owner != 0 {
+        if !goes_with_its_directory(file.uid(), owner) {
             return Err(unsafe_place(
                 "owned by another user than the directory it is in",
             ));
@@ -1229,6 +1237,34 @@ mod tests {
         );
     }
 
+    /// F-5. The refusal of a previous key that equals the current one is one rule written in three
+    /// constructors: the one the key files go through (`from_bytes`), the one a rotation of a key
+    /// already held goes through (`rotated_from`), and the one tests use (`fixed_for_tests`). A test
+    /// that goes through one cannot see another gone, so each has a test of its own, with the
+    /// control that two different keys are a rotation.
+    #[test]
+    fn from_bytes_refuses_a_previous_key_equal_to_the_current_one() {
+        let same = strong(30).into_bytes();
+        assert_eq!(
+            DecisionKeys::from_bytes(&same, Some(&same)).err(),
+            Some(KeyError::SameKey)
+        );
+        assert!(DecisionKeys::from_bytes(&same, Some(&strong(31).into_bytes())).is_ok());
+    }
+
+    /// F-5. The second of the three constructors, on its own.
+    #[test]
+    fn rotated_from_refuses_a_previous_key_equal_to_the_current_one() {
+        let same = strong(32);
+        let current = DecisionKeys::from_bytes(same.as_bytes(), None).expect("a key");
+        assert_eq!(
+            current.rotated_from(same.as_bytes()).err(),
+            Some(KeyError::SameKey)
+        );
+        let again = DecisionKeys::from_bytes(same.as_bytes(), None).expect("a key");
+        assert!(again.rotated_from(strong(33).as_bytes()).is_ok());
+    }
+
     /// A key with no entropy is refused by every constructor but the one for tests (RR-5).
     #[test]
     fn a_key_with_no_entropy_is_refused() {
@@ -1517,6 +1553,24 @@ mod tests {
         let owner = std::fs::metadata(&made).expect("metadata").uid();
         assert_eq!(process_user(), Some(owner));
         let _ = std::fs::remove_dir_all(&probe);
+    }
+
+    /// F-5 (RR-25). The second owner check, on its own. A test cannot make a file that belongs to
+    /// another user, so the rule is a function of the two owners and the table is the test: only
+    /// the file's own user, or root as the owner of the directory, lets a file sit there.
+    #[test]
+    fn a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root() {
+        assert!(goes_with_its_directory(1000, 1000));
+        assert!(goes_with_its_directory(1000, 0), "a directory of root");
+        assert!(goes_with_its_directory(0, 0));
+        assert!(
+            !goes_with_its_directory(1000, 1001),
+            "another user's directory: that user can replace the file"
+        );
+        assert!(
+            !goes_with_its_directory(0, 1000),
+            "root's file in another user's directory"
+        );
     }
 
     #[test]
