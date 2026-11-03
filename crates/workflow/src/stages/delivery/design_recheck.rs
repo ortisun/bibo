@@ -34,7 +34,7 @@ use std::sync::Arc;
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::machines::guards::EnvironmentCause;
 use factory_domain::policy::issue_workflow::{ReplyCap, ReplyKind};
-use factory_domain::vocabulary::Fidelity;
+use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::githost::{GitScope, IssueRef};
 
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
@@ -114,10 +114,17 @@ impl DesignRecheck {
         let Ok(allowlist) = self.allowlists.current(scope.tenant).await else {
             return self.cannot_judge(ctx, scope, issue, &issue_text).await;
         };
+        // The judge only reads, so it reads with the narrowest credential there is: the class
+        // of the intake stage (`issues: read` and `metadata: read`), and not the delivery token,
+        // which can write (DR-10). The comments are posted with a scope of their own.
+        let reading = GitScope {
+            stage: StageKind::Intake,
+            ..scope.clone()
+        };
         let judged = self
             .judge
             .judge(Question {
-                scope,
+                scope: &reading,
                 issue,
                 allowlist: &allowlist,
                 now,

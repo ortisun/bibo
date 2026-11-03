@@ -10,6 +10,8 @@ test must catch.
   `delivery/design_recheck.rs`, `engine/durable.rs`).
 * DR-4: a cap for each kind of reply, and a bounded look at the thread (`domain`, `github`,
   `composition`).
+* DR-10: the re-check before the pull request reads the issue with the narrow scope of the intake
+  stage and not with the token of the delivery stage (`delivery/design_recheck.rs`).
 
 For each break the script changes one or two places in the sources (the old text must occur exactly
 once in its file), runs the tests that must notice with `cargo nextest`, and puts every file back. A
@@ -158,8 +160,14 @@ BREAKS = [
     ),
     (
         "DR-3: a record that cannot be written does not stop the reply",
-        ENGINE,
+        RECHECKING,
         [(CONTEXT, "            Some(records) => records.record(action, reason).await,", "            Some(records) => {\n                let _ = records.record(action, reason).await;\n                Ok(())\n            }")],
+    ),
+    # ---- DR-10: the re-check reads with the narrow scope ----
+    (
+        "DR-10: the re-check reads the issue with the token of the delivery stage, which can write",
+        RECHECKING,
+        [(RECHECK, "                scope: &reading,", "                scope,")],
     ),
     # ---- DR-4: a cap for each kind, and a bounded look ----
     (

@@ -70,6 +70,31 @@ async fn the_decision_record_is_in_the_store_when_the_reply_is_asked_for() {
 }
 
 #[tokio::test]
+async fn the_decision_when_the_rule_cannot_be_read_is_in_the_store_when_the_reply_is_asked_for() {
+    // The design rule is broken: intake cannot judge and says so on the issue. The decision, with
+    // the reply still to follow, is in the store before the comment is asked for.
+    let rig = rig().await;
+    let job = refused_job(&rig).await;
+    rig.design.break_it();
+    rig.replies
+        .look_in_the_store(rig.world.store.clone(), rig.world.tenant, job);
+    let (_, outcome) = rig.run_next().await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    let seen = rig.replies.store_held_at_post();
+    assert_eq!(seen.len(), 1, "the reply was asked for once: {seen:?}");
+    assert!(
+        seen[0].iter().any(|reason| reason
+            .starts_with("design gate could not judge issue example-org/fixture#12")
+            && reason.ends_with("reply to_follow")),
+        "{:?}",
+        seen[0]
+    );
+}
+
+#[tokio::test]
 async fn a_cancel_while_the_reply_is_in_flight_leaves_the_decision_record() {
     let rig = rig().await;
     let job = refused_job(&rig).await;

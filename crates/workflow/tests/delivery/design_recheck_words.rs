@@ -73,6 +73,24 @@ fn stopped_because(world: &World, reason: &str) {
 }
 
 #[tokio::test]
+async fn the_recheck_reads_the_issue_with_the_narrow_intake_scope() {
+    // DR-10. The judge only reads, so it reads with the class of the intake stage (`issues: read`
+    // and `metadata: read`) and not with the delivery token, which can write.
+    let world = World::new();
+    world.issue_with_an_approved_design().await;
+    let ran = world.run().await;
+    assert_eq!(ran.resolution, Resolution::Pass);
+    let stages = world.design.issues.read_as();
+    assert!(!stages.is_empty(), "the issue was read");
+    assert!(
+        stages
+            .iter()
+            .all(|stage| *stage == factory_domain::vocabulary::StageKind::Intake),
+        "{stages:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_edit_after_the_approval_stops_the_pull_request_with_its_own_reason() {
     // The label at 09:00, the edit at 09:30.
     let world = World::new();

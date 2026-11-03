@@ -70,6 +70,42 @@ async fn the_decision_of_a_re_check_that_cannot_judge_is_written_at_once_and_bef
 }
 
 #[tokio::test]
+async fn a_record_that_cannot_be_written_means_no_reply_and_a_failed_attempt() {
+    // DR-3: the reply is posted only after the record is in the store. A store that cannot take
+    // the record fails the attempt (which is tried again), and nothing is said on the issue.
+    let world = World::new();
+    world.issue_shows(&[LABEL, "design: in progress"]);
+    world
+        .label_applied_by(APPROVED, &person(APPROVER_ID, "approver-one"))
+        .await;
+    world.durable.fail(true);
+    assert_eq!(run(&world).await, Err(StageError::Tool));
+    assert!(world.design.replies.texts().is_empty());
+    assert!(
+        world.design.replies.durable_at_post().is_empty(),
+        "the reply was never asked for"
+    );
+    assert!(world.host.opened().is_empty());
+    // The sibling: the store comes back, and the same stage run stops with its comment.
+    world.durable.fail(false);
+    assert_eq!(
+        run(&world).await,
+        Err(StageError::Blocked(BlockedCode::DesignNotApproved))
+    );
+    assert_eq!(world.design.replies.texts().len(), 1);
+}
+
+#[tokio::test]
+async fn a_record_that_cannot_be_written_means_no_reply_when_the_rule_cannot_be_read_either() {
+    let world = World::new();
+    world.design.rule.break_it();
+    world.durable.fail(true);
+    assert_eq!(run(&world).await, Err(StageError::Tool));
+    assert!(world.design.replies.texts().is_empty());
+    assert!(world.design.replies.durable_at_post().is_empty());
+}
+
+#[tokio::test]
 async fn a_re_check_that_passes_writes_nothing_at_once() {
     // The sibling: nothing is going to be said on the issue, so nothing has to be in the store
     // ahead of it. The pass is noted with the attempt, as before.

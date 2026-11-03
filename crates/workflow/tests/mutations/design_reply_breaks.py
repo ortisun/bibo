@@ -63,12 +63,12 @@ BREAKS = [
     (
         "DG-9a: the stage asks with a number of its own and not the cap of the policy",
         WORKFLOW_TESTS,
-        [(HANDLER, "            let cap = design_rule.reply_cap();", "            let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;")],
+        [(HANDLER, "            let cap = design_rule.reply_cap(reason.reply().kind());", "            let cap = ReplyCap::when_the_policy_cannot_be_read(ReplyKind::Refusal);")],
     ),
     (
         "DG-9a: the re-check asks with a number of its own and not the cap of the policy",
         WORKFLOW_TESTS,
-        [(RECHECK, "                    let cap = rule.reply_cap();", "                    let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;")],
+        [(RECHECK, "                    let cap = rule.reply_cap(ReplyKind::Withdrawal);", "                    let cap = ReplyCap::when_the_policy_cannot_be_read(ReplyKind::Withdrawal);")],
     ),
     (
         "DG-9a: a reply held back by the cap is recorded as posted",
@@ -99,7 +99,7 @@ BREAKS = [
     (
         "DG-9b: the adapter reads ten pages, as the old look for a marker did",
         ADAPTER_TESTS,
-        [(CHANGES, "            .get_pages_up_to(scope, TokenClass::Comment, &path, 1)", "            .get_pages_up_to(scope, TokenClass::Comment, &path, 10)")],
+        [(CHANGES, "            .get_pages_up_to(scope, TokenClass::Comment, &path, CAPPED_LOOK_PAGES)", "            .get_pages_up_to(scope, TokenClass::Comment, &path, 10)")],
     ),
     (
         "DG-9b: a thread too long to check is taken for a reply that went through",
@@ -136,7 +136,7 @@ BREAKS = [
     (
         "DG-9d: the record of the refusal is not written before the reply",
         WORKFLOW_TESTS,
-        [(HANDLER, "                refused.then_some(ReplyStatus::ToFollow),", "                None,")],
+        [(HANDLER, "            refused.then_some(ReplyStatus::ToFollow),", "            None,")],
     ),
     (
         "DG-9d: the reply has no record of its own, so a held-back reply leaves no trace",

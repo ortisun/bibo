@@ -44,6 +44,8 @@ pub struct Issues {
     inner: FakeIssueSource,
     down: AtomicBool,
     reads: AtomicUsize,
+    /// The stage of the scope each read was made as (DR-10).
+    stages: Mutex<Vec<factory_domain::vocabulary::StageKind>>,
 }
 
 impl Issues {
@@ -52,7 +54,13 @@ impl Issues {
             inner: FakeIssueSource::new(),
             down: AtomicBool::new(false),
             reads: AtomicUsize::new(0),
+            stages: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The stage of the scope each read was made as, oldest first.
+    pub fn read_as(&self) -> Vec<factory_domain::vocabulary::StageKind> {
+        self.stages.lock().expect("lock").clone()
     }
 
     pub fn fake(&self) -> &FakeIssueSource {
@@ -69,8 +77,9 @@ impl Issues {
         self.reads.load(Ordering::SeqCst)
     }
 
-    fn read(&self) -> Result<(), GitHostError> {
+    fn read(&self, scope: &GitScope) -> Result<(), GitHostError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        self.stages.lock().expect("lock").push(scope.stage);
         if self.down.load(Ordering::SeqCst) {
             Err(GitHostError::Unavailable)
         } else {
@@ -86,7 +95,7 @@ impl IssueSource for Issues {
     }
 
     async fn fetch_issue(&self, scope: &GitScope, issue: &IssueRef) -> Result<Issue, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.fetch_issue(scope, issue).await
     }
 
@@ -95,7 +104,7 @@ impl IssueSource for Issues {
         scope: &GitScope,
         comment: &CommentRef,
     ) -> Result<Comment, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.fetch_comment(scope, comment).await
     }
 
@@ -105,7 +114,7 @@ impl IssueSource for Issues {
         issue: &IssueRef,
         label: &str,
     ) -> Result<Option<GithubActor>, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.label_actor(scope, issue, label).await
     }
 
@@ -115,7 +124,7 @@ impl IssueSource for Issues {
         issue: &IssueRef,
         label: &str,
     ) -> Result<Option<LabelApplication>, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.label_application(scope, issue, label).await
     }
 
@@ -124,7 +133,7 @@ impl IssueSource for Issues {
         scope: &GitScope,
         issue: &IssueRef,
     ) -> Result<Vec<String>, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.labels_ever_applied(scope, issue).await
     }
 
@@ -133,7 +142,7 @@ impl IssueSource for Issues {
         scope: &GitScope,
         issue: &IssueRef,
     ) -> Result<factory_ports::githost::TextEdit, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.text_edit(scope, issue).await
     }
 
@@ -141,7 +150,7 @@ impl IssueSource for Issues {
         &self,
         scope: &GitScope,
     ) -> Result<ProtectionReport, GitHostError> {
-        self.read()?;
+        self.read(scope)?;
         self.inner.repository_protection(scope).await
     }
 }
@@ -232,6 +241,7 @@ impl AllowlistSource for People {
 #[derive(Default)]
 pub struct Durable {
     records: Mutex<Vec<String>>,
+    failing: AtomicBool,
 }
 
 impl Durable {
@@ -242,6 +252,11 @@ impl Durable {
     pub fn clear(&self) {
         self.records.lock().expect("lock").clear();
     }
+
+    /// The store cannot take a record now.
+    pub fn fail(&self, failing: bool) {
+        self.failing.store(failing, Ordering::SeqCst);
+    }
 }
 
 #[async_trait]
@@ -251,6 +266,9 @@ impl factory_workflow::handlers::DurableRecords for Durable {
         _action: factory_workflow::audit::AuditAction,
         reason: String,
     ) -> Result<(), factory_workflow::handlers::StageError> {
+        if self.failing.load(Ordering::SeqCst) {
+            return Err(factory_workflow::handlers::StageError::Tool);
+        }
         self.records.lock().expect("lock").push(reason);
         Ok(())
     }
