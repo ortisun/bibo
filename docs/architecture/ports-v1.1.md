@@ -4662,3 +4662,43 @@ the broker of the process, which keeps its ledger in memory, so a restarted work
 spend again from zero and a second worker does not see the first one's. The ceiling of each token
 and of each stage still hold, so the error is bounded by one stage per restart. A spend recorded in
 the store per job would close it; that is a new store method and was not tried.
+
+### 16.2 The count of required approving reviews (SF-07): made, accepted on 2026-11-03
+
+The protection report said whether a pull request is required and whether code owners review, and
+not how many approving reviews the rules ask for ([findings SF-07](../reports/slice-1-findings.md)).
+The GitHub adapter could read the number (`required_approving_review_count` of the `pull_request`
+rule) and the port had no field for it. The change is made, with its tests and nine deliberate
+breaks (`crates/composition/tests/mutations/approving_reviews_breaks.py`, all caught), and was accepted on 2026-11-03 by the project owner's delegate as an additive change that the
+code and the tests already use. **It is pending the independent review that ADR 0016 asks for of every
+port change; none has covered it yet.**
+
+| Change | Kind | Where | Notes |
+|---|---|---|---|
+| `ProtectionReport::required_approving_reviews: Option<u32>` | Additive field | `crates/ports/src/githost.rs` | `None` means unknown. The adapter keeps the largest count of the `pull_request` rules that apply (as the strictest rule wins on GitHub). A count that is missing, is not a whole number or does not fit a `u32` is not read; a report that read none says `None`. Read from rulesets only: classic branch protection is never read, because it needs the Administration permission. |
+| `PreflightFailure::ApprovingReviewsUnknown` and `PreflightFailure::ApprovingReviewsBelowPolicy { found, needed }` | Additive variants of a closed set | the same file | The named reasons. The audit record of the preflight carries their sentences. |
+| `ProtectionReport::evaluate(.., required_approvals: u32)` and `GithubChangeHost::preflight(.., required_approvals: u32)` | **A parameter is added, which is not additive** | the same file, `crates/github/src/adapter.rs` | An `evaluate` that could not know the number would pass an unknown or low count without saying so, which is what this change exists to stop; so the number is a required argument and not a second method that a caller could forget. The callers are in this repository only (`composition/src/preflight.rs`, the adapter, and their tests), all updated in the same change. |
+| `AuthorityPolicy::approvals_every_pull_request_needs() -> u32` | Added | `crates/domain/src/policy/authority.rs` | The smallest `required_approvals` of `risk_tiers` in `policies/approval.yaml` (1 today). |
+| `PreflightDeps::required_approvals` | Added, no default | `crates/composition/src/preflight.rs` | The composition root fills it from the policy (`pipeline.rs`). |
+| The fakes and every literal | Updated | `crates/testkit/src/githost.rs`, `crates/testkit/src/contracts/githost.rs`, `crates/github/tests/common/subjects.rs`, the preflight and API tests | The fake host reports `Some(1)` for a well protected repository, and the contract suite reads back the count it seeded. |
+
+**What the check does.** `evaluate` adds a reason when a pull request is required and the count is
+unknown (`ApprovingReviewsUnknown`) or lower than the number the policy needs
+(`ApprovingReviewsBelowPolicy`); the repository is then capped at level `L0` like for any other missing
+item. It does not judge the count when no pull request is required: there is no review to count, and
+the repository is capped for the missing rule already.
+
+**Decision: the floor, not the ceiling.** The policy says how many approvals a pull request needs by
+risk tier: 1 for low, medium and high, 2 for critical. The rules of one branch cannot tell the tiers
+apart, so a repository is held to the smallest number (1). Asking for the largest (2) would cap every
+repository whose ruleset asks for one review, and would make a single-maintainer repository unable to
+merge its own pull request. The critical tier's two approvals are counted by the factory's approval
+stage itself (`quorum_met`), not by GitHub. A ruleset that asks for more than the floor passes. If the
+project owner wants GitHub to enforce the critical tier too, the change is one word
+(`min` to `max` in `approvals_every_pull_request_needs`) and every repository must then ask for two.
+
+**Not verified.** The parameter name `required_approving_review_count` is the documented one and is in
+the hand-written fixtures; it has not been read from a real GitHub response (section 13 still asks a
+person to record one). The recordings of the end-to-end scenarios are not changed: their protection
+facts are the harness's own record (`required_approvals: 1`), judged by its own preflight, and do not
+pass through `ProtectionReport`.

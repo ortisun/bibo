@@ -87,6 +87,7 @@ Checked by a preflight at onboarding and at every job start. A repository that f
 * Required status checks listed with the factory App's ID as the source, so another actor cannot post a status with the same name. (GitHub's branch protection and ruleset settings support pinning a check to an App; not exercised here, UNVERIFIED in detail.)
 * The factory App is not in any bypass list; force pushes and branch deletion disabled on the default branch.
 * Code owner review required for protected paths, with stale approvals dismissed on new commits.
+* The ruleset requires at least as many approving reviews as every pull request needs by `policies/approval.yaml` (the smallest `required_approvals` of the risk tiers, 1 today). A count that cannot be read fails the preflight like a count that is too low (SF-07).
 * A ruleset for `factory/*` that blocks deletion and non-fast-forward updates by anyone other than the factory, if the organization's plan supports it.
 
 ### 3.6 Confused-deputy rules
