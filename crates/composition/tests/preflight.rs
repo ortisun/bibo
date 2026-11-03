@@ -62,6 +62,7 @@ fn protected_as_the_policy_wants() -> ProtectionReport {
         dismisses_stale_approvals: true,
         blocks_force_push: true,
         blocks_deletion: true,
+        required_approving_reviews: Some(1),
         required_checks: vec![RequiredCheck {
             context: "factory-validation".to_owned(),
             integration_id: Some(FAKE_APP_ID.0),
@@ -105,6 +106,10 @@ fn recorder(
         source,
         app: FAKE_APP_ID,
         checks: vec![Slug::parse("factory-validation").expect("a slug")],
+        required_approvals: policies
+            .engine
+            .authority
+            .approvals_every_pull_request_needs(),
         attestations,
         tenants: vec![fixture.tenant],
         policy_hash: policies.hash.clone(),
@@ -238,6 +243,64 @@ async fn a_protection_that_fell_short_is_listed_item_by_item() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rules_that_ask_for_fewer_approving_reviews_than_the_policy_needs_cap_the_repository() {
+    // SF-07. The policy says every pull request needs at least one approval. A ruleset that asks
+    // for none, and one whose count could not be read, each cap the repository with a named
+    // reason, and the audit record carries it.
+    for (count, reason) in [
+        (
+            Some(0),
+            "The rules require 0 approving reviews, and the policy needs at least 1.",
+        ),
+        (
+            None,
+            "The number of approving reviews that the rules require could not be read.",
+        ),
+    ] {
+        let fixture = fixture().await;
+        let source = Arc::new(FakeIssueSource::new());
+        let mut short = protected_as_the_policy_wants();
+        short.required_approving_reviews = count;
+        source.seed_protection(&fixture.repo, short).await;
+        let preflight = recorder(
+            &fixture,
+            source,
+            Arc::new(Attested(fixture.world.requester)),
+        );
+
+        let done = preflight.pass(fixture.tenant).await;
+
+        assert!(!done[0].passed, "{count:?}");
+        assert_eq!(done[0].missing, [reason], "{count:?}");
+        assert!(!admission_level_passed(&fixture).await, "{count:?}");
+        let audit = audit_actions(&fixture).await;
+        assert!(audit[0].contains(reason), "{audit:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rules_that_ask_for_as_many_approving_reviews_as_the_policy_or_more_pass() {
+    // The sibling of the test above: the number the policy needs, and more, is enough.
+    for count in [1, 2, 5] {
+        let fixture = fixture().await;
+        let source = Arc::new(FakeIssueSource::new());
+        let mut enough = protected_as_the_policy_wants();
+        enough.required_approving_reviews = Some(count);
+        source.seed_protection(&fixture.repo, enough).await;
+        let preflight = recorder(
+            &fixture,
+            source,
+            Arc::new(Attested(fixture.world.requester)),
+        );
+
+        let done = preflight.pass(fixture.tenant).await;
+
+        assert!(done[0].passed, "{count}: {:?}", done[0].missing);
+        assert!(admission_level_passed(&fixture).await, "{count}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_protection_that_cannot_be_read_is_not_a_protection_that_holds() {
     let fixture = fixture().await;
     // The code host knows nothing of the repository.
@@ -295,6 +358,7 @@ async fn a_tenant_with_no_waiting_job_is_not_asked_about_anything() {
         source,
         app: FAKE_APP_ID,
         checks: Vec::new(),
+        required_approvals: 1,
         attestations: Arc::new(NoAttestations),
         tenants: vec![tenant],
         policy_hash: policies.hash.clone(),

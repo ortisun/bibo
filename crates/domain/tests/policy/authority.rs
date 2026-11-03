@@ -823,6 +823,19 @@ fn separation_of_duties_follows_the_change_and_the_designation() {
 }
 
 #[test]
+fn sf_07_the_rules_of_a_branch_are_held_to_the_smallest_number_of_approvals_of_the_tiers() {
+    // The rules of one branch cannot tell the tiers apart, so a repository is held to the number
+    // that every pull request needs: the smallest of the tiers (1), not the largest (2, the critical
+    // tier, which the approval stage holds to by counting the approvals of people itself).
+    let a = authority();
+    assert_eq!(a.required_approvals(RiskTier::Critical), 2);
+    assert_eq!(a.approvals_every_pull_request_needs(), 1);
+    for tier in [RiskTier::Low, RiskTier::Medium, RiskTier::High] {
+        assert!(a.approvals_every_pull_request_needs() <= a.required_approvals(tier));
+    }
+}
+
+#[test]
 fn a_critical_change_needs_two_distinct_security_approvers() {
     let list = allowlist();
     use AutonomyLevel::L1;

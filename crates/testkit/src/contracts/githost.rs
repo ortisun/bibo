@@ -863,6 +863,7 @@ fn report(strong: bool) -> Result<ProtectionReport, String> {
         dismisses_stale_approvals: strong,
         blocks_force_push: strong,
         blocks_deletion: strong,
+        required_approving_reviews: if strong { Some(1) } else { None },
         required_checks: if strong {
             vec![RequiredCheck {
                 context: "factory-validation".to_owned(),

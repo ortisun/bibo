@@ -552,6 +552,7 @@ impl Rig {
                     dismisses_stale_approvals: true,
                     blocks_force_push: true,
                     blocks_deletion: true,
+                    required_approving_reviews: Some(1),
                     // The two checks the delivery stage publishes, both pinned to the App.
                     required_checks: ["factory-validation", "factory-review"]
                         .iter()

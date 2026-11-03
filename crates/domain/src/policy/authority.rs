@@ -1164,6 +1164,21 @@ impl AuthorityPolicy {
         self.tiers.get(&tier).map_or(u32::MAX, |t| t.approvals)
     }
 
+    /// The number of approvals every pull request needs, whatever its risk tier: the smallest
+    /// `required_approvals` of `risk_tiers`. The protection preflight asks the repository's rules
+    /// for at least this many approving reviews (SF-07). The rules of one branch cannot tell the
+    /// tiers apart, so the floor is what they can be held to; the tiers that need more are held to
+    /// it by the approval stage (`quorum_met`), which counts the approvals of people itself. A
+    /// policy with no tier answers `u32::MAX`, which no repository meets.
+    #[must_use]
+    pub fn approvals_every_pull_request_needs(&self) -> u32 {
+        self.tiers
+            .values()
+            .map(|tier| tier.approvals)
+            .min()
+            .unwrap_or(u32::MAX)
+    }
+
     /// True when `approvals` hold enough distinct approvers for the tier: each for the action,
     /// each approver counted once, each holding a designation the tier names.
     #[must_use]

@@ -135,6 +135,10 @@ fn the_test_profile_assembles_all_thirteen_handlers_and_the_parts_around_them() 
     }
     // The hook, the preflight and the request cache run before each claim, in that order.
     assert_eq!(pipeline.before_claim.len(), 3);
+    // SF-07. The preflight holds a repository's rules to the number of approvals that every pull
+    // request needs by `policies/approval.yaml` (the smallest of `risk_tiers`, which is 1), read
+    // from the policy and not written here.
+    assert_eq!(pipeline.preflight.required_approvals(), 1);
     // The stand-ins are what the registry reports, and a stage handler that holds one says so.
     assert!(
         pipeline

@@ -990,6 +990,12 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         source: Arc::clone(&external.issues),
         app: external.app,
         checks: check_names,
+        // What the policy says every pull request needs: the rules of the repository must ask for
+        // at least this many approving reviews (SF-07).
+        required_approvals: policies
+            .engine
+            .authority
+            .approvals_every_pull_request_needs(),
         attestations: Arc::clone(&external.attestations),
         tenants: tenants.clone(),
         policy_hash: policies.hash.clone(),

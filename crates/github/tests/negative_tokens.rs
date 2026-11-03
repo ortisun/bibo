@@ -480,7 +480,7 @@ fn checks() -> Vec<Slug> {
 fn rules(pinned_to: Option<u64>) -> serde_json::Value {
     let check = |name: &str| serde_json::json!({"context": name, "integration_id": pinned_to});
     serde_json::json!([
-        {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": true, "require_code_owner_review": true}},
+        {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": true, "require_code_owner_review": true, "required_approving_review_count": 1}},
         {"type": "required_status_checks", "parameters": {"required_status_checks": [check("factory-validation"), check("factory-review")]}},
         {"type": "non_fast_forward"},
         {"type": "deletion"}
@@ -505,7 +505,7 @@ async fn negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_run
     set(serde_json::json!([]));
     match world
         .adapter
-        .preflight(&scope, &checks(), Some(&attestation()))
+        .preflight(&scope, &checks(), Some(&attestation()), 1)
         .await
         .unwrap()
     {
@@ -530,7 +530,7 @@ async fn negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_run
         set(rules(pinned));
         let verdict = world
             .adapter
-            .preflight(&scope, &checks(), Some(&attestation()))
+            .preflight(&scope, &checks(), Some(&attestation()), 1)
             .await
             .unwrap();
         assert_eq!(
@@ -549,7 +549,7 @@ async fn negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_run
     assert_eq!(
         world
             .adapter
-            .preflight(&scope, &checks(), None)
+            .preflight(&scope, &checks(), None, 1)
             .await
             .unwrap(),
         PreflightVerdict::CapAtL0(vec![PreflightFailure::BypassNotAttested])
@@ -557,11 +557,61 @@ async fn negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_run
     assert_eq!(
         world
             .adapter
-            .preflight(&scope, &checks(), Some(&attestation()))
+            .preflight(&scope, &checks(), Some(&attestation()), 1)
             .await
             .unwrap(),
         PreflightVerdict::Pass
     );
+
+    // SF-07, through the adapter and the fake server: the ruleset asks for one approving review.
+    // That is enough for a policy that needs one, and short of one that needs two.
+    assert_eq!(
+        world
+            .adapter
+            .preflight(&scope, &checks(), Some(&attestation()), 2)
+            .await
+            .unwrap(),
+        PreflightVerdict::CapAtL0(vec![PreflightFailure::ApprovingReviewsBelowPolicy {
+            found: 1,
+            needed: 2,
+        }])
+    );
+    // A ruleset that asks for no review at all, and one whose count the answer does not carry.
+    let without_count = |count: Option<u64>| {
+        let check = |name: &str| serde_json::json!({"context": name, "integration_id": app_id});
+        let mut parameters = serde_json::json!({"dismiss_stale_reviews_on_push": true, "require_code_owner_review": true});
+        if let Some(count) = count {
+            parameters["required_approving_review_count"] = count.into();
+        }
+        serde_json::json!([
+            {"type": "pull_request", "parameters": parameters},
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [check("factory-validation"), check("factory-review")]}},
+            {"type": "non_fast_forward"},
+            {"type": "deletion"}
+        ])
+    };
+    set(without_count(Some(0)));
+    assert_eq!(
+        world
+            .adapter
+            .preflight(&scope, &checks(), Some(&attestation()), 1)
+            .await
+            .unwrap(),
+        PreflightVerdict::CapAtL0(vec![PreflightFailure::ApprovingReviewsBelowPolicy {
+            found: 0,
+            needed: 1,
+        }])
+    );
+    set(without_count(None));
+    assert_eq!(
+        world
+            .adapter
+            .preflight(&scope, &checks(), Some(&attestation()), 1)
+            .await
+            .unwrap(),
+        PreflightVerdict::CapAtL0(vec![PreflightFailure::ApprovingReviewsUnknown])
+    );
+    set(rules(Some(app_id)));
 
     // Nothing in the preflight needs the Administration permission or pushes anything.
     for mint in world.fake.mints() {
@@ -589,7 +639,12 @@ async fn negative_nt_mrg_07_the_app_holding_workflows_is_refused_and_nothing_is_
     });
     let outcome = world
         .adapter
-        .preflight(&at(StageKind::Intake, 1), &checks(), Some(&attestation()))
+        .preflight(
+            &at(StageKind::Intake, 1),
+            &checks(),
+            Some(&attestation()),
+            1,
+        )
         .await;
     assert_eq!(outcome, Err(GitHostError::Forbidden));
     assert!(

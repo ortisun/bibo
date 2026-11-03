@@ -170,8 +170,9 @@ impl GithubAdapter {
     }
 
     /// The repository protection preflight: reads the rulesets with the Metadata permission and
-    /// judges them, together with the admin's bypass attestation, against the policy. A failure
-    /// to read is an error, which the engine treats as level L0.
+    /// judges them, together with the admin's bypass attestation, against the policy.
+    /// `required_approvals` is the number of approving reviews the policy says a pull request
+    /// needs (SF-07). A failure to read is an error, which the engine treats as level L0.
     ///
     /// # Errors
     /// [`GitHostError`] when the rules cannot be read.
@@ -180,9 +181,10 @@ impl GithubAdapter {
         scope: &GitScope,
         factory_checks: &[Slug],
         attestation: Option<&BypassAttestation>,
+        required_approvals: u32,
     ) -> Result<PreflightVerdict, GitHostError> {
         let report = self.issue_source().repository_protection(scope).await?;
-        Ok(report.evaluate(self.app_id, factory_checks, attestation))
+        Ok(report.evaluate(self.app_id, factory_checks, attestation, required_approvals))
     }
 
     /// The cleanup sweep: revokes the tokens of every job that is not in `running`, whether the
