@@ -84,7 +84,7 @@ fn level(text: &str) -> u8 {
 }
 
 /// The routes an intake that ends at a refusal or at the sandbox may use, and nothing else.
-const INTAKE_ROUTES: [&str; 8] = [
+const INTAKE_ROUTES: [&str; 9] = [
     "GET /app",
     "POST /app/installations/{id}/access_tokens",
     "DELETE /installation/token",
@@ -93,6 +93,9 @@ const INTAKE_ROUTES: [&str; 8] = [
     "GET /repos/{owner}/{repo}/issues/{number}/events",
     "GET /repos/{owner}/{repo}/issues/{number}/comments",
     "POST /repos/{owner}/{repo}/issues/{number}/comments",
+    // The one read of GraphQL: the time the body of an issue with the approving label was last
+    // edited (DR-1). The worker makes it for an approved design, and only then.
+    "POST /graphql",
 ];
 
 async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
@@ -157,6 +160,15 @@ async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
 // ---- the judgments --------------------------------------------------------------------------
 
 /// What every run on the intake path must satisfy whatever the issue was.
+///
+/// Some of these checks hold in every scenario of this file whether or not the gate works, because
+/// no scenario goes far enough to do the thing: nothing merges, opens a pull request or pushes, no
+/// request reaches a model provider or a registry, and no later stage starts, since each run ends at
+/// a refusal or at an agent image that the test removed on purpose (DR-8). They are not evidence
+/// that the gate holds those back. They are here so that a run that does one of them is seen, and
+/// `break_what_the_judgments_hold_true_by_construction_is_seen_when_it_really_happens` makes each
+/// really happen, through the real fakes and the real database, and shows the complaint. What does
+/// discriminate is the text of the comment and the audit lines of the refusal and the pass.
 fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
     let mut problems = Vec::new();
     // Nothing that publishes, merges or pushes. These are separate facts, so each is reported.
@@ -211,6 +223,22 @@ fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
                 mint.token_id
             )),
             Some(permissions) => {
+                // LB-03, exactly: the token that reads the issue holds `issues: read` and
+                // `metadata: read`, and the token of a reply holds `issues: write` and
+                // `metadata: read`. A wider token that is still under the ceilings of the policy
+                // (`contents: read` put back, for instance) is a complaint.
+                let shape: Vec<(&str, &str)> = permissions
+                    .iter()
+                    .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
+                    .collect();
+                if shape != [("issues", "read"), ("metadata", "read")]
+                    && shape != [("issues", "write"), ("metadata", "read")]
+                {
+                    problems.push(format!(
+                        "token {} has {permissions:?}, which is not the intake read class (issues: read, metadata: read) or the reply class (issues: write, metadata: read)",
+                        mint.token_id
+                    ));
+                }
                 for (name, wanted) in permissions {
                     if o.forbidden.iter().any(|f| f == name) {
                         problems.push(format!(
@@ -704,6 +732,9 @@ async fn break_an_app_without_the_issues_write_permission_is_caught() {
 
 /// Break 3: the design gate's policy file is gone from the protected checkout. The gate fails
 /// closed: even an issue approved by an approver is not let through, and the person is told so.
+/// The test waits for the stage to be blocked and reads what the person was told, the cause on
+/// the record and the state of the job, so that a worker that died at its first claim does not
+/// satisfy it (DR-8).
 #[tokio::test(flavor = "multi_thread")]
 async fn break_a_missing_design_policy_stops_even_an_approved_issue_and_is_caught() {
     let mut lab = Lab::start(Options {
@@ -717,7 +748,7 @@ async fn break_a_missing_design_policy_stops_even_an_approved_issue_and_is_caugh
     let issue = design_issue(&lab, "design: approved", APPROVER);
     let job = lab.receive_webhook_job(issue, REQUESTER).await;
     lab.spawn_worker(&[]);
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    settle(&mut lab, job, "intake to be blocked for the missing policy").await;
     let observed = observe(&lab, job, issue).await;
     let problems = judge_gate_passed_then_sandbox(&observed);
     assert!(
@@ -731,6 +762,23 @@ async fn break_a_missing_design_policy_stops_even_an_approved_issue_and_is_caugh
         stderr.contains("NOT READY"),
         "the worker says the gate cannot judge: {stderr}"
     );
+    // The person is told, the cause is on the record, and the job is blocked.
+    assert_eq!(observed.job_status, "BLOCKED", "{}", lab.logs().1);
+    assert_eq!(observed.comments.len(), 1, "{:?}", observed.comments);
+    assert!(
+        observed.comments[0]
+            .starts_with("The factory did not start work on this issue because it could not check whether the design is approved."),
+        "{:?}",
+        observed.comments
+    );
+    assert!(
+        observed.audit.iter().any(|r| r["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("design gate could not judge issue")),
+        "the record names the cause"
+    );
+    assert!(observed.labels.iter().all(|l| !l.starts_with("factory: ")));
     let _ = lab.stop_worker();
 }
 
@@ -772,6 +820,11 @@ async fn break_an_approver_missing_from_the_allowlist_is_refused_and_caught() {
 // ---- the judgments are shown to bite ------------------------------------------------------------
 
 async fn clean_refusal() -> (Lab, Observed) {
+    let (lab, _job, _issue, observed) = clean_refusal_of_a_job().await;
+    (lab, observed)
+}
+
+async fn clean_refusal_of_a_job() -> (Lab, JobId, u64, Observed) {
     let (lab, job, issue) =
         run_refused("design: in review", REQUESTER, Options::default(), &[]).await;
     let observed = observe(&lab, job, issue).await;
@@ -779,7 +832,73 @@ async fn clean_refusal() -> (Lab, Observed) {
         judge_refusal(&observed, "not_approved"),
         Vec::<String>::new()
     );
-    (lab, observed)
+    (lab, job, issue, observed)
+}
+
+/// Sends one request to a loopback fake, as any client would, and reads the answer.
+fn call(address: std::net::SocketAddr, method: &str, path: &str) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).expect("a connection");
+    stream
+        .write_all(
+            format!("{method} {path} HTTP/1.1\r\nHost: loopback\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                .as_bytes(),
+        )
+        .expect("a request");
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+}
+
+/// What the judgments hold true by construction is seen when it really happens (DR-8). In every
+/// other scenario of this file nothing merges, pushes, opens a pull request, asks a model provider
+/// or a registry, or starts a later stage, so the checks for them pass whether or not the gate
+/// works. Here a clean refusal is followed by each of those, done through the real fakes and the
+/// real database, and the observer that the scenarios use sees it and the judgment complains. A
+/// check wired to nothing would stay silent and fail here.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_what_the_judgments_hold_true_by_construction_is_seen_when_it_really_happens() {
+    let (lab, job, issue, honest) = clean_refusal_of_a_job().await;
+    assert!(judge_refusal(&honest, "not_approved").is_empty());
+    let find = |problems: &[String], needle: &str| {
+        assert!(
+            problems.iter().any(|p| p.contains(needle)),
+            "expected a complaint containing {needle:?}, got {problems:#?}"
+        );
+    };
+    // A branch change on the code host.
+    lab.fake.push_commit(REPO, "factory/stray-branch");
+    // A call to the merge endpoint.
+    let merge = factory_testkit::fx::http::HttpRequest {
+        method: "PUT".to_owned(),
+        target: format!("/repos/{REPO}/pulls/1/merge"),
+        version: "HTTP/1.1".to_owned(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        peer: "127.0.0.1:1".parse().expect("an address"),
+    };
+    let _ = lab.fake.handle(&merge);
+    // A request to a model provider and one to a registry.
+    call(lab.provider_addr(), "POST", "/v1/messages");
+    call(lab.registry_addr(), "GET", "/api/v1/crates/serde");
+    // A later stage that started.
+    lab.deployment
+        .db
+        .run(&format!(
+            "UPDATE stage_runs SET status = 'READY', version = version + 1 WHERE job_id = '{}' AND stage_kind = 'SPECIFICATION'",
+            job.as_uuid()
+        ))
+        .await;
+    let seen = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&seen, "not_approved");
+    find(&problems, "branch change(s) were pushed");
+    find(&problems, "a merge was attempted");
+    find(&problems, "route the path never uses");
+    find(&problems, "model-provider fake received");
+    find(&problems, "registry fake received");
+    find(
+        &problems,
+        "the stage SPECIFICATION is READY, but intake did not pass",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -847,6 +966,18 @@ async fn break_doctored_evidence_is_caught_by_each_judgment() {
     find(
         judge_refusal(&o, "not_approved"),
         "can write and carries more",
+    );
+    // LB-03: the read token has `contents: read` again. It is under the ceilings of the policy and
+    // so passes the checks above; the exact shape of the intake token is what refuses it.
+    let mut o = honest.clone_view();
+    o.mints[0]
+        .requested_permissions
+        .as_mut()
+        .expect("permissions")
+        .insert("contents".to_owned(), "read".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "not the intake read class",
     );
     // A second comment (a duplicate answer), a status label and a status comment on a refused issue.
     let mut o = honest.clone_view();

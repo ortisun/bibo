@@ -413,6 +413,17 @@ impl Lab {
     }
 
     /// Starts the real binary on the configuration file. `env` is added to its environment.
+    /// Where the model-provider fake listens. A test of the judgments sends it a request of its
+    /// own, to show that a request that reaches it is seen.
+    pub fn provider_addr(&self) -> std::net::SocketAddr {
+        self._provider.addr()
+    }
+
+    /// Where the registry fake listens (see [`provider_addr`](Self::provider_addr)).
+    pub fn registry_addr(&self) -> std::net::SocketAddr {
+        self._registry.addr()
+    }
+
     pub fn spawn_worker(&mut self, env: &[(&str, &str)]) {
         let stdout = std::fs::File::create(&self.stdout_log).expect("a log file");
         let stderr = std::fs::File::create(&self.stderr_log).expect("a log file");
