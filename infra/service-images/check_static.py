@@ -42,6 +42,38 @@ ALLOWED = {
 }
 # Paths that must never be let back in, however they are spelled.
 NEVER = (".git", ".env", "infra/compose/secrets", "target", ".claude")
+
+# What the .dockerignore says after the allow list, line by line and in this order (DR-7): the names
+# of credentials left out of what was let in, the sources that are named like one and are code, then
+# the folders, which come last because the last rule wins. The audit of the image file systems calls
+# the same names credentials (fsaudit.py CREDENTIAL_NAMES and CREDENTIAL_DIRS).
+DENIED_NAMES = (
+    "**/.DS_Store",
+    "**/.env",
+    "**/.env.*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*secret*",
+    "**/*credential*",
+    "**/id_rsa*",
+    "**/id_dsa*",
+    "**/id_ecdsa*",
+    "**/id_ed25519*",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.kdbx",
+    "**/*.jks",
+    "**/*.keystore",
+    "**/.netrc",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.git-credentials",
+    "**/.gitconfig",
+    "**/auth.json",
+)
+SOURCES_BACK = ("!**/*secret*.rs", "!**/*credential*.rs")
+DENIED_FOLDERS = ("**/target", "**/.aws", "**/.ssh", "**/.gnupg", "**/.docker", "**/.kube")
+AFTER_THE_ALLOW_LIST = DENIED_NAMES + SOURCES_BACK + DENIED_FOLDERS
 SECRET_NAME = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|API_?KEY)", re.IGNORECASE)
 
 
@@ -179,16 +211,24 @@ def judge(files: dict[str, str]) -> dict[str, list[str]]:
     rules = [line.strip() for line in files["ignore"].splitlines() if line.strip() and not line.strip().startswith("#")]
     if not rules or rules[0] != "*":
         fail("DENY-ALL-CONTEXT", ".dockerignore does not start with '*'")
-    let_in = {rule[1:] for rule in rules if rule.startswith("!")}
+    # The allow list is the run of "!" lines right after "*"; what follows is the deny part, which
+    # must be exactly AFTER_THE_ALLOW_LIST: no name missing, none added, none moved.
+    allow_end = 1
+    while allow_end < len(rules) and rules[allow_end].startswith("!"):
+        allow_end += 1
+    let_in = {rule[1:] for rule in rules[1:allow_end]}
     if let_in != ALLOWED:
         extra, missing = sorted(let_in - ALLOWED), sorted(ALLOWED - let_in)
         fail("DENY-ALL-CONTEXT", f".dockerignore lets in {extra or 'nothing extra'} and lacks {missing or 'nothing'}")
     for path in let_in:
         if any(path.rstrip("/") == bad.rstrip("/") or path.startswith(bad) for bad in NEVER):
             fail("DENY-ALL-CONTEXT", f".dockerignore lets in {path}")
-    for pattern in ("**/target", "**/.env", "**/*.pem", "**/*.key"):
-        if pattern not in rules:
-            fail("DENY-ALL-CONTEXT", f".dockerignore does not exclude {pattern} inside what it lets in")
+    after = tuple(rules[allow_end:])
+    if after != AFTER_THE_ALLOW_LIST:
+        lacking = [rule for rule in AFTER_THE_ALLOW_LIST if rule not in after]
+        added = [rule for rule in after if rule not in AFTER_THE_ALLOW_LIST]
+        detail = f"lacks {lacking}" if lacking else (f"has {added} that is not on the list" if added else "has the lines in another order")
+        fail("DENY-ALL-CONTEXT", f".dockerignore, after the allow list, {detail}; the lines must be exactly those of AFTER_THE_ALLOW_LIST in this order")
 
     # COMPOSE: the compose file runs the images build.sh makes, as the same user, with no override.
     compose = files["compose"]
@@ -233,7 +273,17 @@ DAMAGES = [
     ("NO-CREDENTIAL", "dockerfile", "COPY schemas schemas\n", "ADD https://example.org/x.tgz /x\n"),
     ("DENY-ALL-CONTEXT", "ignore", "*\n\n!Cargo.toml", "!Cargo.toml"),
     ("DENY-ALL-CONTEXT", "ignore", "!migrations/\n", "!migrations/\n!infra/compose/secrets/\n"),
-    ("DENY-ALL-CONTEXT", "ignore", "**/*.pem\n", ""),
+    ("DENY-ALL-CONTEXT", "ignore", "**/*secret*\n**/*credential*\n", "**/*credential*\n**/*secret*\n"),
+    ("DENY-ALL-CONTEXT", "ignore", "!**/*secret*.rs\n", "!**/*secret*\n"),
+    ("DENY-ALL-CONTEXT", "ignore", "!**/*credential*.rs\n", ""),
+    ("DENY-ALL-CONTEXT", "ignore", "**/target\n**/.aws\n", "**/.aws\n**/target\n!**/*.rs\n"),
+    ("DENY-ALL-CONTEXT", "ignore", "**/.kube\n", "**/.kube\n**/.cache\n"),
+] + [
+    # One damage per line of the deny part: take it out, and the rule must say so.
+    ("DENY-ALL-CONTEXT", "ignore", f"{line}\n", "")
+    for line in AFTER_THE_ALLOW_LIST
+    if line not in SOURCES_BACK
+] + [
     ("COMPOSE", "compose", "image: ${FACTORY_API_IMAGE:-factory-api:local}", "image: ${FACTORY_API_IMAGE:-factory-api:latest}"),
     ("COMPOSE", "compose", "      FACTORY_CONFIG: /etc/factory/worker.yaml\n", "      FACTORY_CONFIG: /etc/factory/worker.yaml\n      DOCKER_HOST: tcp://elsewhere:2375\n"),
     ("COMPOSE", "compose", "    pull_policy: never\n    <<: *hardened\n    profiles: [factory]\n    # Exit code 3", "    pull_policy: always\n    <<: *hardened\n    profiles: [factory]\n    # Exit code 3"),

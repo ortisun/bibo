@@ -341,15 +341,21 @@ def command_fs(args: argparse.Namespace) -> int:
             if digest is not None:
                 digest.update(block)
             file_findings: List[str] = []
-            if member.size <= SMALL_TEXT_LIMIT and not looks_compiled(block):
+            compiled = looks_compiled(block)
+            if member.size <= SMALL_TEXT_LIMIT and not compiled:
                 # The whole file is in this one block. Every blocking pattern applies.
                 scan_bytes(block, patterns, False, path, file_findings)
                 scanned_bytes += len(block)
             else:
+                # A file over the limit is read with the patterns of a vendor prefix only, in
+                # windows. The patterns named by `--runtime-minted` are given up for a file that is
+                # compiled and for no other: a large text file is not where a program keeps the
+                # constant prefix of a token (DR-5).
+                given_up = runtime_minted if compiled else frozenset()
                 carry = b""
                 while block:
                     window = carry + block
-                    scan_bytes(window, patterns, True, path, file_findings, runtime_minted)
+                    scan_bytes(window, patterns, True, path, file_findings, given_up)
                     scanned_bytes += len(block)
                     carry = window[-OVERLAP:]
                     block = handle.read(CHUNK)
@@ -471,8 +477,9 @@ def main(argv: List[str]) -> int:
         metavar="PATTERN_ID",
         help=(
             "id of a pattern for a credential that the factory mints at run time (for example "
-            "factory_job_token). It is applied to text files and not to compiled or large files, "
-            "where only the constant prefix of such a credential can appear"
+            "factory_job_token). It is not applied to a compiled file (an ELF file, or any file "
+            "that looks_compiled says is not text), where only the constant prefix of such a "
+            "credential can appear. It is applied to a text file of any size"
         ),
     )
     fs.set_defaults(handler=command_fs)

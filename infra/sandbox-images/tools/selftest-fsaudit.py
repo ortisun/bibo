@@ -240,6 +240,61 @@ def main() -> int:
         with_option["secrets.txt"],
     )
 
+    # DR-5. The option gives up two patterns for a file that is compiled (an ELF file, or any file
+    # that is not text by `looks_compiled`), and for nothing else. A text file of any size is
+    # scanned with them, because it is not where the program keeps a constant prefix.
+    api_token = "sfa" + "t_" + "0123456789abcdef" * 4
+    padding = b"a line of ordinary text, long enough to pass the size limit of a small file\n"
+    big_text = padding * ((module.SMALL_TEXT_LIMIT // len(padding)) + 64)
+    middle = len(big_text) // 2
+    big_job = big_text[:middle] + f"token = {real_token}\n".encode() + big_text[middle:]
+    big_api = big_text[:middle] + f"token = {api_token}\n".encode() + big_text[middle:]
+    expect(
+        "the large text file of this test is over the limit of a small file",
+        len(big_job) > module.SMALL_TEXT_LIMIT and not module.looks_compiled(big_job[:4096]),
+        str(len(big_job)),
+    )
+    shaped = [
+        Entry("./var/log/large-text-job-token.log", big_job),
+        Entry("./var/log/large-text-api-token.log", big_api),
+        Entry("./opt/non-elf.db", b"SQLite format 3\x00" + b"\x00" * 8 + f"{real_token}".encode() + b"\x00" * 8),
+        Entry("./opt/another-non-elf.db", b"SQLite format 3\x00" + b"\x00" * 8 + f"{api_token}".encode() + b"\x00" * 8),
+        Entry("./usr/local/bin/elf-with-a-token", b"\x7fELF\x00\x00" + real_token.encode() + b"\x00\x00"),
+        Entry("./usr/local/bin/elf-with-an-api-token", b"\x7fELF\x00\x00" + api_token.encode() + b"\x00\x00"),
+    ]
+    shaped_without = audit(shaped)
+    shaped_with = audit(shaped, minted)
+    for path in (
+        "/var/log/large-text-job-token.log",
+        "/var/log/large-text-api-token.log",
+        "/opt/non-elf.db",
+        "/opt/another-non-elf.db",
+        "/usr/local/bin/elf-with-a-token",
+        "/usr/local/bin/elf-with-an-api-token",
+    ):
+        expect(
+            f"without the option a token in {path} is a finding",
+            mentions(shaped_without, "secrets.txt", path),
+            shaped_without["secrets.txt"],
+        )
+    for path in ("/var/log/large-text-job-token.log", "/var/log/large-text-api-token.log"):
+        expect(
+            f"with the option a token in a large text file ({path}) is still a finding",
+            mentions(shaped_with, "secrets.txt", path),
+            shaped_with["secrets.txt"],
+        )
+    for path in (
+        "/opt/non-elf.db",
+        "/opt/another-non-elf.db",
+        "/usr/local/bin/elf-with-a-token",
+        "/usr/local/bin/elf-with-an-api-token",
+    ):
+        expect(
+            f"with the option a token in the compiled file {path} is skipped, and only there",
+            not mentions(shaped_with, "secrets.txt", path),
+            shaped_with["secrets.txt"],
+        )
+
     # Files under the trees that the sandbox user could have written are scanned.
     planted = audit(
         [
