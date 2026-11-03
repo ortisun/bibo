@@ -6,6 +6,7 @@
 
 mod collections;
 mod numbers;
+mod repository;
 mod text;
 mod timestamp;
 
@@ -20,6 +21,9 @@ pub use collections::{NonEmptyVec, UniqueVec};
 pub use numbers::{
     AggregateVersion, Bounded, ExactInteger, ExactPositiveInt, Integer, LARGEST_EXACT_INTEGER,
     NonNegativeInt, NonNegativeNumber, PositiveFraction, PositiveInt, PositiveNumber, UnitInterval,
+};
+pub use repository::{
+    MAX_BRANCH_BYTES, MAX_FULL_NAME_BYTES, is_repository_branch, is_repository_full_name,
 };
 pub use text::{
     BoundedString, EventType, GitSha, HumanText, HumanTitle, MediaType, NonEmptyString,

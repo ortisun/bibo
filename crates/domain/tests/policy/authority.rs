@@ -1435,3 +1435,29 @@ fn the_policy_and_the_entry_agree_on_which_repository_a_designation_reaches() {
         );
     }
 }
+
+#[test]
+fn rh_2_a_registration_typed_under_another_name_is_not_covered_by_an_entry_with_an_id() {
+    let narrow = narrowed_by_id();
+    // The id is the listed one and the typed name is another repository's: nothing vouches that they belong
+    // together, so the entry does not reach it.
+    assert!(
+        !narrow.covers_repository(&RepositoryIdentity::typed("victim/secrets", ITS_ID)),
+        "a person narrowed to one repository id must not register that id under any name"
+    );
+    // The sibling: the name recorded in the entry, in any case, is covered.
+    assert!(narrow.covers_repository(&RepositoryIdentity::typed(OLD_NAME, ITS_ID)));
+    assert!(narrow.covers_repository(&RepositoryIdentity::typed("ACME/Old-Name", ITS_ID)));
+    // The id still decides first: the right name with another id is not covered.
+    assert!(!narrow.covers_repository(&RepositoryIdentity::typed(OLD_NAME, SOMEONE_ELSES_ID)));
+    // The control: a repository that is already registered follows the id through a rename (RR-28), so the
+    // same pair is covered when a row vouches for it.
+    assert!(narrow.covers_repository(&RepositoryIdentity::registered("victim/secrets", ITS_ID)));
+    // An entry with no id still compares the name, typed or not, and an entry with no narrowing covers all.
+    let mut by_name = entry(OTHER_REPO_ONLY, "by-name", &[Designation::Approver]);
+    by_name.repositories = Some(BTreeSet::from([ListedRepository::named(OLD_NAME)]));
+    assert!(by_name.covers_repository(&RepositoryIdentity::typed(OLD_NAME, 1)));
+    assert!(!by_name.covers_repository(&RepositoryIdentity::typed("victim/secrets", ITS_ID)));
+    let wide = entry(OTHER_REPO_ONLY, "wide", &[Designation::Approver]);
+    assert!(wide.covers_repository(&RepositoryIdentity::typed("any/thing", 7)));
+}

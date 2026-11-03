@@ -172,13 +172,17 @@ impl ListedRepository {
     ///
     /// * The listing has an id and the repository has one: the ids decide, and the names are not
     ///   looked at. A renamed or transferred repository is the same repository, and a new one under
-    ///   the old name is not.
+    ///   the old name is not. The exception is a registration (see [`RepositoryIdentity::typed`]):
+    ///   its name and id were typed by a person and no row vouches for the pair, so the typed name
+    ///   must also equal the name recorded in the entry, without regard to case (finding RH-2).
     /// * The listing has an id and the question carries none (a layer that cannot know it, see
     ///   [`RepositoryIdentity::by_name_only`]): the name recorded next to the id decides.
     /// * The listing has no id: the name decides, without regard to case.
     fn is(&self, asked: &RepositoryIdentity<'_>) -> bool {
         match (self.github_repository_id, asked.github_repository_id) {
-            (Some(listed), Some(known)) => listed == known,
+            (Some(listed), Some(known)) => {
+                listed == known && (!asked.typed || self.name.eq_ignore_ascii_case(asked.name))
+            }
             _ => self.name.eq_ignore_ascii_case(asked.name),
         }
     }
@@ -192,6 +196,10 @@ pub struct RepositoryIdentity<'a> {
     pub name: &'a str,
     /// GitHub's numeric id of the repository.
     pub github_repository_id: Option<u64>,
+    /// True when the name and the id were typed by a person at registration and no registered row
+    /// vouches that they belong together (finding RH-2). An entry that lists the id then also requires
+    /// the typed name to be the name recorded in the entry.
+    pub typed: bool,
 }
 
 impl<'a> RepositoryIdentity<'a> {
@@ -202,6 +210,21 @@ impl<'a> RepositoryIdentity<'a> {
         Self {
             name,
             github_repository_id: Some(github_repository_id),
+            typed: false,
+        }
+    }
+
+    /// A registration that is being asked for: the name and the GitHub id as a person typed them,
+    /// with no row behind them (finding RH-2). The ids decide, as for a registered repository, and
+    /// an entry that lists the id also requires this name to be the one recorded in the entry. Without
+    /// that, a person narrowed to one repository id could register that id under any name, and the
+    /// credential for the repository is chosen by name.
+    #[must_use]
+    pub const fn typed(name: &'a str, github_repository_id: u64) -> Self {
+        Self {
+            name,
+            github_repository_id: Some(github_repository_id),
+            typed: true,
         }
     }
 
@@ -214,6 +237,7 @@ impl<'a> RepositoryIdentity<'a> {
         Self {
             name,
             github_repository_id: None,
+            typed: false,
         }
     }
 }
