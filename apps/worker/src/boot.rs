@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use factory_composition::assemble::{Identity, Prepared, prepare};
+use factory_composition::assemble::{Identity, Prepared, WORKER_DOES_NOT_HOLD, prepare};
 use factory_composition::config::FactoryConfig;
 use factory_composition::indexing::ActiveJobs;
 use factory_composition::providers::{ProviderInputs, Providers, assemble, system_runner};
@@ -53,7 +53,8 @@ pub async fn boot(config: &FactoryConfig) -> Result<Booted, StartupFailure> {
         Arc::new(ids),
         &mut prepared.secrets,
     )?;
-    prepared.check_secret_kinds(config.profile)?;
+    // The API holds the webhook secret; the worker does not, and says nothing about it.
+    prepared.check_secret_kinds(config.profile, &WORKER_DOES_NOT_HOLD)?;
     let jobs = Arc::new(ActiveJobs::new());
     let providers = assemble(ProviderInputs {
         config,

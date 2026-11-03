@@ -109,3 +109,27 @@ fn an_example_that_drops_the_decision_key_no_longer_names_the_shared_key() {
     let config = FactoryConfig::from_yaml(&without).expect("the rest still parses");
     assert!(config.decisions.is_none());
 }
+
+/// The two Docker keys are written in the example as comments. Taking the comment marks off must
+/// give a file the parser accepts and that carries the values, so the example cannot drift from the
+/// keys of the parser (a misspelled key is an error in the worker).
+#[test]
+fn the_docker_keys_in_the_worker_example_parse_once_uncommented() {
+    let text = example("worker.local.example.yaml");
+    let uncommented = text
+        .replace("  # docker_host: ", "  docker_host: ")
+        .replace("  # docker_config: ", "  docker_config: ");
+    assert_ne!(uncommented, text, "the example holds both keys");
+    let config = FactoryConfig::from_yaml(&uncommented).expect("the uncommented keys parse");
+    assert_eq!(
+        config.sandbox.docker_host.as_deref(),
+        Some("unix:///var/run/docker.sock")
+    );
+    assert_eq!(
+        config.sandbox.docker_config,
+        Some(PathBuf::from("/home/factory/.docker"))
+    );
+    // The file as shipped sets neither.
+    let shipped = FactoryConfig::from_yaml(&text).expect("parses");
+    assert!(shipped.sandbox.docker_host.is_none() && shipped.sandbox.docker_config.is_none());
+}

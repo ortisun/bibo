@@ -285,7 +285,11 @@ pub fn github_adapter(
         );
     }
     let policy = AppPolicy::from_github_app(&security.credentials.github_app);
-    let config = AdapterConfig::new(AppId(github.app_id), base.clone(), policy);
+    let mut config = AdapterConfig::new(AppId(github.app_id), base.clone(), policy);
+    // The hosts a link in a comment may point to are the policy's (`output_hygiene`), so a GitHub
+    // Enterprise server is allowed by listing it there, and `FactoryConfig::check_link_host` stops
+    // the start when `github.web_base_url` names a host the list does not have.
+    config.outbound.link_domains = security.output_hygiene.allow_link_domains.clone();
     Ok(GithubAdapter::new(
         config,
         GithubParts {

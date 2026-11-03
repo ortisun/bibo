@@ -174,6 +174,9 @@ pub async fn prepare(
     config
         .check_endpoints(&policies.security)
         .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    config
+        .check_link_host(&policies.security)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
     let routing = load_routing(&config.protected_checkout, &untrusted, &policies.security)?;
     confirm_routing(config.profile, &routing)?;
     crate::routing::enabled_models(&routing.policy, &config.broker.upstreams)
@@ -256,6 +259,49 @@ pub async fn prepare(
     })
 }
 
+/// The kinds of secret the policy lists for the factory as a whole that the worker never holds: the
+/// API verifies webhooks and holds the webhook secret, the worker does not. The worker passes this
+/// to [`Prepared::check_secret_kinds`] so that it neither stops nor warns about a value that is not
+/// its to have. (A webhook secret file that the worker's configuration names anyway is registered
+/// with the redactor, as every secret file is.)
+pub const WORKER_DOES_NOT_HOLD: [SecretKind; 1] = [SecretKind::WebhookSecret];
+
+/// The kinds the policy requires that have no value registered, without those in `not_held`. What
+/// is left is a kind the binary holds and lacks: the redactor does not know a value it should.
+#[must_use]
+pub fn missing_kinds(secrets: &FactorySecrets, not_held: &[SecretKind]) -> Vec<SecretKind> {
+    secrets
+        .unregistered_kinds()
+        .into_iter()
+        .filter(|kind| !not_held.contains(kind))
+        .collect()
+}
+
+/// Refuses to go on when a kind of secret that the binary holds has no value registered, in the
+/// production profile; the other profiles say so in the log, once for each kind.
+///
+/// # Errors
+/// [`StartupFailure::SecretKindMissing`], in the production profile only.
+pub fn check_kinds(
+    secrets: &FactorySecrets,
+    profile: Profile,
+    not_held: &[SecretKind],
+) -> Result<(), StartupFailure> {
+    let missing = missing_kinds(secrets, not_held);
+    if profile == Profile::Production
+        && let Some(kind) = missing.first()
+    {
+        return Err(StartupFailure::SecretKindMissing(kind.label()));
+    }
+    for kind in missing {
+        tracing::warn!(
+            kind = kind.label(),
+            "no secret of a kind the policy lists is registered"
+        );
+    }
+    Ok(())
+}
+
 impl Prepared {
     /// Refuses to go on when a kind of secret the policy requires has no value registered.
     ///
@@ -263,18 +309,17 @@ impl Prepared {
     /// provider keys). A kind that nothing registered means the redactor does not know a value it
     /// should. Production refuses to start; the other profiles say so in the log.
     ///
+    /// `not_held` names the kinds this binary never holds (the worker passes
+    /// [`WORKER_DOES_NOT_HOLD`]); they are skipped. A kind the binary holds and lacks is still
+    /// refused in production.
+    ///
     /// # Errors
     /// [`StartupFailure::SecretKindMissing`], in the production profile only.
-    pub fn check_secret_kinds(&self, profile: Profile) -> Result<(), StartupFailure> {
-        if let Some(kind) = self.secrets.unregistered_kinds().first() {
-            if profile == Profile::Production {
-                return Err(StartupFailure::SecretKindMissing(kind.label()));
-            }
-            tracing::warn!(
-                kind = kind.label(),
-                "no secret of a kind the policy lists is registered"
-            );
-        }
-        Ok(())
+    pub fn check_secret_kinds(
+        &self,
+        profile: Profile,
+        not_held: &[SecretKind],
+    ) -> Result<(), StartupFailure> {
+        check_kinds(&self.secrets, profile, not_held)
     }
 }

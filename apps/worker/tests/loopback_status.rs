@@ -452,6 +452,86 @@ async fn a_job_is_written_on_its_issue_through_the_real_adapter_one_label_and_on
     );
 }
 
+// ---- the host of the link in the text of a finished job (LB-08) ---------------------------------
+
+/// The configuration of a deployment whose GitHub is an Enterprise-style server at
+/// `https://ghe.example.org`: the web address in the configuration, and (separately, because the
+/// protected policy decides which hosts a comment may link to) the host on the policy's list.
+fn enterprise_options(list_the_host: bool) -> Options {
+    Options {
+        config: Some(Box::new(|text| {
+            text.replace(
+                "  api_base_url:",
+                "  web_base_url: 'https://ghe.example.org'\n  api_base_url:",
+            )
+        })),
+        checkout: Some(Box::new(move |protected| {
+            if !list_the_host {
+                return;
+            }
+            let path = protected.join("policies/security.yaml");
+            let text = std::fs::read_to_string(&path).expect("the security policy");
+            let from = "allow_link_domains: [github.com] ";
+            assert!(
+                text.contains(from),
+                "the security policy no longer has the list; update this test"
+            );
+            let to = "allow_link_domains: [github.com, ghe.example.org] ";
+            std::fs::write(&path, text.replace(from, to)).expect("the changed policy");
+        })),
+        ..Options::default()
+    }
+}
+
+/// The text of the one comment on the issue once the job is done.
+fn the_comment(observed: &Observed) -> String {
+    assert_eq!(observed.comments.len(), 1, "{:?}", observed.comments);
+    observed.comments[0].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_job_links_to_github_dot_com_when_nothing_else_is_configured() {
+    let (lab, issue, status) = run_job(Options::default(), true, |_| {}).await;
+    let observed = observe(&lab, issue, status).await;
+    assert!(judge(&observed).is_empty(), "{:?}", judge(&observed));
+    let comment = the_comment(&observed);
+    assert!(
+        comment.contains(&format!("(https://github.com/{REPO}/pulls?q=head%3A")),
+        "{comment}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_job_links_to_an_enterprise_host_through_the_real_adapter() {
+    let (lab, issue, status) = run_job(enterprise_options(true), true, |_| {}).await;
+    let observed = observe(&lab, issue, status).await;
+    assert!(judge(&observed).is_empty(), "{:?}", judge(&observed));
+    let comment = the_comment(&observed);
+    assert!(
+        comment.contains(&format!("(https://ghe.example.org/{REPO}/pulls?q=head%3A")),
+        "the link kept its host through the adapter's text rules: {comment}"
+    );
+    assert!(!comment.contains("github.com"), "{comment}");
+}
+
+/// Break: the enterprise host is configured but the protected policy does not list it. The
+/// adapter would strip the link and say nothing, so the worker refuses to start and names the key.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_an_enterprise_host_the_policy_does_not_list_stops_the_start_and_is_caught() {
+    let lab = Lab::start(Options {
+        without_people: true,
+        ..enterprise_options(false)
+    })
+    .await;
+    let config =
+        Arc::new(FactoryConfig::from_file(&lab.deployment.config_path).expect("the configuration"));
+    let Err(refused) = boot(&config).await else {
+        panic!("the worker booted with a link host the policy does not list");
+    };
+    let message = refused.to_string();
+    assert!(message.contains("github.web_base_url"), "{message}");
+}
+
 // ---- deliberate breaks ------------------------------------------------------------------------
 
 /// Break 1: the switch is off. Nothing is written, and the judgment says the issue shows nothing.

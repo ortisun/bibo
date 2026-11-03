@@ -215,10 +215,108 @@ pub struct SandboxConfig {
     /// real sidecar refuses, so a deployment that runs agents must set them.
     #[serde(default)]
     pub sidecar_command: Vec<String>,
+    /// Where the Docker daemon is, as `DOCKER_HOST` would say: `unix:///<absolute socket path>` or
+    /// `tcp://<host>:<port>`. None means the client's own default socket. The `docker` client of
+    /// the worker runs with an empty environment, so this key is the only way to name a daemon that
+    /// is not on the default socket (a rootless Docker, Colima, a remote host). A `tcp://` address
+    /// must be on the loopback interface unless `allow_remote_docker` is set.
+    #[serde(default)]
+    pub docker_host: Option<String>,
+    /// The directory of the Docker client's own configuration, as `DOCKER_CONFIG` would say. An
+    /// absolute path to a directory. None means the client's default.
+    #[serde(default)]
+    pub docker_config: Option<PathBuf>,
+    /// Allows `docker_host` to be a `tcp://` address that is not on the loopback interface. A
+    /// daemon that is reached over a network gives whoever sits on that network the control of
+    /// every container, so this is an explicit choice and the production profile refuses it.
+    #[serde(default)]
+    pub allow_remote_docker: bool,
 }
 
 fn default_owner() -> String {
     "factory-worker".to_owned()
+}
+
+impl SandboxConfig {
+    /// Checks the three Docker keys, which need no file other than the configuration. That
+    /// `docker_config` is a directory on this machine is checked when the providers are built.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] naming the key.
+    pub fn validate_docker(&self, profile: Profile) -> Result<(), ConfigError> {
+        if self.allow_remote_docker && profile == Profile::Production {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.allow_remote_docker",
+                problem: "the production profile does not reach a Docker daemon over a network",
+            });
+        }
+        if let Some(host) = &self.docker_host
+            && let Some(problem) = docker_host_problem(host, self.allow_remote_docker)
+        {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.docker_host",
+                problem,
+            });
+        }
+        if let Some(directory) = &self.docker_config
+            && (!directory.is_absolute()
+                || directory
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir))
+        {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.docker_config",
+                problem: "must be an absolute directory path with no .. part",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Why `host` may not be the address of the Docker daemon, or `None`.
+///
+/// Only two shapes are accepted: `unix://` and an absolute socket path, and `tcp://host:port`
+/// where the host is on the loopback interface, or any plain host name or address when
+/// `allow_remote` is set. Any other transport (`ssh://`, `npipe://`, `fd://`, `http://`) needs a
+/// helper program or a socket activation that the worker's container does not have.
+fn docker_host_problem(host: &str, allow_remote: bool) -> Option<&'static str> {
+    const SHAPE: &str = "must be unix:///<absolute socket path> or tcp://<host>:<port>";
+    if host.chars().any(|c| c.is_control() || c.is_whitespace()) || host.contains(['?', '#', '@']) {
+        return Some("must be a plain address with no white space, query, fragment or user part");
+    }
+    if let Some(path) = host.strip_prefix("unix://") {
+        let usable = path.starts_with('/')
+            && path.len() > 1
+            && !path.ends_with('/')
+            && path.split('/').all(|part| part != "..");
+        return (!usable).then_some(
+            "a unix address must be unix:// followed by an absolute socket path with no .. part",
+        );
+    }
+    let Some(rest) = host.strip_prefix("tcp://") else {
+        return Some(SHAPE);
+    };
+    let (name, port) = match rest.strip_prefix('[') {
+        Some(inside) => match inside.split_once("]:") {
+            Some((name, port)) => (name, port),
+            None => return Some(SHAPE),
+        },
+        None => match rest.rsplit_once(':') {
+            Some((name, port)) if !name.contains(':') => (name, port),
+            _ => return Some(SHAPE),
+        },
+    };
+    let valid_port = port.parse::<u16>().is_ok_and(|p| p > 0);
+    let plain_name = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | ':'));
+    if !valid_port || !plain_name {
+        return Some(SHAPE);
+    }
+    (!allow_remote && !is_loopback_host(name)).then_some(
+        "a tcp address must be on the loopback interface unless allow_remote_docker is true",
+    )
 }
 
 /// Where the repositories live, and with that which transport the host-side version control may
@@ -374,6 +472,13 @@ pub struct GithubConfig {
     /// labels and the comment are observability and no job depends on them.
     #[serde(default = "default_true")]
     pub write_issue_status: bool,
+    /// The address of GitHub's web pages, `scheme://host[:port]` with no path, from which the
+    /// factory builds the links it writes (the link to the draft pull request in the status
+    /// comment of a finished job). The default is `https://github.com`; a GitHub Enterprise server
+    /// has its own. The host must also be one `output_hygiene.allow_link_domains` of
+    /// `policies/security.yaml` lists, or the adapter would strip every link, and the start says so.
+    #[serde(default = "default_github_web")]
+    pub web_base_url: String,
 }
 
 fn default_true() -> bool {
@@ -382,6 +487,30 @@ fn default_true() -> bool {
 
 fn default_github_api() -> String {
     "https://api.github.com".to_owned()
+}
+
+fn default_github_web() -> String {
+    "https://github.com".to_owned()
+}
+
+impl GithubConfig {
+    /// Why `web_base_url` cannot be used, or `None`: the rules of every outside address, and no
+    /// path, because the links are built as `<base>/<owner>/<name>/...`.
+    fn web_base_problem(&self, profile: Profile) -> Option<&'static str> {
+        if let Some(problem) = endpoint_problem(profile, &self.web_base_url) {
+            return Some(problem);
+        }
+        let (_, rest) = self.web_base_url.split_once("://")?;
+        rest.trim_end_matches('/')
+            .contains('/')
+            .then_some("must be scheme://host[:port] with no path")
+    }
+
+    /// The web address without a trailing slash, ready to have `/<owner>/<name>/...` added.
+    #[must_use]
+    pub fn web_root(&self) -> &str {
+        self.web_base_url.trim_end_matches('/')
+    }
 }
 
 /// The package registry the dependency gate asks about a new package (the crates.io API).
@@ -980,6 +1109,7 @@ impl FactoryConfig {
                 });
             }
         }
+        self.sandbox.validate_docker(self.profile)?;
         // A conflict between the two fields is an error in every profile.
         self.sandbox.remote.remote()?;
         if self.profile == Profile::Production {
@@ -1056,6 +1186,12 @@ impl FactoryConfig {
                     problem,
                 })
             })?;
+            if let Some(problem) = github.web_base_problem(self.profile) {
+                return Err(ConfigError::OutOfRange {
+                    field: "github.web_base_url",
+                    problem,
+                });
+            }
             for installation in &github.installations {
                 installation
                     .tenant
@@ -1202,6 +1338,39 @@ impl FactoryConfig {
             }
         }
         Ok(())
+    }
+
+    /// Checks that the host of the links the factory writes is one the output policy allows
+    /// (`output_hygiene.allow_link_domains`, a listed host or a subdomain of one). The GitHub
+    /// adapter strips a link to any other host, so a `github.web_base_url` that fails this would
+    /// give a comment with no link and no error. It is checked in every profile.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] naming `github.web_base_url`.
+    pub fn check_link_host(
+        &self,
+        policy: &factory_domain::policy::SecurityPolicy,
+    ) -> Result<(), ConfigError> {
+        let Some(github) = &self.github else {
+            return Ok(());
+        };
+        let host = host_of(&github.web_base_url).map(str::to_ascii_lowercase);
+        let allowed = host.as_deref().is_some_and(|host| {
+            policy
+                .output_hygiene
+                .allow_link_domains
+                .iter()
+                .map(|domain| domain.to_ascii_lowercase())
+                .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
+        });
+        if allowed {
+            Ok(())
+        } else {
+            Err(ConfigError::OutOfRange {
+                field: "github.web_base_url",
+                problem: "the host is not one output_hygiene.allow_link_domains of the security policy lists, so every link to it would be stripped",
+            })
+        }
     }
 
     /// The environment variables the process reads, for the README and the usage text.
@@ -1763,6 +1932,238 @@ mod tests {
         // The other profiles are not held to the list.
         let local = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
         assert!(local.check_endpoints(&policy).is_ok());
+    }
+
+    /// `text` with `extra` added to the inline `sandbox` table of the files above.
+    fn with_sandbox_keys(text: &str, extra: &str) -> String {
+        let edited = text.replace(
+            "workspace_root: /var/ws }",
+            &format!("workspace_root: /var/ws, {extra} }}"),
+        );
+        assert_ne!(edited, text, "the edit applied");
+        edited
+    }
+
+    fn refused_key(text: &str) -> &'static str {
+        match FactoryConfig::from_yaml(text) {
+            Err(ConfigError::OutOfRange { field, .. }) => field,
+            other => panic!("expected a refusal that names a key: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_docker_keys_default_to_the_clients_own_defaults() {
+        let config = FactoryConfig::from_yaml(&minimal("local", "a", "b")).expect("loads");
+        assert_eq!(config.sandbox.docker_host, None);
+        assert_eq!(config.sandbox.docker_config, None);
+        assert!(!config.sandbox.allow_remote_docker);
+    }
+
+    #[test]
+    fn a_unix_socket_or_a_loopback_tcp_address_is_accepted_as_the_docker_host() {
+        for host in [
+            "unix:///var/run/docker.sock",
+            "unix:///run/user/1000/docker.sock",
+            "unix:///Users/someone/.colima/default/docker.sock",
+            "tcp://127.0.0.1:2375",
+            "tcp://localhost:2376",
+            "tcp://[::1]:2375",
+        ] {
+            let text = with_sandbox_keys(
+                &minimal("local", "a", "b"),
+                &format!("docker_host: '{host}'"),
+            );
+            let config = FactoryConfig::from_yaml(&text).unwrap_or_else(|e| panic!("{host}: {e}"));
+            assert_eq!(config.sandbox.docker_host.as_deref(), Some(host));
+        }
+    }
+
+    #[test]
+    fn a_docker_host_that_is_not_a_socket_or_a_loopback_address_is_refused_naming_the_key() {
+        for host in [
+            // A remote daemon without the explicit flag.
+            "tcp://10.0.0.5:2375",
+            "tcp://docker.example.org:2376",
+            // Hosts that only look like the loopback interface.
+            "tcp://127.0.0.1.example.org:2375",
+            "tcp://localhost.example.org:2375",
+            "tcp://127.0.0.1@example.org:2375",
+            "tcp://0.0.0.0:2375",
+            // A port is part of the address.
+            "tcp://127.0.0.1",
+            "tcp://127.0.0.1:0",
+            "tcp://127.0.0.1:70000",
+            "tcp://127.0.0.1:http",
+            // Other transports, and shapes that are not an address at all.
+            "ssh://user@127.0.0.1",
+            "http://127.0.0.1:2375",
+            "npipe:////./pipe/docker_engine",
+            "fd://",
+            "unix://docker.sock",
+            "unix://",
+            "unix:///",
+            "unix:///var/run/../docker.sock",
+            "/var/run/docker.sock",
+            "",
+            "unix:///var/run/docker .sock",
+        ] {
+            let text = with_sandbox_keys(
+                &minimal("local", "a", "b"),
+                &format!("docker_host: '{host}'"),
+            );
+            assert_eq!(refused_key(&text), "sandbox.docker_host", "{host:?}");
+        }
+    }
+
+    #[test]
+    fn a_remote_docker_host_needs_the_explicit_flag_and_the_production_profile_refuses_the_flag() {
+        let remote = "docker_host: 'tcp://10.0.0.5:2375'";
+        let local = minimal("local", "a", "b");
+        assert_eq!(
+            refused_key(&with_sandbox_keys(&local, remote)),
+            "sandbox.docker_host"
+        );
+        let allowed = with_sandbox_keys(&local, &format!("{remote}, allow_remote_docker: true"));
+        let config = FactoryConfig::from_yaml(&allowed).expect("the flag allows it");
+        assert_eq!(
+            config.sandbox.docker_host.as_deref(),
+            Some("tcp://10.0.0.5:2375")
+        );
+        // Production: the flag is refused, with or without a remote address behind it.
+        let baseline = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n");
+        assert!(FactoryConfig::from_yaml(&baseline).is_ok());
+        for extra in [
+            format!("{remote}, allow_remote_docker: true"),
+            "allow_remote_docker: true".to_owned(),
+        ] {
+            assert_eq!(
+                refused_key(&with_sandbox_keys(&baseline, &extra)),
+                "sandbox.allow_remote_docker",
+                "{extra}"
+            );
+        }
+        // Production still accepts the sockets and the loopback addresses.
+        for host in ["unix:///var/run/docker.sock", "tcp://127.0.0.1:2375"] {
+            let text = with_sandbox_keys(&baseline, &format!("docker_host: '{host}'"));
+            FactoryConfig::from_yaml(&text).unwrap_or_else(|e| panic!("{host}: {e}"));
+        }
+        assert_eq!(
+            refused_key(&with_sandbox_keys(
+                &baseline,
+                "docker_host: 'tcp://10.0.0.5:2375'"
+            )),
+            "sandbox.docker_host"
+        );
+    }
+
+    #[test]
+    fn the_docker_config_directory_must_be_an_absolute_path() {
+        let local = minimal("local", "a", "b");
+        let ok = with_sandbox_keys(&local, "docker_config: /home/factory/.docker");
+        let config = FactoryConfig::from_yaml(&ok).expect("loads");
+        assert_eq!(
+            config.sandbox.docker_config,
+            Some(PathBuf::from("/home/factory/.docker"))
+        );
+        for bad in [
+            "'.docker'",
+            "'~/.docker'",
+            "'../docker'",
+            "''",
+            "/home/../etc/docker",
+        ] {
+            let text = with_sandbox_keys(&local, &format!("docker_config: {bad}"));
+            assert_eq!(refused_key(&text), "sandbox.docker_config", "{bad}");
+        }
+    }
+
+    // ---- the host of the links the factory writes (LB-08) -------------------------------------------
+
+    fn web_world(web: &str) -> String {
+        LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            &format!("  api_base_url: http://127.0.0.1:9\n  web_base_url: '{web}'\n"),
+        )
+    }
+
+    #[test]
+    fn the_web_base_defaults_to_github_dot_com() {
+        let config = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert_eq!(
+            config.github.expect("github").web_base_url,
+            "https://github.com"
+        );
+    }
+
+    #[test]
+    fn a_github_enterprise_style_web_base_is_accepted() {
+        for web in [
+            "https://ghe.example.org",
+            "https://ghe.example.org/",
+            "https://ghe.example.org:8443",
+            "https://git.corp.example.org",
+        ] {
+            let config = FactoryConfig::from_yaml(&with_world("local", &web_world(web)))
+                .unwrap_or_else(|e| panic!("{web}: {e}"));
+            assert_eq!(config.github.expect("github").web_base_url, web);
+        }
+        // The loopback interface may use plain http outside production, like every address here.
+        let local =
+            FactoryConfig::from_yaml(&with_world("local", &web_world("http://127.0.0.1:3000")));
+        assert!(local.is_ok(), "{local:?}");
+    }
+
+    #[test]
+    fn a_web_base_that_is_not_a_plain_host_url_is_refused_naming_the_key() {
+        for web in [
+            "http://ghe.example.org",
+            "ghe.example.org",
+            "ftp://ghe.example.org",
+            "https://ghe.example.org/some/path",
+            "https://ghe.example.org?x=1",
+            "https://user@ghe.example.org",
+            "https://ghe.example.org/#x",
+            "https://",
+        ] {
+            let text = with_world("local", &web_world(web));
+            assert_eq!(refused_key(&text), "github.web_base_url", "{web}");
+        }
+        // Production reaches the outside world over https only, the loopback interface included.
+        let production = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  web_base_url: 'http://127.0.0.1:3000'\n",
+        );
+        assert_eq!(refused_key(&production), "github.web_base_url");
+    }
+
+    #[test]
+    fn the_link_host_must_be_one_the_output_policy_allows_or_the_start_stops() {
+        let mut policy = crate::startup::tests_support::repository_security_policy();
+        assert_eq!(
+            policy.output_hygiene.allow_link_domains,
+            ["github.com".to_owned()]
+        );
+        let stock = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(stock.check_link_host(&policy).is_ok());
+        let enterprise = FactoryConfig::from_yaml(&with_world(
+            "local",
+            &web_world("https://ghe.example.org:8443"),
+        ))
+        .expect("loads");
+        // The host is not on the list: the adapter would strip every link, and the start says so.
+        assert!(matches!(
+            enterprise.check_link_host(&policy),
+            Err(ConfigError::OutOfRange {
+                field: "github.web_base_url",
+                ..
+            })
+        ));
+        // A host that only ends like a listed one is not a subdomain of it.
+        policy.output_hygiene.allow_link_domains = vec!["example.org".to_owned()];
+        assert!(enterprise.check_link_host(&policy).is_ok(), "a subdomain");
+        policy.output_hygiene.allow_link_domains = vec!["xample.org".to_owned()];
+        assert!(enterprise.check_link_host(&policy).is_err());
+        policy.output_hygiene.allow_link_domains = vec!["GHE.example.org".to_owned()];
+        assert!(enterprise.check_link_host(&policy).is_ok(), "case");
     }
 
     #[test]

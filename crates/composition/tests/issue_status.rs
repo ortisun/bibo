@@ -28,6 +28,8 @@ use factory_composition::startup::load_policy;
 use factory_domain::ids::{
     AttemptId, CorrelationId, JobId, PrincipalId, RepositoryId, StageRunId, TenantId,
 };
+use factory_domain::machines::guards::{GuardCleared, GuardFacts, PipelineScopeFacts, evaluate};
+use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::policy::issue_workflow::StatusLabel;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus};
@@ -225,6 +227,27 @@ impl Rig {
         host: &Arc<FakeChangeHost>,
         jobs: &Arc<ActiveJobs>,
     ) -> IssueStatusReporter {
+        Self::reporter_on(
+            clock,
+            store,
+            tenant,
+            writer,
+            host,
+            jobs,
+            "https://github.com",
+        )
+    }
+
+    /// A reporter whose links to pull requests are built from `web_base_url`.
+    fn reporter_on(
+        clock: &Arc<FakeClock>,
+        store: &Arc<InMemoryStore>,
+        tenant: TenantId,
+        writer: &Arc<Decorated>,
+        host: &Arc<FakeChangeHost>,
+        jobs: &Arc<ActiveJobs>,
+        web_base_url: &str,
+    ) -> IssueStatusReporter {
         let policies = load_policy(&root(), &[]).expect("the real policies load");
         IssueStatusReporter::new(IssueStatusDeps {
             store: store.clone(),
@@ -238,6 +261,7 @@ impl Rig {
             policy_hash: Sha256Digest::of(b"the policy in force"),
             permission: StatusPermission::from_level(AutonomyLevel::L0),
             redactor: Arc::new(redactor_from_policy(&policies.security).expect("a redactor")),
+            web_base_url: web_base_url.to_owned(),
         })
     }
 
@@ -443,6 +467,32 @@ impl Rig {
 
     /// Moves the job with a legal transition of the machine.
     async fn move_job(&self, job: JobId, event: JobEvent, guard: Guard) {
+        self.move_job_with(job, event, cleared(guard)).await;
+    }
+
+    /// Completes a job whose only stage in scope, intake, has passed: the guard of the transition
+    /// holds on facts that say so. (The testkit's `cleared` has no facts for this guard.)
+    async fn complete(&self, job: JobId) {
+        let runs = [StageRunSnapshot {
+            id: StageRunId::from_uuid(uid(9000)),
+            kind: StageKind::Intake,
+            status: StageRunStatus::Passed,
+            block_disposition: None,
+        }];
+        let proof = evaluate(
+            Guard::PipelineScopeComplete,
+            &GuardFacts::PipelineScope(PipelineScopeFacts {
+                scope: &[StageKind::Intake],
+                stage_runs: &runs,
+                approval_decision_is_approve: true,
+                ledger_chain_verifies: true,
+            }),
+        )
+        .expect("the scope is complete");
+        self.move_job_with(job, JobEvent::Complete, proof).await;
+    }
+
+    async fn move_job_with(&self, job: JobId, event: JobEvent, proof: GuardCleared) {
         let mut tx = self
             .store
             .begin(TenantScope::new(self.tenant))
@@ -450,7 +500,7 @@ impl Rig {
             .unwrap();
         let row = tx.get_job(job).await.unwrap();
         let at = factory_domain::values::Timestamp::parse("2026-11-02T10:00:00Z").unwrap();
-        let plan = AppliedTransition::plan(row.value.status, event, at, cleared(guard)).unwrap();
+        let plan = AppliedTransition::plan(row.value.status, event, at, proof).unwrap();
         tx.transition_job(job, row.version, plan).await.unwrap();
         tx.commit().await.unwrap();
     }
@@ -535,6 +585,53 @@ async fn a_new_job_gets_one_label_and_one_comment_and_each_change_edits_them() {
     let stamp = StatusStamp::from_text(&comments[0]).expect("the marker");
     assert_eq!(stamp.job, job);
     assert!(comments[0].lines().all(|l| !l.contains("factory:")));
+}
+
+/// LB-08: the link to the draft pull request in the text of a finished job named `github.com`
+/// whatever the deployment was. It is built from the configured web address now.
+#[tokio::test]
+async fn a_finished_job_links_to_the_pull_requests_on_the_configured_host() {
+    for (base, link_start) in [
+        (
+            "https://github.com",
+            "(https://github.com/acme/widgets/pulls?q=head%3A",
+        ),
+        // A GitHub Enterprise-style server, with a port and with a trailing slash.
+        (
+            "https://ghe.example.org",
+            "(https://ghe.example.org/acme/widgets/pulls?q=head%3A",
+        ),
+        (
+            "https://ghe.example.org:8443/",
+            "(https://ghe.example.org:8443/acme/widgets/pulls?q=head%3A",
+        ),
+    ] {
+        let mut rig = Rig::new();
+        rig.reporter = Rig::reporter_on(
+            &rig.clock,
+            &rig.store,
+            rig.tenant,
+            &rig.writer,
+            &rig.host,
+            &rig.jobs,
+            base,
+        );
+        let job = rig.accepted(Some("acme/widgets#12")).await;
+        rig.complete(job).await;
+        rig.reporter.pass(rig.tenant).await;
+        assert_eq!(rig.labels(), vec!["factory: done".to_owned()], "{base}");
+        let comment = rig.comments().remove(0);
+        assert!(
+            comment.contains(link_start),
+            "{base}: the link starts {link_start}: {comment}"
+        );
+        if base != "https://github.com" {
+            assert!(
+                !comment.contains("github.com"),
+                "{base}: no fixed host is left: {comment}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -1393,6 +1490,7 @@ async fn a_level_below_the_one_the_row_allows_gets_no_status() {
         // The jobs of the rig run at L1.
         permission: StatusPermission::from_level(AutonomyLevel::L2),
         redactor: Arc::new(redactor_from_policy(&policies.security).expect("a redactor")),
+        web_base_url: "https://github.com".to_owned(),
     });
     rig.accepted(Some("acme/widgets#12")).await;
     rig.reporter.pass(rig.tenant).await;
@@ -1418,6 +1516,7 @@ fn step_inputs(rig: &Rig, checkout: std::path::PathBuf) -> StatusStepInputs {
         base_policy_hash: policies.hash.clone(),
         checkout,
         untrusted_roots: Vec::new(),
+        web_base_url: "https://github.com".to_owned(),
     }
 }
 

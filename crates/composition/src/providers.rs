@@ -50,7 +50,7 @@ use factory_sandbox::{
 use factory_spec_adapter::invocation::IntegrationConfig;
 use factory_spec_adapter::{SpecKitConfig, SpecKitProvider};
 
-use crate::config::{FactoryConfig, Remote, RemoteConfig};
+use crate::config::{FactoryConfig, Remote, RemoteConfig, SandboxConfig};
 use crate::indexing::{ActiveJobs, IndexingSandbox, IndexingWorkspaces};
 use crate::profile::Profile;
 use crate::sandbox_specs::sandbox_policy_from;
@@ -79,6 +79,31 @@ pub enum ProviderError {
     /// The Spec Kit installation file is missing or not the expected JSON.
     #[error("the Spec Kit installation at {0} cannot be read: {1}")]
     Installation(String, String),
+    /// `sandbox.docker_config` is not a directory on this machine.
+    #[error("sandbox.docker_config: {0} is not a directory on this machine")]
+    DockerConfig(String),
+}
+
+/// The settings of the `docker` client from the sandbox section of the configuration. The client
+/// runs with an empty environment, so `DOCKER_HOST` and `DOCKER_CONFIG` reach it only through
+/// here, and only when the configuration names them.
+///
+/// # Errors
+/// [`ProviderError::DockerConfig`] when `sandbox.docker_config` is not a directory.
+pub fn docker_settings_from(sandbox: &SandboxConfig) -> Result<DockerSettings, ProviderError> {
+    let mut settings = DockerSettings::default();
+    if let Some(host) = &sandbox.docker_host {
+        settings.env.push(("DOCKER_HOST".to_owned(), host.clone()));
+    }
+    if let Some(directory) = &sandbox.docker_config {
+        if !directory.is_dir() {
+            return Err(ProviderError::DockerConfig(directory.display().to_string()));
+        }
+        settings
+            .env
+            .push(("DOCKER_CONFIG".to_owned(), directory.display().to_string()));
+    }
+    Ok(settings)
 }
 
 /// What [`assemble`] needs from the rest of the start-up.
@@ -375,7 +400,7 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
                 .chain(config.sandbox.labels.clone())
                 .collect(),
             sidecar_command: config.sandbox.sidecar_command.clone(),
-            docker: DockerSettings::default(),
+            docker: docker_settings_from(&config.sandbox)?,
             watchdog: WatchdogSettings {
                 disk_poll_interval: Duration::from_secs(5),
             },

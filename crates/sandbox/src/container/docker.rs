@@ -99,13 +99,16 @@ impl DockerError {
     }
 }
 
-/// The text a client prints when the daemon cannot be reached.
+/// The text a client prints when the daemon cannot be reached. The first four are the wording of
+/// older clients; the last is the one of the client that prints `failed to connect to the docker
+/// API at <address>; check if the path is correct and if the daemon is running` (Docker 29).
 fn daemon_unreachable(text: &str) -> bool {
     [
         "Cannot connect to the Docker daemon",
         "Is the docker daemon running",
         "error during connect",
         "Cannot connect to the Docker API",
+        "failed to connect to the docker API at",
     ]
     .iter()
     .any(|needle| text.contains(needle))
@@ -359,6 +362,113 @@ impl DockerClient {
             Ok(documents.remove(0))
         } else {
             Err(DockerError::Os)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! What the client says when it cannot reach the daemon. Each test hands the client one text of
+    //! standard error, as a scripted `docker` that exits with code 1, and asks what the call became.
+
+    use super::*;
+    use factory_domain::redaction::Redactor;
+    use factory_ports::process::{ProcessRunner, SpawnOutput};
+
+    /// A runner whose `docker` always exits with code 1 and prints `text` on standard error.
+    struct Prints(&'static str);
+
+    #[async_trait::async_trait]
+    impl ProcessRunner for Prints {
+        fn fidelity(&self) -> Fidelity {
+            Fidelity::Fake
+        }
+
+        async fn run(
+            &self,
+            _req: SpawnRequest,
+            _cancel: &dyn CancelSignal,
+        ) -> Result<SpawnOutput, SpawnError> {
+            Ok(SpawnOutput {
+                exit_code: Some(1),
+                signal: None,
+                stdout: Vec::new(),
+                stderr: self.0.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    async fn what_became_of(stderr: &'static str) -> Result<DockerOutput, DockerError> {
+        let client = DockerClient::new(
+            Arc::new(Prints(stderr)),
+            DockerSettings::default(),
+            Arc::new(Redactor::builder().build().expect("a redactor")),
+        );
+        client
+            .run_raw(
+                vec!["version".to_owned()],
+                None,
+                Duration::from_secs(5),
+                1024,
+                &NeverCancel,
+            )
+            .await
+    }
+
+    async fn is_unavailable(stderr: &'static str) -> bool {
+        what_became_of(stderr).await == Err(DockerError::Unavailable)
+    }
+
+    #[tokio::test]
+    async fn the_phrase_cannot_connect_to_the_docker_daemon_means_unavailable() {
+        assert!(
+            is_unavailable("Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n")
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn the_phrase_is_the_docker_daemon_running_means_unavailable() {
+        assert!(is_unavailable("error: Is the docker daemon running?\n").await);
+    }
+
+    #[tokio::test]
+    async fn the_phrase_error_during_connect_means_unavailable() {
+        assert!(
+            is_unavailable("error during connect: Get \"http://docker.example/v1.45/info\": EOF\n")
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn the_phrase_cannot_connect_to_the_docker_api_means_unavailable() {
+        assert!(is_unavailable("Cannot connect to the Docker API at tcp://127.0.0.1:2375\n").await);
+    }
+
+    /// The wording of the client that prints `failed to connect to the docker API at ...` (Docker
+    /// 29.9.2 prints it for a `DOCKER_HOST` whose socket is not there).
+    #[tokio::test]
+    async fn the_current_client_wording_failed_to_connect_to_the_docker_api_means_unavailable() {
+        assert!(
+            is_unavailable(
+                "failed to connect to the docker API at unix:///nonexistent/docker.sock; check if the path is correct and if the daemon is running: dial unix /nonexistent/docker.sock: connect: no such file or directory\n"
+            )
+            .await
+        );
+    }
+
+    /// A refusal by a daemon that is there is not an unreachable daemon: the call fails with the
+    /// message, and a missing object stays recognisable.
+    #[tokio::test]
+    async fn a_daemon_that_answers_with_an_error_is_not_unavailable() {
+        let refused = what_became_of("Error response from daemon: No such container: gone\n").await;
+        assert_eq!(refused.expect("the output is returned").code, Some(1));
+        for text in [
+            "Error response from daemon: conflict: unable to delete image\n",
+            "failed to create the container: name is already in use\n",
+        ] {
+            assert!(!is_unavailable(text).await, "{text}");
         }
     }
 }

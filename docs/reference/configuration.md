@@ -97,8 +97,13 @@ The tenant pool and the system pool must name different login roles. A file that
 | `sandbox.remote.https_host` | text | no | none | The host of `https://<host>/<owner>/<name>.git`. When both keys are empty the host is `github.com`. |
 | `sandbox.remote.directory` | path | no | none | A directory of bare repositories. The production profile refuses it. |
 | `sandbox.sidecar_command` | list of text | no | empty | The arguments of the egress sidecar program. A deployment that runs agents must set them. The real sidecar refuses to start without them. |
+| `sandbox.docker_host` | text | no | none | Where the Docker daemon is, as `DOCKER_HOST` would say: `unix:///<absolute socket path>` (no `..` part) or `tcp://<host>:<port>`. A `tcp://` host must be `127.0.0.1`, `localhost` or `[::1]` unless `sandbox.allow_remote_docker` is true. No other scheme is accepted (`ssh://`, `npipe://`, `fd://`, `http://`). With no value the `docker` client uses its own default socket. A refused value stops the worker at start with exit code 2 and a line that begins `sandbox.docker_host:`. |
+| `sandbox.docker_config` | path | no | none | The directory of the Docker client's own configuration, as `DOCKER_CONFIG` would say. An absolute path with no `..` part. It must be a directory on the machine where the worker runs; if it is not, the worker stops at start with a line that begins `sandbox.docker_config:`. |
+| `sandbox.allow_remote_docker` | true or false | no | false | Lets `sandbox.docker_host` be a `tcp://` address that is not on the loopback interface. Whoever can reach that address controls every container, so set it only for a daemon on a network you control. The production profile refuses `true` and the line begins `sandbox.allow_remote_docker:`. |
 
 The two root paths that the Docker daemon mounts, `sandbox.token_root` and `sandbox.workspace_root`, must be paths on the machine where the daemon runs. They must not lie under a forbidden mount source of the policy, such as `/var`, `/etc`, `/home`, `/usr`, `/root` or `/`.
+
+The worker starts the `docker` client with an empty environment: a `DOCKER_HOST` or `DOCKER_CONFIG` in the worker's own environment does not reach it. `sandbox.docker_host` and `sandbox.docker_config` are the only way to name a daemon that is not on the default socket (a rootless Docker, Colima, a remote host), and they are the only two variables passed.
 
 ### broker
 
@@ -135,6 +140,7 @@ The two root paths that the Docker daemon mounts, `sandbox.token_root` and `sand
 | `github.bypass_attestations[].repository` | text | yes | no default | The repository, as `owner/name`. |
 | `github.bypass_attestations[].principal` | text | yes | no default | The administrator who made the statement, as the UUID of their principal. |
 | `github.bypass_attestations[].recorded_at` | text | yes | no default | When the statement was recorded, as a UTC time such as `2026-10-28T09:00:00Z`. |
+| `github.web_base_url` | text | no | https://github.com | The address of GitHub's web pages, `scheme://host[:port]` with no path, from which the factory builds the links it writes: today the link to the draft pull request in the status comment of a finished job. A GitHub Enterprise server has its own. The same rules as the other outside addresses apply (https, or plain http on the loopback interface outside production). The host must also be listed in `output_hygiene.allow_link_domains` of `policies/security.yaml` (a listed host or a subdomain of one); otherwise the adapter would strip every link, so the worker stops at start with a line that begins `github.web_base_url:`. |
 | `github.write_issue_status` | true or false | no | true | Writes the state of each job on its issue: one `factory: <state>` label and one status comment. Set it to false to stop the worker writing on issues. Nothing else changes, because no job depends on the labels. The worker also needs `policies/issue-workflow.yaml` in the protected checkout when this is true. Without it, or with a broken one, the worker still starts: it writes nothing on any issue and reports a degraded health line with the reason. |
 
 ### registry

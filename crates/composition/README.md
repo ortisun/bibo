@@ -91,7 +91,10 @@ The configuration keys that point at the outside world are in [the reference](..
    the policy, the redactor, the registry of secret values, the connected store and the telemetry
    guard.
 3. Add what the binary alone needs (the worker starts the broker listener), then
-   `Prepared::check_secret_kinds(profile)`.
+   `Prepared::check_secret_kinds(profile, not_held)`. `not_held` lists the kinds of secret the policy names for
+   the factory as a whole that this binary never holds (the worker passes `WORKER_DOES_NOT_HOLD`, the webhook
+   secret, which only the API holds): they are skipped, with no warning. A kind the binary holds and lacks is
+   still refused in the production profile and logged in the others.
 4. Build a `PortRegistry`, call `check(profile)`, and only then build the engine.
 
 ## Tests
@@ -129,6 +132,9 @@ sandbox:
   labels: {}                                # more Docker labels; a test run adds its own
   remote: { https_host: github.com }        # or { directory: /abs/path } outside production
   sidecar_command: []                       # the egress sidecar's arguments
+  # docker_host: unix:///var/run/docker.sock   # where the Docker daemon is (the client runs with an empty environment)
+  # docker_config: /home/factory/.docker       # the client's configuration directory; absolute, must exist
+  # allow_remote_docker: false                 # true allows a tcp:// host off the loopback interface; production refuses it
 broker:
   listen: 127.0.0.1:8731
   upstreams:
@@ -200,7 +206,9 @@ below, and the test keeps them true.
 
 1. **The worker example parses.** It is a valid configuration of the `local` profile with no credential, so the
    worker is BLOCKED until the deployment adds `broker.upstreams`, `broker.prices`, `github` and
-   `worker.tenants`. It may add `sandbox.remote` and `sandbox.sidecar_command`.
+   `worker.tenants`. It may add `sandbox.remote`, `sandbox.sidecar_command`, `sandbox.docker_host` and
+   `sandbox.docker_config` (the two Docker keys are the only way to reach a daemon that is not on the default
+   socket: the `docker` client of the worker runs with an empty environment).
 2. **The API example is refused by the worker's parser, and is the API's own.** It names `database.api` and
    `listen`, which `FactoryConfig` does not have, and lacks `definitions_root`; the test
    `the_api_example_is_refused_by_the_worker_parser` shows the refusal. The API has its own type

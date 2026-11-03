@@ -139,3 +139,134 @@ fn the_path_rules_follow_the_protection_groups_of_the_policy() {
     assert!(shown.contains("Hidden"), "{shown}");
     assert!(shown.contains("DenyWrite"), "{shown}");
 }
+
+// ---- where the Docker daemon is (LB-01) ------------------------------------------------------------
+
+/// A runner that records every request and answers as a daemon with nothing in it would: exit code
+/// 0 and no output. No process starts.
+#[derive(Default)]
+struct Recorder {
+    seen: std::sync::Mutex<Vec<factory_ports::process::SpawnRequest>>,
+}
+
+#[async_trait::async_trait]
+impl factory_ports::process::ProcessRunner for Recorder {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn run(
+        &self,
+        req: factory_ports::process::SpawnRequest,
+        _cancel: &dyn factory_ports::clock::CancelSignal,
+    ) -> Result<factory_ports::process::SpawnOutput, factory_ports::process::SpawnError> {
+        self.seen.lock().expect("lock").push(req);
+        Ok(factory_ports::process::SpawnOutput {
+            exit_code: Some(0),
+            signal: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            truncated: false,
+        })
+    }
+}
+
+/// Builds the providers on a recorder, asks the sandbox to sweep (the one call that reaches the
+/// `docker` client with no database behind it) and returns what the client was asked to run.
+async fn docker_requests_of(config: &FactoryConfig) -> Vec<factory_ports::process::SpawnRequest> {
+    let recorder = Arc::new(Recorder::default());
+    let policies = load_policy(&root(), &[]).expect("the repository policy loads");
+    let mut given = inputs(config, &policies);
+    given.runner = recorder.clone();
+    let providers = assemble(given).expect("the providers assemble");
+    providers
+        .sandbox
+        .sweep_orphans(&[])
+        .await
+        .expect("an empty daemon has nothing to sweep");
+    let seen = recorder.seen.lock().expect("lock").clone();
+    seen
+}
+
+fn plain(env: &[(String, factory_ports::process::EnvValue)], name: &str) -> Option<String> {
+    env.iter().find_map(|(key, value)| match value {
+        factory_ports::process::EnvValue::Plain(text) if key == name => Some(text.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn the_docker_keys_of_the_configuration_reach_every_docker_command_of_the_sandbox() {
+    let directory =
+        std::env::temp_dir().join(format!("composition-docker-config-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("a directory");
+    let extra = format!(
+        "  docker_host: 'unix:///run/user/1000/docker.sock'\n  docker_config: {}\n",
+        directory.display()
+    );
+    let config = FactoryConfig::from_yaml(&config_text("local", &extra)).expect("parses");
+    let seen = docker_requests_of(&config).await;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        seen.len() >= 2,
+        "the sweep lists containers and networks: {seen:?}"
+    );
+    for request in &seen {
+        assert_eq!(request.program, factory_ports::process::Program::Docker);
+        assert_eq!(
+            plain(&request.env, "DOCKER_HOST").as_deref(),
+            Some("unix:///run/user/1000/docker.sock"),
+            "{request:?}"
+        );
+        assert_eq!(
+            plain(&request.env, "DOCKER_CONFIG"),
+            Some(directory.display().to_string()),
+            "{request:?}"
+        );
+        assert_eq!(request.env.len(), 2, "nothing else is passed: {request:?}");
+    }
+}
+
+#[tokio::test]
+async fn without_the_keys_the_docker_client_gets_no_environment_at_all() {
+    // The default stays what it was: the client's own default socket, and no variable of ours.
+    let config = FactoryConfig::from_yaml(&config_text("local", "")).expect("parses");
+    let seen = docker_requests_of(&config).await;
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter().all(|request| request.env.is_empty()),
+        "{seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_remote_docker_host_allowed_by_the_flag_reaches_the_client_unchanged() {
+    let extra = "  docker_host: 'tcp://10.0.0.5:2375'\n  allow_remote_docker: true\n";
+    let config = FactoryConfig::from_yaml(&config_text("local", extra)).expect("parses");
+    let seen = docker_requests_of(&config).await;
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|request| {
+        plain(&request.env, "DOCKER_HOST").as_deref() == Some("tcp://10.0.0.5:2375")
+    }));
+}
+
+#[test]
+fn a_docker_config_that_is_not_a_directory_stops_the_assembly_and_names_the_key() {
+    let policies = load_policy(&root(), &[]).expect("the repository policy loads");
+    for path in ["/nonexistent/docker-config", "/etc/hosts"] {
+        let config =
+            FactoryConfig::from_yaml(&config_text("local", &format!("  docker_config: {path}\n")))
+                .expect("parses: the absolute path is all the parser can check");
+        let refused = assemble(inputs(&config, &policies))
+            .err()
+            .unwrap_or_else(|| panic!("{path} is not a directory"));
+        assert!(
+            matches!(refused, ProviderError::DockerConfig(_)),
+            "{refused:?}"
+        );
+        assert!(
+            refused.to_string().contains("sandbox.docker_config"),
+            "{refused}"
+        );
+    }
+}

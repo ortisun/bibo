@@ -290,13 +290,15 @@ pub const fn stage_phrase(stage: StageKind) -> &'static str {
 }
 
 /// The link to the draft pull request of a finished job: the list of pull requests of the
-/// repository, narrowed to the job's branch. A link to `github.com`, the one host the output
-/// hygiene allows.
+/// repository, narrowed to the job's branch. It points at `web_base_url`
+/// (`github.web_base_url`: `https://github.com`, or the address of a GitHub Enterprise server),
+/// which must be a host the output hygiene allows (`FactoryConfig::check_link_host`).
 #[must_use]
-pub fn pull_request_link(repo: &RepoRef, job: JobId) -> Option<String> {
+pub fn pull_request_link(web_base_url: &str, repo: &RepoRef, job: JobId) -> Option<String> {
     let branch = job_branch(job).ok()?;
     Some(format!(
-        "https://github.com/{}/{}/pulls?q=head%3A{}",
+        "{}/{}/{}/pulls?q=head%3A{}",
+        web_base_url.trim_end_matches('/'),
         repo.owner(),
         repo.name(),
         percent_encode_component(branch.as_str())
@@ -374,6 +376,9 @@ pub struct IssueStatusDeps {
     pub permission: StatusPermission,
     /// The one redactor of the process. A comment with a secret in it is not written.
     pub redactor: Arc<Redactor>,
+    /// The address of GitHub's web pages, from which the link to the pull request is built
+    /// (`github.web_base_url`).
+    pub web_base_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -936,7 +941,7 @@ impl Inner {
             return Err(FailureCode::NotAllowed.into());
         }
         let link = (item.status == JobStatus::Completed)
-            .then(|| pull_request_link(&item.repo, item.job))
+            .then(|| pull_request_link(&self.deps.web_base_url, &item.repo, item.job))
             .flatten();
         let text = status_text(item.status, item.stage, link.as_deref());
         if self
@@ -1303,6 +1308,9 @@ pub struct StatusStepInputs {
     pub tenants: Vec<TenantId>,
     /// The one redactor of the process.
     pub redactor: Arc<Redactor>,
+    /// The address of GitHub's web pages (`github.web_base_url`), for the link in the text of a
+    /// finished job.
+    pub web_base_url: String,
     /// The approval policy, for the row `write_status_label` and the trigger label.
     pub approval: Arc<ApprovalPolicy>,
     /// The hash of the security and approval policies.
@@ -1350,6 +1358,7 @@ impl StatusStep {
                 policy_hash: policy.policy_hash,
                 permission: policy.permission,
                 redactor: inputs.redactor,
+                web_base_url: inputs.web_base_url,
             }))),
             Err(refused) => Self::Off(Arc::new(IssueStatusOff::new(
                 inputs.store,
@@ -1478,6 +1487,26 @@ mod tests {
         );
         let without = status_text(JobStatus::Completed, None, None);
         assert!(!without.contains("http"));
+    }
+
+    #[test]
+    fn the_pull_request_link_is_built_on_the_configured_web_address() {
+        let repo = RepoRef::parse("acme/widgets").expect("a repository");
+        let job = JobId::from_uuid(uuid::Uuid::from_u128(0x1234));
+        let branch = percent_encode_component(job_branch(job).expect("a branch").as_str());
+        let on = |base: &str| pull_request_link(base, &repo, job).expect("a link");
+        assert_eq!(
+            on("https://github.com"),
+            format!("https://github.com/acme/widgets/pulls?q=head%3A{branch}")
+        );
+        assert_eq!(
+            on("https://ghe.example.org"),
+            format!("https://ghe.example.org/acme/widgets/pulls?q=head%3A{branch}")
+        );
+        assert_eq!(
+            on("https://ghe.example.org:8443/"),
+            format!("https://ghe.example.org:8443/acme/widgets/pulls?q=head%3A{branch}")
+        );
     }
 
     #[test]
