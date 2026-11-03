@@ -5,7 +5,7 @@
 //! check.
 
 use factory_domain::values::Timestamp;
-use factory_ports::githost::{ActorLogin, GitHostError, GithubActor};
+use factory_ports::githost::{AccountType, ActorLogin, GitHostError, GithubActor};
 use factory_ports::paths::RepoRef;
 use serde_json::Value;
 
@@ -32,6 +32,18 @@ pub(crate) fn actor(value: &Value) -> Result<GithubActor, GitHostError> {
     let login =
         ActorLogin::new(raw.strip_suffix("[bot]").unwrap_or(raw)).unwrap_or_else(|_| ghost());
     Ok(GithubActor { id, login })
+}
+
+/// The kind of account of an `actor` object, from its `type` and its login. `null` is the
+/// placeholder of a deleted account, which is not a person; so is an object with no `type`.
+pub(crate) fn actor_type(value: &Value) -> AccountType {
+    if value.is_null() {
+        return AccountType::Other;
+    }
+    AccountType::from_host(
+        value["type"].as_str(),
+        value["login"].as_str().unwrap_or_default(),
+    )
 }
 
 fn ghost() -> ActorLogin {

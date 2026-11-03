@@ -519,6 +519,8 @@ fn paged_world(
         configure: Some(Box::new(move |config| {
             if let Some(max) = max_pages {
                 config.pages.max_pages = max;
+                // The events of an issue have a cap of their own, larger by default.
+                config.pages.event_pages = max;
             }
         })),
         ..Options::default()

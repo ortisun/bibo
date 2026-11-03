@@ -146,6 +146,43 @@ pub struct GithubActor {
     pub login: ActorLogin,
 }
 
+/// What kind of account the code host says an actor is, from the `type` of the actor in an event.
+/// Only a [`User`](Self::User) is a person. An approval or a request by anything else is refused,
+/// whatever its numeric id and whatever the allowlist says, because the policy gives authority to
+/// people (`must_be_human_user`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccountType {
+    /// A person's account.
+    User,
+    /// A bot account, including a GitHub App acting as itself.
+    Bot,
+    /// An organization.
+    Organization,
+    /// Anything else, and an actor whose type the host did not say. Not a person.
+    Other,
+}
+
+impl AccountType {
+    /// The type from the `type` string of the host and the login of the actor. A login that ends
+    /// in `[bot]` is a bot whatever `type` says.
+    #[must_use]
+    pub fn from_host(kind: Option<&str>, login: &str) -> Self {
+        match kind {
+            _ if login.ends_with("[bot]") => Self::Bot,
+            Some("User") => Self::User,
+            Some("Bot") => Self::Bot,
+            Some("Organization") => Self::Organization,
+            _ => Self::Other,
+        }
+    }
+
+    /// True for a person's account.
+    #[must_use]
+    pub const fn is_person(self) -> bool {
+        matches!(self, Self::User)
+    }
+}
+
 /// Who applied a label, and when the code host says it did.
 ///
 /// Added after v1.1, pending architect confirmation (`docs/architecture/ports-v1.1.md`, "Additions
@@ -157,6 +194,109 @@ pub struct LabelApplication {
     /// When the code host recorded it. `None` when the source cannot say; a caller then has no
     /// time to compare and must not pretend it has.
     pub applied_at: Option<Timestamp>,
+    /// The kind of account that applied it. Only a person's account can be allowed to ask for
+    /// work or to approve a design.
+    pub actor_type: AccountType,
+}
+
+/// One `labeled` event of an issue, reduced to what the gates read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledEvent {
+    /// The id the host gave the event. Events are numbered in the order they happened; it breaks a
+    /// tie between two events of the same second.
+    pub id: Option<u64>,
+    /// When the host recorded the event.
+    pub at: Timestamp,
+    /// The name of the label, as it was at the time of the event.
+    pub label: String,
+    /// Who applied it and what kind of account that is, or `None` when the host names nobody
+    /// (the placeholder of a deleted account is named, so `None` is an event with a null actor).
+    pub actor: Option<(GithubActor, AccountType)>,
+}
+
+/// The `labeled` events of one issue, and whether the list is whole.
+///
+/// This type is the one place that says what the events mean, so that the adapter and the fake
+/// cannot disagree. Two rules matter:
+///
+/// * **A list that was cut answers nothing.** If the host has more events than the reader fetched,
+///   `complete` is false and every question is `Unavailable`, whatever was found: the event that
+///   matters may be in the part that was not read, and an older application by an approver must
+///   never stand in for a newer one by somebody else.
+/// * **The order of the list is not relied on.** The latest application is the event with the
+///   greatest time, then the greatest id. GitHub's order (oldest first) has not been observed by
+///   anybody here; this works whichever way the list comes. Two events that tie on both and name
+///   different people are ambiguous, and the answer is `Unavailable`: nobody is guessed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelTimeline {
+    events: Vec<LabeledEvent>,
+    complete: bool,
+}
+
+impl LabelTimeline {
+    /// The events read, in any order, and whether the reader saw the end of the list.
+    #[must_use]
+    pub const fn new(events: Vec<LabeledEvent>, complete: bool) -> Self {
+        Self { events, complete }
+    }
+
+    /// The application of `label` that put it on the issue now: the latest `labeled` event for
+    /// exactly that name. `None` when no event applied it, or when the latest names nobody.
+    ///
+    /// # Errors
+    /// [`GitHostError::Unavailable`] when the list was cut, or when the two latest events cannot
+    /// be told apart.
+    pub fn latest_application(
+        &self,
+        label: &str,
+    ) -> Result<Option<LabelApplication>, GitHostError> {
+        if !self.complete {
+            return Err(GitHostError::Unavailable);
+        }
+        let mut latest: Option<&LabeledEvent> = None;
+        let mut tied = false;
+        for event in self.events.iter().filter(|e| e.label == label) {
+            let Some(best) = latest else {
+                latest = Some(event);
+                continue;
+            };
+            match (event.at, event.id).cmp(&(best.at, best.id)) {
+                std::cmp::Ordering::Greater => {
+                    latest = Some(event);
+                    tied = false;
+                }
+                std::cmp::Ordering::Equal => tied |= event.actor != best.actor,
+                std::cmp::Ordering::Less => {}
+            }
+        }
+        if tied {
+            return Err(GitHostError::Unavailable);
+        }
+        Ok(latest.and_then(|event| {
+            event
+                .actor
+                .as_ref()
+                .map(|(actor, actor_type)| LabelApplication {
+                    actor: actor.clone(),
+                    applied_at: Some(event.at),
+                    actor_type: *actor_type,
+                })
+        }))
+    }
+
+    /// The name of every label that any `labeled` event applied, once each, sorted. A label that
+    /// was applied and taken off is still in the list.
+    ///
+    /// # Errors
+    /// [`GitHostError::Unavailable`] when the list was cut: a label may be in the part not read.
+    pub fn labels_ever_applied(&self) -> Result<Vec<String>, GitHostError> {
+        if !self.complete {
+            return Err(GitHostError::Unavailable);
+        }
+        let names: std::collections::BTreeSet<&str> =
+            self.events.iter().map(|e| e.label.as_str()).collect();
+        Ok(names.into_iter().map(str::to_owned).collect())
+    }
 }
 
 /// An issue as fetched live. Its text is untrusted.
@@ -511,9 +651,14 @@ pub trait IssueSource: Send + Sync {
     ) -> Result<Option<GithubActor>, GitHostError>;
 
     /// Like [`label_actor`](Self::label_actor), with the time the host recorded for the label that
-    /// is on the issue now. A label that was applied, removed and applied again is the later
-    /// application. The default is the actor with no time, which is all a source that keeps no
-    /// timeline can say; the code host adapter answers with the time of the `labeled` event.
+    /// is on the issue now and the kind of account that applied it. A label that was applied,
+    /// removed and applied again is the later application. The default is the actor of
+    /// `label_actor`, with no time and an account type of `Other`, which is all a source that keeps
+    /// no timeline can say, and which no caller accepts as a person; the code host adapter answers
+    /// with the `labeled` event.
+    ///
+    /// A source reads the whole list of events. If it cannot read all of it, it answers
+    /// `Unavailable` (see [`LabelTimeline`]), never the best guess from the part it read.
     async fn label_application(
         &self,
         scope: &GitScope,
@@ -526,7 +671,24 @@ pub trait IssueSource: Send + Sync {
             .map(|actor| LabelApplication {
                 actor,
                 applied_at: None,
+                actor_type: AccountType::Other,
             }))
+    }
+
+    /// The name of every label that any event of the issue shows as applied, at any time, once
+    /// each. A label that was applied and later taken off is in the list. The design gate uses it
+    /// to keep an issue on the design track after its design label was removed.
+    ///
+    /// The default is `Unavailable`: a source that keeps no timeline cannot say what an issue
+    /// once carried, and a caller that needs the answer refuses. A source answers from the whole
+    /// list of events, or `Unavailable` when it could not read all of it.
+    async fn labels_ever_applied(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<Vec<String>, GitHostError> {
+        let _ = (scope, issue);
+        Err(GitHostError::Unavailable)
     }
 
     /// Reads the rules that apply to the default branch. A failure to read is an error, which the
@@ -932,6 +1094,205 @@ mod tests {
         for bad in ["", "-a", "a-", "a--b", "a b", "a_b", "a/b", &"x".repeat(40)] {
             assert!(ActorLogin::new(bad).is_err(), "{bad:?}");
         }
+    }
+
+    fn person(id: u64, login: &str) -> (GithubActor, AccountType) {
+        (
+            GithubActor {
+                id,
+                login: ActorLogin::new(login).unwrap(),
+            },
+            AccountType::User,
+        )
+    }
+
+    fn labeled(
+        id: u64,
+        second: u32,
+        label: &str,
+        actor: Option<(GithubActor, AccountType)>,
+    ) -> LabeledEvent {
+        LabeledEvent {
+            id: Some(id),
+            at: Timestamp::parse(&format!("2026-10-28T10:00:{second:02}Z")).unwrap(),
+            label: label.to_owned(),
+            actor,
+        }
+    }
+
+    #[test]
+    fn the_latest_application_wins_whatever_the_order_of_the_list() {
+        // DG-1: the order the host uses has not been observed, so the answer must not depend on it.
+        let events = vec![
+            labeled(1, 1, "design: approved", Some(person(2002, "approver-one"))),
+            labeled(2, 2, "bug", Some(person(7, "somebody"))),
+            labeled(
+                3,
+                30,
+                "design: approved",
+                Some(person(1001, "requester-one")),
+            ),
+        ];
+        let mut reversed = events.clone();
+        reversed.reverse();
+        for list in [events, reversed] {
+            let timeline = LabelTimeline::new(list, true);
+            let found = timeline
+                .latest_application("design: approved")
+                .unwrap()
+                .expect("an application");
+            assert_eq!(
+                found.actor.id, 1001,
+                "the later application is the one that counts"
+            );
+            assert_eq!(found.actor_type, AccountType::User);
+            assert_eq!(timeline.latest_application("not there"), Ok(None));
+        }
+    }
+
+    #[test]
+    fn a_list_that_was_cut_answers_nothing_whatever_was_found() {
+        // DG-1: found or not found, an incomplete list is `Unavailable` in both arms.
+        let found = LabelTimeline::new(
+            vec![labeled(
+                1,
+                1,
+                "design: approved",
+                Some(person(2002, "approver-one")),
+            )],
+            false,
+        );
+        assert_eq!(
+            found.latest_application("design: approved"),
+            Err(GitHostError::Unavailable)
+        );
+        assert_eq!(
+            found.latest_application("not there"),
+            Err(GitHostError::Unavailable)
+        );
+        assert_eq!(found.labels_ever_applied(), Err(GitHostError::Unavailable));
+        // The same events in a whole list answer.
+        let whole = LabelTimeline::new(
+            vec![labeled(
+                1,
+                1,
+                "design: approved",
+                Some(person(2002, "approver-one")),
+            )],
+            true,
+        );
+        assert_eq!(
+            whole
+                .latest_application("design: approved")
+                .unwrap()
+                .unwrap()
+                .actor
+                .id,
+            2002
+        );
+    }
+
+    #[test]
+    fn two_latest_events_that_cannot_be_told_apart_are_not_guessed() {
+        let same_moment = |a: Option<u64>, b: Option<u64>| {
+            let mut first = labeled(0, 5, "design: approved", Some(person(2002, "approver-one")));
+            let mut second = labeled(
+                0,
+                5,
+                "design: approved",
+                Some(person(1001, "requester-one")),
+            );
+            first.id = a;
+            second.id = b;
+            LabelTimeline::new(vec![first, second], true)
+        };
+        // The same second and no ids: two people, no order.
+        assert_eq!(
+            same_moment(None, None).latest_application("design: approved"),
+            Err(GitHostError::Unavailable)
+        );
+        // The ids settle it.
+        assert_eq!(
+            same_moment(Some(1), Some(2))
+                .latest_application("design: approved")
+                .unwrap()
+                .unwrap()
+                .actor
+                .id,
+            1001
+        );
+        // The same person twice is not ambiguous.
+        let twice = LabelTimeline::new(
+            vec![
+                labeled(1, 5, "x", Some(person(1, "a"))),
+                labeled(1, 5, "x", Some(person(1, "a"))),
+            ],
+            true,
+        );
+        assert!(twice.latest_application("x").unwrap().is_some());
+    }
+
+    #[test]
+    fn an_event_that_names_nobody_credits_nobody() {
+        let timeline = LabelTimeline::new(
+            vec![
+                labeled(1, 1, "design: approved", Some(person(2002, "approver-one"))),
+                labeled(2, 2, "design: approved", None),
+            ],
+            true,
+        );
+        assert_eq!(timeline.latest_application("design: approved"), Ok(None));
+    }
+
+    #[test]
+    fn every_label_ever_applied_is_listed_once_even_when_it_was_taken_off() {
+        let timeline = LabelTimeline::new(
+            vec![
+                labeled(1, 1, "factory", Some(person(1, "a"))),
+                labeled(2, 2, "design: proposed", Some(person(1, "a"))),
+                labeled(3, 3, "factory", Some(person(1, "a"))),
+            ],
+            true,
+        );
+        assert_eq!(
+            timeline.labels_ever_applied().unwrap(),
+            vec!["design: proposed".to_owned(), "factory".to_owned()]
+        );
+    }
+
+    #[test]
+    fn only_a_user_account_is_a_person() {
+        // DG-5.
+        assert_eq!(
+            AccountType::from_host(Some("User"), "octocat"),
+            AccountType::User
+        );
+        assert_eq!(
+            AccountType::from_host(Some("Bot"), "dependabot"),
+            AccountType::Bot
+        );
+        assert_eq!(
+            AccountType::from_host(Some("User"), "github-actions[bot]"),
+            AccountType::Bot,
+            "a [bot] login is never a person"
+        );
+        assert_eq!(
+            AccountType::from_host(Some("Organization"), "acme"),
+            AccountType::Organization
+        );
+        assert_eq!(AccountType::from_host(None, "octocat"), AccountType::Other);
+        assert_eq!(
+            AccountType::from_host(Some("Mannequin"), "x"),
+            AccountType::Other
+        );
+        for not_a_person in [
+            AccountType::Bot,
+            AccountType::Organization,
+            AccountType::Other,
+        ] {
+            assert!(!not_a_person.is_person());
+        }
+        assert!(AccountType::User.is_person());
     }
 
     #[test]

@@ -502,6 +502,7 @@ fn capped_world() -> World {
             config.pages = PageLimits {
                 per_page: 100,
                 max_pages: 0,
+                event_pages: 0,
             };
         })),
         ..Options::default()

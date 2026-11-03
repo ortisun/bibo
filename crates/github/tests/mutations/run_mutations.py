@@ -26,7 +26,11 @@ LEGACY_OLD = """        let Some(presented) = headers.signature_256.as_deref() e
             });
         };"""
 
-# (name, [(file, old, new)], [test filters])
+# The rule that reads the events of an issue is shared with the fake and lives in the ports.
+PORTS = "../../ports/src/githost.rs"
+NEWEST = "            match (event.at, event.id).cmp(&(best.at, best.id)) {"
+
+# (name, [(file, old, new)], [test filters]) or (name, [(file, old, new)], [test filters], package)
 BREAKS = [
     (
         "skip the signature comparison",
@@ -159,11 +163,79 @@ BREAKS = [
         [("client.rs", "            match self.base.target_of(&link) {", "            match Some(link.clone()) {")],
         ["a_link_to_another_host_is_never_followed"],
     ),
+    # ---- the fixes of the security review of the design gate (DG-1 to DG-6) ----
+    (
+        "events: the adapter reads a list that was cut as a whole one (finding DG-1)",
+        [("issues.rs", "Ok(LabelTimeline::new(labeled, !events.truncated))", "Ok(LabelTimeline::new(labeled, true))")],
+        ["a_list_that_is_still_cut_after_the_larger_cap"],
+    ),
+    (
+        "events: the events of an issue get the page cap of other listings (finding DG-1)",
+        [("client.rs", "        self.pages.event_pages\n", "        self.pages.max_pages\n")],
+        ["the_latest_application_is_named_after_more_than_a_thousand_events"],
+    ),
+    (
+        "events: a cut list still names the person who applied the label (finding DG-1)",
+        [(PORTS, "    ) -> Result<Option<LabelApplication>, GitHostError> {\n        if !self.complete {\n            return Err(GitHostError::Unavailable);\n        }\n        let mut latest", "    ) -> Result<Option<LabelApplication>, GitHostError> {\n        let mut latest")],
+        ["a_list_that_is_still_cut_after_the_larger_cap"],
+    ),
+    (
+        "events: a cut list still gives the labels ever applied (finding DG-2)",
+        [(PORTS, "    pub fn labels_ever_applied(&self) -> Result<Vec<String>, GitHostError> {\n        if !self.complete {\n            return Err(GitHostError::Unavailable);\n        }\n", "    pub fn labels_ever_applied(&self) -> Result<Vec<String>, GitHostError> {\n")],
+        ["a_list_that_is_still_cut_after_the_larger_cap"],
+    ),
+    (
+        "events: the order of the list is trusted, the last event listed wins (finding DG-1)",
+        [(PORTS, NEWEST, "            match std::cmp::Ordering::Greater {")],
+        ["the_latest_application_is_named_after_more_than_a_thousand_events", "the_answer_is_the_same_whichever_way_the_list_runs"],
+    ),
+    (
+        "events: the oldest application wins instead of the latest (finding DG-1)",
+        [(PORTS, NEWEST, "            match (best.at, best.id).cmp(&(event.at, event.id)) {")],
+        ["the_latest_application_is_named_after_more_than_a_thousand_events", "the_answer_is_the_same_whichever_way_the_list_runs"],
+    ),
+    (
+        "events: two events that cannot be told apart are guessed (finding DG-1)",
+        [(PORTS, "tied |= event.actor != best.actor", "tied |= false")],
+        ["two_latest_events_that_cannot_be_told_apart"],
+        "factory-ports",
+    ),
+    (
+        "events: the labels ever applied leave out a label that was taken off (finding DG-2)",
+        [("issues.rs", "            .await?\n            .labels_ever_applied()\n", "            .await?\n            .labels_ever_applied()\n            .map(|_| Vec::new())\n")],
+        ["a_label_that_was_applied_and_taken_off_is_in_the_labels_ever_applied"],
+    ),
+    (
+        "actor type: every account that applied a label is a user (finding DG-5)",
+        [("issues.rs", "Some((actor(&item[\"actor\"])?, actor_type(&item[\"actor\"])))", "Some((actor(&item[\"actor\"])?, factory_ports::githost::AccountType::User))")],
+        ["the_kind_of_account_that_applied_a_label_is_carried_through"],
+    ),
+    (
+        "actor type: a login that ends in [bot] is not a bot (finding DG-5)",
+        [(PORTS, "            _ if login.ends_with(\"[bot]\") => Self::Bot,\n", "")],
+        ["only_a_user_account_is_a_person"],
+        "factory-ports",
+    ),
+    (
+        "labels: a missing or null list of labels reads as no labels (finding DG-6)",
+        [("issues.rs", "        .as_array()\n        .ok_or(GitHostError::Unavailable)?\n        .iter()\n        .map(|item| match item {", "        .as_array()\n        .map_or(&[][..], Vec::as_slice)\n        .iter()\n        .map(|item| match item {")],
+        ["an_answer_with_no_whole_list_of_labels_is_unavailable"],
+    ),
+    (
+        "labels: an item that is not a label reads as a label with no name (finding DG-6)",
+        [("issues.rs", "            _ => Err(GitHostError::Unavailable),\n        })\n        .collect()", "            _ => Ok(String::new()),\n        })\n        .collect()")],
+        ["an_answer_with_no_whole_list_of_labels_is_unavailable"],
+    ),
+    (
+        "events: a labeled event with no label name reads as a label with no name (finding DG-6)",
+        [("issues.rs", "            .as_str()\n            .ok_or(GitHostError::Unavailable)?\n            .to_owned(),\n        actor:", "            .as_str()\n            .unwrap_or_default()\n            .to_owned(),\n        actor:")],
+        ["an_event_list_with_an_entry_that_is_not_whole_is_unavailable"],
+    ),
 ]
 
 
-def run(filters):
-    command = ["cargo", "nextest", "run", "-p", "factory-github", "--no-fail-fast", *filters]
+def run(filters, package):
+    command = ["cargo", "nextest", "run", "-p", package, "--no-fail-fast", *filters]
     done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     return done.returncode, done.stdout + done.stderr
 
@@ -172,7 +244,7 @@ def main():
     outcomes = []
     # An optional word on the command line runs only the breaks whose name contains it.
     only = sys.argv[1] if len(sys.argv) > 1 else ""
-    for name, edits, filters in BREAKS:
+    for name, edits, filters, *package in BREAKS:
         if only not in name:
             continue
         originals = {}
@@ -184,7 +256,7 @@ def main():
                 if text.count(old) != 1:
                     raise SystemExit(f"{name}: the text to change occurs {text.count(old)} times in {file}")
                 path.write_text(text.replace(old, new))
-            code, output = run(filters)
+            code, output = run(filters, package[0] if package else "factory-github")
         finally:
             for path, text in originals.items():
                 path.write_text(text)

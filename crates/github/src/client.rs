@@ -29,6 +29,11 @@ pub struct PageLimits {
     pub per_page: u32,
     /// The most pages one listing reads.
     pub max_pages: u32,
+    /// The most pages the events of one issue are read for. More than `max_pages`, because the
+    /// design gate has to see the end of the list: the newest event is the one that counts, and a
+    /// list that is still not finished at this cap is an `Unavailable` answer, never a guess
+    /// from the part that was read.
+    pub event_pages: u32,
 }
 
 impl Default for PageLimits {
@@ -36,6 +41,7 @@ impl Default for PageLimits {
         Self {
             per_page: 100,
             max_pages: 10,
+            event_pages: 30,
         }
     }
 }
@@ -103,6 +109,11 @@ impl Client {
             pages,
             etags: Mutex::new(EtagCache::default()),
         }
+    }
+
+    /// The page cap for the events of one issue.
+    pub(crate) fn event_pages(&self) -> u32 {
+        self.pages.event_pages
     }
 
     pub(crate) fn minter(&self) -> &Arc<TokenMinter> {
@@ -240,10 +251,24 @@ impl Client {
         class: TokenClass,
         target: &str,
     ) -> Result<Pages, GitHostError> {
+        self.get_pages_up_to(scope, class, target, self.pages.max_pages)
+            .await
+    }
+
+    /// Like [`get_pages_as`](Self::get_pages_as), with a page cap chosen for this one call. A
+    /// reader that must see the end of a list (the events of an issue, for the design gate) asks
+    /// for more pages than the default and still treats `truncated` as a failure.
+    pub(crate) async fn get_pages_up_to(
+        &self,
+        scope: &GitScope,
+        class: TokenClass,
+        target: &str,
+        max_pages: u32,
+    ) -> Result<Pages, GitHostError> {
         let separator = if target.contains('?') { '&' } else { '?' };
         let mut next = format!("{target}{separator}per_page={}", self.pages.per_page);
         let mut items = Vec::new();
-        for _ in 0..self.pages.max_pages {
+        for _ in 0..max_pages {
             let reply = self
                 .call(scope, class, Method::Get, &next, None, false)
                 .await?;

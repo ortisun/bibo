@@ -439,6 +439,9 @@ pub(crate) struct Issue {
     pub comments: Vec<Comment>,
     /// The timeline GitHub serves at `/issues/{n}/events`: who labelled, unlabelled or closed.
     pub events: Vec<IssueEvent>,
+    /// True when the fake lists the events newest first. GitHub's own order has not been observed,
+    /// so a test can run an adapter against either.
+    pub events_newest_first: bool,
 }
 
 /// One entry of an issue's event list. The `labeled` event is the only place the API says who
@@ -747,6 +750,7 @@ impl FakeGithub {
                 updated_at: now,
                 comments: Vec::new(),
                 events,
+                events_newest_first: false,
             },
         );
         number
@@ -862,6 +866,45 @@ impl FakeGithub {
             label,
             created_at: now,
         });
+    }
+
+    /// Makes the fake list the events of an issue newest first instead of oldest first, so that a
+    /// test can show that a reader does not depend on the order.
+    ///
+    /// # Panics
+    /// Panics when the issue is not known.
+    pub fn list_events_newest_first(&self, repo: &str, number: u64, newest_first: bool) {
+        let mut state = self.lock();
+        state
+            .repos
+            .get_mut(repo)
+            .and_then(|r| r.issues.get_mut(&number))
+            .expect("a known issue")
+            .events_newest_first = newest_first;
+    }
+
+    /// Adds `count` events that are not about labels (the issue was subscribed to), as a long
+    /// thread has, so that the list of events passes the pages a reader is willing to read.
+    ///
+    /// # Panics
+    /// Panics when the issue or the actor is not known.
+    pub fn add_events_of_no_interest(&self, repo: &str, number: u64, count: usize, actor: &str) {
+        let now = self.now();
+        let mut state = self.lock();
+        assert!(state.users.contains_key(actor), "unknown user {actor}");
+        let ids: Vec<u64> = (0..count).map(|_| state.new_id()).collect();
+        let issue = state
+            .repos
+            .get_mut(repo)
+            .and_then(|r| r.issues.get_mut(&number))
+            .expect("a known issue");
+        issue.events.extend(ids.into_iter().map(|id| IssueEvent {
+            id,
+            event: "subscribed".to_owned(),
+            actor: actor.to_owned(),
+            label: None,
+            created_at: now,
+        }));
     }
 
     /// Protects a branch.

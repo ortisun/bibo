@@ -20,14 +20,15 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::Clock;
 use factory_ports::githost::{
     Comment, CommentRef, CommentTarget, GitHostError, GitScope, GithubActor, Issue, IssueRef,
-    IssueSource, LabelApplication, ProtectionReport,
+    IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport,
 };
 use factory_ports::paths::BranchName;
 
 use crate::client::Client;
 use crate::encoding::percent_encode_component;
-use crate::parse::{actor, repo_path, timestamp};
+use crate::parse::{actor, actor_type, repo_path, timestamp};
 use crate::protection::protection_from_rules;
+use crate::token::TokenClass;
 
 /// Issue text as read, next to the cleaned form that is safe to put in front of a model or a
 /// person. The original is the record; the cleaned form is never used to decide anything.
@@ -77,6 +78,82 @@ impl GithubIssueSource {
     pub(crate) fn new(client: Arc<Client>, clock: Arc<dyn Clock>) -> Self {
         Self { client, clock }
     }
+
+    /// Reads the events of an issue as far as the event page cap allows (30 pages of 100 by
+    /// default, three times the cap of other listings, because the design gate has to see the end
+    /// of the list). A list that is still not finished then is marked incomplete, and every
+    /// question put to it is `Unavailable`.
+    async fn label_timeline(
+        &self,
+        scope: &GitScope,
+        issue_path: &str,
+    ) -> Result<LabelTimeline, GitHostError> {
+        let events = self
+            .client
+            .get_pages_up_to(
+                scope,
+                TokenClass::Stage,
+                &format!("{issue_path}/events"),
+                self.client.event_pages(),
+            )
+            .await?;
+        let labeled = events
+            .items
+            .iter()
+            .map(labeled_event)
+            .collect::<Result<Vec<Option<LabeledEvent>>, GitHostError>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(LabelTimeline::new(labeled, !events.truncated))
+    }
+}
+
+/// The label names of the `labels` member of an issue. The member must be an array whose items
+/// are objects with a string `name`, or strings (the form the API documents for some calls). A
+/// member that is missing, null or of another type, or an item of another shape, is an answer that
+/// cannot be trusted: it must not read as "no labels", which would put the issue off the design
+/// track.
+fn label_names(value: &serde_json::Value) -> Result<Vec<String>, GitHostError> {
+    value
+        .as_array()
+        .ok_or(GitHostError::Unavailable)?
+        .iter()
+        .map(|item| match item {
+            serde_json::Value::String(name) => Ok(name.clone()),
+            serde_json::Value::Object(_) => item["name"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(GitHostError::Unavailable),
+            _ => Err(GitHostError::Unavailable),
+        })
+        .collect()
+}
+
+/// One entry of the event list as a `labeled` event, or `None` for an event of another kind. An
+/// entry that is not an object, has no `event` string, or is a `labeled` event without a label
+/// name or a time, is malformed and fails the whole read.
+fn labeled_event(item: &serde_json::Value) -> Result<Option<LabeledEvent>, GitHostError> {
+    if !item.is_object() {
+        return Err(GitHostError::Unavailable);
+    }
+    let kind = item["event"].as_str().ok_or(GitHostError::Unavailable)?;
+    if kind != "labeled" {
+        return Ok(None);
+    }
+    Ok(Some(LabeledEvent {
+        id: item["id"].as_u64(),
+        at: timestamp(&item["created_at"])?,
+        label: item["label"]["name"]
+            .as_str()
+            .ok_or(GitHostError::Unavailable)?
+            .to_owned(),
+        actor: if item["actor"].is_null() {
+            None
+        } else {
+            Some((actor(&item["actor"])?, actor_type(&item["actor"])))
+        },
+    }))
 }
 
 fn same_repository(
@@ -115,12 +192,7 @@ impl IssueSource for GithubIssueSource {
             title: value["title"].as_str().unwrap_or_default().to_owned(),
             body: value["body"].as_str().unwrap_or_default().to_owned(),
             author: actor(&value["user"])?,
-            labels: value["labels"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|label| label["name"].as_str().map(str::to_owned))
-                .collect(),
+            labels: label_names(&value["labels"])?,
             updated_at: timestamp(&value["updated_at"])?,
             fetched_at: self.clock.now(),
         })
@@ -190,33 +262,27 @@ impl IssueSource for GithubIssueSource {
         let base = format!("{}/issues/{}", repo_path(&issue.repo), issue.number);
         // The label must be on the issue now. A label that was applied and removed is not one.
         let current = self.client.get(scope, &base).await?;
-        let present = current.json["labels"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|l| l["name"].as_str() == Some(label));
-        if !present {
+        if !label_names(&current.json["labels"])?
+            .iter()
+            .any(|name| name == label)
+        {
             return Ok(None);
         }
-        let events = self
-            .client
-            .get_pages(scope, &format!("{base}/events"))
-            .await?;
-        // The latest `labeled` event for this label is the one that put it there now.
-        let latest = events.items.iter().rev().find(|e| {
-            e["event"].as_str() == Some("labeled") && e["label"]["name"].as_str() == Some(label)
-        });
-        match latest {
-            Some(event) if !event["actor"].is_null() => Ok(Some(LabelApplication {
-                actor: actor(&event["actor"])?,
-                applied_at: Some(timestamp(&event["created_at"])?),
-            })),
-            // Present, but nobody is named for it: nobody is credited with it.
-            Some(_) => Ok(None),
-            // The list was cut short and the event may be further on: do not guess.
-            None if events.truncated => Err(GitHostError::Unavailable),
-            None => Ok(None),
-        }
+        self.label_timeline(scope, &base)
+            .await?
+            .latest_application(label)
+    }
+
+    async fn labels_ever_applied(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<Vec<String>, GitHostError> {
+        same_repository(scope, &issue.repo)?;
+        let base = format!("{}/issues/{}", repo_path(&issue.repo), issue.number);
+        self.label_timeline(scope, &base)
+            .await?
+            .labels_ever_applied()
     }
 
     async fn repository_protection(
