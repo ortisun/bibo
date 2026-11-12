@@ -4722,3 +4722,48 @@ every job of the tenant that had not ended before the day began, because the sto
 column (the same gap `timeline.rs` documents for the spend of one job). That is one listing of the
 tenant's jobs and one read of events per job at every admission. It is correct and it grows with
 the number of jobs; a cost on the attempt row and this one query would replace it.
+
+### 16.4 The workflows of the target repository (threat T-48): made, pending architect confirmation
+
+Nothing in the ports could say what the workflows of a target repository do with the factory's
+branches, so the protection preflight could not judge them
+([threat model](../security/threat-model.md), T-48). The change follows 16.2: a field on the report,
+named reasons, and one more argument of `evaluate`. It is made, with its tests. **It is pending
+architect confirmation and the independent review that ADR 0016 asks for of every port change; none
+has covered it.**
+
+| Change | Kind | Where | Notes |
+|---|---|---|---|
+| `IssueSource::workflow_files(&self, scope) -> Result<Vec<WorkflowFile>, GitHostError>`, with a default body that answers `Unavailable`; the type `WorkflowFile { path, text: Option<String> }` | Additive method with a default | `crates/ports/src/githost.rs` | Every file directly in `.github/workflows` of the default branch whose name ends in `.yml` or `.yaml`, at one commit. A repository without the directory answers an empty list. A file whose text could not be read has `text: None`. A source that cannot read files answers `Unavailable`, which the preflight never takes for "no workflows". |
+| `ProtectionReport::exposed_workflows: Option<Vec<ExposedWorkflow>>`, with `ExposedWorkflow { path, reasons }` and the closed set `WorkflowExposureReason` (nine reasons, each with a code and a sentence) | Additive field | the same file | `None` means not read or not judged. The adapters answer `None`: the GitHub adapter may depend on `domain` and `ports` only and has no YAML reader. The worker's preflight reads the files, judges them with `factory_contracts::workflows` and fills the field. |
+| `PreflightFailure::WorkflowsNotRead`, `WorkflowExposed(ExposedWorkflow)` and `WorkflowAcknowledgementDoesNotMatch` | Additive variants of a closed set | the same file | The named reasons. The audit record of the preflight carries their sentences. |
+| `ProtectionReport::evaluate(.., workflows: WorkflowRule<'_>)`, with `WorkflowRule { exposed_caps_at_l0, acknowledgement }` and `WorkflowExposureAcknowledgement { by, at, workflows }`; `ProtectionReport::exposure_is_acknowledged` | **A parameter is added, which is not additive** | the same file | For the reason given in 16.2: an `evaluate` that could be called without the rule would pass a repository whose workflows nobody read. `WorkflowRule::RECORD_ONLY` is the rule that does not judge them; `GithubAdapter::preflight`, which no production code calls, uses it and says so. The callers are in this repository only, all updated in the same change. |
+| `BypassAttestations::workflow_acknowledgement`, with a default body that answers `None` | Additive method with a default (a seam of `composition`, not a port) | `crates/composition/src/preflight.rs` | The owner's statement comes from the same source as the bypass statement: `github.workflow_exposure_acknowledgements` of the worker configuration, read by `ConfigAttestations`. |
+| `PreflightDeps::exposed_workflows` | Added, no default | the same file | The composition root fills it from `credentials.repository_requirements.exposed_workflows` of `policies/security.yaml` (`cap_at_l0` or `record_only`). |
+| The fakes and every literal | Updated | `crates/testkit/src/githost.rs` (`seed_workflow`, `make_the_workflow_read_fail`), `crates/testkit/src/fx/github/` (`add_file` and the route `GET /repos/{owner}/{repo}/contents/{path}`), `crates/testkit/src/contracts/githost.rs`, the preflight and API tests | The contract suite of the issue source has no check for `workflow_files`; the adapter's own tests (`crates/github/tests/workflow_files.rs`) cover the read. |
+
+**The credential, and an open decision.** The GitHub adapter reads the workflow files with its
+fetch credential (`contents: read` and `metadata: read`, one repository), the one a fetch of the
+repository gets. The scope of the preflight names the intake stage, whose own token holds
+`issues: read` only and is not widened. The App's permissions are unchanged.
+
+The preflight runs before a job is admitted, so this read puts a token that can read contents, and
+two routes (`GET .../branches/{branch}` and `GET .../contents/{path}`), on the path that finding
+LB-03 held to `issues: read`. The loopback run judges exactly that
+(`apps/worker/tests/loopback_e2e.rs`, `judge_common`: the routes of the path and the two token
+shapes it accepts), and eight of its tests fail with this change. **They were left failing on
+purpose.** Whether the preflight may hold `contents: read` before intake has accepted the issue is
+a decision for the security reviewer, not for the author of this change. The two ways forward are:
+accept it, and teach the judgment a third token shape that may reach only those two routes and only
+paths under `.github/workflows`; or refuse it, and move the read to after intake has passed, at the
+cost of a first job that is admitted before its repository's workflows were read.
+
+**UNVERIFIED against the real GitHub:** the shape of the contents API (a list for a directory, 404
+for a directory that does not exist, base64 text, no text for a file over 1 MB, at most 1,000
+entries in a list), and every rule of the classifier about which events start a workflow and what a
+workflow has in reach. A person must record real answers and run one workflow on a fixture
+repository before the check is trusted.
+
+**Not tried.** A check in the contract suite with a defect in the fake; a digest of each
+acknowledged workflow, so that a change of its text ends the acknowledgement; a store for the
+acknowledgement with an expiry.

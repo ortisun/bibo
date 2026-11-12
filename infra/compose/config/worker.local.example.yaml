@@ -65,6 +65,8 @@ decisions:
 #       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, installation_id: 0 }
 #     bypass_attestations:                          # an administrator's statement; without it the repository runs at L0
 #       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, principal: 00000000-0000-0000-0000-000000000000, recorded_at: '2026-01-01T00:00:00Z' }
+#     workflow_exposure_acknowledgements:           # only for a repository whose workflows are exposed to factory branches on purpose; names exactly those workflows
+#       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, principal: 00000000-0000-0000-0000-000000000000, recorded_at: '2026-01-01T00:00:00Z', workflows: ['.github/workflows/ci.yml'] }
 # A model provider: the key is a file, and the models, prices and ceilings come from policies/model_routing.yaml.
 #   broker:
 #     upstreams:

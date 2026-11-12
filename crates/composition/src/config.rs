@@ -460,6 +460,26 @@ pub struct AttestationConfig {
     pub recorded_at: String,
 }
 
+/// The statement of the owner of a repository that named workflows are exposed to the factory's
+/// branches on purpose (threat T-48): for example, a repository whose only secret is harmless.
+/// The preflight caps a repository with exposed workflows at level L0; an entry here lets it pass
+/// when it names exactly the workflows found exposed. A workflow that is not in the list, or a
+/// list that names a workflow that is no longer exposed, and the entry covers nothing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowAcknowledgementConfig {
+    /// The tenant, as a UUID.
+    pub tenant: String,
+    /// The repository, as `owner/name`.
+    pub repository: String,
+    /// The person who made the statement, as the UUID of their principal.
+    pub principal: String,
+    /// When the statement was recorded, as a UTC time such as `2026-11-12T09:00:00Z`.
+    pub recorded_at: String,
+    /// The paths of the workflow files the statement covers, each `.github/workflows/<file>`.
+    pub workflows: Vec<String>,
+}
+
 /// The GitHub App.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -481,6 +501,10 @@ pub struct GithubConfig {
     /// The administrators' statements about the bypass list.
     #[serde(default)]
     pub bypass_attestations: Vec<AttestationConfig>,
+    /// The owners' statements that named workflows are exposed to factory branches on purpose
+    /// (threat T-48). At most one for a repository of a tenant.
+    #[serde(default)]
+    pub workflow_exposure_acknowledgements: Vec<WorkflowAcknowledgementConfig>,
     /// Writes the state of each job on its issue: one `factory: <state>` label and one status
     /// comment (ADR 0017). False stops the worker from writing on issues. Nothing else changes: the
     /// labels and the comment are observability and no job depends on them.
@@ -1266,6 +1290,58 @@ impl FactoryConfig {
                     });
                 }
             }
+            let mut acknowledged = std::collections::BTreeSet::new();
+            for statement in &github.workflow_exposure_acknowledgements {
+                if statement.tenant.parse::<uuid::Uuid>().is_err() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.workflow_exposure_acknowledgements[].tenant",
+                        problem: "must be a UUID",
+                    });
+                }
+                if !is_repository_name(&statement.repository) {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.workflow_exposure_acknowledgements[].repository",
+                        problem: "must be owner/name",
+                    });
+                }
+                if statement.principal.parse::<uuid::Uuid>().is_err() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.workflow_exposure_acknowledgements[].principal",
+                        problem: "must be a UUID",
+                    });
+                }
+                if factory_domain::values::Timestamp::parse(&statement.recorded_at).is_err() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.workflow_exposure_acknowledgements[].recorded_at",
+                        problem: "must be a UTC time such as 2026-11-12T09:00:00Z",
+                    });
+                }
+                // An empty list would acknowledge nothing, and a path outside the workflow
+                // directory names no workflow: both are mistakes a person should hear about.
+                let mut paths = std::collections::BTreeSet::new();
+                let listed = !statement.workflows.is_empty()
+                    && statement.workflows.iter().all(|path| {
+                        path.strip_prefix(".github/workflows/")
+                            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+                            && paths.insert(path.as_str())
+                    });
+                if !listed {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.workflow_exposure_acknowledgements[].workflows",
+                        problem: "must list at least one path, each .github/workflows/<file> and each once",
+                    });
+                }
+                // Two statements for one repository would leave it to chance which one counts.
+                if !acknowledged.insert((
+                    statement.tenant.to_ascii_lowercase(),
+                    statement.repository.to_ascii_lowercase(),
+                )) {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.workflow_exposure_acknowledgements[].repository",
+                        problem: "must appear once for a tenant",
+                    });
+                }
+            }
         }
         if let Some(registry) = &self.registry {
             endpoint_problem(self.profile, &registry.base_url).map_or(Ok(()), |problem| {
@@ -1686,7 +1762,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    const LOOPBACK_WORLD: &str = "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: http://127.0.0.1:9\n  installations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1 }\n  bypass_attestations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10, recorded_at: '2026-10-28T09:00:00Z' }\nregistry: { base_url: 'http://127.0.0.1:9', user_agent: factory-test }\nadvisory_database: { date_file: /srv/db/date }\nruntimes:\n  claude_code: { versions: ['2.1.311'] }\n  declare_capabilities: true\n";
+    const LOOPBACK_WORLD: &str = "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: http://127.0.0.1:9\n  installations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1 }\n  bypass_attestations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10, recorded_at: '2026-10-28T09:00:00Z' }\n  workflow_exposure_acknowledgements:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10, recorded_at: '2026-11-12T09:00:00Z', workflows: ['.github/workflows/ci.yml'] }\nregistry: { base_url: 'http://127.0.0.1:9', user_agent: factory-test }\nadvisory_database: { date_file: /srv/db/date }\nruntimes:\n  claude_code: { versions: ['2.1.311'] }\n  declare_capabilities: true\n";
 
     fn with_world(profile: &str, world: &str) -> String {
         format!(
@@ -1701,6 +1777,11 @@ mod tests {
         let github = config.github.expect("github");
         assert_eq!(github.installations.len(), 1);
         assert_eq!(github.bypass_attestations.len(), 1);
+        assert_eq!(github.workflow_exposure_acknowledgements.len(), 1);
+        assert_eq!(
+            github.workflow_exposure_acknowledgements[0].workflows,
+            [".github/workflows/ci.yml"]
+        );
         assert_eq!(config.registry.expect("registry").timeout_seconds, 10);
         assert!(config.runtimes.declare_capabilities);
     }
@@ -1857,6 +1938,31 @@ mod tests {
                 "recorded_at: '2026-10-28T09:00:00Z'",
                 "recorded_at: yesterday",
                 "github.bypass_attestations[].recorded_at",
+            ),
+            (
+                "recorded_at: '2026-11-12T09:00:00Z'",
+                "recorded_at: today",
+                "github.workflow_exposure_acknowledgements[].recorded_at",
+            ),
+            (
+                "workflows: ['.github/workflows/ci.yml']",
+                "workflows: []",
+                "github.workflow_exposure_acknowledgements[].workflows",
+            ),
+            (
+                "workflows: ['.github/workflows/ci.yml']",
+                "workflows: ['ci.yml']",
+                "github.workflow_exposure_acknowledgements[].workflows",
+            ),
+            (
+                "workflows: ['.github/workflows/ci.yml']",
+                "workflows: ['.github/workflows/ci.yml', '.github/workflows/ci.yml']",
+                "github.workflow_exposure_acknowledgements[].workflows",
+            ),
+            (
+                "workflows: ['.github/workflows/ci.yml']",
+                "workflows: ['.github/workflows/sub/ci.yml']",
+                "github.workflow_exposure_acknowledgements[].workflows",
             ),
         ] {
             let text = with_world("local", &LOOPBACK_WORLD.replacen(from, to, 1));

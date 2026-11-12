@@ -333,6 +333,7 @@ async fn held_every_request_of_the_adapter_is_on_a_short_list_of_methods_and_rou
         "GET /app",
         "GET /repos/{owner}/{repo}",
         "GET /repos/{owner}/{repo}/branches/{branch}",
+        "GET /repos/{owner}/{repo}/contents/{path}",
         "GET /repos/{owner}/{repo}/issues/{number}",
         "GET /repos/{owner}/{repo}/issues/{number}/comments",
         "GET /repos/{owner}/{repo}/issues/{number}/events",

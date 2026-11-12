@@ -560,6 +560,7 @@
       "branch_deletion_disabled": true,
       "default_branch_protected": true,
       "dismiss_stale_approvals_on_new_commits": true,
+      "exposed_workflows": "cap_at_l0",
       "factory_branch_pattern": "factory/*",
       "force_push_disabled": true,
       "push_only_to_factory_branch_pattern": true,
@@ -575,7 +576,8 @@
     "threats": [
       "T-19",
       "T-24",
-      "T-14"
+      "T-14",
+      "T-48"
     ],
     "webhook_secret": {
       "overlapping_secrets_during_rotation": true,

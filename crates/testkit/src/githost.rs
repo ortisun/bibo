@@ -23,7 +23,7 @@ use factory_ports::githost::{
     CommentCap, CommentRef, CommentTarget, DraftPrRequest, GitHostError, GitScope, GithubActor,
     Issue, IssueRef, IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport,
     ProtectionSource, PullRequestLifecycle, PullRequestRef, PullRequestState, Rejection,
-    RequiredCheck, TextEdit,
+    RequiredCheck, TextEdit, WorkflowFile,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::workspace::{FetchCredential, FetchTarget, PushCredential, PushTarget};
@@ -955,6 +955,11 @@ struct IssueState {
     text_edit_read_fails: bool,
     comments: BTreeMap<CommentRef, Comment>,
     protection: BTreeMap<RepoRef, ProtectionReport>,
+    /// The workflow files of the default branch of a repository. A repository with no entry has
+    /// none.
+    workflows: BTreeMap<RepoRef, Vec<WorkflowFile>>,
+    /// Makes `workflow_files` fail with `Unavailable`, as a host that is down does.
+    workflow_read_fails: bool,
     permissions_asked: Vec<String>,
 }
 
@@ -1083,6 +1088,28 @@ impl FakeIssueSource {
     pub fn seed_text_edit(&self, issue: &IssueRef, edit: TextEdit) {
         let mut state = self.state.lock().expect("the lock is never poisoned");
         state.text_edits.insert(issue.clone(), edit);
+    }
+
+    /// Puts a workflow file on the default branch of the repository (threat T-48). A `text` of
+    /// `None` is a file the host lists and cannot give the text of. A second file at the same path
+    /// replaces the first.
+    pub fn seed_workflow(&self, repo: &RepoRef, path: &str, text: Option<&str>) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        let files = state.workflows.entry(repo.clone()).or_default();
+        files.retain(|file| file.path != path);
+        files.push(WorkflowFile {
+            path: path.to_owned(),
+            text: text.map(str::to_owned),
+        });
+    }
+
+    /// Makes the read of the workflow files fail with `Unavailable`, as a code host that is down
+    /// does.
+    pub fn make_the_workflow_read_fail(&self, fails: bool) {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .workflow_read_fails = fails;
     }
 
     /// Makes the read of the edit time fail with `Unavailable`, as a code host that is down does.
@@ -1337,6 +1364,19 @@ impl IssueSource for FakeIssueSource {
             .cloned()
             .ok_or(GitHostError::NotFound)
     }
+
+    async fn workflow_files(&self, scope: &GitScope) -> Result<Vec<WorkflowFile>, GitHostError> {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        state.permissions_asked.push("contents".to_owned());
+        if state.workflow_read_fails {
+            return Err(GitHostError::Unavailable);
+        }
+        Ok(state
+            .workflows
+            .get(&scope.repo)
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 /// A report for a repository protected the way the policy wants, with the factory's checks pinned.
@@ -1354,6 +1394,8 @@ fn strong_protection() -> ProtectionReport {
             context: "factory-validation".to_owned(),
             integration_id: Some(FAKE_APP_ID.0),
         }],
+        // The workflows are a read of their own (`workflow_files`), judged by the preflight.
+        exposed_workflows: None,
     }
 }
 

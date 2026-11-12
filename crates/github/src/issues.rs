@@ -9,6 +9,8 @@
 //! * `label_actor` reads the issue's event list, the only place the API says who applied a label.
 //!   The webhook's `sender` is never used for this.
 //! * `repository_protection` reads the rulesets with the Metadata permission only.
+//! * `workflow_files` reads the workflow files of the default branch with the fetch credential
+//!   (`contents: read`), never with the stage token (threat T-48; see `workflows.rs`).
 //!
 //! A scope names one repository. A reference to another repository is `NotFound` before any call
 //! is made, and a token for one repository cannot read another in any case.
@@ -21,6 +23,7 @@ use factory_ports::clock::Clock;
 use factory_ports::githost::{
     Comment, CommentRef, CommentTarget, GitHostError, GitScope, GithubActor, Issue, IssueRef,
     IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport, TextEdit,
+    WorkflowFile,
 };
 use factory_ports::paths::BranchName;
 
@@ -31,6 +34,7 @@ use crate::parse::{actor, actor_type, repo_path, timestamp};
 use crate::protection::protection_from_rules;
 use crate::token::TokenClass;
 use crate::wire::Method;
+use crate::workflows::{WORKFLOW_DIRECTORY, listed_workflows, text_of, workflow_file};
 
 /// Issue text as read, next to the cleaned form that is safe to put in front of a model or a
 /// person. The original is the record; the cleaned form is never used to decide anything.
@@ -356,6 +360,65 @@ impl IssueSource for GithubIssueSource {
             return Err(GitHostError::Unavailable);
         }
         protection_from_rules(default_branch, &serde_json::Value::Array(rules.items))
+    }
+
+    async fn workflow_files(&self, scope: &GitScope) -> Result<Vec<WorkflowFile>, GitHostError> {
+        // Every read here carries the fetch credential (`contents: read`), whatever the stage of
+        // the scope: the intake token of the preflight cannot read contents and is not widened.
+        // The reads are conditional: the preflight repeats them at every job start, and an answer
+        // that has not changed does not count against the rate limit.
+        let read = |target: String| async move {
+            self.client
+                .call(scope, TokenClass::Fetch, Method::Get, &target, None, true)
+                .await
+        };
+        let repo = read(repo_path(&scope.repo)).await?;
+        let default_branch = repo.json["default_branch"]
+            .as_str()
+            .and_then(|name| BranchName::new(name).ok())
+            .ok_or(GitHostError::Unavailable)?;
+        let branch = read(format!(
+            "{}/branches/{}",
+            repo_path(&scope.repo),
+            percent_encode_component(default_branch.as_str())
+        ))
+        .await?;
+        // The list and every file are read at this one commit.
+        let commit = branch.json["commit"]["sha"]
+            .as_str()
+            .filter(|sha| sha.len() >= 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or(GitHostError::Unavailable)?
+            .to_owned();
+        let contents = |path: &str| {
+            let encoded: Vec<String> = path.split('/').map(percent_encode_component).collect();
+            format!(
+                "{}/contents/{}?ref={commit}",
+                repo_path(&scope.repo),
+                encoded.join("/")
+            )
+        };
+        let listing = match read(contents(WORKFLOW_DIRECTORY)).await {
+            Ok(reply) => reply.json,
+            // The branch was read with the same credential, so this is "no such directory".
+            Err(GitHostError::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut files = Vec::new();
+        for listed in listed_workflows(&listing)? {
+            let text = if listed.is_file {
+                match read(contents(&listed.path)).await {
+                    Ok(reply) => text_of(&reply.json),
+                    // Listed a moment ago at this commit and gone now: no text, so it counts as
+                    // exposed. Any other failure fails the whole read.
+                    Err(GitHostError::NotFound) => None,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            };
+            files.push(workflow_file(&listed, text));
+        }
+        Ok(files)
     }
 }
 

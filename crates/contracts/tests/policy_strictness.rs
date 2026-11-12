@@ -81,6 +81,30 @@ fn negative_nt_pol_03_control_the_unchanged_files_load_from_a_temporary_checkout
 // ---- NT-POL-03: schema strictness -----------------------------------------------------------
 
 #[test]
+fn negative_nt_pol_03_the_consequence_of_exposed_workflows_is_one_of_two_words_and_required() {
+    // Threat T-48. The key under `credentials.repository_requirements` takes `cap_at_l0` or
+    // `record_only`; any other word, and a policy without the key, is refused.
+    let text = real(SECURITY_FILE);
+    let key = "    exposed_workflows: cap_at_l0\n";
+    let other = replace_once(&text, key, "    exposed_workflows: record_only\n");
+    load_security_text(&other).unwrap_or_else(|e| panic!("{e}"));
+    for word in ["ignore", "allow", "true", "\"\""] {
+        let changed = replace_once(&text, key, &format!("    exposed_workflows: {word}\n"));
+        let error = refused(load_security_text(&changed), word);
+        assert_eq!(error.kind, PolicyErrorKind::Type, "{word}: {error}");
+        assert_eq!(
+            error.key.as_deref(),
+            Some("credentials.repository_requirements.exposed_workflows"),
+            "{word}: {error}"
+        );
+    }
+    let missing = replace_once(&text, key, "");
+    let error = refused(load_security_text(&missing), "the key is missing");
+    assert_eq!(error.kind, PolicyErrorKind::Type, "{error}");
+    assert!(error.message.contains("exposed_workflows"), "{error}");
+}
+
+#[test]
 fn negative_nt_pol_03_an_unknown_key_is_refused_at_any_depth_and_named() {
     let text = real(SECURITY_FILE);
     // Top level.

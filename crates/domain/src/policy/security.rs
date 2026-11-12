@@ -1113,6 +1113,17 @@ strict! {
     }
 }
 
+closed_set! {
+    /// What happens to a repository whose workflows are exposed to the factory's branches
+    /// (threat T-48).
+    pub enum ExposedWorkflows {
+        /// The repository runs at level L0, unless its owner acknowledged exactly those workflows.
+        CapAtL0,
+        /// The workflows are named in the audit record and the repository is not capped for them.
+        RecordOnly,
+    }
+}
+
 strict! {
     /// What a repository must have for the factory to act above level L0.
     pub struct RepositoryRequirements {
@@ -1136,6 +1147,8 @@ strict! {
         pub factory_branch_pattern: String,
         /// Whether pushes are limited to that pattern.
         pub push_only_to_factory_branch_pattern: bool,
+        /// What exposed workflows of the target repository cost it (threat T-48).
+        pub exposed_workflows: ExposedWorkflows,
     }
 }
 
