@@ -165,7 +165,7 @@ Do not enable the repository until its owner has done the five steps in [the tar
 
 ## Where to read more
 
-- [Prepare a repository](prepare-a-repository.md): the project manifest, the gates that read Rust tooling only, and the test names that count as acceptance evidence.
+- [Prepare a repository](prepare-a-repository.md): the project manifest, the test report formats the test gate reads, the gate that reads Cargo only, and the test names that count as acceptance evidence.
 - [ADR 0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md): the decisions, the options that lost and what is not built.
 - [Show the issue workflow on a board](project-board.md) and [Claude Code and Codex side by side](claude-and-codex.md), with their decision records [0018](../adr/0018-project-board-mirror-that-adapts.md) and [0019](../adr/0019-claude-code-and-codex-alike.md).
 - [The issue workflow policy](../../policies/issue-workflow.yaml): every label and every move.
