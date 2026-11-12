@@ -8,7 +8,9 @@
 //! # One pass
 //!
 //! 1. If a sweep is due, `Engine::sweep`: end attempts whose lease lapsed, whose deadline passed
-//!    or whose teardown ran out of time. Another worker's lapsed lease is recovered here.
+//!    or whose teardown ran out of time. Another worker's lapsed lease is recovered here. A sweep
+//!    is due when the sweep interval has passed since the last one, by the loop's ticker, whether
+//!    or not the loop found work in between: a queue that never empties does not put it off.
 //! 2. `Engine::claim_next`, which takes at most one attempt (the loop sets `claim_batch` to 1, so
 //!    it never holds a lease it is not running).
 //! 3. Each started attempt runs inside a `factory.job` span with `Engine::run_attempt`.
@@ -25,8 +27,9 @@
 //! sweeper of the next worker moves the attempt to `LEASE_LOST` and the stage run to a retry.
 //! So a lease is never abandoned silently: it is logged, counted, and the exit code says so.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use factory_ports::store::WorkerId;
 use factory_workflow::engine::{AttemptOutcome, Engine, EngineError};
@@ -177,14 +180,16 @@ impl WorkerLoop {
     pub async fn run(&self) -> LoopSummary {
         let mut summary = LoopSummary::default();
         let mut sweep_due = true;
-        let mut since_sweep = Duration::ZERO;
+        // The wait until the next sweep. It is made once per sweep and looked at on every pass, so
+        // the time an attempt took counts towards it exactly as the time spent idle does.
+        let mut next_sweep = self.ticker.sleep(self.settings.sweep_interval());
         tracing::info!(worker = self.worker.as_str(), "worker loop started");
         loop {
             if self.shutdown.is_raised() {
                 summary.stopped_cleanly = true;
                 break;
             }
-            if sweep_due {
+            if sweep_due || has_ended(&mut next_sweep).await {
                 match self.engine.sweep().await {
                     Ok(swept) => {
                         summary.sweeps += 1;
@@ -205,7 +210,7 @@ impl WorkerLoop {
                     }
                 }
                 sweep_due = false;
-                since_sweep = Duration::ZERO;
+                next_sweep = self.ticker.sleep(self.settings.sweep_interval());
             }
             for hook in &self.before_claim {
                 hook.before_claim().await;
@@ -214,13 +219,13 @@ impl WorkerLoop {
                 Ok(claimed) => claimed,
                 Err(error) if is_transient(&error) => {
                     tracing::warn!(%error, "the claim failed and will be tried again");
-                    self.idle(&mut since_sweep, &mut sweep_due).await;
+                    self.idle().await;
                     continue;
                 }
                 Err(error) => return self.fail(summary, &error),
             };
             if claimed.started.is_empty() {
-                self.idle(&mut since_sweep, &mut sweep_due).await;
+                self.idle().await;
                 continue;
             }
             for attempt in claimed.started {
@@ -320,16 +325,24 @@ impl WorkerLoop {
         }
     }
 
-    async fn idle(&self, since_sweep: &mut Duration, sweep_due: &mut bool) {
-        let wait = self.settings.poll_interval();
+    async fn idle(&self) {
         tokio::select! {
-            () = self.ticker.sleep(wait) => {}
+            () = self.ticker.sleep(self.settings.poll_interval()) => {}
             () = self.shutdown.raised() => {}
         }
-        *since_sweep += wait;
-        if *since_sweep >= self.settings.sweep_interval() {
-            *sweep_due = true;
-        }
+    }
+}
+
+/// A wait of the loop's ticker.
+type Wait<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// True when `wait` has ended. It looks once and does not wait. The caller replaces a wait that
+/// has ended before it asks again.
+async fn has_ended(wait: &mut Wait<'_>) -> bool {
+    tokio::select! {
+        biased;
+        () = wait.as_mut() => true,
+        () = std::future::ready(()) => false,
     }
 }
 
