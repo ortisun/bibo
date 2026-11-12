@@ -143,6 +143,32 @@ pub const OUTPUT_SCHEMA_OF: [(&str, &str); 9] = [
     ("documentation-reviewer", "review-findings"),
 ];
 
+/// The factory schemas an agent's answer is checked against besides its own output schema, by
+/// agent directory name. The planner's envelope holds a plan that the engine validates against
+/// `task-dag`, so the planner has to be shown that schema too.
+pub const EXTRA_ANSWER_SCHEMAS: [(&str, &str); 1] = [("planner", "task-dag")];
+
+/// The texts of every schema the answer of `agent` is checked against: its output schema first,
+/// then the factory schemas of [`EXTRA_ANSWER_SCHEMAS`].
+pub fn answer_schema_texts(agent: &Agent) -> Vec<String> {
+    let output = &agent.manifest["outputs_schema"];
+    let mut texts = vec![read_text(&agent_schema_path(
+        output["name"].as_str().expect("a name"),
+        output["version"].as_u64().expect("a version"),
+    ))];
+    for (_, name) in EXTRA_ANSWER_SCHEMAS
+        .iter()
+        .filter(|(dir, _)| *dir == agent.dir_name)
+    {
+        texts.push(read_text(
+            &repo_root()
+                .join("schemas")
+                .join(format!("{name}.schema.json")),
+        ));
+    }
+    texts
+}
+
 /// The file of an agent input or output schema: `agents/schemas/<name>.v<version>.schema.json`.
 pub fn agent_schema_path(name: &str, version: u64) -> PathBuf {
     agents_dir()

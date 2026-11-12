@@ -98,7 +98,7 @@
   },
   "prompt": {
     "template_path": "agents/planner/prompt.md",
-    "template_version": "1.0.0",
-    "template_sha256": "sha256:cb37f1c995e55f34bfbb397cad27ad56c6dfc1242aa26bbf04f96514524167e0"
+    "template_version": "1.1.0",
+    "template_sha256": "sha256:94c2c4b3bad9a30da73e8f8ee0f73ce5c9f7ac5b51f3ab588be0d489c3190960"
   }
 }

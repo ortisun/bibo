@@ -73,7 +73,7 @@
   },
   "prompt": {
     "template_path": "agents/intake-classifier/prompt.md",
-    "template_version": "1.0.0",
-    "template_sha256": "sha256:d91bce6759902078e4858d18573112f888cb800628a88e2efc76e346c412424c"
+    "template_version": "1.1.0",
+    "template_sha256": "sha256:f5683900e954bbb9fd312b18900e5af84f1a2ea4d16479a088112c2348646411"
   }
 }

@@ -104,7 +104,7 @@
   },
   "prompt": {
     "template_path": "agents/documentation-writer/prompt.md",
-    "template_version": "1.0.0",
-    "template_sha256": "sha256:a1e27975d794438cdcc61099a603bd1e92f3778a0f5ecdcf840319bb03ca0228"
+    "template_version": "1.1.0",
+    "template_sha256": "sha256:06b2084c22593a07f4f31c9e2ae723ca800654c3bb62362ace959f6da9d3cbb3"
   }
 }

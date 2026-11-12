@@ -21,8 +21,8 @@ use serde_json::{Value, json};
 
 use agent_defs::checks::{self, KNOWN_POLICY_GAPS};
 use agent_defs::{
-    Agent, OUTPUT_SCHEMA_OF, SLICE_1_AGENTS, agent_schema_path, agents, profile_files,
-    profile_value, security_policy,
+    Agent, OUTPUT_SCHEMA_OF, SLICE_1_AGENTS, agent_schema_path, agents, answer_schema_texts,
+    profile_files, profile_value, security_policy,
 };
 use support::{TempDir, example_dir, read_example, read_text, repo_root};
 
@@ -579,8 +579,8 @@ fn a_mismatched_prompt_version_is_caught() {
 fn data_outside_the_untrusted_section_is_caught() {
     let intake = agent("intake-classifier");
     let broken = intake.prompt.replace(
-        "Your only tool is `report.submit`",
-        "The request is {{input.request}}. Your only tool is `report.submit`",
+        "You have no tools.",
+        "The request is {{input.request}}. You have no tools.",
     );
     let problems = checks::prompt_problems(&intake.manifest, &broken, &classes());
     assert!(mentions(&problems, "whole line"), "{problems:#?}");
@@ -780,6 +780,82 @@ fn an_input_schema_that_drifts_from_the_prompt_table_is_caught() {
         .expect("properties")
         .insert("builder_notes".to_owned(), json!({ "type": "string" }));
     assert!(!checks::input_schema_problems(&builder.prompt, &schema).is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------
+// The output channel: how a report really leaves a run
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn every_prompt_says_the_final_message_is_the_report_and_shows_the_schemas_it_is_checked_against() {
+    no_problems("output channel", |a| {
+        checks::output_channel_problems(&a.prompt, &answer_schema_texts(a))
+    });
+}
+
+#[test]
+fn the_planner_is_shown_the_task_graph_schema_as_well_as_its_envelope() {
+    let planner = agent("planner");
+    let texts = answer_schema_texts(&planner);
+    assert_eq!(texts.len(), 2);
+    assert!(texts[1].contains("task-dag"));
+}
+
+#[test]
+fn a_prompt_that_names_a_tool_no_runtime_offers_is_caught() {
+    let builder = agent("builder");
+    let schemas = answer_schema_texts(&builder);
+    let broken = builder.prompt.replace(
+        "end your run with one final message",
+        "call `report.submit` once with one final message",
+    );
+    assert_ne!(broken, builder.prompt, "the sentence to break was not found");
+    let problems = checks::output_channel_problems(&broken, &schemas);
+    assert!(mentions(&problems, "no runtime gives"), "{problems:#?}");
+}
+
+#[test]
+fn an_embedded_schema_that_drifts_from_its_file_is_caught() {
+    let reviewer = agent("code-reviewer");
+    let schemas = answer_schema_texts(&reviewer);
+    let broken = reviewer
+        .prompt
+        .replacen("\"additionalProperties\": false", "\"additionalProperties\": true", 1);
+    assert_ne!(broken, reviewer.prompt, "the schema line to break was not found");
+    let problems = checks::output_channel_problems(&broken, &schemas);
+    assert!(mentions(&problems, "differs from its schema file"), "{problems:#?}");
+
+    let mut changed_file = schemas.clone();
+    changed_file[0].push_str("\n{}");
+    let problems = checks::output_channel_problems(&reviewer.prompt, &changed_file);
+    assert!(mentions(&problems, "differs from its schema file"), "{problems:#?}");
+}
+
+#[test]
+fn a_prompt_without_the_schema_or_without_the_final_message_rule_is_caught() {
+    let intake = agent("intake-classifier");
+    let schemas = answer_schema_texts(&intake);
+    let no_rule = intake.prompt.replace(checks::FINAL_MESSAGE_RULE, "");
+    assert_ne!(no_rule, intake.prompt);
+    let problems = checks::output_channel_problems(&no_rule, &schemas);
+    assert!(mentions(&problems, "fixed rule"), "{problems:#?}");
+
+    let no_schema: String = {
+        let mut kept = Vec::new();
+        let mut inside = false;
+        for line in intake.prompt.lines() {
+            if line == "```json" {
+                inside = true;
+            } else if inside && line == "```" {
+                inside = false;
+            } else if !inside {
+                kept.push(line);
+            }
+        }
+        kept.join("\n")
+    };
+    let problems = checks::output_channel_problems(&no_schema, &schemas);
+    assert!(mentions(&problems, "shows 0 schema(s)"), "{problems:#?}");
 }
 
 fn strings(value: &Value) -> BTreeSet<String> {

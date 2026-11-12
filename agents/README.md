@@ -31,7 +31,7 @@ Placements are the sandbox only. No agent can merge, push, deploy, change a poli
 | `documentation-writer` | `technical_writer` | documenting | read, write README, changelog and `docs/` Markdown | `documentation-report` |
 | `documentation-reviewer` | `documentation_reviewer` | documentation review | read | `review-findings` |
 
-Tool names are the ids in the tool table of [`policies/security.yaml`](../policies/security.yaml). The manifest declares what an agent may hold, and the policy engine still decides what a stage grants. `report.submit` is declared with `read` access because it writes no workspace file. The Spec Kit skills (`speckit.*`) appear only in the specification writer, because every other stage runs with skills off ([the spike](../docs/spikes/agent-runtime.md), section 4.6).
+Tool names are the ids in the tool table of [`policies/security.yaml`](../policies/security.yaml). The manifest declares what an agent may hold, and the policy engine still decides what a stage grants. `report.submit` is declared with `read` access because it writes no workspace file. It names the output channel of the policy, not a tool an agent can call: see "How a report is returned" below. The Spec Kit skills (`speckit.*`) appear only in the specification writer, because every other stage runs with skills off ([the spike](../docs/spikes/agent-runtime.md), section 4.6).
 
 Each agent lists `recommended_models` with a cheaper starting model and a larger model to escalate to after two failed repairs. Both tools default to the most expensive model, so the manifests name the models explicitly. Only models named in the recorded runs are used.
 
@@ -52,13 +52,23 @@ Every line of data starts with `> `, so no line of data can look like a delimite
 
 Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history.
 
+## How a report is returned
+
+Neither command line tool gives an agent a tool for returning a report. The adapter takes the last message of the run as the answer, takes one Markdown code fence off it when the whole message is one fenced block (`crates/runtime/src/report.rs`, `without_fence`), and hands the bytes to the engine, which validates them against the output schema of the manifest. Claude Code's `--json-schema` rejects the factory schemas and Codex's `--output-schema` does not check the answer ([the spike](../docs/spikes/agent-runtime.md), "Structured output with the real schemas"), so neither flag is used.
+
+The prompt is therefore the only place the model learns the shape of its answer. Every "Output contract" section says that the final message is the report, carries one fixed rule about that message, and shows each schema the answer is checked against, byte for byte, in a `json` fence. The planner is shown `schemas/task-dag.schema.json` as well, because the engine validates the plan inside its envelope against it. `agents/refresh_hashes.py` rewrites the shown schemas from their files, and the test `every_prompt_says_the_final_message_is_the_report_and_shows_the_schemas_it_is_checked_against` fails when a prompt and a schema file differ.
+
+A report the validator rejects fails the run. Nothing asks the agent to correct it within the same run, and the prompts say so.
+
+No part of this has met a real model. Whether the models follow the rule often enough is measured by the first live run, not by these tests.
+
 ## Adding or changing an agent
 
 1. Write the test that should fail first. Put the agent in `SLICE_1_AGENTS` and `OUTPUT_SCHEMA_OF` in `crates/contracts/tests/agent_defs/mod.rs` and in `STAGE_OF_ROLE` in `agent_defs/checks.rs`.
 2. Write the input and output schemas in `agents/schemas/`. The input schema lists exactly the inputs of the prompt table.
 3. Write `prompt.md` with the sections above. Copy the fixed instruction from an existing prompt, and give each input a class from `untrusted_content.classes` in the security policy.
 4. Write `manifest.json`. Give the agent the fewest tools and the narrowest paths that its work needs, and check the tool and role against the policy's tool table.
-5. Run `python3 -I agents/refresh_hashes.py`, then add `fixtures/valid/` and `fixtures/invalid/`.
+5. Run `python3 -I agents/refresh_hashes.py`, then add `fixtures/valid/` and `fixtures/invalid/`. The script also copies the output schema into the `json` fence of the prompt's output contract.
 6. Run `cargo nextest run -p factory-contracts --test repo_definitions --test prompt_rendering --test agent_conformance`.
 
 When you change a prompt, raise `prompt.template_version` and the `Prompt version:` line together, run the hash script and commit the manifest in the same change. A change that alters behavior also raises the manifest `version`.

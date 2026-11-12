@@ -107,7 +107,7 @@ pub async fn assemble(
         note,
     } = end;
     let outcome = match outcome {
-        Ok(bytes) => judge_output(io, req, &usage, bytes),
+        Ok(bytes) => judge_output(io, req, &usage, without_fence(bytes)),
         Err(error) => Err(error),
     };
     let permission_denials = denials
@@ -125,6 +125,36 @@ pub async fn assemble(
         runtime_version: version,
         exit,
         permission_denials,
+    }
+}
+
+/// The final message without a Markdown code fence around it.
+///
+/// The prompts ask for a bare JSON document as the final message. A model often wraps such a
+/// document in a fence all the same, and a run that did the work should not fail on that. So one
+/// fence is taken off when the whole message is exactly one fenced block: the first line is
+/// ` ``` ` or ` ```json `, the last line is ` ``` `, and no line between them starts a fence.
+/// Anything else is returned as it is, prose before or after the block included, and the engine's
+/// validator refuses it. Nothing here parses the document or decides whether it is valid.
+#[must_use]
+pub fn without_fence(bytes: Vec<u8>) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return bytes;
+    };
+    let trimmed = text.trim();
+    let Some((first, rest)) = trimmed.split_once('\n') else {
+        return bytes;
+    };
+    let opens = matches!(first.trim_end(), "```" | "```json" | "```JSON");
+    let Some(inner) = rest.strip_suffix("```") else {
+        return bytes;
+    };
+    let inner_is_one_block = inner.ends_with('\n')
+        && !inner.lines().any(|line| line.trim_start().starts_with("```"));
+    if opens && inner_is_one_block {
+        inner.trim_end_matches(['\n', '\r']).as_bytes().to_vec()
+    } else {
+        bytes
     }
 }
 
@@ -274,5 +304,48 @@ pub fn usage_of(input_tokens: u64, output_tokens: u64, cost_micro: u64, requests
         output_tokens,
         cost: CostMicroUsd(cost_micro),
         requests,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_fence;
+
+    fn unwrapped(text: &str) -> String {
+        String::from_utf8(without_fence(text.as_bytes().to_vec())).expect("UTF-8")
+    }
+
+    #[test]
+    fn a_bare_document_is_returned_byte_for_byte() {
+        for text in ["{\"a\": 1}", "  {\"a\": 1}\n", "", "not json at all"] {
+            assert_eq!(unwrapped(text), text);
+        }
+    }
+
+    #[test]
+    fn one_fence_around_the_whole_message_is_taken_off() {
+        assert_eq!(unwrapped("```json\n{\"a\": 1}\n```"), "{\"a\": 1}");
+        assert_eq!(unwrapped("```\n{\n  \"a\": 1\n}\n```\n"), "{\n  \"a\": 1\n}");
+        assert_eq!(unwrapped("\n```json  \r\n{\"a\": 1}\r\n```  \n"), "{\"a\": 1}");
+    }
+
+    #[test]
+    fn prose_around_a_fence_is_not_stripped_so_the_validator_refuses_it() {
+        for text in [
+            "Here is the report:\n```json\n{\"a\": 1}\n```",
+            "```json\n{\"a\": 1}\n```\nDone.",
+            "```json\n{\"a\": 1}\n```\n```json\n{\"b\": 2}\n```",
+            "```python\n{\"a\": 1}\n```",
+            "```json {\"a\": 1} ```",
+            "```json\n{\"a\": 1}```",
+        ] {
+            assert_eq!(unwrapped(text), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_are_left_alone() {
+        let bytes = vec![0x60, 0x60, 0x60, 0x0a, 0xff, 0x0a, 0x60, 0x60, 0x60];
+        assert_eq!(without_fence(bytes.clone()), bytes);
     }
 }

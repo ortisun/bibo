@@ -269,6 +269,85 @@ pub fn prompt_problems(manifest: &Value, prompt: &str, classes: &[String]) -> Ve
     problems
 }
 
+/// The sentence every prompt uses to say how the report is returned. The command line tools give
+/// an agent no tool to submit a report with: the adapter takes the last message of the run as the
+/// answer, so the prompt has to say exactly that.
+pub const FINAL_MESSAGE_RULE: &str = "Put no sentence before or after the document and no code fence around it.";
+
+/// The schemas shown inside ` ```json ` fences of a section, in order.
+pub fn embedded_schemas(section: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut open: Option<Vec<&str>> = None;
+    for line in section.lines() {
+        match (&mut open, line) {
+            (None, "```json") => open = Some(Vec::new()),
+            (Some(lines), "```") => {
+                found.push(lines.join("\n"));
+                open = None;
+            }
+            (Some(lines), _) => lines.push(line),
+            (None, _) => {}
+        }
+    }
+    found
+}
+
+/// The output contract must tell the model how its report really leaves the run, and must show it
+/// the schemas the factory checks the report against, byte for byte.
+///
+/// `schemas` are the texts of the schema files the agent's answer is validated against, in the
+/// order the prompt shows them: the output schema of the manifest first.
+pub fn output_channel_problems(prompt: &str, schemas: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let lowered = prompt.to_lowercase();
+    for phrase in ["call `report.submit`", "`report.submit` call", "tool is `report.submit`"] {
+        if lowered.contains(phrase) {
+            problems.push(format!(
+                "the prompt says `{phrase}`, but no runtime gives the agent a tool of that name"
+            ));
+        }
+    }
+    let found = sections(prompt);
+    let Some((_, contract)) = found.iter().find(|(h, _)| h == "Output contract") else {
+        problems.push("there is no output contract to check".to_owned());
+        return problems;
+    };
+    if !contract.contains("final message") {
+        problems.push(
+            "the output contract does not say that the final message is the report".to_owned(),
+        );
+    }
+    if !contract.contains(FINAL_MESSAGE_RULE) {
+        problems.push(
+            "the output contract does not carry the fixed rule for the final message".to_owned(),
+        );
+    }
+    let shown = embedded_schemas(contract);
+    if shown.len() != schemas.len() {
+        problems.push(format!(
+            "the output contract shows {} schema(s) but the answer is checked against {}",
+            shown.len(),
+            schemas.len()
+        ));
+    }
+    for (index, (shown, wanted)) in shown.iter().zip(schemas).enumerate() {
+        if shown.trim_end() != wanted.trim_end() {
+            problems.push(format!(
+                "embedded schema {} differs from its schema file; run python3 -I agents/refresh_hashes.py",
+                index + 1
+            ));
+        }
+    }
+    for (heading, body) in &found {
+        if heading != "Output contract" && !embedded_schemas(body).is_empty() {
+            problems.push(format!(
+                "the section `{heading}` shows a schema, which belongs in the output contract"
+            ));
+        }
+    }
+    problems
+}
+
 /// The properties and required names of an input schema must be exactly the inputs of the table.
 pub fn input_schema_problems(prompt: &str, schema: &Value) -> Vec<String> {
     let rows = input_rows(prompt);

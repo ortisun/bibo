@@ -91,7 +91,7 @@
   },
   "prompt": {
     "template_path": "agents/specification-reviewer/prompt.md",
-    "template_version": "1.0.0",
-    "template_sha256": "sha256:ba7396975aaa1c5ff39895b1a506635c97fc89f6f87ad6300376d06054c5ec27"
+    "template_version": "1.1.0",
+    "template_sha256": "sha256:efdc007b0a76582f929cf1f99960223552e9cbb7e20db6d493f0744c1847773d"
   }
 }
