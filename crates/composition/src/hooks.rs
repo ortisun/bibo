@@ -10,3 +10,20 @@ pub trait BeforeClaim: Send + Sync {
     /// cannot do its work logs and returns.
     async fn before_claim(&self);
 }
+
+/// Work to do, again and again, while one attempt runs.
+///
+/// The steps before a claim run between attempts only, and a worker runs one attempt at a time. A
+/// person who cancels a job while its stage runs would otherwise wait for the stage to end before
+/// anything reads the request. The loop calls this at its poll interval for the job of the attempt
+/// it is running. Like [`BeforeClaim`], it must not fail the loop.
+#[async_trait::async_trait(?Send)]
+pub trait WhileRunning: Send + Sync {
+    /// Applies the cancel requests recorded for `job` and nothing else. Once the engine has the
+    /// cancel, the next heartbeat of the attempt reads it and raises the attempt's cancel signal.
+    async fn apply_cancels(
+        &self,
+        tenant: factory_domain::ids::TenantId,
+        job: factory_domain::ids::JobId,
+    );
+}

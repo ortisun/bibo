@@ -80,6 +80,22 @@ returns the attempt in `LoopSummary::abandoned` and exits with code 4. It does n
 because the attempt is still in flight in the store: the lease expires and the sweeper of the next
 worker moves the attempt to `LEASE_LOST`. So a lease is never abandoned silently.
 
+Three rules keep the loop alive for every job (`tests/liveness.rs`):
+
+* **The sweep is due by time.** It runs when the sweep interval has passed by the loop's ticker,
+  whether or not the loop waited in between, so a queue that never empties does not put it off. It
+  does not run while an attempt runs: a sweep waits for the attempt in progress to end.
+* **One bad job does not stop the others.** An error about the process (the configuration, a store
+  that is unreachable or broken: `EngineError::is_about_the_process`) ends the loop. An error about
+  one job does not. A ready stage run whose start raises one is set aside for one lease time by the
+  claim (`Deferral::Faulted`, counted in `LoopSummary::set_aside`); it stays `READY` and is tried
+  again after the wait. An attempt whose run raises one is failed through `Engine::fail_attempt` as
+  a fault of the factory (`INTERNAL`, never retried) and counted in `LoopSummary::faulted`.
+* **A cancel reaches a running attempt.** While an attempt runs, the loop asks `ClaimWork` at the
+  poll interval for the cancel requests of that job (`with_cancel_watch`). The engine's next
+  heartbeat of the attempt then raises its cancel signal. Admissions, approvals, pauses and the
+  decisions about other jobs are still applied between attempts only.
+
 While an attempt runs, the loop also serves the **evidence-drift** requests of the stage handlers
 (`with_drift_pump`): a handler's future is `Send` and the engine's is not, so the delivery stage reports
 a changed binding down a channel and the loop, which owns the engine, makes the `apply_change` call.

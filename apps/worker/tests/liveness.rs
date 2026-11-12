@@ -1,23 +1,35 @@
-//! The loop stays alive for everyone: it sweeps while it is busy, and one bad job does not stop
-//! the others.
+//! The loop stays alive for everyone: it sweeps while it is busy, one bad job does not stop the
+//! others, and a cancel reaches an attempt that is running.
 //!
-//! Real: PostgreSQL, the engine, the loop and the ticker. Scripted: the stage handlers (the engine
-//! suite's), as in the other loop tests.
+//! Real: PostgreSQL, the engine, the loop, the ticker, and for the cancel the hook that applies
+//! decisions with the allowlist file and the policy files. Scripted: the stage handlers (the
+//! engine suite's), as in the other loop tests.
 
 mod support;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use factory_composition::decision_signing::{DecisionKeys, Signing};
+use factory_composition::decisions::{
+    AllowlistAuthority, ApprovalSubmitter, AuditMarkers, ClaimWork, ClaimWorkDeps, DecisionFields,
+    REQUESTED,
+};
+use factory_composition::delivery::StoreApprovalSources;
+use factory_composition::seams::FileAllowlist;
+use factory_composition::startup::load_policy;
 use factory_composition::system::{RandomIds, Shutdown, TokioTicker};
 use factory_domain::contracts::StageContract;
-use factory_domain::ids::{JobId, TenantId};
-use factory_domain::state::{AttemptStatus, StageRunStatus};
-use factory_domain::vocabulary::{Fidelity, StageKind};
+use factory_domain::ids::{AuditEventId, JobId, TenantId};
+use factory_domain::scope::TenantScope;
+use factory_domain::state::{AttemptStatus, JobStatus, StageRunStatus};
+use factory_domain::vocabulary::{Fidelity, HumanRole, StageKind};
 use factory_ports::agent::RoutingNeed;
 use factory_ports::clock::IdGenerator;
+use factory_ports::store::{AuditAction, AuditActor, AuditDecision, NewAuditEvent, Store};
 use factory_storage::pg::PgStore;
 use factory_worker::run::{Flow, LoopSummary, Observer, WorkerLoop};
 use factory_workflow::engine::{AttemptOutcome, Engine, EngineConfig, JobView};
@@ -27,6 +39,7 @@ use factory_workflow::handlers::{
     StageHandler, StageOutput,
 };
 use factory_workflow::scheduler::ClaimedAttempt;
+use factory_workflow::stages::approval::{ApprovalCommand, Outcome, ServiceError, Verb};
 use support::engine::{PgWorld, ScriptedHandler, Step};
 use support::{seed_tenant, seeded_repository, server, worker_config};
 
@@ -367,6 +380,170 @@ async fn an_attempt_that_raises_a_hard_error_is_failed_and_the_job_behind_it_run
                 "{intake:#?}"
             );
             assert_eq!(intake.status, StageRunStatus::Failed, "{intake:#?}");
+        })
+        .await;
+}
+
+// ------------------------------------------------------------------------------------------------
+// A cancel reaches a running attempt
+// ------------------------------------------------------------------------------------------------
+
+/// No approval is asked for in this test.
+struct NoDecisions;
+
+#[async_trait(?Send)]
+impl ApprovalSubmitter for NoDecisions {
+    async fn submit(&self, _: ApprovalCommand) -> Result<Outcome, ServiceError> {
+        Err(ServiceError::Unavailable)
+    }
+}
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root")
+}
+
+struct Checkout(PathBuf);
+
+impl Drop for Checkout {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// With one worker, a cancel that a person records while a stage runs is applied while it runs:
+/// the attempt is told to stop and ends as cancelled, long before the stage would have ended.
+#[tokio::test(flavor = "current_thread")]
+async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (_db, world, tenant) = world(|_| {}).await;
+            let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
+            let checkout = Checkout(
+                repository_root()
+                    .join("target/worker-liveness")
+                    .join(world.ids.new_uuid().simple().to_string()),
+            );
+            std::fs::create_dir_all(checkout.0.join("allowlist")).expect("a directory");
+            // The first person `PgWorld::person` makes has the GitHub id 2000.
+            let operator = world.person("operator-one", &[HumanRole::Operator]).await;
+            std::fs::write(
+                checkout.0.join("allowlist/allowlist.yaml"),
+                format!(
+                    "version: 1\nentries:\n  - tenant: {tenant}\n    github_user_id: 1001\n    login: requester-one\n    designations: [requester]\n  - tenant: {tenant}\n    github_user_id: 2000\n    login: operator-one\n    designations: [operator]\n",
+                    tenant = tenant.as_uuid()
+                ),
+            )
+            .expect("the allowlist file");
+            let allowlist = Arc::new(FileAllowlist::in_checkout(&checkout.0));
+            let engine = Arc::new(world.restarted_engine());
+            let keys = Arc::new(DecisionKeys::generated().expect("a signing key"));
+            let hook = Arc::new(ClaimWork::new(ClaimWorkDeps {
+                engine: Arc::clone(&engine),
+                store: world.store.clone(),
+                tenants: vec![tenant],
+                submitter: Arc::new(NoDecisions),
+                approvals: Arc::new(StoreApprovalSources::new(
+                    world.store.clone(),
+                    world.deps.artifacts.clone(),
+                    allowlist.clone(),
+                )),
+                authority: Arc::new(AllowlistAuthority::new(
+                    allowlist,
+                    Arc::clone(&policies.approval),
+                    world.deps.clock.clone(),
+                )),
+                markers: Arc::new(AuditMarkers::new(
+                    world.store.clone(),
+                    policies.hash.clone(),
+                    Arc::clone(&keys),
+                )),
+                clock: world.deps.clock.clone(),
+                max_age: Duration::from_secs(72 * 3600),
+                per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
+                keys: Arc::clone(&keys),
+            }));
+
+            // The intake stage of the job never ends by itself.
+            let never = Arc::new(tokio::sync::Notify::new());
+            world.script(StageKind::Intake).queue([Step::Hang(never)]);
+            let job = world.admitted_job().await;
+
+            let shutdown = Shutdown::new();
+            let worker_loop = WorkerLoop::shared(
+                Arc::clone(&engine),
+                Arc::new(TokioTicker),
+                PgWorld::worker("worker-alone"),
+                PgWorld::loop_settings(),
+                shutdown.clone(),
+            )
+            .with_before_claim(hook.clone())
+            .with_cancel_watch(hook.clone());
+            let task = tokio::task::spawn_local(async move { worker_loop.run().await });
+            while world.script(StageKind::Intake).executed().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+
+            // The record `POST /v1/jobs/{id}/decisions` writes, with the word only the API makes.
+            let id = AuditEventId::from_uuid(world.ids.new_uuid());
+            let fields = DecisionFields {
+                verb: Verb::Cancel,
+                job,
+                stage_run: None,
+                head: None,
+                evidence: None,
+                target: None,
+            };
+            let mut tx = world
+                .store
+                .begin(TenantScope::new(tenant))
+                .await
+                .expect("a tx");
+            let correlation = tx.get_job(job).await.expect("a job").value.correlation_id;
+            tx.record_audit(NewAuditEvent {
+                id,
+                actor: AuditActor::Human(operator),
+                action: AuditAction::new(REQUESTED).expect("an action"),
+                subject: keys.signed_subject(&Signing {
+                    tenant,
+                    actor: operator,
+                    event: id,
+                    requested_at: "2026-10-28T12:00:00Z",
+                    fields: &fields,
+                }),
+                decision: AuditDecision::Record,
+                reason: "requested: not needed".to_owned(),
+                policy_hash: policies.hash.clone(),
+                job: Some(job),
+                stage_run: None,
+                correlation_id: correlation,
+            })
+            .await
+            .expect("the request is recorded");
+            tx.commit().await.expect("commit");
+
+            // The loop polls every 50 ms, the heartbeat that tells the attempt runs every 500 ms.
+            let view = until(&world, job, 8, |view| {
+                view.newest(StageKind::Intake)
+                    .is_some_and(|run| run.attempts[0].status == AttemptStatus::Cancelled)
+            })
+            .await;
+            let intake = view.newest(StageKind::Intake).expect("a run");
+            assert_eq!(
+                intake.attempts[0].status,
+                AttemptStatus::Cancelled,
+                "the running attempt was cancelled: {view:#?}"
+            );
+            assert!(
+                matches!(view.status, JobStatus::Cancelling | JobStatus::Cancelled),
+                "{view:#?}"
+            );
+            assert!(!task.is_finished(), "the loop goes on after a cancel");
+            let summary = stopped(&shutdown, task).await;
+            assert!(summary.failure.is_none(), "{summary:?}");
+            assert!(summary.abandoned.is_empty(), "{summary:?}");
         })
         .await;
 }

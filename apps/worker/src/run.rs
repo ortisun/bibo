@@ -14,6 +14,9 @@
 //! 2. `Engine::claim_next`, which takes at most one attempt (the loop sets `claim_batch` to 1, so
 //!    it never holds a lease it is not running).
 //! 3. Each started attempt runs inside a `factory.job` span with `Engine::run_attempt`.
+//!    While it runs, the loop asks at the poll interval for a cancel of that job and gives it to
+//!    the engine, so a person who cancels a job does not wait for its stage to end. Admissions,
+//!    approvals and every other decision are still applied between attempts only.
 //! 4. With nothing to do the loop waits for the poll interval or for the stop request, whichever
 //!    comes first.
 //!
@@ -38,7 +41,7 @@ use tracing::Instrument;
 
 use factory_composition::config::LoopConfig;
 use factory_composition::drift::DriftPump;
-use factory_composition::hooks::BeforeClaim;
+use factory_composition::hooks::{BeforeClaim, WhileRunning};
 use factory_composition::indexing::ActiveJobs;
 use factory_composition::system::Shutdown;
 use factory_composition::telemetry::job_stretch;
@@ -90,6 +93,7 @@ pub struct WorkerLoop {
     observer: Option<Arc<dyn Observer>>,
     jobs: Option<Arc<ActiveJobs>>,
     before_claim: Vec<Arc<dyn BeforeClaim>>,
+    while_running: Vec<Arc<dyn WhileRunning>>,
     drift: Option<Arc<DriftPump>>,
 }
 
@@ -125,6 +129,7 @@ impl WorkerLoop {
             observer: None,
             jobs: None,
             before_claim: Vec::new(),
+            while_running: Vec::new(),
             drift: None,
         }
     }
@@ -145,6 +150,35 @@ impl WorkerLoop {
     pub fn with_before_claim(mut self, hook: Arc<dyn BeforeClaim>) -> Self {
         self.before_claim.push(hook);
         self
+    }
+
+    /// Asks `hook`, at the poll interval while an attempt runs, to apply the cancel requests of
+    /// the job of that attempt. `factory_composition::decisions::ClaimWork` is the one: without
+    /// it a cancel is read between attempts only, so with one worker it waits for the stage to
+    /// end.
+    #[must_use]
+    pub fn with_cancel_watch(mut self, hook: Arc<dyn WhileRunning>) -> Self {
+        self.while_running.push(hook);
+        self
+    }
+
+    /// Applies the cancel requests of the job of `attempt`, at the poll interval, for as long as
+    /// it is polled. It never completes: the loop selects on it next to the attempt and drops it
+    /// when the attempt ends.
+    ///
+    /// The hook gives the cancel to the engine. The attempt learns of it from its next heartbeat,
+    /// which raises its cancel signal, so the handler and its sandbox run are told to stop within
+    /// one poll interval plus one heartbeat interval of the request.
+    async fn watch_for_cancel(&self, attempt: &ClaimedAttempt) {
+        if self.while_running.is_empty() {
+            return std::future::pending().await;
+        }
+        loop {
+            self.ticker.sleep(self.settings.poll_interval()).await;
+            for hook in &self.while_running {
+                hook.apply_cancels(attempt.tenant, attempt.job).await;
+            }
+        }
     }
 
     /// Tells the loop to note, while an attempt runs, which tenant owns its job. The indexing
@@ -353,12 +387,17 @@ impl WorkerLoop {
         }
         .instrument(span);
         tokio::pin!(work);
+        // The watch is made once and kept through both phases. It never completes, so it never
+        // ends a `select!` and so never drops a drift request that is being served.
+        let cancel_watch = self.watch_for_cancel(attempt);
+        tokio::pin!(cancel_watch);
         // Phase 1: no stop request yet. The attempt runs; a stop request starts the drain clock.
         let stop = self.shutdown.raised();
         tokio::pin!(stop);
         loop {
             tokio::select! {
                 result = &mut work => return Ran::from(result),
+                () = &mut cancel_watch => {}
                 () = &mut stop => {
                     tracing::info!(attempt = %attempt.attempt, drain_s = self.settings.drain_s, "stop requested; letting the running attempt finish");
                     break;
@@ -372,6 +411,7 @@ impl WorkerLoop {
         loop {
             tokio::select! {
                 result = &mut work => return Ran::from(result),
+                () = &mut cancel_watch => {}
                 () = self.serve_drift() => {}
                 () = &mut drain => {
                     tracing::error!(
