@@ -809,7 +809,10 @@ fn a_prompt_that_names_a_tool_no_runtime_offers_is_caught() {
         "end your run with one final message",
         "call `report.submit` once with one final message",
     );
-    assert_ne!(broken, builder.prompt, "the sentence to break was not found");
+    assert_ne!(
+        broken, builder.prompt,
+        "the sentence to break was not found"
+    );
     let problems = checks::output_channel_problems(&broken, &schemas);
     assert!(mentions(&problems, "no runtime gives"), "{problems:#?}");
 }
@@ -818,17 +821,28 @@ fn a_prompt_that_names_a_tool_no_runtime_offers_is_caught() {
 fn an_embedded_schema_that_drifts_from_its_file_is_caught() {
     let reviewer = agent("code-reviewer");
     let schemas = answer_schema_texts(&reviewer);
-    let broken = reviewer
-        .prompt
-        .replacen("\"additionalProperties\": false", "\"additionalProperties\": true", 1);
-    assert_ne!(broken, reviewer.prompt, "the schema line to break was not found");
+    let broken = reviewer.prompt.replacen(
+        "\"additionalProperties\": false",
+        "\"additionalProperties\": true",
+        1,
+    );
+    assert_ne!(
+        broken, reviewer.prompt,
+        "the schema line to break was not found"
+    );
     let problems = checks::output_channel_problems(&broken, &schemas);
-    assert!(mentions(&problems, "differs from its schema file"), "{problems:#?}");
+    assert!(
+        mentions(&problems, "differs from its schema file"),
+        "{problems:#?}"
+    );
 
     let mut changed_file = schemas.clone();
     changed_file[0].push_str("\n{}");
     let problems = checks::output_channel_problems(&reviewer.prompt, &changed_file);
-    assert!(mentions(&problems, "differs from its schema file"), "{problems:#?}");
+    assert!(
+        mentions(&problems, "differs from its schema file"),
+        "{problems:#?}"
+    );
 }
 
 #[test]

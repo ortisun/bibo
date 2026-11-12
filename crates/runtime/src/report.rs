@@ -150,7 +150,9 @@ pub fn without_fence(bytes: Vec<u8>) -> Vec<u8> {
         return bytes;
     };
     let inner_is_one_block = inner.ends_with('\n')
-        && !inner.lines().any(|line| line.trim_start().starts_with("```"));
+        && !inner
+            .lines()
+            .any(|line| line.trim_start().starts_with("```"));
     if opens && inner_is_one_block {
         inner.trim_end_matches(['\n', '\r']).as_bytes().to_vec()
     } else {
@@ -325,8 +327,14 @@ mod tests {
     #[test]
     fn one_fence_around_the_whole_message_is_taken_off() {
         assert_eq!(unwrapped("```json\n{\"a\": 1}\n```"), "{\"a\": 1}");
-        assert_eq!(unwrapped("```\n{\n  \"a\": 1\n}\n```\n"), "{\n  \"a\": 1\n}");
-        assert_eq!(unwrapped("\n```json  \r\n{\"a\": 1}\r\n```  \n"), "{\"a\": 1}");
+        assert_eq!(
+            unwrapped("```\n{\n  \"a\": 1\n}\n```\n"),
+            "{\n  \"a\": 1\n}"
+        );
+        assert_eq!(
+            unwrapped("\n```json  \r\n{\"a\": 1}\r\n```  \n"),
+            "{\"a\": 1}"
+        );
     }
 
     #[test]

@@ -272,7 +272,8 @@ pub fn prompt_problems(manifest: &Value, prompt: &str, classes: &[String]) -> Ve
 /// The sentence every prompt uses to say how the report is returned. The command line tools give
 /// an agent no tool to submit a report with: the adapter takes the last message of the run as the
 /// answer, so the prompt has to say exactly that.
-pub const FINAL_MESSAGE_RULE: &str = "Put no sentence before or after the document and no code fence around it.";
+pub const FINAL_MESSAGE_RULE: &str =
+    "Put no sentence before or after the document and no code fence around it.";
 
 /// The schemas shown inside ` ```json ` fences of a section, in order.
 pub fn embedded_schemas(section: &str) -> Vec<String> {
@@ -300,7 +301,11 @@ pub fn embedded_schemas(section: &str) -> Vec<String> {
 pub fn output_channel_problems(prompt: &str, schemas: &[String]) -> Vec<String> {
     let mut problems = Vec::new();
     let lowered = prompt.to_lowercase();
-    for phrase in ["call `report.submit`", "`report.submit` call", "tool is `report.submit`"] {
+    for phrase in [
+        "call `report.submit`",
+        "`report.submit` call",
+        "tool is `report.submit`",
+    ] {
         if lowered.contains(phrase) {
             problems.push(format!(
                 "the prompt says `{phrase}`, but no runtime gives the agent a tool of that name"
