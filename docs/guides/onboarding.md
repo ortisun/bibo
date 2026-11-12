@@ -124,9 +124,11 @@ A project owner who works alone holds every designation and is the only person w
 
 ## Required before you enable the repository: check its own workflows
 
-The factory pushes the code of a job to a `factory/*` branch of your repository and opens a draft pull request. A model wrote that code. GitHub's documentation says that your workflows that start on `push` or `pull_request` run for that branch with your repository's secrets, before anyone has read the change. The factory has no control for this, and the installer does not look at your workflows. This project has not exercised the GitHub behaviour against a real repository.
+The factory pushes the code of a job to a `factory/*` branch of your repository and opens a draft pull request. A model wrote that code. GitHub's documentation says that your workflows that start on `push` or `pull_request` run for that branch with your repository's secrets, before anyone has read the change. This project has not exercised the GitHub behaviour against a real repository.
 
-Do not enable the repository until its owner has done the five steps in [the target repository's own workflows](production.md#the-target-repositorys-own-workflows). In short: no secret, no write token and no self-hosted runner may be within reach of a workflow that a `factory/*` branch starts.
+The installer does not look at your workflows. The worker does, before it admits a job: the protection preflight reads the workflow files of your default branch, and a repository with a workflow that is exposed to factory branches runs at level `L0` and opens no pull request. The check reads files, not the settings of your repository or organization, so it does not replace the steps below.
+
+Do not enable the repository until its owner has done the five steps in [the target repository's own workflows](production.md#the-target-repositorys-own-workflows). In short: no secret, no write token and no self-hosted runner may be within reach of a workflow that a `factory/*` branch starts. [Make your workflows safe for factory branches](prepare-a-repository.md#make-your-workflows-safe-for-factory-branches) gives the two simplest fixes, and the production guide says how to record an acknowledgement for a workflow that is exposed on purpose.
 
 ## What the installer does not do
 

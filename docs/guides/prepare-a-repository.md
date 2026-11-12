@@ -188,6 +188,55 @@ A job that changes no behavior, such as a refactor, has no exemption. The change
 
 The gate does not read what a test asserts. An empty new test that carries the identifier counts. The new tests are not run against the code of the base commit, so the gate does not show that a new test would fail without the change. A copy of an old test under a new name is a new test. The independent code reviewer is told to open each covering test that the report names and to report a test that asserts nothing, cannot fail or does not exercise the scenario. That is the judgment of a model and not a measurement.
 
+## Make your workflows safe for factory branches
+
+The factory pushes the code of a job to a branch named `factory/job-<id>` of your repository and opens a draft pull request to your default branch. A model wrote that code. GitHub starts your `push` and `pull_request` workflows for it before a person has read it.
+
+Before it admits a job, the factory reads the workflow files of your default branch (`.github/workflows/*.yml` and `*.yaml`). If one of them would run for a factory branch with a secret, a write token or a runner that is not GitHub's in reach, the repository runs at level `L0` and no pull request opens. Threat T-48 in the [threat model](../security/threat-model.md) has the full rules.
+
+The two simplest fixes:
+
+1. **A workflow that needs secrets: leave factory branches out of its `push` trigger.**
+
+   ```yaml
+   on:
+     push:
+       branches-ignore: ['factory/**']
+   ```
+
+   A `push` trigger that lists its branches, such as `branches: [main]`, is safe already. Do not give such a workflow a `pull_request` trigger for your default branch.
+
+2. **A pull request check: give it a read-only token and no secret.**
+
+   ```yaml
+   on:
+     pull_request:
+
+   permissions:
+     contents: read
+
+   jobs:
+     test:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+         - run: make test
+   ```
+
+   Write `permissions` at the top of the file, name a runner of GitHub (`ubuntu-*`, `windows-*` or `macos-*`) in every job, and read no `secrets.` value except `secrets.GITHUB_TOKEN`.
+
+What the check counts as exposed even if you think it is safe:
+
+- a job behind an `environment:`, because the factory cannot read the protection of an environment;
+- `runs-on: ${{ matrix.os }}` or any other expression, a runner group, and a runner label of your own;
+- the trigger `pull_request_target`, and a job that calls a reusable workflow;
+- a `branches` list that takes factory branches back out with a `!` pattern: use `branches-ignore`, or list the branches by name;
+- a workflow that uses YAML anchors or aliases, and any file the check cannot parse.
+
+If such a workflow is exposed on purpose, the operator of the factory can record your acknowledgement of it. The [production guide](production.md#what-the-factory-checks-and-what-it-does-not) says how.
+
+The check reads files and not settings. It cannot see the secrets policy of your organization, the default permissions of the workflow token, or what a script that your workflow runs does. A workflow that passes the check still runs code that a model wrote.
+
 ## Limits that exist today
 
 The factory was built and tested against one Rust fixture. Two gates read Rust tooling only.
