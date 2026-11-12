@@ -258,7 +258,32 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
             )
             .await?;
         }
-        if let (true, Some(requester)) = (open, authorized) {
+        // An issue has one open job. A label that is taken off and put back is a new delivery
+        // (the issue changed, so neither the body nor the semantic key repeats), and without this
+        // look it would start a second job beside the first, each spending on its own.
+        let already_open = match (open, authorized) {
+            (true, Some(_)) => {
+                factory_composition::seams::open_job_for_issue(
+                    &mut *tx,
+                    bound.repository,
+                    issue.number,
+                )
+                .await?
+            }
+            _ => None,
+        };
+        if let Some(existing) = &already_open {
+            witness = audit(
+                state,
+                &mut *tx,
+                &format!("issue {}#{}", registered.value.full_name, issue.number),
+                "webhook.duplicate_delivery",
+                "The issue already has a job that has not ended, so the label made no second job.",
+                Some((existing.id, existing.correlation_id)),
+            )
+            .await?;
+        }
+        if let (true, Some(requester), None) = (open, authorized, &already_open) {
             let job_id = JobId::from_uuid(ids.new_uuid());
             // The record of the job is written under the job's own correlation id, as every record
             // of a job is, so that one search finds all of them.

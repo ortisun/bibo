@@ -4702,3 +4702,23 @@ the hand-written fixtures; it has not been read from a real GitHub response (sec
 person to record one). The recordings of the end-to-end scenarios are not changed: their protection
 facts are the harness's own record (`required_approvals: 1`), judged by its own preflight, and do not
 pass through `ProtectionReport`.
+
+### 16.3 The day ceilings and the running cap: no port changed, one proposal not made
+
+The enforcement of `budgets.hard_ceilings.per_repo_day`, `per_org_day` and
+`budgets.concurrency.max_running_jobs_per_repo` (`crates/composition/src/authority.rs`) changed no
+port trait. Two things next to the ports did change, and an implementor of the engine's
+`Authority` seam must know both:
+
+- `AdmissionFacts` (domain, the answer of `Authority::admission`) has two more facts,
+  `repository_day_budget_has_room` and `organization_day_budget_has_room`. `G_ADMISSION_OK` needs
+  both. Every place that builds the facts was updated in the same change.
+- `Authority::concurrency_allows` keeps its signature. The real implementation now reads the
+  repository from the job and counts the running jobs of that repository.
+
+Proposed and not made: `JobOps::spend_since(repository: Option<RepositoryId>, since: Timestamp) ->
+Result<CostMicroUsd, StoreError>`. Today the spend of a day is summed from the attempt events of
+every job of the tenant that had not ended before the day began, because the store has no cost
+column (the same gap `timeline.rs` documents for the spend of one job). That is one listing of the
+tenant's jobs and one read of events per job at every admission. It is correct and it grows with
+the number of jobs; a cost on the attempt row and this one query would replace it.

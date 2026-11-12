@@ -390,6 +390,86 @@ async fn the_audit_record_of_a_job_made_from_a_webhook_carries_the_correlation_i
     env.stop().await;
 }
 
+/// The same label applied again to an issue, as GitHub sends it after the label was taken off and
+/// put back: a new delivery id and an issue that changed since, so it repeats no earlier delivery.
+fn relabelled(tenant: &Tenant, sender: u64, issue: u64, updated_at: &str) -> Vec<u8> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&payload(tenant, "factory", sender, issue)).expect("json");
+    value["issue"]["updated_at"] = json!(updated_at);
+    serde_json::to_vec(&value).expect("json")
+}
+
+/// An issue has one open job. Before this a requester who took the factory label off and put it
+/// back got a second job for the same issue, running beside the first and spending on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_label_applied_again_to_an_issue_whose_job_is_open_makes_no_second_job() {
+    let env = Env::start().await;
+    let a = &env.a;
+    let requester = a.requester.github_id;
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(70),
+            &payload(a, "factory", requester, 51),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 1);
+
+    // The label again, a minute later. The delivery is new and is recorded; the job is not made.
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(71),
+            &relabelled(a, requester, 51, "2026-10-28T10:01:00Z"),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "webhook_deliveries").await, 2);
+    assert_eq!(rows(&env, "jobs").await, 1, "one issue, one open job");
+    // The record says what became of the label, and it is a record of the job that is open.
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events e JOIN jobs j ON j.id = e.job_id \
+                 WHERE e.action = 'webhook.duplicate_delivery' \
+                   AND e.subject LIKE 'issue %#51' AND e.reason LIKE '%already has a job%'"
+            )
+            .await,
+        1
+    );
+
+    // Another issue of the same repository is another job.
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(72),
+            &payload(a, "factory", requester, 52),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 2);
+
+    // Once the job of the issue has ended, the label starts a new one.
+    env.db
+        .run(
+            "UPDATE jobs SET status = 'REJECTED', terminal_at = now(), version = version + 1 \
+             WHERE id = (SELECT job_id FROM audit_events \
+                          WHERE action = 'job.received_from_webhook' AND subject LIKE 'issue %#51')",
+        )
+        .await;
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(73),
+            &relabelled(a, requester, 51, "2026-10-28T10:02:00Z"),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 3);
+    env.stop().await;
+}
+
 /// The requests the API left for the worker to answer: the audit records with the action
 /// `webhook_accepted_or_rejected.denied`, read by the worker login.
 async fn rejection_requests(env: &Env) -> Vec<factory_ports::store::AuditRecord> {

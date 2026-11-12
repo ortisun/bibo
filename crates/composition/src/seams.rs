@@ -24,7 +24,7 @@ use factory_contracts::agent_schema::AgentSchemaLoader;
 use factory_contracts::loader::{DefinitionFormat, DefinitionLoader};
 use factory_contracts::yaml::{self, YamlLimits};
 use factory_domain::contracts::{ProjectManifest, SchemaRef, Violation};
-use factory_domain::ids::{JobId, TenantId};
+use factory_domain::ids::{JobId, RepositoryId, TenantId};
 use factory_domain::policy::authority::{
     Allowlist, AllowlistEntry, ListedRepository, RepositoryIdentity,
 };
@@ -38,8 +38,8 @@ use factory_ports::githost::IssueRef;
 use factory_ports::paths::{BranchName, RepoRef};
 use factory_ports::registry::ValidatedOutput;
 use factory_ports::store::{
-    AuditFilter, JobFilter, JobOrigin, NewOriginalRequest, RequestSource as StoredSource, Store,
-    StoreError, Tx,
+    AuditFilter, Job, JobFilter, JobOrigin, NewOriginalRequest, RequestSource as StoredSource,
+    Store, StoreError, Tx,
 };
 use factory_workflow::stages::intake::seams::{
     AgentOutputCheck, AllowlistSource, CapabilityProbes, FetchedRequest, RecordedRequest,
@@ -472,6 +472,61 @@ async fn webhook_issue(tx: &mut dyn Tx, job: JobId) -> Option<IssueRef> {
         .iter()
         .filter(|record| record.event.action.as_str() == WEBHOOK_JOB_ACTION)
         .find_map(|record| issue_of(record.event.subject.strip_prefix("issue ")?))
+}
+
+/// The job of `repository` that has not ended and is for issue `number`, if there is one.
+///
+/// A job row does not carry its issue. The issue is in the stored request of the job
+/// (`source_ref`), and for a job that a webhook made and whose intake has not fetched the issue
+/// yet, in the audit record the API wrote for it ([`WEBHOOK_JOB_ACTION`]). The webhook endpoint
+/// asks this before it makes a job, so that a label applied a second time to an issue whose job is
+/// still open does not start a second job beside it.
+///
+/// The look and the insert that follows are one transaction but not one lock: two labels that
+/// arrive at the same instant can each find no open job.
+///
+/// # Errors
+/// The store errors. The caller makes no job then.
+pub async fn open_job_for_issue(
+    tx: &mut dyn Tx,
+    repository: RepositoryId,
+    number: u64,
+) -> Result<Option<Job>, StoreError> {
+    let mut after = None;
+    loop {
+        let page = tx
+            .list_jobs(
+                JobFilter {
+                    statuses: Vec::new(),
+                    repository: Some(repository),
+                },
+                after,
+                200,
+            )
+            .await?;
+        for job in page.rows.into_iter().map(|job| job.value) {
+            if job.status.is_terminal() {
+                continue;
+            }
+            let issue = match tx.get_original_request(job.id, None).await {
+                Ok(request) => request.source_ref.as_deref().and_then(issue_of),
+                Err(StoreError::NotFound) => tx
+                    .read_audit(AuditFilter::Job(job.id), 0, 100)
+                    .await?
+                    .iter()
+                    .filter(|record| record.event.action.as_str() == WEBHOOK_JOB_ACTION)
+                    .find_map(|record| issue_of(record.event.subject.strip_prefix("issue ")?)),
+                Err(other) => return Err(other),
+            };
+            if issue.is_some_and(|issue| issue.number == number) {
+                return Ok(Some(job));
+            }
+        }
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return Ok(None),
+        }
+    }
 }
 
 impl StoreRequests {

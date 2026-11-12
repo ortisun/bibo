@@ -69,6 +69,7 @@ pub use attempt::AttemptOutcome;
 pub use changes::ChangeApplied;
 pub use config::EngineConfig;
 pub use error::EngineError;
+pub use payload::{UnreadableCost, attempt_cost_micro_usd};
 pub use platform::PlatformEvent;
 pub use view::{AttemptView, JobView, StageRunView};
 

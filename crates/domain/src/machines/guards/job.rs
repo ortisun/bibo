@@ -22,6 +22,12 @@ pub struct AdmissionFacts {
     pub repository_registered_and_enabled: bool,
     /// Policy allows this class of request.
     pub policy_allows_request_class: bool,
+    /// What the repository has spent and the jobs it has started in the current day are below the
+    /// ceilings of `budgets.hard_ceilings.per_repo_day`. False when a reading could not be made.
+    pub repository_day_budget_has_room: bool,
+    /// What the organization has spent in the current day is below the ceiling of
+    /// `budgets.hard_ceilings.per_org_day`. False when the reading could not be made.
+    pub organization_day_budget_has_room: bool,
     /// The repository passed the protection preflight. This does not decide admission. If it did
     /// not pass, the job is admitted but may only run at autonomy level L0.
     pub protection_preflight_passed: bool,
@@ -35,6 +41,13 @@ impl AdmissionFacts {
         !self.protection_preflight_passed
     }
 }
+
+/// What admission says when the repository's day ceiling holds a job back. It names the ceiling
+/// by its key in `policies/security.yaml`, because this text goes to the audit record.
+pub const REPOSITORY_DAY_CEILING_REACHED: &str = "the repository reached a ceiling of budgets.hard_ceilings.per_repo_day for the day, or its usage could not be read";
+
+/// What admission says when the organization's day ceiling holds a job back.
+pub const ORGANIZATION_DAY_CEILING_REACHED: &str = "the organization reached the ceiling of budgets.hard_ceilings.per_org_day for the day, or its spend could not be read";
 
 /// `G_ADMISSION_OK`.
 ///
@@ -57,6 +70,14 @@ pub fn admission_ok(facts: &AdmissionFacts) -> GuardResult {
         .require(
             facts.policy_allows_request_class,
             "policy does not allow this class of request",
+        )
+        .require(
+            facts.repository_day_budget_has_room,
+            REPOSITORY_DAY_CEILING_REACHED,
+        )
+        .require(
+            facts.organization_day_budget_has_room,
+            ORGANIZATION_DAY_CEILING_REACHED,
         )
         .finish()
 }
@@ -84,6 +105,14 @@ pub fn admission_denied(facts: &AdmissionFacts) -> GuardResult {
             (
                 !facts.policy_allows_request_class,
                 "policy forbids this class of request",
+            ),
+            (
+                !facts.repository_day_budget_has_room,
+                REPOSITORY_DAY_CEILING_REACHED,
+            ),
+            (
+                !facts.organization_day_budget_has_room,
+                ORGANIZATION_DAY_CEILING_REACHED,
             ),
         ],
     )

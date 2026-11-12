@@ -213,6 +213,28 @@ const NEVER: &[&str] = &[
 /// reviewer checked on 2026-10-28. Keep the reasons short and true. A new use of an old name in a
 /// new file is a new line here, on purpose.
 const REVIEWED: &[(&str, &str, &str)] = &[
+    // The four fields of the day ceiling line were added with the line on 2026-11-11 by the
+    // author of the line, and wait for a reviewer like the port notes of that change.
+    (
+        "crates/composition/src/authority.rs",
+        "repository",
+        "the identifier of a registered repository, a UUID",
+    ),
+    (
+        "crates/composition/src/authority.rs",
+        "rule",
+        "the policy rule of a budget scope, a closed set of static strings",
+    ),
+    (
+        "crates/composition/src/authority.rs",
+        "metrics",
+        "the budget metrics that reached a ceiling, a closed set of names",
+    ),
+    (
+        "crates/composition/src/authority.rs",
+        "readings",
+        "budget metric names with the dollars and the job count the factory summed itself",
+    ),
     (
         "crates/composition/src/decisions.rs",
         "admitted",

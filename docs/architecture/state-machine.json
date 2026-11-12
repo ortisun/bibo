@@ -14,8 +14,8 @@
     "org_admin": "A human organization administrator. May raise a budget above its ceiling, raise autonomy, and enable anything that is off by default. Matches policies/approval.yaml."
   },
   "guards": {
-    "G_ADMISSION_OK": "The requester is on the tenant's named requester allowlist in protected configuration, the tenant is within its job quota, the repository is registered and enabled, the repository passed the protection preflight (otherwise the job may only run at autonomy level L0), and policy allows this class of request.",
-    "G_ADMISSION_DENIED": "The requester is not on the allowlist, the quota is exceeded, the repository is not registered or is disabled, or policy forbids this class of request. The reason is recorded and no reply reveals which test failed.",
+    "G_ADMISSION_OK": "The requester is on the tenant's named requester allowlist in protected configuration, the tenant is within its job quota, the repository is registered and enabled, the repository passed the protection preflight (otherwise the job may only run at autonomy level L0), policy allows this class of request, and neither the repository nor the organization has reached a ceiling of its day (budgets.hard_ceilings.per_repo_day and per_org_day).",
+    "G_ADMISSION_DENIED": "The requester is not on the allowlist, the quota is exceeded, the repository is not registered or is disabled, policy forbids this class of request, or the repository or the organization has reached a ceiling of its day or its usage could not be read. The reason is recorded and no reply reveals which test failed.",
     "G_ANY_STAGE_WAITING": "At least one stage run of the job is WAITING_FOR_HUMAN.",
     "G_NO_STAGE_WAITING": "No stage run of the job is WAITING_FOR_HUMAN.",
     "G_ACTOR_MAY_PAUSE": "The principal holds the operator role on the tenant.",

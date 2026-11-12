@@ -150,6 +150,16 @@ impl Timestamp {
         Self::shortest(moved)
     }
 
+    /// The first instant of the UTC calendar day this instant is in. This is the day that the
+    /// ceilings "per day" of the budget policy count over: the canonical time is UTC (ADR 0011),
+    /// so a day starts at 00:00:00Z whatever the zone of the host or of the people.
+    #[must_use]
+    pub fn start_of_utc_day(&self) -> Timestamp {
+        let midnight = self.instant.replace_time(time::Time::MIDNIGHT);
+        // Midnight of a date this type holds is a date this type holds.
+        Self::shortest(midnight).unwrap_or(*self)
+    }
+
     /// The gap from `earlier` to `self`, or `None` when `earlier` is later than `self`.
     #[must_use]
     pub fn duration_since(&self, earlier: &Timestamp) -> Option<std::time::Duration> {
@@ -271,6 +281,18 @@ mod arithmetic_tests {
             .checked_sub(Duration::from_secs(20))
             .expect("no overflow");
         assert_eq!(earlier, at("2026-10-26T23:59:50Z"));
+    }
+
+    #[test]
+    fn the_day_starts_at_midnight_utc() {
+        for (instant, start) in [
+            ("2026-11-10T23:59:59.999Z", "2026-11-10T00:00:00Z"),
+            ("2026-11-11T00:00:00Z", "2026-11-11T00:00:00Z"),
+            ("2026-11-11T00:00:00.001Z", "2026-11-11T00:00:00Z"),
+            ("2024-02-29T12:30:00Z", "2024-02-29T00:00:00Z"),
+        ] {
+            assert_eq!(at(instant).start_of_utc_day(), at(start), "{instant}");
+        }
     }
 
     #[test]

@@ -12,9 +12,44 @@
 //! One key is still read back by the engine, because the store has no row for what it carries:
 //! [`key::COST`]. The code that reads it says what is missing.
 
+use factory_domain::contracts::DomainEvent;
 use factory_domain::ids::StageRunId;
 use factory_domain::vocabulary::StageKind;
 use serde_json::{Map, Value, json};
+
+/// The events that end an attempt. Each carries what the attempt spent, when it spent anything.
+const ATTEMPT_ENDS: [&str; 5] = [
+    "attempt.succeeded",
+    "attempt.failed",
+    "attempt.timed_out",
+    "attempt.lease_lost",
+    "attempt.cancelled",
+];
+
+/// An event that ends an attempt states a cost that is not a whole number of millionths of a
+/// dollar. Whoever sums a spend treats this as a spend that cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("an attempt event states a cost that is not a number of millionths of a dollar")]
+pub struct UnreadableCost;
+
+/// What `event` says an attempt spent, in millionths of a US dollar, as the broker metered it.
+/// Zero for an event that does not end an attempt and for an attempt that spent nothing (the
+/// engine leaves the key out then).
+///
+/// This is how a reader outside the engine sums the spend of a day: the store has no cost column
+/// yet (see the table in [`timeline`](super::timeline)), so the events are the record.
+///
+/// # Errors
+/// [`UnreadableCost`] when the key is there and is not an unsigned whole number.
+pub fn attempt_cost_micro_usd(event: &DomainEvent) -> Result<u64, UnreadableCost> {
+    if !ATTEMPT_ENDS.contains(&event.event_type.as_str()) {
+        return Ok(0);
+    }
+    match event.payload.get(key::COST) {
+        None => Ok(0),
+        Some(value) => value.as_u64().ok_or(UnreadableCost),
+    }
+}
 
 /// The key names. A reader and a writer both use these constants, so they cannot drift apart.
 pub(crate) mod key {

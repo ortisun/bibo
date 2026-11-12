@@ -62,6 +62,8 @@ fn a_failure_names_the_guard_and_every_unmet_condition() {
         tenant_within_job_quota: false,
         repository_registered_and_enabled: true,
         policy_allows_request_class: true,
+        repository_day_budget_has_room: true,
+        organization_day_budget_has_room: true,
         protection_preflight_passed: true,
     };
     let failure = job::admission_ok(&facts).unwrap_err();
@@ -101,12 +103,14 @@ fn admission() -> AdmissionFacts {
         tenant_within_job_quota: true,
         repository_registered_and_enabled: true,
         policy_allows_request_class: true,
+        repository_day_budget_has_room: true,
+        organization_day_budget_has_room: true,
         protection_preflight_passed: true,
     }
 }
 
 #[test]
-fn admission_holds_when_the_four_conditions_hold() {
+fn admission_holds_when_the_six_conditions_hold() {
     assert_holds(job::admission_ok(&admission()));
     assert!(job::admission_denied(&admission()).is_err());
 }
@@ -114,7 +118,11 @@ fn admission_holds_when_the_four_conditions_hold() {
 #[test]
 fn each_admission_condition_is_required_on_its_own() {
     type Break = fn(&mut AdmissionFacts);
-    let breaks: [(&str, Break); 4] = [
+    let breaks: [(&str, Break); 6] = [
+        ("per_repo_day", |f| f.repository_day_budget_has_room = false),
+        ("per_org_day", |f| {
+            f.organization_day_budget_has_room = false
+        }),
         ("allowlist", |f| f.requester_on_allowlist = false),
         ("quota", |f| f.tenant_within_job_quota = false),
         ("repository", |f| {
@@ -142,13 +150,15 @@ fn a_failed_protection_preflight_limits_autonomy_but_does_not_deny_admission() {
 
 #[test]
 fn admission_is_either_ok_or_denied_never_both_and_never_neither() {
-    for bits in 0..32u32 {
+    for bits in 0..128u32 {
         let facts = AdmissionFacts {
             requester_on_allowlist: bits & 1 != 0,
             tenant_within_job_quota: bits & 2 != 0,
             repository_registered_and_enabled: bits & 4 != 0,
             policy_allows_request_class: bits & 8 != 0,
             protection_preflight_passed: bits & 16 != 0,
+            repository_day_budget_has_room: bits & 32 != 0,
+            organization_day_budget_has_room: bits & 64 != 0,
         };
         let ok = job::admission_ok(&facts).is_ok();
         let denied = job::admission_denied(&facts).is_ok();

@@ -427,6 +427,8 @@ pub fn cleared(guard: Guard) -> GuardCleared {
             tenant_within_job_quota: true,
             repository_registered_and_enabled: true,
             policy_allows_request_class: true,
+            repository_day_budget_has_room: true,
+            organization_day_budget_has_room: true,
             protection_preflight_passed: true,
         }),
         Guard::UpstreamPassed => GuardFacts::Upstream(UpstreamFacts {
@@ -593,6 +595,8 @@ pub fn cleared(guard: Guard) -> GuardCleared {
             tenant_within_job_quota: true,
             repository_registered_and_enabled: true,
             policy_allows_request_class: true,
+            repository_day_budget_has_room: true,
+            organization_day_budget_has_room: true,
             protection_preflight_passed: true,
         }),
         other => panic!("fixtures::cleared has no facts for {other}; add them"),

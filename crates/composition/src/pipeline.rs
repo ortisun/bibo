@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 use factory_contracts::registry::FileAgentRegistry;
 use factory_domain::ids::TenantId;
+use factory_domain::policy::budget::{BudgetPolicy, Metric, Scope};
 use factory_domain::redaction::Redactor;
 use factory_domain::values::{GitSha, Slug};
 use factory_domain::vocabulary::StageKind;
@@ -262,6 +263,21 @@ pub fn non_overridable_blocks(policies: &LoadedPolicies) -> Vec<(String, String)
         .iter()
         .map(|block| (block.gate.clone(), block.code.clone()))
         .collect()
+}
+
+/// What one job may spend across all its attempts, in millionths of a dollar: the point where
+/// the policy stops a job (`budgets.hard_ceilings.per_job.max_usd` at
+/// `budgets.thresholds.stop_at_fraction`). The engine compares it with what the ended attempts of
+/// the job reported, before it starts another attempt, retries or opens a rework round.
+///
+/// A ceiling the policy does not state is zero, so that nothing starts.
+#[must_use]
+pub fn job_budget_micro_usd(budget: &BudgetPolicy) -> u64 {
+    // A policy value is finite and not negative (the loader refuses others); the cast saturates.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    budget
+        .stops_at(Scope::Job, Metric::Usd)
+        .map_or(0, |dollars| (dollars * 1_000_000.0).ceil() as u64)
 }
 
 /// The commit of the gate definitions: the configured one, and for the profiles that are not
@@ -853,6 +869,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone())
         .with_non_overridable_blocks(non_overridable_blocks(&policies));
     config.claim_batch = 1;
+    // The ceiling of a job is the policy's, not the constant the engine starts with.
+    config.job_budget_micro_usd = job_budget_micro_usd(&policies.engine.budget);
     if let Some(tune) = tune_engine {
         tune(&mut config);
     }

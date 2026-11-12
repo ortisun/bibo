@@ -8,7 +8,10 @@
 //! log, and nothing in the reply says which test failed (`G_ADMISSION_DENIED`).
 
 use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
-use factory_domain::machines::guards::{GuardFacts, evaluate};
+use factory_domain::machines::guards::job::{
+    ORGANIZATION_DAY_CEILING_REACHED, REPOSITORY_DAY_CEILING_REACHED,
+};
+use factory_domain::machines::guards::{GuardError, GuardFacts, evaluate};
 use factory_domain::state::{Guard, JobEvent, JobStatus};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::store::{AuditActor, NewJob, NewStageRun, PipelineScope, StoreError};
@@ -153,7 +156,7 @@ impl Engine {
                     stage_runs: created,
                 })
             }
-            Err(_) => {
+            Err(unmet) => {
                 // The definition of G_ADMISSION_DENIED is the opposite of G_ADMISSION_OK, so it
                 // holds here. It is evaluated anyway: a move needs its own guard.
                 let cleared = clear(Guard::AdmissionDenied, &GuardFacts::Admission(facts))?;
@@ -163,14 +166,37 @@ impl Engine {
                     Step::new(JobEvent::RejectAtAdmission, cleared).cause("admission-denied"),
                 )
                 .await?;
-                cx.audit(
-                    &mut *tx,
-                    AuditActor::System(factory_domain::values::Slug::parse(
-                        super::record::COMPONENT,
-                    )?),
-                    AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
-                )
-                .await?;
+                // The audit record of a job that a day ceiling held back names the ceiling, in the
+                // fixed words of the guard, so that a person who reads the log knows it was the
+                // budget and which one. The other tests stay unnamed, as before: the record does
+                // not say whether it was the allowlist, the quota or the repository. The reply to
+                // the requester says nothing in either case.
+                let ceilings: Vec<&str> = match &unmet {
+                    GuardError::Unmet(failure) => failure
+                        .unmet
+                        .iter()
+                        .copied()
+                        .filter(|condition| {
+                            [
+                                REPOSITORY_DAY_CEILING_REACHED,
+                                ORGANIZATION_DAY_CEILING_REACHED,
+                            ]
+                            .contains(condition)
+                        })
+                        .collect(),
+                    GuardError::WrongFacts { .. } => Vec::new(),
+                };
+                let action =
+                    AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied);
+                let actor = AuditActor::System(factory_domain::values::Slug::parse(
+                    super::record::COMPONENT,
+                )?);
+                if ceilings.is_empty() {
+                    cx.audit(&mut *tx, actor, action).await?;
+                } else {
+                    let reason = format!("admission was refused: {}", ceilings.join("; "));
+                    cx.audit_because(&mut *tx, actor, action, reason).await?;
+                }
                 cx.commit(tx).await?;
                 Ok(Admission::Rejected)
             }

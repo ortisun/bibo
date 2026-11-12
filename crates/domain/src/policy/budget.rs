@@ -303,6 +303,14 @@ impl BudgetPolicy {
         self.limits(scope).get(metric)
     }
 
+    /// The usage of a metric at which [`check`](Self::check) says a scope is exhausted: the
+    /// ceiling at the stop fraction. `None` when the scope does not limit the metric.
+    #[must_use]
+    pub fn stops_at(&self, scope: Scope, metric: Metric) -> Option<f64> {
+        self.ceiling(scope, metric)
+            .map(|ceiling| ceiling * self.stop_at)
+    }
+
     fn limits(&self, scope: Scope) -> &Limits {
         match scope {
             Scope::Task => &self.task,

@@ -1327,15 +1327,19 @@ fn admission_is_always_exactly_one_of_ok_and_denied() {
         any::<bool>(),
         any::<bool>(),
         any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
     );
     runner(SEQUENCES)
-        .run(&strategy, |(a, b, c, d, e)| {
+        .run(&strategy, |(a, b, c, d, e, f, g)| {
             let facts = AdmissionFacts {
                 requester_on_allowlist: a,
                 tenant_within_job_quota: b,
                 repository_registered_and_enabled: c,
                 policy_allows_request_class: d,
                 protection_preflight_passed: e,
+                repository_day_budget_has_room: f,
+                organization_day_budget_has_room: g,
             };
             prop_assert!(job::admission_ok(&facts).is_ok() ^ job::admission_denied(&facts).is_ok());
             Ok(())
