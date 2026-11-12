@@ -55,12 +55,24 @@ fn a_strong_response_becomes_a_report_that_passes_with_an_attestation() {
     // The fixture asks for one approving review, which is what the policy needs (SF-07).
     assert_eq!(strong.required_approving_reviews, Some(1));
     assert_eq!(
-        strong.evaluate(APP, &checks(), Some(&attestation()), 1, WorkflowRule::RECORD_ONLY),
+        strong.evaluate(
+            APP,
+            &checks(),
+            Some(&attestation()),
+            1,
+            WorkflowRule::RECORD_ONLY
+        ),
         PreflightVerdict::Pass
     );
     // The same response is short of a policy that needs two.
     assert_eq!(
-        strong.evaluate(APP, &checks(), Some(&attestation()), 2, WorkflowRule::RECORD_ONLY),
+        strong.evaluate(
+            APP,
+            &checks(),
+            Some(&attestation()),
+            2,
+            WorkflowRule::RECORD_ONLY
+        ),
         PreflightVerdict::CapAtL0(vec![PreflightFailure::ApprovingReviewsBelowPolicy {
             found: 1,
             needed: 2,
@@ -82,7 +94,13 @@ fn a_repository_with_only_classic_protection_is_capped_at_l0_with_a_named_reason
     let classic = report(include_str!("fixtures/rules_branches_empty.json"));
     assert_eq!(classic.source, ProtectionSource::NoRulesetRules);
     assert_eq!(classic.required_approving_reviews, None);
-    match classic.evaluate(APP, &checks(), Some(&attestation()), 1, WorkflowRule::RECORD_ONLY) {
+    match classic.evaluate(
+        APP,
+        &checks(),
+        Some(&attestation()),
+        1,
+        WorkflowRule::RECORD_ONLY,
+    ) {
         PreflightVerdict::CapAtL0(reasons) => {
             assert_eq!(reasons.first(), Some(&PreflightFailure::NoRulesetRules));
             assert!(reasons.contains(&PreflightFailure::PullRequestNotRequired));
@@ -95,7 +113,13 @@ fn a_repository_with_only_classic_protection_is_capped_at_l0_with_a_named_reason
 fn checks_that_any_app_may_satisfy_or_that_another_app_owns_are_not_pinned() {
     let unpinned = report(include_str!("fixtures/rules_branches_unpinned.json"));
     assert_eq!(
-        unpinned.evaluate(APP, &checks(), Some(&attestation()), 1, WorkflowRule::RECORD_ONLY),
+        unpinned.evaluate(
+            APP,
+            &checks(),
+            Some(&attestation()),
+            1,
+            WorkflowRule::RECORD_ONLY
+        ),
         PreflightVerdict::CapAtL0(vec![
             PreflightFailure::FactoryCheckNotPinned("factory-validation".to_owned()),
             PreflightFailure::FactoryCheckNotPinned("factory-review".to_owned()),

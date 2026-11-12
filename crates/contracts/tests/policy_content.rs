@@ -1609,3 +1609,22 @@ fn gate_evidence_invalidation_points_at_the_state_machine_mapping() {
         "the comment above invalidated_by must point at the mapping: {comment:?}"
     );
 }
+
+#[test]
+fn exposed_workflows_cap_a_repository_and_the_policy_names_the_threat() {
+    // Threat T-48. The shipped policy caps a repository whose workflows are exposed; a policy
+    // that only records them is a change a person makes on purpose.
+    use factory_domain::policy::security::ExposedWorkflows;
+    let credentials = &security().credentials;
+    assert_eq!(
+        credentials.repository_requirements.exposed_workflows,
+        ExposedWorkflows::CapAtL0
+    );
+    assert!(
+        credentials
+            .threats
+            .iter()
+            .any(|threat| threat.as_str() == "T-48"),
+        "the credentials section names T-48"
+    );
+}

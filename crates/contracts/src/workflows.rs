@@ -428,15 +428,19 @@ fn reads_a_secret(scalar: &str) -> bool {
         let at = from + offset;
         let after = &lower[at + WORD.len()..];
         from = at + WORD.len();
-        if lower[..at].chars().next_back().is_some_and(is_name_character) {
+        if lower[..at]
+            .chars()
+            .next_back()
+            .is_some_and(is_name_character)
+        {
             continue;
         }
         let rest = after.trim_start();
         match rest.chars().next() {
             Some('.') => {
-                let harmless = rest.strip_prefix(TOKEN).is_some_and(|tail| {
-                    !tail.chars().next().is_some_and(is_name_character)
-                });
+                let harmless = rest
+                    .strip_prefix(TOKEN)
+                    .is_some_and(|tail| !tail.chars().next().is_some_and(is_name_character));
                 if !harmless {
                     return true;
                 }
@@ -586,7 +590,8 @@ mod tests {
     use super::*;
     use WorkflowExposureReason as Reason;
 
-    const SAFE_JOB: &str = "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make test\n";
+    const SAFE_JOB: &str =
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make test\n";
 
     fn reasons(text: &str) -> Vec<Reason> {
         classify(".github/workflows/w.yml", Some(text), "main")
@@ -614,6 +619,16 @@ mod tests {
             root.get("on").and_then(|on| on.get("pull_request")),
             Some(&Node::Nothing)
         );
+        assert_eq!(reasons(text), []);
+    }
+
+    #[test]
+    fn the_workflow_of_this_repository_is_read_and_is_not_exposed() {
+        // A real file, not one written for the test: `pull_request` with no filter, `push` to
+        // main, a read-only token, a runner of GitHub and no secret. Its comments say "secrets",
+        // and comments are not read.
+        let text = include_str!("../../../.github/workflows/ci.yml");
+        assert!(read(text).is_some(), "the reader refuses the real workflow");
         assert_eq!(reasons(text), []);
     }
 
@@ -690,10 +705,14 @@ mod tests {
         ] {
             assert!(reached(on), "{on}");
         }
-        assert!(reasons(&with_a_secret("  push:\n").replace("on:\n  push:\n", "on: push\n"))
-            == [Reason::UsesSecrets]);
-        assert!(reasons(&with_a_secret("  push:\n").replace("on:\n  push:\n", "on: [push]\n"))
-            == [Reason::UsesSecrets]);
+        assert!(
+            reasons(&with_a_secret("  push:\n").replace("on:\n  push:\n", "on: push\n"))
+                == [Reason::UsesSecrets]
+        );
+        assert!(
+            reasons(&with_a_secret("  push:\n").replace("on:\n  push:\n", "on: [push]\n"))
+                == [Reason::UsesSecrets]
+        );
         // Not reached.
         for on in [
             "  push:\n    branches: [main]\n",
@@ -800,18 +819,50 @@ mod tests {
             ("permissions:\n", "", vec![Reason::PermissionsNotDeclared]),
             ("permissions: {}\n", "", vec![]),
             ("permissions: read-all\n", "", vec![]),
-            ("permissions:\n  contents: read\n  issues: none\n", "", vec![]),
-            ("permissions: write-all\n", "", vec![Reason::WritePermissions]),
-            ("permissions:\n  contents: write\n", "", vec![Reason::WritePermissions]),
-            ("permissions:\n  id-token: write\n", "", vec![Reason::WritePermissions]),
-            ("permissions:\n  contents: admin\n", "", vec![Reason::WritePermissions]),
+            (
+                "permissions:\n  contents: read\n  issues: none\n",
+                "",
+                vec![],
+            ),
+            (
+                "permissions: write-all\n",
+                "",
+                vec![Reason::WritePermissions],
+            ),
+            (
+                "permissions:\n  contents: write\n",
+                "",
+                vec![Reason::WritePermissions],
+            ),
+            (
+                "permissions:\n  id-token: write\n",
+                "",
+                vec![Reason::WritePermissions],
+            ),
+            (
+                "permissions:\n  contents: admin\n",
+                "",
+                vec![Reason::WritePermissions],
+            ),
             ("permissions: [read]\n", "", vec![Reason::WritePermissions]),
             ("", "    permissions:\n      contents: read\n", vec![]),
             ("", "    permissions: {}\n", vec![]),
-            ("permissions: read-all\n", "    permissions:\n      pull-requests: write\n", vec![Reason::WritePermissions]),
-            ("permissions: write-all\n", "    permissions: read-all\n", vec![Reason::WritePermissions]),
+            (
+                "permissions: read-all\n",
+                "    permissions:\n      pull-requests: write\n",
+                vec![Reason::WritePermissions],
+            ),
+            (
+                "permissions: write-all\n",
+                "    permissions: read-all\n",
+                vec![Reason::WritePermissions],
+            ),
         ] {
-            assert_eq!(reasons(&workflow(top, &[job(in_job)])), expected, "{top}{in_job}");
+            assert_eq!(
+                reasons(&workflow(top, &[job(in_job)])),
+                expected,
+                "{top}{in_job}"
+            );
         }
         // One job that declares and one that does not.
         let two = "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    permissions: read-all\n  b:\n    runs-on: ubuntu-latest\n";
@@ -832,7 +883,10 @@ mod tests {
             ("[self-hosted, linux]", vec![Reason::SelfHostedRunner]),
             ("[Self-Hosted]", vec![Reason::SelfHostedRunner]),
             ("${{ matrix.os }}", vec![Reason::RunnerUnknown]),
-            ("[ubuntu-latest, '${{ inputs.runner }}']", vec![Reason::RunnerUnknown]),
+            (
+                "[ubuntu-latest, '${{ inputs.runner }}']",
+                vec![Reason::RunnerUnknown],
+            ),
             ("gpu-box", vec![Reason::RunnerUnknown]),
             ("ubuntu-", vec![Reason::RunnerUnknown]),
             ("{group: big}", vec![Reason::RunnerUnknown]),
@@ -895,6 +949,9 @@ mod tests {
         ];
         let exposed = exposed_workflows(&files, "main");
         let paths: Vec<&str> = exposed.iter().map(|w| w.path.as_str()).collect();
-        assert_eq!(paths, [".github/workflows/a.yml", ".github/workflows/z.yml"]);
+        assert_eq!(
+            paths,
+            [".github/workflows/a.yml", ".github/workflows/z.yml"]
+        );
     }
 }

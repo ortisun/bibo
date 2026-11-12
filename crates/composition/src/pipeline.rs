@@ -1014,6 +1014,12 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             .engine
             .authority
             .approvals_every_pull_request_needs(),
+        // What an exposed workflow of the target repository costs it (threat T-48).
+        exposed_workflows: policies
+            .security
+            .credentials
+            .repository_requirements
+            .exposed_workflows,
         attestations: Arc::clone(&external.attestations),
         tenants: tenants.clone(),
         policy_hash: policies.hash.clone(),

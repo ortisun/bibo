@@ -74,7 +74,9 @@ async fn every_workflow_file_comes_back_with_its_text_and_nothing_else_does() {
         .collect();
     assert_eq!(asked.len(), 3, "{asked:?}");
     assert!(
-        asked.iter().all(|path| path.contains("/contents/.github/workflows")),
+        asked
+            .iter()
+            .all(|path| path.contains("/contents/.github/workflows")),
         "{asked:?}"
     );
 }
@@ -135,7 +137,10 @@ async fn the_reads_carry_a_token_that_can_read_contents_and_nothing_more() {
         ]
     );
     assert_eq!(
-        mints[0].requested_repositories.as_deref().map(<[String]>::len),
+        mints[0]
+            .requested_repositories
+            .as_deref()
+            .map(<[String]>::len),
         Some(1),
         "the token is for one repository"
     );
@@ -163,7 +168,8 @@ async fn a_read_that_fails_is_an_error_and_never_an_empty_list() {
     // The App may not read contents at all.
     let world = World::with(common::harness::Options {
         app: Some(
-            factory_testkit::fx::github::AppConfig::factory_default().without_permission("contents"),
+            factory_testkit::fx::github::AppConfig::factory_default()
+                .without_permission("contents"),
         ),
         ..common::harness::Options::default()
     });

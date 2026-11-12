@@ -1087,7 +1087,14 @@ credentials:
     dismiss_stale_approvals_on_new_commits: true
     factory_branch_pattern: "factory/*"
     push_only_to_factory_branch_pattern: true
-  threats: [T-19, T-24, T-14]
+    # Threat T-48. The preflight reads the workflow files of the default branch and lists the
+    # ones a factory branch or its pull request would start with a secret, a write token or an
+    # unknown runner in reach. cap_at_l0: such a repository runs at L0, like any other failed
+    # requirement, unless its owner recorded an acknowledgement of exactly those workflows
+    # (worker configuration, github.workflow_exposure_acknowledgements). record_only: the
+    # workflows are named in the audit record and the repository is not capped for them.
+    exposed_workflows: cap_at_l0
+  threats: [T-19, T-24, T-14, T-48]
 
 # -----------------------------------------------------------------------------
 # 11. Webhook intake

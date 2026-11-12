@@ -1397,7 +1397,10 @@ mod tests {
     #[test]
     fn every_exposed_workflow_is_a_failure_of_its_own() {
         let mut report = strong();
-        let first = exposed(".github/workflows/ci.yml", WorkflowExposureReason::UsesSecrets);
+        let first = exposed(
+            ".github/workflows/ci.yml",
+            WorkflowExposureReason::UsesSecrets,
+        );
         let second = exposed(
             ".github/workflows/deploy.yml",
             WorkflowExposureReason::PullRequestTarget,
@@ -1416,7 +1419,10 @@ mod tests {
     fn a_statement_covers_exactly_the_workflows_it_names() {
         let mut report = strong();
         report.exposed_workflows = Some(vec![
-            exposed(".github/workflows/ci.yml", WorkflowExposureReason::UsesSecrets),
+            exposed(
+                ".github/workflows/ci.yml",
+                WorkflowExposureReason::UsesSecrets,
+            ),
             exposed(
                 ".github/workflows/deploy.yml",
                 WorkflowExposureReason::SelfHostedRunner,
@@ -1424,7 +1430,10 @@ mod tests {
         ]);
         // The same set, in another order.
         let exact = acknowledged(&[".github/workflows/deploy.yml", ".github/workflows/ci.yml"]);
-        assert_eq!(with_statement(&report, Some(&exact)), PreflightVerdict::Pass);
+        assert_eq!(
+            with_statement(&report, Some(&exact)),
+            PreflightVerdict::Pass
+        );
         assert!(report.exposure_is_acknowledged(Some(&exact)));
         // One fewer, one more, another path, another case: nothing is covered.
         for paths in [
@@ -1439,7 +1448,10 @@ mod tests {
             vec![],
         ] {
             let statement = acknowledged(&paths);
-            assert!(!report.exposure_is_acknowledged(Some(&statement)), "{paths:?}");
+            assert!(
+                !report.exposure_is_acknowledged(Some(&statement)),
+                "{paths:?}"
+            );
             match with_statement(&report, Some(&statement)) {
                 PreflightVerdict::CapAtL0(list) => {
                     assert_eq!(list.len(), 3, "{paths:?}: {list:?}");
@@ -1453,7 +1465,10 @@ mod tests {
         }
         // A statement is not what makes a repository with nothing exposed pass.
         assert!(!strong().exposure_is_acknowledged(Some(&exact)));
-        assert_eq!(with_statement(&strong(), Some(&exact)), PreflightVerdict::Pass);
+        assert_eq!(
+            with_statement(&strong(), Some(&exact)),
+            PreflightVerdict::Pass
+        );
     }
 
     #[test]

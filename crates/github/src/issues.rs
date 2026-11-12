@@ -365,9 +365,11 @@ impl IssueSource for GithubIssueSource {
     async fn workflow_files(&self, scope: &GitScope) -> Result<Vec<WorkflowFile>, GitHostError> {
         // Every read here carries the fetch credential (`contents: read`), whatever the stage of
         // the scope: the intake token of the preflight cannot read contents and is not widened.
+        // The reads are conditional: the preflight repeats them at every job start, and an answer
+        // that has not changed does not count against the rate limit.
         let read = |target: String| async move {
             self.client
-                .call(scope, TokenClass::Fetch, Method::Get, &target, None, false)
+                .call(scope, TokenClass::Fetch, Method::Get, &target, None, true)
                 .await
         };
         let repo = read(repo_path(&scope.repo)).await?;

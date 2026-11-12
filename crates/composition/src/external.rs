@@ -11,7 +11,7 @@
 //! | Port or seam | Built from |
 //! |---|---|
 //! | `IssueSource`, `ChangeHost` | `factory-github`: the App id, the private key file, the installations, the API base URL, over the `ureq` transport (rustls), with the permission policy of `policies/security.yaml` |
-//! | `BypassAttestations` | `github.bypass_attestations`: the statements an administrator made, as the configuration records them |
+//! | `BypassAttestations` | `github.bypass_attestations`: the statements an administrator made, as the configuration records them; and `github.workflow_exposure_acknowledgements`: the statements an owner made about workflows that are exposed to factory branches on purpose (threat T-48) |
 //! | `AgentRuntime` | `factory-runtime`: the Claude Code and Codex adapters, one of each for every provider in `broker.upstreams`, bound to a tenant on first use ([`TenantRuntimes`]), behind one dispatcher ([`RuntimeSet`]); the turn attestation is the broker core |
 //! | `ModelRouter` | [`PolicyModelRouter`] over the routing policy, offering only the models `broker.upstreams` enables |
 //! | `CapabilityProbes` | the probe of each runtime in an `agent` sandbox ([`probe_at_startup`]); `BLOCKED` with the reason when the sandbox cannot be made (the Docker daemon does not answer, the image is not on the host), or a declared list in the local and test profiles |
@@ -49,7 +49,7 @@ use factory_ports::agent::{
 };
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{Clock, IdGenerator};
-use factory_ports::githost::{AppId, BypassAttestation};
+use factory_ports::githost::{AppId, BypassAttestation, WorkflowExposureAcknowledgement};
 use factory_ports::paths::RepoRef;
 use factory_ports::sandbox::{SandboxProvider, TeardownReason};
 use factory_ports::store::InstallationId;
@@ -170,9 +170,16 @@ pub fn declared_capabilities(runtimes: &[RuntimeId]) -> ProbedCapabilities {
 
 /// The statements of `github.bypass_attestations`, as the configuration records them. A repository
 /// with no entry has no statement, and the preflight caps it at L0.
+///
+/// It also holds the statements of `github.workflow_exposure_acknowledgements` (threat T-48): the
+/// owner of a repository says that named workflows are exposed to the factory's branches on
+/// purpose. A repository with no entry acknowledges nothing, and the preflight caps it when it
+/// finds an exposed workflow. Such an entry has the limits of the bypass statement: no expiry, no
+/// withdrawal except by editing the configuration, no check of the person it names.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigAttestations {
     statements: HashMap<(TenantId, RepoRef), BypassAttestation>,
+    acknowledgements: HashMap<(TenantId, RepoRef), WorkflowExposureAcknowledgement>,
 }
 
 impl ConfigAttestations {
@@ -198,7 +205,29 @@ impl ConfigAttestations {
                 },
             );
         }
-        Self { statements }
+        let mut acknowledgements = HashMap::new();
+        for entry in &github.workflow_exposure_acknowledgements {
+            let (Ok(tenant), Ok(principal), Ok(at), Ok(repository)) = (
+                entry.tenant.parse::<uuid::Uuid>(),
+                entry.principal.parse::<uuid::Uuid>(),
+                Timestamp::parse(&entry.recorded_at),
+                RepoRef::parse(&entry.repository),
+            ) else {
+                continue;
+            };
+            acknowledgements.insert(
+                (TenantId::from_uuid(tenant), repository),
+                WorkflowExposureAcknowledgement {
+                    by: PrincipalId::from_uuid(principal),
+                    at,
+                    workflows: entry.workflows.clone(),
+                },
+            );
+        }
+        Self {
+            statements,
+            acknowledgements,
+        }
     }
 
     /// How many statements there are.
@@ -228,6 +257,16 @@ impl BypassAttestations for ConfigAttestations {
         repository: &RepoRef,
     ) -> Option<BypassAttestation> {
         self.statements.get(&(tenant, repository.clone())).cloned()
+    }
+
+    async fn workflow_acknowledgement(
+        &self,
+        tenant: TenantId,
+        repository: &RepoRef,
+    ) -> Option<WorkflowExposureAcknowledgement> {
+        self.acknowledgements
+            .get(&(tenant, repository.clone()))
+            .cloned()
     }
 }
 
