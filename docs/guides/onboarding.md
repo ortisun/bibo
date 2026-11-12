@@ -15,6 +15,7 @@ The order matters. The factory takes tickets only after the project is mapped. A
 |---|---|
 | Claude Code 2.1.271 or later, or Codex with the `plugin` command, or both | EGM's reviewers run in fresh contexts. Older Claude Code versions do not isolate them, and an older Codex has no plugins. |
 | `git`, `python3` | The installer and the map check use them. |
+| Rust (through `rustup`), Node.js with `npm`, `uv`, Docker with Compose, and `gh` | The factory's own checks need them. The installer reports each one that is missing and leaves it to you, because none of them has an install path that the factory can pin and verify. See [The factory's own tools](#the-factorys-own-tools). |
 | `gh`, signed in, with permission to manage labels on the repository | Only for `--repo`, which creates the labels. |
 | A fine-grained GitHub token for this one repository | For the GitHub MCP server in your design session. Permissions: Issues and Pull requests read and write, Contents and Metadata read. It is your token. The factory's engine never uses it. |
 
@@ -28,7 +29,7 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
    scripts/install.sh --check --checkout ../my-project --repo my-org/my-project
    ```
 
-   Each line says `PRESENT`, `WOULD_ADD`, `DRIFT`, `NEEDS`, `BLOCKED` or `SKIPPED`. The end lists what you must do.
+   Each line says `PRESENT`, `WOULD_ADD`, `DRIFT`, `NEEDS`, `BLOCKED` or `SKIPPED`. The end lists what you must do. The first lines are about the factory's own tools on this machine (see [The factory's own tools](#the-factorys-own-tools)).
 
 2. **Install.** Run it again without `--check`.
 
@@ -36,7 +37,7 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
    scripts/install.sh --checkout ../my-project --repo my-org/my-project
    ```
 
-   With `--repo` the run stops first, changing nothing, if the repository variable `FACTORY_BOT_LOGIN` is not set (step 6 says why); add `--allow-missing-bot-login` if the factory's GitHub App does not exist yet. Otherwise it installs the EGM plugin if it is missing, for each of Claude Code and Codex that you have (`--agent` chooses). It adds an entry for GitHub's MCP server to `.mcp.json` for Claude Code and to `.codex/config.toml` for Codex. It copies the issue forms, the Action and its helper files into `.github/`, and creates the fifteen labels. It also looks for a GitHub Projects board: it uses the one linked to the repository, or the one you name with `--project OWNER/NUMBER`, and writes how the stages map onto it to `.github/project-board.json`. Pass `--create-project OWNER` to make a board, or `--no-board` to go without. The [board guide](project-board.md) says how it adapts to a board that already exists. If the project already has Spec Kit (a `.specify/` folder), the `speckit` step makes it cover Claude Code and Codex alike: it adds whichever integration is missing with `specify integration install claude` or `codex` (offline, never `--force`), and it checks that every Spec Kit skill is the file the factory pins, because the worker refuses one that is not. A project with no `.specify/` is left alone, and `--no-speckit` skips the step. It does not commit, push or start a job. A file you changed is reported as `DRIFT` and kept. Add `--update` to replace it.
+   With `--repo` the run stops first, changing nothing, if the repository variable `FACTORY_BOT_LOGIN` is not set (step 6 says why); add `--allow-missing-bot-login` if the factory's GitHub App does not exist yet. Otherwise it first installs any of the factory's own tools that is missing, at its pinned version, and then it installs the EGM plugin if it is missing, for each of Claude Code and Codex that you have (`--agent` chooses). It adds an entry for GitHub's MCP server to `.mcp.json` for Claude Code and to `.codex/config.toml` for Codex. It copies the issue forms, the Action and its helper files into `.github/`, and creates the fifteen labels. It also looks for a GitHub Projects board: it uses the one linked to the repository, or the one you name with `--project OWNER/NUMBER`, and writes how the stages map onto it to `.github/project-board.json`. Pass `--create-project OWNER` to make a board, or `--no-board` to go without. The [board guide](project-board.md) says how it adapts to a board that already exists. If the project already has Spec Kit (a `.specify/` folder), the `speckit` step makes it cover Claude Code and Codex alike: it adds whichever integration is missing with `specify integration install claude` or `codex` (offline, never `--force`), and it checks that every Spec Kit skill is the file the factory pins, because the worker refuses one that is not. A project with no `.specify/` is left alone, and `--no-speckit` skips the step. It does not commit, push or start a job. A file you changed is reported as `DRIFT` and kept. Add `--update` to replace it.
 
 3. **Start a new session** of Claude Code or Codex in the project, so the EGM skills load. In Codex, trust the project when it asks: Codex reads `.codex/config.toml` only for a project you trust.
 
@@ -105,6 +106,29 @@ From this point a named requester can apply the `factory` label. For a new solut
 | `SKIPPED` | The step needs a tool that is missing. | Fix the tool step first. |
 
 The exit codes are 0 ready, 1 a step failed, 2 wrong arguments, and 3 not finished. Code 3 covers `BLOCKED` and `NEEDS`, so an unmapped project is exit code 3 and not an error.
+
+## The factory's own tools
+
+The factory checks code with tools of its own: `cargo-nextest`, `cargo-deny`, `cargo-audit`, `gitleaks`, `actionlint`, `pyright` and `shellcheck`. Their versions are written once, in `scripts/lib/tool-pins.sh`. The CI script and the installer both read that file, and the CI step `tool-pins` fails when the workflow names another version.
+
+The installer's `host-tools` step runs `scripts/setup-tools.sh`. You can also run it on its own, from the factory repository. Look first; this changes nothing:
+
+```bash no-run reason="it reads the tools of the machine it runs on, and the answer differs from one machine to the next"
+scripts/setup-tools.sh --check
+```
+
+Then install what is missing:
+
+```bash no-run reason="it downloads and installs programs on the machine it runs on"
+scripts/setup-tools.sh
+```
+
+- **Where the programs go.** Into `.tools/bin` inside the factory repository. Git ignores that folder. `--prefix DIR` puts them in `DIR/bin` instead, and so does the environment variable `FACTORY_TOOLS_PREFIX`. Nothing is written to your home folder or to a system folder, except by Homebrew for `shellcheck`.
+- **Your search path.** `scripts/ci.sh` puts `.tools/bin` first on its own `PATH`, so the checks use the pinned tools. Your shell does not. When the folder is not on your `PATH` the script prints a `NOTE` with the line to add.
+- **How each tool is installed.** The three cargo tools with `cargo install --locked` at the pinned version. `gitleaks` and `actionlint` from their GitHub release archive for macOS or Linux, on arm64 or amd64. Each archive must have the SHA-256 recorded in `scripts/lib/tool-pins.sh`, copied from the release's own checksum file. All archives are checked before anything is installed. One wrong hash fails the run with exit code 1, and nothing is installed. `pyright` with `npm ci` from the lockfile that CI uses. `shellcheck` with Homebrew when it is there; a package manager cannot choose an exact version, so another version is a `NOTE` and is kept.
+- **What stays with you.** Rust (through `rustup`), Node.js and `npm`, `uv`, Docker with Compose and `gh`. The script reports each one as `PRESENT` or `NEEDS` and never installs it, because none of them has an install path that the factory pins and checks. It never pipes a downloaded script into a shell.
+- **A tool at another version** is left where it is. With `--check` it is `DRIFT`. Without `--check` the pinned version is installed into `.tools/bin` beside it, and a note says which copy your own `PATH` finds first.
+- **A machine that only designs.** Pass `--no-tools` to `scripts/install.sh` to skip the step.
 
 ## A single-maintainer repository
 

@@ -34,10 +34,16 @@
 #                                                      that is not --check stops before it changes anything: until the
 #                                                      variable names the factory's GitHub App, the Action does nothing and
 #                                                      says so in its log. Use it only when the App does not exist yet.
+#   --no-tools                                         Skip the host-tools step: leave the factory's own tools as they are.
 #   --help                                             Show this text.
 #
 # What each step does
 #   tools          git and python3.
+#   host-tools     The factory's own tools on this machine, through scripts/setup-tools.sh: cargo-nextest, cargo-deny,
+#                  cargo-audit, gitleaks, actionlint, pyright and shellcheck at the versions in scripts/lib/tool-pins.sh,
+#                  and the programs a person installs (Rust, Node.js, uv, Docker, gh). A missing pinned tool is installed
+#                  into .tools/bin in this repository (or FACTORY_TOOLS_PREFIX/bin). With --check it only reports. Its
+#                  lines appear under their own tool names; scripts/setup-tools.sh --help explains each one.
 #   claude, codex  The coding agents. Claude Code must be 2.1.271 or later, for EGM's reviewer isolation. Codex must
 #                  have the `plugin` command; the script checks the command, not a version number.
 #   egm-plugin     The EGM plugin (egm@egm, from github.com/google/elephant-goldfish-model) in the user scope of each
@@ -123,6 +129,7 @@ update=0
 agent="auto"
 want_mcp=1
 want_speckit=1
+want_tools=1
 allow_missing_bot=0
 # Set to 1 by the gate on FACTORY_BOT_LOGIN: the steps that change things do not run.
 HALT=0
@@ -144,6 +151,7 @@ while [ $# -gt 0 ]; do
     --update) update=1 ;;
     --no-mcp) want_mcp=0 ;;
     --no-speckit) want_speckit=0 ;;
+    --no-tools) want_tools=0 ;;
     --allow-missing-bot-login) allow_missing_bot=1 ;;
     --agent)
       [ $# -ge 2 ] || usage_error "--agent needs auto, claude, codex or both"
@@ -377,6 +385,48 @@ step_agent_codex() {
   fi
   HAVE_CODEX=1
   report PRESENT codex "Codex $(codex --version 2>/dev/null | awk '{print $NF; exit}')"
+}
+
+# The factory's own tools, through scripts/setup-tools.sh, which prints lines in this script's format. Each of its lines
+# is reported here as it is, and its outcome decides what this run still needs.
+step_host_tools() {
+  if [ "$want_tools" -eq 0 ]; then
+    report SKIPPED host-tools "--no-tools"
+    return
+  fi
+  local output code=0 state name detail
+  if [ "$check_only" -eq 1 ]; then
+    output=$(bash "$SELF_DIR/setup-tools.sh" --check 2>&1) || code=$?
+  else
+    printf '  %-9s %-15s %s\n' ... host-tools "running scripts/setup-tools.sh; installing a cargo tool can take minutes"
+    output=$(bash "$SELF_DIR/setup-tools.sh" 2>&1) || code=$?
+  fi
+  while read -r state name detail; do
+    case "$state" in
+      PRESENT | ADDED | WOULD_ADD | DRIFT | NEEDS | NOTE | BLOCKED) ;;
+      *) continue ;;
+    esac
+    report "$state" "$name" "$detail"
+    case "$state" in
+      DRIFT) PENDING=1 ;;
+      NOTE) remember "$name: $detail" ;;
+      ADDED) done_for_you "Installed $name for the factory: $detail" ;;
+      NEEDS | BLOCKED) needs_you "The factory's own tool $name: $detail. Run scripts/setup-tools.sh for the full advice." ;;
+    esac
+  done <<EOF_TOOLS
+$output
+EOF_TOOLS
+  case "$code" in
+    0 | 3) ;;
+    1)
+      report BLOCKED host-tools "scripts/setup-tools.sh failed; read its lines above"
+      FAILED=1
+      ;;
+    *)
+      report BLOCKED host-tools "scripts/setup-tools.sh ended with exit code $code"
+      FAILED=1
+      ;;
+  esac
 }
 
 step_tools() {
@@ -1437,6 +1487,7 @@ if [ "$check_only" -eq 1 ]; then printf 'Checking only. Nothing will be changed.
 step_tools
 step_bot_gate
 if [ "$HALT" -eq 0 ]; then
+  step_host_tools
   step_egm
   step_mcp
   step_files

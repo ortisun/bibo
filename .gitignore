@@ -8,6 +8,8 @@
 
 # Build and tooling output
 target/
+# The factory's own pinned tools, installed by scripts/setup-tools.sh
+.tools/
 node_modules/
 dist/
 .env

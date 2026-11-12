@@ -36,7 +36,7 @@
 # top-level key loads without a message), and it does not enforce `minVersion` (verified: v9.0.0 is
 # accepted by 8.30.1). So a misspelled key weakens the scan without any error. That is why the
 # rules and the exceptions below were each tested for their effect and not only for loading. The
-# version in use is PIN_GITLEAKS in scripts/ci.sh.
+# version in use is PIN_GITLEAKS in scripts/lib/tool-pins.sh.
 #
 # EXCEPTIONS. scripts/ci.sh passes --ignore-gitleaks-allow, so an inline `gitleaks:allow` comment
 # cannot hide a finding. Two exceptions exist today, both below, each limited to one or two files

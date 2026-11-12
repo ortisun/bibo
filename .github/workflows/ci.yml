@@ -15,8 +15,8 @@
 # Why the install steps are here and not in scripts/ci.sh: installing a tool changes the
 # machine, and running a check must not. A missing tool is reported by scripts/ci.sh as BLOCKED.
 #
-# Tool versions are pinned here, in .github/tools/pyright/, and as PIN_* lines in scripts/ci.sh
-# (which shows them in its install hints). Change a version in every place, in one pull request.
+# Tool versions are pinned here, in .github/tools/pyright/, and as PIN_* lines in scripts/lib/tool-pins.sh
+# (read by scripts/ci.sh and scripts/setup-tools.sh). Change a version in every place, in one pull request.
 # The "tool-pins" step of scripts/ci.sh fails if the places disagree.
 
 name: ci

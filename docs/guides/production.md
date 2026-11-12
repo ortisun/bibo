@@ -78,6 +78,16 @@ The check is not a proof. It reads files and not settings: it cannot see the sec
 
 One stronger option is not built. The factory could deliver from a fork, so that GitHub's rules for fork pull requests apply. Threat T-48 in the [threat model](../security/threat-model.md) records it, and rates the risk as open.
 
+## The factory's own tools on the host
+
+The scanners and linters that the checks run (`gitleaks`, `actionlint`, `cargo-deny`, `cargo-audit`, `cargo-nextest`, `pyright`, `shellcheck`) come from the factory's own installation, at the versions in `scripts/lib/tool-pins.sh`. A check whose tool is missing is BLOCKED, never passed. On the host, from the factory repository, see what is missing; this changes nothing:
+
+```bash no-run reason="the answer depends on the tools of the machine it runs on"
+scripts/setup-tools.sh --check
+```
+
+Then run `scripts/setup-tools.sh` without `--check` to install what is missing into `.tools/bin` in the repository, or into another folder with `--prefix DIR`. `scripts/install.sh` runs the same script as its `host-tools` step. `gitleaks` and `actionlint` are installed only from a release archive whose SHA-256 matches the one recorded in the repository. Rust, Node.js, `uv`, Docker and `gh` are reported and left to the operator. [The factory's own tools](onboarding.md#the-factorys-own-tools) in the onboarding guide has the details.
+
 ## Settings to review before the first job
 
 - **Budget.** `stages.budget.max_cost_usd` defaults to 10.0 dollars for each stage run, and a job has up to 13 stage runs, more after rework. That is far above a small smoke budget. Lower it, and rely on the provider-side limit as the hard stop. The broker refuses a model that has no entry in `broker.prices`.

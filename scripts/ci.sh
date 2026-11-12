@@ -37,6 +37,9 @@
 #
 # A step that needs a tool you do not have is reported as BLOCKED with a plain-English reason
 # and an install hint. It is never skipped and never passed. There is no switch to skip a step.
+# scripts/setup-tools.sh installs the pinned tools into .tools/bin in the repository, and this
+# script puts that folder first on the PATH when it exists (FACTORY_TOOLS_PREFIX names another
+# folder; its bin/ is used then).
 #
 # HOW A LATER WORK PACKAGE ADDS A STEP WITHOUT EDITING THIS FILE
 #   Put a file named scripts/ci/steps.d/NN-name.step in the repository. Each line is
@@ -79,18 +82,31 @@ EXIT_USAGE=2
 EXIT_BLOCKED=3
 
 # ---------------------------------------------------------------------------------------------
-# Tool versions that CI installs. They appear in install hints. The workflow pins the same
-# numbers; a person who installs a different version gets a different result at their own risk,
-# and the version actually used is recorded in the output and in the JSON line.
+# Tool versions that CI installs. They live in scripts/lib/tool-pins.sh, which
+# scripts/setup-tools.sh reads too, so the checks and the installer name the same versions. The
+# workflow pins the same numbers (the tool-pins step compares them). A person who installs a
+# different version gets a different result at their own risk, and the version actually used is
+# recorded in the output and in the JSON line.
 # ---------------------------------------------------------------------------------------------
-PIN_NEXTEST="0.9.137"
-PIN_DENY="0.19.9"
-PIN_AUDIT="0.22.2"
-PIN_GITLEAKS="8.30.1"
-PIN_ACTIONLINT="1.7.12"
-PIN_PYRIGHT="1.1.413"
-PIN_SHELLCHECK="0.11.0"
-PIN_PYYAML="6.0.3"
+TOOL_PINS_FILE="$SELF_DIR/lib/tool-pins.sh"
+if [ ! -f "$TOOL_PINS_FILE" ]; then
+  printf 'ci.sh: %s is missing; it names the versions of the tools.\n' "$TOOL_PINS_FILE" >&2
+  exit "$EXIT_USAGE"
+fi
+# shellcheck source=lib/tool-pins.sh
+. "$TOOL_PINS_FILE"
+
+# The tools that scripts/setup-tools.sh installs land in this folder's bin/ (by default .tools/ in
+# the repository). It goes first on the PATH, so the checks use the factory's own pinned tools
+# before any other copy on the machine. FACTORY_TOOLS_PREFIX names another folder.
+TOOLS_BIN="${FACTORY_TOOLS_PREFIX:-$ROOT/.tools}/bin"
+if [ -d "$TOOLS_BIN" ]; then
+  case ":$PATH:" in
+    *":$TOOLS_BIN:"*) ;;
+    *) PATH="$TOOLS_BIN:$PATH" ;;
+  esac
+  export PATH
+fi
 
 # ---------------------------------------------------------------------------------------------
 # Small helpers
@@ -134,13 +150,13 @@ file_sha256() {
 tool_hint() {
   case $1 in
     cargo | rustc | rustup) printf 'Install Rust with rustup (https://rustup.rs). rust-toolchain.toml selects the pinned version.' ;;
-    cargo-nextest) printf 'cargo install --locked cargo-nextest --version %s' "$PIN_NEXTEST" ;;
-    cargo-deny) printf 'cargo install --locked cargo-deny --version %s' "$PIN_DENY" ;;
-    cargo-audit) printf 'cargo install --locked cargo-audit --version %s' "$PIN_AUDIT" ;;
-    gitleaks) printf 'Install gitleaks %s from https://github.com/gitleaks/gitleaks/releases' "$PIN_GITLEAKS" ;;
-    actionlint) printf 'Install actionlint %s from https://github.com/rhysd/actionlint/releases' "$PIN_ACTIONLINT" ;;
-    pyright) printf 'npm install --global pyright@%s' "$PIN_PYRIGHT" ;;
-    shellcheck) printf 'Install shellcheck %s (brew install shellcheck, or apt install shellcheck)' "$PIN_SHELLCHECK" ;;
+    cargo-nextest) printf 'Run scripts/setup-tools.sh, which installs cargo-nextest %s' "$PIN_NEXTEST" ;;
+    cargo-deny) printf 'Run scripts/setup-tools.sh, which installs cargo-deny %s' "$PIN_DENY" ;;
+    cargo-audit) printf 'Run scripts/setup-tools.sh, which installs cargo-audit %s' "$PIN_AUDIT" ;;
+    gitleaks) printf 'Run scripts/setup-tools.sh, which installs gitleaks %s from its release, checked against a recorded SHA-256' "$PIN_GITLEAKS" ;;
+    actionlint) printf 'Run scripts/setup-tools.sh, which installs actionlint %s from its release, checked against a recorded SHA-256' "$PIN_ACTIONLINT" ;;
+    pyright) printf 'Run scripts/setup-tools.sh, which installs pyright %s from .github/tools/pyright/package-lock.json' "$PIN_PYRIGHT" ;;
+    shellcheck) printf 'Run scripts/setup-tools.sh (it uses Homebrew when present), or install shellcheck %s with apt install shellcheck' "$PIN_SHELLCHECK" ;;
     docker) printf 'Install Docker with the Compose plugin (https://docs.docker.com/get-docker/)' ;;
     node | npm) printf 'Install Node.js and npm (https://nodejs.org)' ;;
     uv | uvx) printf 'Install uv (https://docs.astral.sh/uv/)' ;;
@@ -275,7 +291,7 @@ internal_step() {
 register_builtin_steps() {
   internal_step no-secrets-in-config "Example env file and Compose files hold no secret-looking values" "python3"
   internal_step workflow-policy "Workflows: actions pinned to commit SHAs, no pull_request_target, least privilege (ST-10)" "python3"
-  internal_step tool-pins "Tool versions agree between scripts/ci.sh, the workflow and the pyright lockfile" "python3"
+  internal_step tool-pins "Tool versions and archive hashes agree between scripts/lib/tool-pins.sh, the workflow and the pyright lockfile" "python3"
   internal_step policy-yaml "policies/*.yaml follow the parser contract and name only real threats (ST-06)" "uv python3"
   step readability-corpus "Readability corpus is well formed and matches the master prompt" "python3" "" -- \
     python3 -I fixtures/readability/check_corpus.py --prompt-examples
@@ -982,9 +998,13 @@ int_workflow_policy() {
 }
 
 # ----- tool versions agree everywhere they are written -------------------------------------------
-# Tool versions are written in three places: PIN_* in this script (install hints), the workflow
-# (what CI installs) and the pyright lockfile. A version changed in one place only would leave
-# people and CI testing with different tools, which is exactly the drift this script exists to stop.
+# Tool versions are written in three places: PIN_* in scripts/lib/tool-pins.sh (read by this
+# script for its install hints and by scripts/setup-tools.sh to install), the workflow (what CI
+# installs) and the pyright lockfile. A version changed in one place only would leave people and
+# CI testing with different tools, which is exactly the drift this script exists to stop. The
+# SHA-256 of the linux amd64 archives of gitleaks and actionlint is written in the pins file and in
+# the workflow; those must agree too. And no other script may keep a PIN_ line of its own, since a
+# second copy is how two places come to disagree.
 py_tool_pins() {
   python3 -I - "$@" <<'PY'
 import json
@@ -992,28 +1012,50 @@ import pathlib
 import re
 import sys
 
-ci_path, workflow_path, package_path, lock_path = (pathlib.Path(arg) for arg in sys.argv[1:5])
+pins_path, workflow_path, package_path, lock_path = (pathlib.Path(arg) for arg in sys.argv[1:5])
+other_scripts = [pathlib.Path(arg) for arg in sys.argv[5:]]
 try:
-    ci = ci_path.read_text(encoding="utf-8")
+    pins_text = pins_path.read_text(encoding="utf-8")
     workflow = workflow_path.read_text(encoding="utf-8")
     package = json.loads(package_path.read_text(encoding="utf-8"))
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    others = {path: path.read_text(encoding="utf-8") for path in other_scripts}
 except (OSError, ValueError) as exc:
     print(f"BLOCKED: cannot read one of the files that name tool versions: {exc}")
     sys.exit(3)
 
-pins = dict(re.findall(r'^PIN_([A-Z]+)="([^"]+)"$', ci, re.M))
+pins = dict(re.findall(r'^PIN_([A-Z]+)="([^"]+)"$', pins_text, re.M))
+hashes = dict(re.findall(r'^SHA256_([A-Z0-9_]+)="([^"]*)"$', pins_text, re.M))
 problems = []
 
 
 def expect(label, pin, actual):
     want = pins.get(pin)
     if want is None:
-        problems.append(f"{ci_path} has no PIN_{pin} line")
+        problems.append(f"{pins_path} has no PIN_{pin} line")
     elif actual != want:
-        problems.append(f"{label}: the workflow or lockfile says {actual!r}, but PIN_{pin} in {ci_path} says {want!r}")
+        problems.append(f"{label}: the workflow or lockfile says {actual!r}, but PIN_{pin} in {pins_path} says {want!r}")
     else:
         print(f"ok    {label} {want}")
+
+
+for path, text in others.items():
+    for line in re.findall(r'^\s*PIN_[A-Z]+=.*$', text, re.M):
+        problems.append(f"{path} sets its own {line.strip()!r}; versions belong in {pins_path} only")
+for tool in ("GITLEAKS", "ACTIONLINT"):
+    for platform in ("DARWIN_ARM64", "DARWIN_AMD64", "LINUX_AMD64", "LINUX_ARM64"):
+        value = hashes.get(f"{tool}_{platform}")
+        if value is None or not re.fullmatch(r"[0-9a-f]{64}", value):
+            problems.append(f"{pins_path}: SHA256_{tool}_{platform} is missing or is not 64 lower-case hex digits")
+for tool, archive in (("gitleaks", "linux_x64"), ("actionlint", "linux_amd64")):
+    match = re.search(rf"/{tool}_[0-9.]+_{archive}\.tar\.gz\"\s*\\\s*\n\s*([0-9a-f]{{64}})", workflow)
+    want = hashes.get(f"{tool.upper()}_LINUX_AMD64")
+    if match is None:
+        problems.append(f"{workflow_path}: no SHA-256 found after the {tool} {archive} download")
+    elif match.group(1) != want:
+        problems.append(f"{tool} linux amd64: the workflow checks {match.group(1)}, but {pins_path} records {want}")
+    else:
+        print(f"ok    {tool} linux amd64 SHA-256 {want[:12]}...")
 
 
 tool_line = re.search(r"^\s*tool:\s*(\S+)\s*$", workflow, re.M)
@@ -1031,17 +1073,24 @@ sys.exit(1 if problems else 0)
 PY
 }
 
+# int_tool_pins [PINS WORKFLOW PACKAGE LOCK [SCRIPT...]]: the self-test passes copies to change.
+# SCRIPT are the scripts that must not keep a PIN_ line of their own.
 int_tool_pins() {
   need_tool python3
-  local ci=${1:-scripts/ci.sh} workflow=${2:-.github/workflows/ci.yml}
+  local pins=${1:-scripts/lib/tool-pins.sh} workflow=${2:-.github/workflows/ci.yml}
   local package=${3:-.github/tools/pyright/package.json} lock=${4:-.github/tools/pyright/package-lock.json}
-  show_cmd python3 -I - "$ci" "$workflow" "$package" "$lock"
-  py_tool_pins "$ci" "$workflow" "$package" "$lock"
+  local -a scripts=(scripts/ci.sh scripts/setup-tools.sh scripts/install.sh)
+  if [ "$#" -gt 4 ]; then
+    shift 4
+    scripts=("$@")
+  fi
+  show_cmd python3 -I - "$pins" "$workflow" "$package" "$lock" "${scripts[@]}"
+  py_tool_pins "$pins" "$workflow" "$package" "$lock" "${scripts[@]}"
   RC=$?
   case $RC in
     0) ;;
     3) int_blocked "a file that names tool versions could not be read (see above)" ;;
-    *) int_failed "a tool version differs between scripts/ci.sh, the workflow and the pyright lockfile" ;;
+    *) int_failed "a tool version or archive hash differs between scripts/lib/tool-pins.sh, the workflow and the pyright lockfile" ;;
   esac
 }
 
@@ -1427,7 +1476,8 @@ st_cleanup() {
 # If ST_PATH is set it replaces PATH for the child. GITHUB_ACTIONS is cleared so that the child
 # does not print workflow commands.
 sub_ci() {
-  SUB_OUT=$(GITHUB_ACTIONS="" PATH="${ST_PATH:-$PATH}" "$BASH" "$SELF" "$@" 2>&1)
+  # The child must see exactly ST_PATH, so the factory's own tool folder is pointed at nothing.
+  SUB_OUT=$(GITHUB_ACTIONS="" FACTORY_TOOLS_PREFIX=/nonexistent-factory-tools PATH="${ST_PATH:-$PATH}" "$BASH" "$SELF" "$@" 2>&1)
   SUB_CODE=$?
 }
 sub_json() { printf '%s\n' "$SUB_OUT" | tail -n 1; }
@@ -1798,18 +1848,32 @@ st_pinning() {
   cp .github/workflows/ci.yml "$ST_TMP/pins/ci.yml"
   cp .github/tools/pyright/package.json "$ST_TMP/pins/package.json"
   cp .github/tools/pyright/package-lock.json "$ST_TMP/pins/package-lock.json"
-  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
   st_equal "control: an unchanged copy of the three files agrees" "$SUB_CODE" 0
   sed 's/cargo-deny@0\.19\.9/cargo-deny@0.19.8/' .github/workflows/ci.yml >"$ST_TMP/pins/ci.yml"
-  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
   st_equal "a cargo-deny version changed only in the workflow is rejected" "$SUB_CODE" 1
   sed 's|/download/v8\.30\.1/|/download/v8.30.2/|' .github/workflows/ci.yml >"$ST_TMP/pins/ci.yml"
-  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
   st_equal "a gitleaks release tag that disagrees with its file name is rejected" "$SUB_CODE" 1
   cp .github/workflows/ci.yml "$ST_TMP/pins/ci.yml"
   sed 's/"pyright": "1\.1\.413"/"pyright": "1.1.412"/' .github/tools/pyright/package.json >"$ST_TMP/pins/package.json"
-  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
   st_equal "a pyright version changed only in package.json is rejected" "$SUB_CODE" 1
+  cp .github/tools/pyright/package.json "$ST_TMP/pins/package.json"
+  sed 's/551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb/551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470ec/' \
+    .github/workflows/ci.yml >"$ST_TMP/pins/ci.yml"
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  st_equal "a gitleaks archive hash changed only in the workflow is rejected" "$SUB_CODE" 1
+  cp .github/workflows/ci.yml "$ST_TMP/pins/ci.yml"
+  grep -v '^SHA256_ACTIONLINT_DARWIN_AMD64=' scripts/lib/tool-pins.sh >"$ST_TMP/pins/tool-pins.sh"
+  sub_ci --internal tool-pins "$ST_TMP/pins/tool-pins.sh" "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  st_equal "a pins file without the hash for one platform is rejected" "$SUB_CODE" 1
+  { cat scripts/setup-tools.sh; printf 'PIN_GITLEAKS="8.30.1"\n'; } >"$ST_TMP/pins/setup-tools.sh"
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json" scripts/ci.sh "$ST_TMP/pins/setup-tools.sh"
+  st_equal "a second PIN_ line in another script is rejected, even with the same value" "$SUB_CODE" 1
+  sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json" scripts/ci.sh scripts/setup-tools.sh
+  st_equal "control: the real scripts keep no PIN_ line of their own" "$SUB_CODE" 0
 
   # The history scan. First: the scanner is hidden, so the result must be BLOCKED.
   git_path=$(type -P git 2>/dev/null || true)

@@ -7,7 +7,7 @@
 # dependencies, unknown sources) and T-30 (poisoned sources). The license rule itself is stated in
 # policies/security.yaml, supply_chain.licenses.
 #
-# Schema checked against cargo-deny 0.19.9, the version pinned in scripts/ci.sh (PIN_DENY). The
+# Schema checked against cargo-deny 0.19.9, the version pinned in scripts/lib/tool-pins.sh (PIN_DENY). The
 # parser rejects an unknown key with an error, so a typo here fails loudly. When the pin changes,
 # re-read the output of `cargo deny init` and re-run this file before merging.
 #
