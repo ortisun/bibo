@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use factory_domain::ids::JobId;
 use factory_testkit::fx::canary::{Canary, CanarySet, Sweeper};
-use factory_testkit::fx::github::{AppConfig, MintRecord, TokenView};
+use factory_testkit::fx::github::{AppConfig, AuthSummary, MintRecord, TokenView};
 use factory_testkit::fx::sinks::{SinkCollector, SinkKind};
 use serde_json::Value;
 use support::loopback::*;
@@ -57,6 +57,8 @@ struct Observed {
     labels: Vec<String>,
     mints: Vec<MintRecord>,
     tokens: Vec<TokenView>,
+    /// Every request that carried an installation token, in order.
+    token_uses: Vec<TokenUse>,
     merges: usize,
     pulls: usize,
     pushes: usize,
@@ -84,7 +86,7 @@ fn level(text: &str) -> u8 {
 }
 
 /// The routes an intake that ends at a refusal or at the sandbox may use, and nothing else.
-const INTAKE_ROUTES: [&str; 9] = [
+const INTAKE_ROUTES: [&str; 11] = [
     "GET /app",
     "POST /app/installations/{id}/access_tokens",
     "DELETE /installation/token",
@@ -96,12 +98,60 @@ const INTAKE_ROUTES: [&str; 9] = [
     // The one read of GraphQL: the time the body of an issue with the approving label was last
     // edited (DR-1). The worker makes it for an approved design, and only then.
     "POST /graphql",
+    // The two reads of the workflow check of the protection preflight (threat T-48) that only it
+    // makes: the commit at the tip of the default branch, and the files of `.github/workflows` at
+    // that commit. The check also reads the repository for the name of its default branch. Only the
+    // workflow read class may make them; see `judge_common`.
+    BRANCH_ROUTE,
+    CONTENTS_ROUTE,
 ];
+
+const BRANCH_ROUTE: &str = "GET /repos/{owner}/{repo}/branches/{branch}";
+const CONTENTS_ROUTE: &str = "GET /repos/{owner}/{repo}/contents/{path}";
+/// What a token may always do: give itself up.
+const REVOKE_ROUTE: &str = "DELETE /installation/token";
+/// The read of the repository, which names its default branch.
+const REPOSITORY_ROUTE: &str = "GET /repos/{owner}/{repo}";
+
+/// The permissions of the token that reads the workflow files before a job is admitted. The owner
+/// accepted this third class on 2026-11-12, as an amendment to LB-03: it reads contents, so the
+/// judgment holds it to the repository, the branch and the contents routes, and to paths under
+/// `.github/workflows`.
+const WORKFLOW_READ_CLASS: [(&str, &str); 2] = [("contents", "read"), ("metadata", "read")];
+
+/// One request that carried an installation token.
+#[derive(Clone)]
+struct TokenUse {
+    token_id: u64,
+    route: String,
+    path: String,
+}
+
+/// Whether the path of a request to the contents route is the workflow directory or a file in it.
+fn is_under_the_workflow_directory(path: &str) -> bool {
+    let directory = format!("/repos/{REPO}/contents/.github/workflows");
+    let inside = path == directory
+        || path
+            .strip_prefix(&directory)
+            .is_some_and(|rest| rest.starts_with('/'));
+    inside
+        && !path
+            .split('/')
+            .any(|part| part == ".." || part == "%2e%2e" || part == "%2E%2E")
+}
 
 async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
     let mut routes = BTreeMap::new();
     let mut done = BTreeMap::new();
+    let mut token_uses = Vec::new();
     for request in lab.fake.requests() {
+        if let AuthSummary::InstallationToken { token_id } = &request.auth {
+            token_uses.push(TokenUse {
+                token_id: *token_id,
+                route: request.route.clone(),
+                path: request.path.clone(),
+            });
+        }
         if request.status < 300 {
             *done.entry(request.route.clone()).or_insert(0) += 1;
         }
@@ -141,6 +191,7 @@ async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
         labels: lab.fake.labels_of(REPO, issue),
         mints: lab.fake.mints(),
         tokens: lab.fake.tokens(),
+        token_uses,
         merges: lab.fake.merge_attempts().len(),
         pulls: lab.fake.pull_numbers(REPO).len(),
         pushes: lab.fake.pushes().len(),
@@ -226,16 +277,19 @@ fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
                 // LB-03, exactly: the token that reads the issue holds `issues: read` and
                 // `metadata: read`, and the token of a reply holds `issues: write` and
                 // `metadata: read`. A wider token that is still under the ceilings of the policy
-                // (`contents: read` put back, for instance) is a complaint.
+                // (`contents: read` put back, for instance) is a complaint. The third class reads
+                // the workflow files for the protection preflight (T-48) and holds `contents: read`
+                // and `metadata: read` with no `issues`; where it may be used is judged below.
                 let shape: Vec<(&str, &str)> = permissions
                     .iter()
                     .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
                     .collect();
                 if shape != [("issues", "read"), ("metadata", "read")]
                     && shape != [("issues", "write"), ("metadata", "read")]
+                    && shape != WORKFLOW_READ_CLASS
                 {
                     problems.push(format!(
-                        "token {} has {permissions:?}, which is not the intake read class (issues: read, metadata: read) or the reply class (issues: write, metadata: read)",
+                        "token {} has {permissions:?}, which is not the intake read class (issues: read, metadata: read), the reply class (issues: write, metadata: read) or the workflow read class (contents: read, metadata: read)",
                         mint.token_id
                     ));
                 }
@@ -266,6 +320,43 @@ fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
                     ));
                 }
             }
+        }
+    }
+    // The amendment to LB-03: the token that can read contents reaches the repository (for the name
+    // of the default branch), the tip of that branch and the workflow directory, and nothing else;
+    // and no other token reaches the branch or the contents.
+    let workflow_readers: BTreeSet<u64> = o
+        .mints
+        .iter()
+        .filter(|mint| {
+            mint.requested_permissions.as_ref().is_some_and(|p| {
+                p.iter()
+                    .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
+                    .eq(WORKFLOW_READ_CLASS)
+            })
+        })
+        .map(|mint| mint.token_id)
+        .collect();
+    for used in &o.token_uses {
+        let reads_files = used.route == BRANCH_ROUTE || used.route == CONTENTS_ROUTE;
+        if workflow_readers.contains(&used.token_id) {
+            if !reads_files && used.route != REVOKE_ROUTE && used.route != REPOSITORY_ROUTE {
+                problems.push(format!(
+                    "token {} is of the workflow read class and was used on {}, which is not one of its routes",
+                    used.token_id, used.route
+                ));
+            }
+            if used.route == CONTENTS_ROUTE && !is_under_the_workflow_directory(&used.path) {
+                problems.push(format!(
+                    "token {} read {}, which is not under .github/workflows",
+                    used.token_id, used.path
+                ));
+            }
+        } else if reads_files {
+            problems.push(format!(
+                "token {} is not of the workflow read class and was used on {}",
+                used.token_id, used.route
+            ));
         }
     }
     for token in &o.tokens {
@@ -979,6 +1070,59 @@ async fn break_doctored_evidence_is_caught_by_each_judgment() {
         judge_refusal(&o, "not_approved"),
         "not the intake read class",
     );
+    // The amendment to LB-03. The token of the workflow read class is used on a route that is not
+    // one of its own (it reads an issue); it reads a file outside `.github/workflows`, plainly and by climbing out of
+    // the directory; and a token of another class reads a file.
+    let reader = honest
+        .mints
+        .iter()
+        .find(|mint| {
+            mint.requested_permissions
+                .as_ref()
+                .is_some_and(|p| p.contains_key("contents"))
+        })
+        .expect("the run read the workflow files, so it minted a token that can")
+        .token_id;
+    let other = honest
+        .mints
+        .iter()
+        .find(|mint| mint.token_id != reader)
+        .expect("a token that reads the issue")
+        .token_id;
+    let mut o = honest.clone_view();
+    o.token_uses.push(TokenUse {
+        token_id: reader,
+        route: "GET /repos/{owner}/{repo}/issues/{number}".to_owned(),
+        path: format!("/repos/{REPO}/issues/1"),
+    });
+    find(judge_refusal(&o, "not_approved"), "not one of its routes");
+    for outside in [
+        format!("/repos/{REPO}/contents/src/main.rs"),
+        format!("/repos/{REPO}/contents/.github/workflows-old/ci.yml"),
+        format!("/repos/{REPO}/contents/.github/workflows/../../src/main.rs"),
+        format!("/repos/{REPO}/contents/.github"),
+    ] {
+        let mut o = honest.clone_view();
+        o.token_uses.push(TokenUse {
+            token_id: reader,
+            route: CONTENTS_ROUTE.to_owned(),
+            path: outside,
+        });
+        find(
+            judge_refusal(&o, "not_approved"),
+            "not under .github/workflows",
+        );
+    }
+    let mut o = honest.clone_view();
+    o.token_uses.push(TokenUse {
+        token_id: other,
+        route: CONTENTS_ROUTE.to_owned(),
+        path: format!("/repos/{REPO}/contents/.github/workflows"),
+    });
+    find(
+        judge_refusal(&o, "not_approved"),
+        "is not of the workflow read class",
+    );
     // A second comment (a duplicate answer), a status label and a status comment on a refused issue.
     let mut o = honest.clone_view();
     o.comments.push("another".to_owned());
@@ -1484,6 +1628,7 @@ impl Observed {
             labels: self.labels.clone(),
             mints: self.mints.clone(),
             tokens: self.tokens.clone(),
+            token_uses: self.token_uses.clone(),
             merges: self.merges,
             pulls: self.pulls,
             pushes: self.pushes,

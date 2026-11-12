@@ -4749,14 +4749,17 @@ repository gets. The scope of the preflight names the intake stage, whose own to
 
 The preflight runs before a job is admitted, so this read puts a token that can read contents, and
 two routes (`GET .../branches/{branch}` and `GET .../contents/{path}`), on the path that finding
-LB-03 held to `issues: read`. The loopback run judges exactly that
-(`apps/worker/tests/loopback_e2e.rs`, `judge_common`: the routes of the path and the two token
-shapes it accepts), and eight of its tests fail with this change. **They were left failing on
-purpose.** Whether the preflight may hold `contents: read` before intake has accepted the issue is
-a decision for the security reviewer, not for the author of this change. The two ways forward are:
-accept it, and teach the judgment a third token shape that may reach only those two routes and only
-paths under `.github/workflows`; or refuse it, and move the read to after intake has passed, at the
-cost of a first job that is admitted before its repository's workflows were read.
+LB-03 held to `issues: read`. **The project owner accepted this on 2026-11-12, as an amendment to
+LB-03.** The intake token is unchanged. A third token class, the workflow read class
+(`contents: read` and `metadata: read`, one repository), is used by deterministic code of the
+worker, never enters a sandbox, and may reach only three routes: `GET /repos/{owner}/{repo}` for
+the name of the default branch, `GET .../branches/{branch}`, and `GET .../contents/{path}` for paths
+under `.github/workflows`. The loopback run judges exactly that (`apps/worker/tests/loopback_e2e.rs`,
+`judge_common`): a token of that class on any other route, a contents read outside the directory
+(including a path that climbs out with `..`), and a token of another class on the branch or
+contents route are complaints, and `break_doctored_evidence_is_caught_by_each_judgment` shows each
+one is caught. The other way, moving the read to after intake, was refused because it would admit
+a first job before its repository's workflows were read.
 
 **UNVERIFIED against the real GitHub:** the shape of the contents API (a list for a directory, 404
 for a directory that does not exist, base64 text, no text for a file over 1 MB, at most 1,000
