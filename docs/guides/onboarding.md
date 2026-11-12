@@ -122,12 +122,19 @@ A project owner who works alone holds every designation and is the only person w
 - **A repository registered before this rule.** The migration `2026-11-03-002600` switches off every enabled repository whose enabler is its attestor, with a `NOTICE`, and writes no audit record. Another person can enable it. A project owner who works alone cannot re-register it (a GitHub repository is registered once), so a database administrator sets the flag by hand with a statement such as `UPDATE repositories SET single_maintainer = true WHERE id = '...'` as the table owner, and writes an audit record that says who asked for it and why. Nobody else can: the API login and the worker have no grant on the column, and a trigger refuses them even if they had one.
 - **Not a tenant setting.** The flag is for one repository. Another repository of the same owner is strict unless it was registered with the switch too.
 
+## Required before you enable the repository: check its own workflows
+
+The factory pushes the code of a job to a `factory/*` branch of your repository and opens a draft pull request. A model wrote that code. GitHub's documentation says that your workflows that start on `push` or `pull_request` run for that branch with your repository's secrets, before anyone has read the change. The factory has no control for this, and the installer does not look at your workflows. This project has not exercised the GitHub behaviour against a real repository.
+
+Do not enable the repository until its owner has done the five steps in [the target repository's own workflows](production.md#the-target-repositorys-own-workflows). In short: no secret, no write token and no self-hosted runner may be within reach of a workflow that a `factory/*` branch starts.
+
 ## What the installer does not do
 
 - It does not run the bootstrap. The bootstrap asks you first and spends model tokens on every directory.
 - It does not write to the GitHub repository except the labels, and the board when you ask for one with `--create-project`. It does both only when you pass `--repo`.
 - It does not install the factory's engine, database or worker. See the [local deployment guide](../operations/local-deployment.md).
 - It does not prove the map is good. It proves that every directory with code has a contract file.
+- It does not write `.factory/project.yaml`, the project manifest that the validation stage reads its gate commands from. Without that file on the default branch the build and test gates of every job are BLOCKED. A person writes it: see [Prepare a repository](prepare-a-repository.md).
 
 ## Troubleshooting
 
@@ -158,6 +165,7 @@ A project owner who works alone holds every designation and is the only person w
 
 ## Where to read more
 
+- [Prepare a repository](prepare-a-repository.md): the project manifest, the gates that read Rust tooling only, and the test names that count as acceptance evidence.
 - [ADR 0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md): the decisions, the options that lost and what is not built.
 - [Show the issue workflow on a board](project-board.md) and [Claude Code and Codex side by side](claude-and-codex.md), with their decision records [0018](../adr/0018-project-board-mirror-that-adapts.md) and [0019](../adr/0019-claude-code-and-codex-alike.md).
 - [The issue workflow policy](../../policies/issue-workflow.yaml): every label and every move.

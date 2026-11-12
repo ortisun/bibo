@@ -21,7 +21,8 @@ Three rules hold for every policy file.
 | [`policies/security.yaml`](../../policies/security.yaml) | The default-deny security policy. See the table below. | A pull request on the protected branch, reviewed by a code owner. |
 | [`policies/approval.yaml`](../../policies/approval.yaml) | Autonomy levels, who holds which designation, which actions need a person, and what an approval is bound to. | The same. Raising an autonomy level is an action that only an `org_admin` may approve. |
 | [`policies/issue-workflow.yaml`](../../policies/issue-workflow.yaml) | The labels an issue carries, who writes each, and which `factory:` label shows which job state. See the section below. | The same. The rendered copy `onboarding/github/issue-workflow.json` is made from it, and a stale copy fails the build. |
-| `policies/model_routing.yaml` | Which model serves which stage. **The file does not exist.** Without it the model router is BLOCKED and the worker cannot run a live stage. | A person writes it. See the [production guide](../guides/production.md). |
+| [`policies/model_routing.yaml`](../../policies/model_routing.yaml) | Which models each stage may use and in which order, what each model costs, and the spend ceilings of a stage run and of a job. See the section below for what the code does with it today. | A pull request on the protected branch, reviewed by a code owner. The project owner confirms every number. |
+| `.factory/project.yaml` on the default branch of each target repository | The project manifest: the gate commands that the validation stage runs, and the project's own settings. It is read at the base commit of a job, never from the builder's commit. Only the fixture repository holds one ([`fixtures/repos/word-count/.factory/project.yaml`](../../fixtures/repos/word-count/.factory/project.yaml)). See [Prepare a repository](../guides/prepare-a-repository.md) for every key. | A pull request on the target repository's protected branch. The central policy refuses a change to `.factory/**` by a builder. |
 | `allowlist/allowlist.yaml` in the protected checkout | Who holds which designation, by numeric GitHub user identifier. It is read on every decision. This repository holds no copy. | An `org_admin`. Widening `security_approver` or `org_admin` needs two distinct `org_admin` people. |
 | [`.github/CODEOWNERS`](../../.github/CODEOWNERS) | Who must review a change to a protected path. | A code owner. Today there is one owner, so GitHub cannot count a second review. |
 | [`agents/*/manifest.json`](../../agents/README.md) | One specialist agent: tools, permissions, limits, schemas, skills and prompt. | A person, in a reviewed pull request. |
@@ -89,6 +90,24 @@ A repository without branch-protection rules runs at `L0`, which is why the stat
 **No code reads `close_or_label_issue`.** The factory never closes an issue and writes no other label of its namespace. The row is documentation until a consumer exists. Changing it stops nothing.
 
 The records of the step carry a hash that binds `policies/issue-workflow.yaml` to the security and approval policies, so a record says which label map was in force.
+
+## What `policies/model_routing.yaml` controls
+
+The file exists. An earlier version of this page said it did not.
+
+The worker loads it at start-up with the other policies and checks it against the security policy (`load_routing` in `crates/composition/src/startup.rs`). A file that is missing or broken stops the start.
+
+| Part of the file | What the code does with it today |
+|---|---|
+| `models` | The broker prices every answer with these prices and refuses a model that has none (`price_table` in `crates/composition/src/routing.rs`). |
+| `routes` | The router answers from this table. For a stage and a tier it walks the candidates in the order of the file. It returns the first one that is enabled, is not excluded, has the capabilities the stage needs and, for a review, is independent of the author's model (`route_filtered`). |
+| `roles`, the ceilings and the caps | A job token holds only the models of the stage's routes and the ceiling of the stage run. The broker holds each request to the caps of the role (`token_request`, `request_caps`). |
+| `independence` | The review stage names the model of the author, and the router drops every candidate that the rule refuses. |
+| `roles[].escalate_to` and `roles[].escalate_after_failed_repairs` | The loader checks them and the tighten-only check compares them. Nothing acts on them. No code moves a role to its larger model after failed repairs. |
+
+Routing is a static lookup. The router does not measure anything, does not learn and does not escalate. Every stage found by a search of `crates/workflow/src` asks for the `standard` tier, so the routes of the `large` tier are not selected today.
+
+The file is not confirmed. Its status is `designed`, and every price carries `price_checked_on: unchecked`. The `production` profile refuses to start while either is true (`confirm_routing` in `crates/composition/src/startup.rs`). The other profiles start and log a warning.
 
 ## What `policies/issue-workflow.yaml` controls
 
