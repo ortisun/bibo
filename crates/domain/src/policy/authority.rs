@@ -541,6 +541,10 @@ pub struct AdmissionInput<'a> {
     pub repository_registered_and_enabled: bool,
     /// Policy allows this class of request.
     pub policy_allows_request_class: bool,
+    /// The repository is below its ceilings for the day (`budgets.hard_ceilings.per_repo_day`).
+    pub repository_day_budget_has_room: bool,
+    /// The organization is below its ceiling for the day (`budgets.hard_ceilings.per_org_day`).
+    pub organization_day_budget_has_room: bool,
     /// The repository passed the protection preflight.
     pub protection_preflight_passed: bool,
 }
@@ -1145,6 +1149,8 @@ impl AuthorityPolicy {
             tenant_within_job_quota: input.tenant_within_job_quota,
             repository_registered_and_enabled: input.repository_registered_and_enabled,
             policy_allows_request_class: input.policy_allows_request_class,
+            repository_day_budget_has_room: input.repository_day_budget_has_room,
+            organization_day_budget_has_room: input.organization_day_budget_has_room,
             protection_preflight_passed: input.protection_preflight_passed,
         };
         match admission_ok(&facts) {

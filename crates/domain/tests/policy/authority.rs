@@ -344,6 +344,8 @@ fn admit(
         tenant_within_job_quota: quota,
         repository_registered_and_enabled: registered,
         policy_allows_request_class: class,
+        repository_day_budget_has_room: true,
+        organization_day_budget_has_room: true,
         protection_preflight_passed: preflight,
     })
 }

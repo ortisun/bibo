@@ -2469,6 +2469,8 @@ mod tests {
             tenant_within_job_quota: true,
             repository_registered_and_enabled: true,
             policy_allows_request_class: true,
+            repository_day_budget_has_room: true,
+            organization_day_budget_has_room: true,
             protection_preflight_passed: true,
         };
         evaluate(Guard::AdmissionOk, &GuardFacts::Admission(facts)).expect("admission holds")

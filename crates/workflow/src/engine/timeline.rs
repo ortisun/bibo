@@ -492,13 +492,9 @@ impl Timeline {
                 | "attempt.cancelled",
                 _,
             ) => {
-                self.spent_micro_usd = self.spent_micro_usd.saturating_add(
-                    event
-                        .payload
-                        .get(key::COST)
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                );
+                self.spent_micro_usd = self
+                    .spent_micro_usd
+                    .saturating_add(super::payload::attempt_cost_micro_usd(event).unwrap_or(0));
                 Ok(())
             }
             _ => Ok(()),
