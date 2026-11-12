@@ -1385,7 +1385,7 @@
   },
   {
    "id": "NT-GATE-01",
-   "status": "proven",
+   "status": "proven_on_double",
    "tests": [
     {
      "name": "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture",
@@ -1409,7 +1409,8 @@
       "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture"
      ]
     }
-   ]
+   ],
+   "note": "The only control-off variant, `the-workspace-lets-any-edit-in`, edits the workspace double of the test kit (`crates/testkit/src/workspace.rs`). The product applies the path rules when it takes a change in (`crates/sandbox/src/workspace/ingest.rs`, step 5) and again in the validation stage (`crates/workflow/src/gates/scope/`), and no variant removes either. The sandbox crate has tests of the product rule (`crates/sandbox/tests/workspace/`), and they are not tests of this row."
   },
   {
    "id": "NT-GATE-02",
@@ -3017,7 +3018,7 @@
   },
   {
    "id": "NT-SEC-05",
-   "status": "proven",
+   "status": "proven_on_double",
    "tests": [
     {
      "name": "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
@@ -3058,7 +3059,8 @@
       "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused"
      ]
     }
-   ]
+   ],
+   "note": "The only control-off variant, `the-workspace-skips-the-secret-scan`, edits the workspace double of the test kit (`crates/testkit/src/workspace.rs`). The product scans a change for secrets when it takes it in (`crates/sandbox/src/workspace/ingest.rs`, step 6) and again in the secret scan gate (`crates/workflow/src/gates/scope/secrets.rs`), and no variant removes either. No test under `crates/sandbox/tests` expects the refusal `SecretFound`, so a variant aimed at the product ingestion would have no test to fail today."
   },
   {
    "id": "NT-SEC-07",

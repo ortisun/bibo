@@ -36,6 +36,11 @@ ROOT = Path.cwd()
 DATA = ROOT / "docs/security/p0-coverage.json"
 SELF = "tests/security/mutations.py"
 
+# WORKSPACE is a test double: the workspace of the test kit, which only tests use. The product
+# takes a change in through crates/sandbox/src/workspace/ingest.rs. A break of WORKSPACE shows that
+# the tests notice the double losing a control, and nothing about the product. The coverage checker
+# (docs/security/tools/check_p0_coverage.py) reads this path and gives a row that only such a break
+# covers the status "proven_on_double". Every other file below is product code.
 WORKSPACE = "crates/testkit/src/workspace.rs"
 COMMANDS = "crates/domain/src/policy/commands.rs"
 EGRESS = "crates/domain/src/policy/egress.rs"
@@ -61,11 +66,11 @@ GITHUB_PERMISSIONS = "crates/github/src/permissions.rs"
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
     "the-workspace-lets-any-edit-in": (
-        "the audited ingestion of a change no longer checks the protected paths of the rules, so a change to a workflow, a CI script, a test or a fixture is taken in",
+        "the workspace double of the test kit no longer checks the protected paths of the rules when it takes a change in, so a change to a workflow, a CI script, a test or a fixture is taken in (the product ingestion is not changed)",
         [(WORKSPACE, "                _ if self.has(WorkspaceDefect::AllowsAnyEdit) => false,", "                _ if true => false,")],
     ),
     "the-workspace-skips-the-secret-scan": (
-        "the audited ingestion of a change no longer looks for a secret in the files that changed",
+        "the workspace double of the test kit no longer looks for a secret in the files that changed when it takes a change in (the product ingestion is not changed)",
         [(WORKSPACE, "        if !self.has(WorkspaceDefect::SkipsSecretScan) {", "        if false {")],
     ),
     "a-forbidden-command-class-denies-nothing": (

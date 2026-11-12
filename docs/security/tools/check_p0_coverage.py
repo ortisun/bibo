@@ -17,7 +17,9 @@ What --check fails on:
   * a row whose test name is not defined (as a function) in the named source file, or whose name
     does not start with the catalog naming rule (negative_ followed by the lower-case id);
   * a status that the evidence does not support: "proven" with no control-off variant, with a
-    variant that does not exist, or with no test that can run without Docker or a live provider;
+    variant that does not exist, with no test that can run without Docker or a live provider, or
+    with variants that only edit a test double (a file under crates/testkit) and never the
+    product; "proven_on_double" when a variant of the row does edit the product;
     "control_off_missing" that lists a variant; "missing" that lists a test; "blocked" with no
     reason;
   * a control-off variant that is not what it says: a mutation name that the script does not
@@ -44,9 +46,10 @@ CATALOG = ROOT / "docs/security/negative-test-catalog.md"
 WORK_PACKAGES = ROOT / "docs/architecture/work-packages.json"
 WP_TOOL = ROOT / "docs/architecture/tools/check_work_packages.py"
 
-STATUSES = ("proven", "control_off_missing", "blocked", "missing")
+STATUSES = ("proven", "proven_on_double", "control_off_missing", "blocked", "missing")
 STATUS_TEXT = {
     "proven": "implemented, control-off proven",
+    "proven_on_double": "implemented, control-off proven against the test double only",
     "control_off_missing": "implemented, control-off missing",
     "blocked": "BLOCKED",
     "missing": "missing",
@@ -133,6 +136,71 @@ def mutation_catalog(rel):
                     filters = [x.value for x in last.elts if isinstance(x, ast.Constant) and isinstance(x.value, str)]
                 found[head.value] = filters
     return found
+
+
+# A test double is a stand-in for a product component that only tests use. Every double of this
+# workspace lives in the test kit crate.
+DOUBLE_PREFIX = "crates/testkit/"
+
+
+def mutation_targets(rel):
+    """{name: [edited files]} for the dictionary MUTATIONS or the list BREAKS of a script. A file
+    that the script names through a constant (WORKSPACE = "crates/...") is resolved; a file that
+    cannot be resolved is left out."""
+    source = read_text(rel)
+    if source is None:
+        return {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    constants = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                constants[node.targets[0].id] = node.value.value
+
+    def files_of(edits):
+        found = []
+        if not isinstance(edits, ast.List):
+            return found
+        for edit in edits.elts:
+            if not isinstance(edit, ast.Tuple) or not edit.elts:
+                continue
+            head = edit.elts[0]
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                found.append(head.value)
+            elif isinstance(head, ast.Name) and head.id in constants:
+                found.append(constants[head.id])
+        return found
+
+    targets = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name) or target.id not in ("MUTATIONS", "BREAKS"):
+            continue
+        value = node.value
+        if isinstance(value, ast.Dict):
+            for key, entry in zip(value.keys, value.values):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str) and isinstance(entry, ast.Tuple) and len(entry.elts) > 1:
+                    targets[key.value] = files_of(entry.elts[1])
+        elif isinstance(value, ast.List):
+            for element in value.elts:
+                if isinstance(element, ast.Tuple) and len(element.elts) > 1 and isinstance(element.elts[0], ast.Constant):
+                    targets[element.elts[0].value] = files_of(element.elts[1])
+    return targets
+
+
+def on_double(control):
+    """True when a control-off variant is a mutation whose every edit is in a test double. Such a
+    variant shows that the tests notice the double losing its control. It says nothing about the
+    product code that the double stands in for."""
+    if control.get("kind") != "mutation":
+        return False
+    files = mutation_targets(control.get("script", "")).get(control.get("name"), [])
+    return bool(files) and all(f.startswith(DOUBLE_PREFIX) for f in files)
 
 
 def crate_dir(rel):
@@ -333,9 +401,13 @@ def validate_row(rid, row, owners, wps, naming=True):
         if not needs or ran_and_passed(t):
             runnable.add(t["name"])
     caught_runnable = set()
+    caught_by_product = set()
     for c in control:
         errors += validate_control(rid, c, tests, names)
-        caught_runnable |= {n for n in c.get("catches", []) if n in runnable}
+        caught = {n for n in c.get("catches", []) if n in runnable}
+        caught_runnable |= caught
+        if not on_double(c):
+            caught_by_product |= caught
     if status == "missing":
         if tests or control:
             errors.append(f"{rid}: status missing but the row lists tests or control-off variants")
@@ -350,8 +422,21 @@ def validate_row(rid, row, owners, wps, naming=True):
             errors.append(f"{rid}: status proven but no control-off variant is named")
         elif not caught_runnable:
             errors.append(f"{rid}: status proven but no control-off variant catches a test that runs without Docker or a live provider")
+        elif not caught_by_product:
+            errors.append(f"{rid}: status proven but every control-off variant that catches a test edits a test double under {DOUBLE_PREFIX} and not the product; the status is proven_on_double")
         if all_blocked:
             errors.append(f"{rid}: status proven but every test needs Docker or a live provider; the row is blocked")
+    if status == "proven_on_double":
+        if not control:
+            errors.append(f"{rid}: status proven_on_double but no control-off variant is named")
+        elif not caught_runnable:
+            errors.append(f"{rid}: status proven_on_double but no control-off variant catches a test that runs without Docker or a live provider")
+        elif caught_by_product:
+            errors.append(f"{rid}: status proven_on_double but a control-off variant edits the product and catches a test; the status is proven")
+        if not str(row.get("note", "")).strip():
+            errors.append(f"{rid}: status proven_on_double needs a note that names the product control that no variant removes")
+        if all_blocked:
+            errors.append(f"{rid}: status proven_on_double but every test needs Docker or a live provider; the row is blocked")
     if status == "control_off_missing":
         if control:
             errors.append(f"{rid}: status control_off_missing but control-off variants are listed")
@@ -464,6 +549,8 @@ def render(doc, catalog, owners):
             if c["kind"] == "mutation":
                 run = runs.get((c["script"], c["name"]))
                 ran = f", {run['result'].lower()} {run['date']}" if run else ", not run in this review"
+                if on_double(c):
+                    ran += ", edits the test double and not the product"
             control.append(f"{c['kind'].replace('_', ' ')} `{short(label, 60)}`{ran}")
         extra = len(r.get("control_off", [])) - 3
         if extra > 0:
@@ -475,6 +562,7 @@ def render(doc, catalog, owners):
         w(f"| {r['id']} | {title} | {o['wp']}, {o['crate']}{scope} | {'<br>'.join(shown) or 'none'} | {'<br>'.join(control) or 'none'} | {status} |")
     w("")
     sections = (
+        ("proven_on_double", "### Implemented, control-off proven against the test double only", "Each of these tests exists and runs, and the only variant that makes it fail removes the control from a test double of the test kit (`crates/testkit`). The product code that the double stands in for has no variant, so nothing here shows that a test fails when the product loses the control."),
         ("blocked", "### BLOCKED", "Each of these needs something this machine does not have. A test in this list has not passed here and is not counted as a pass."),
         ("missing", "### Missing", "Each of these P0 tests has no test of the catalog name in the repository."),
         ("control_off_missing", "### Implemented, control-off missing", "Each of these tests exists and runs, and nothing in the repository shows that it fails when its control is removed."),
@@ -514,6 +602,8 @@ def render(doc, catalog, owners):
                 if c["kind"] == "mutation":
                     run = runs.get((c["script"], c["name"]))
                     ran = f", {run['result'].lower()} {run['date']}" if run else ", not run in this review"
+                    if on_double(c):
+                        ran += ", edits the test double and not the product"
                 control.append(f"{c['kind'].replace('_', ' ')} `{short(label, 60)}`{ran}")
             title = catalog[r["id"]]["title"].replace("|", "/")
             owner = r["owner"]
@@ -533,7 +623,7 @@ def render(doc, catalog, owners):
     else:
         w("None.")
     w("")
-    notes = [r for r in rows if r.get("note") and r["status"] not in ("blocked", "missing", "control_off_missing")]
+    notes = [r for r in rows if r.get("note") and r["status"] not in ("blocked", "missing", "control_off_missing", "proven_on_double")]
     if notes:
         w("### Notes on rows")
         w("")
@@ -577,7 +667,8 @@ def render(doc, catalog, owners):
         w("|---|---|---|---|---|")
         for run in doc["mutation_runs"]:
             failed = ", ".join(f"`{short(n, 70)}`" for n in run["failed"]) or "none"
-            w(f"| `{run['script']}` | `{run['name']}` | {run['date']} | {run['result']} | {failed} |")
+            double = " (edits the test double)" if on_double({"kind": "mutation", "script": run["script"], "name": run["name"]}) else ""
+            w(f"| `{run['script']}` | `{run['name']}`{double} | {run['date']} | {run['result']} | {failed} |")
     else:
         w("None were run.")
     w("")
@@ -607,6 +698,7 @@ def self_test(doc):
     if errors:
         return [f"the data is not valid, so the breaks prove nothing: {errors[:3]}"]
     row = next(r for r in doc["rows"] if r["status"] == "proven" and r["control_off"])
+    double_row = next((r for r in doc["rows"] if r["status"] == "proven_on_double"), None)
 
     def remove_a_row(d):
         d["rows"] = [r for r in d["rows"] if r["id"] != "NT-SBX-01"]
@@ -627,6 +719,14 @@ def self_test(doc):
     def a_control_off_for_a_test_of_another_row(d):
         target = next(r for r in d["rows"] if r["id"] == row["id"])
         target["control_off"][0] = dict(target["control_off"][0], catches=["negative_nt_not_a_test_of_this_row"])
+
+    def proven_by_a_test_double_alone(d):
+        next(r for r in d["rows"] if r["id"] == double_row["id"])["status"] = "proven"
+
+    def a_product_variant_called_a_double(d):
+        target = next(r for r in d["rows"] if r["id"] == row["id"])
+        target["status"] = "proven_on_double"
+        target["note"] = "A note, so that only the status is wrong."
 
     def blocked_without_a_reason(d):
         # No row has to be blocked (a machine with a daemon blocks none), so the break makes one.
@@ -650,11 +750,16 @@ def self_test(doc):
         ("claim control-off with a mutation that is not defined", control_off_without_a_mutation, "is not defined in"),
         ("claim control-off with no variant", proven_without_a_variant, "no control-off variant"),
         ("claim control-off for a test that is not in the row", a_control_off_for_a_test_of_another_row, "not a test of this row"),
+        ("call a variant that edits the product a variant of a test double", a_product_variant_called_a_double, "edits the product"),
         ("block a row with no reason", blocked_without_a_reason, "needs blocked"),
         ("drop an audit event type", drop_an_audit_event_type, "differ from audit.must_record"),
         ("give an audit event type an owner that is not a work package", an_owner_that_is_not_a_work_package, "is not a work package"),
         ("name an emitter that the sources do not hold", an_emitter_that_the_sources_do_not_hold, "does not contain"),
     ]
+    if double_row is not None:
+        # The case needs a row whose only variants edit a test double. When no row is in that
+        # state the claim cannot be made, so there is nothing to break.
+        cases.append(("claim proven with variants that only edit a test double", proven_by_a_test_double_alone, "edits a test double"))
     problems = []
     for label, change, expected in cases:
         broken = copy.deepcopy(doc)
