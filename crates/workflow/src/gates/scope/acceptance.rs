@@ -8,6 +8,33 @@
 //! `fr_001`, so `tests/it.rs::fr_001_counts_a_line` names `FR-001`. A name matches only as a
 //! whole token, so `fr_0011` does not name `FR-001`.
 //!
+//! The rule is the same for every test report format, because it is applied to the name of the
+//! test in the one model of a test run (`crate::gates::command::outcomes`):
+//!
+//! 1. Both the name and the identifier are put in one form: letters in lower case, and every
+//!    character that is not an ASCII letter or digit written as an underscore. So the letter
+//!    case of the identifier does not matter, and `FR-001`, `fr_001`, `Fr 001` and `fr.001`
+//!    are the same.
+//! 2. The identifier must then appear in the name with no letter or digit directly before or
+//!    after it.
+//!
+//! For a JUnit XML report the name is `<classname>::<name>`, so the identifier may be in the
+//! name of the test case or in its class name. A class or a module named after a requirement
+//! therefore names the requirement for every test case in it, as a Rust test binary named
+//! after one does.
+//!
+//! | The test | Names `FR-001` |
+//! |---|---|
+//! | `tests/it.rs::fr_001_counts_a_line` (Rust) | yes |
+//! | `tests.test_count::test_fr_001_counts_a_line` (pytest) | yes |
+//! | `word count FR-001 counts a line` (Jest) | yes |
+//! | `example.com/wc::Test_FR_001_CountsALine` (Go) | yes |
+//! | `example.com/wc::TestFR_001_CountsALine` (Go) | no: the letter `t` of `Test` comes directly before `fr` |
+//! | `com.example.FR_001_Test::countsALine` (JUnit, in the class name) | yes |
+//! | `com.example.CountTest::fr001CountsALine` | no: `fr001` has no separator |
+//! | `example.com/wc::Test_FR_001CountsALine` | no: a letter follows `001` |
+//! | `tests.test_count::test_fr_0011` | no: a digit follows `001` |
+//!
 //! A test **covers** a requirement when it names it, it ran and passed on the candidate commit,
 //! and it did **not** pass in the test run of the base commit. The report says which of three
 //! reasons applies ([`Basis`]): the test is new, it failed on the base commit, or it was ignored
@@ -305,6 +332,41 @@ mod tests {
         assert_eq!(uncovered(&reqs, &["t::fr_0011_other"]), ["FR-001"]);
         assert_eq!(uncovered(&reqs, &["t::xfr_001"]), ["FR-001"]);
         assert!(uncovered(&reqs, &["t::fr_001"]).is_empty());
+    }
+
+    #[test]
+    fn names_from_other_test_runners_follow_the_same_token_rule() {
+        let reqs = [requirement("FR-001", &["AS-004"])];
+        for name in [
+            "tests.test_count::test_fr_001_counts_a_line",
+            "tests.test_count::test_counts[FR-001]",
+            "word count FR-001 counts a line",
+            "word count fr-001 counts a line",
+            "example.com/wc::Test_FR_001_CountsALine",
+            "com.example.FR_001_Test::countsALine",
+            "com.example.CountTest::as_004_emptyInput",
+            "FR-001",
+        ] {
+            assert!(uncovered(&reqs, &[name]).is_empty(), "{name}");
+        }
+        for name in [
+            "com.example.CountTest::fr001CountsALine",
+            "example.com/wc::TestFR_001_CountsALine",
+            "example.com/wc::Test_FR_001CountsALine",
+            "tests.test_count::test_fr_0011",
+            "tests.test_count::test_xfr_001",
+            "word count FR-0010 counts a line",
+        ] {
+            assert_eq!(uncovered(&reqs, &[name]), ["FR-001"], "{name}");
+        }
+    }
+
+    #[test]
+    fn the_letter_case_of_the_requirement_identifier_does_not_matter() {
+        let lower = [requirement("fr-001", &[])];
+        assert!(uncovered(&lower, &["t::FR_001_x"]).is_empty());
+        let upper = [requirement("FR-001", &[])];
+        assert!(uncovered(&upper, &["t::Fr_001_x"]).is_empty());
     }
 
     #[test]

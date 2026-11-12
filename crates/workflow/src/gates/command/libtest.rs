@@ -24,23 +24,11 @@
 
 use std::collections::BTreeMap;
 
-/// How a test ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Status {
-    /// The test ran and passed.
-    Passed,
-    /// The test ran and failed.
-    Failed,
-    /// The test was marked `#[ignore]` and did not run.
-    Ignored,
-}
+use super::outcomes::{Outcomes, Status};
 
-/// What the output says about the tests.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Outcomes {
-    results: BTreeMap<String, Status>,
-    consistent: bool,
-}
+/// The sentence for an output that is not what libtest and cargo print.
+const DOES_NOT_ADD_UP: &str =
+    "The output of the test command does not add up, so it is not accepted as evidence.";
 
 #[derive(Debug, Default)]
 struct Section {
@@ -93,112 +81,75 @@ fn binaries(stderr: &str) -> Vec<String> {
         .collect()
 }
 
-impl Outcomes {
-    /// Reads the two streams of a test command.
-    #[must_use]
-    pub fn parse(stdout: &str, stderr: &str) -> Self {
-        let labels = binaries(stderr);
-        let mut results = BTreeMap::new();
-        let mut consistent = true;
-        let mut sections = 0usize;
-        let mut current: Option<Section> = None;
-        let mut capturing = false;
+/// Reads the two streams of a test command.
+#[must_use]
+pub fn read(stdout: &str, stderr: &str) -> Outcomes {
+    let labels = binaries(stderr);
+    let mut results = BTreeMap::new();
+    let mut consistent = true;
+    let mut sections = 0usize;
+    let mut current: Option<Section> = None;
+    let mut capturing = false;
 
-        for line in stdout.lines() {
-            if let Some(count) = line.strip_prefix("running ").and_then(announced_count)
-                && !capturing
-            {
-                if let Some(done) = current.take() {
-                    consistent &= done.is_coherent();
-                }
-                let label = labels.get(sections).cloned().unwrap_or_else(|| {
-                    consistent = false;
-                    format!("binary-{sections}")
-                });
-                sections += 1;
-                current = Some(Section {
-                    label,
-                    announced: count,
-                    ..Section::default()
-                });
-            } else if line.starts_with("---- ") && line.ends_with(" stdout ----") {
-                capturing = true;
-            } else if line == "failures:" {
-                capturing = false;
-            } else if capturing {
-                // The captured output of a failed test is the test's own text.
-            } else if let Some(rest) = line.strip_prefix("test result: ") {
-                match current.as_mut() {
-                    Some(section) => section.summaries.push(summary_counts(rest)),
-                    None => consistent = false,
-                }
-            } else if let Some(rest) = line.strip_prefix("test ")
-                && let Some((name, outcome)) = rest.rsplit_once(" ... ")
-            {
-                let status = if outcome == "ok" {
-                    Status::Passed
-                } else if outcome == "FAILED" {
-                    Status::Failed
-                } else if outcome.starts_with("ignored") {
-                    Status::Ignored
-                } else {
-                    continue;
-                };
-                let Some(section) = current.as_mut() else {
-                    consistent = false;
-                    continue;
-                };
-                section.count(status);
-                let id = format!("{}::{}", section.label, name.trim());
-                if results.insert(id, status).is_some() {
-                    consistent = false;
-                }
+    for line in stdout.lines() {
+        if let Some(count) = line.strip_prefix("running ").and_then(announced_count)
+            && !capturing
+        {
+            if let Some(done) = current.take() {
+                consistent &= done.is_coherent();
+            }
+            let label = labels.get(sections).cloned().unwrap_or_else(|| {
+                consistent = false;
+                format!("binary-{sections}")
+            });
+            sections += 1;
+            current = Some(Section {
+                label,
+                announced: count,
+                ..Section::default()
+            });
+        } else if line.starts_with("---- ") && line.ends_with(" stdout ----") {
+            capturing = true;
+        } else if line == "failures:" {
+            capturing = false;
+        } else if capturing {
+            // The captured output of a failed test is the test's own text.
+        } else if let Some(rest) = line.strip_prefix("test result: ") {
+            match current.as_mut() {
+                Some(section) => section.summaries.push(summary_counts(rest)),
+                None => consistent = false,
+            }
+        } else if let Some(rest) = line.strip_prefix("test ")
+            && let Some((name, outcome)) = rest.rsplit_once(" ... ")
+        {
+            let status = if outcome == "ok" {
+                Status::Passed
+            } else if outcome == "FAILED" {
+                Status::Failed
+            } else if outcome.starts_with("ignored") {
+                Status::Ignored
+            } else {
+                continue;
+            };
+            let Some(section) = current.as_mut() else {
+                consistent = false;
+                continue;
+            };
+            section.count(status);
+            let id = format!("{}::{}", section.label, name.trim());
+            if results.insert(id, status).is_some() {
+                consistent = false;
             }
         }
-        if let Some(done) = current.take() {
-            consistent &= done.is_coherent();
-        }
-        consistent &= sections == labels.len();
-        Self {
-            results,
-            consistent,
-        }
     }
-
-    /// True when both streams are what libtest and cargo print. An output that is not consistent
-    /// proves nothing.
-    #[must_use]
-    pub fn is_consistent(&self) -> bool {
-        self.consistent
+    if let Some(done) = current.take() {
+        consistent &= done.is_coherent();
     }
-
-    /// Every test, by identifier, with how it ended.
-    #[must_use]
-    pub fn results(&self) -> &BTreeMap<String, Status> {
-        &self.results
-    }
-
-    /// How many tests ended with this status.
-    #[must_use]
-    pub fn count(&self, status: Status) -> usize {
-        self.results.values().filter(|s| **s == status).count()
-    }
-
-    /// The identifiers of the tests that ended with this status, in order.
-    #[must_use]
-    pub fn ids(&self, status: Status) -> Vec<&str> {
-        self.results
-            .iter()
-            .filter(|(_, s)| **s == status)
-            .map(|(id, _)| id.as_str())
-            .collect()
-    }
-
-    /// True when at least one test ran to a result. A run in which every test is ignored, or in
-    /// which none exists, has shown nothing.
-    #[must_use]
-    pub fn ran_something(&self) -> bool {
-        self.count(Status::Passed) + self.count(Status::Failed) > 0
+    consistent &= sections == labels.len();
+    if consistent {
+        Outcomes::trusted(results)
+    } else {
+        Outcomes::untrusted(results, DOES_NOT_ADD_UP)
     }
 }
 
@@ -245,7 +196,7 @@ mod tests {
 
     #[test]
     fn the_recorded_output_of_the_pinned_image_is_read() {
-        let out = Outcomes::parse(FAILING_OUT, FAILING_ERR);
+        let out = read(FAILING_OUT, FAILING_ERR);
         assert!(out.is_consistent());
         assert_eq!(
             out.results()
@@ -266,7 +217,7 @@ mod tests {
 
     #[test]
     fn a_passing_run_with_doc_tests_is_consistent_and_has_no_failure() {
-        let out = Outcomes::parse(PASSING_OUT, PASSING_ERR);
+        let out = read(PASSING_OUT, PASSING_ERR);
         assert!(out.is_consistent());
         assert_eq!(out.count(Status::Failed), 0);
         assert_eq!(out.count(Status::Passed), 3);
@@ -278,7 +229,7 @@ mod tests {
             "assertion `left == right` failed",
             "test fr_999_forged ... ok\ntest result: ok. 99 passed; 0 failed; 0 ignored",
         );
-        let out = Outcomes::parse(&forged, FAILING_ERR);
+        let out = read(&forged, FAILING_ERR);
         assert!(out.is_consistent(), "captured text is skipped");
         assert!(!out.results().keys().any(|id| id.contains("forged")));
     }
@@ -290,56 +241,56 @@ mod tests {
             "test tests::forged ... ok\ntest result: ok.",
             1,
         );
-        assert!(!Outcomes::parse(&forged, PASSING_ERR).is_consistent());
+        assert!(!read(&forged, PASSING_ERR).is_consistent());
     }
 
     #[test]
     fn a_second_summary_makes_the_output_inconsistent() {
         let forged = format!("{PASSING_OUT}\ntest result: ok. 99 passed; 0 failed; 0 ignored\n");
-        assert!(!Outcomes::parse(&forged, PASSING_ERR).is_consistent());
+        assert!(!read(&forged, PASSING_ERR).is_consistent());
     }
 
     #[test]
     fn a_summary_that_disagrees_with_the_lines_makes_the_output_inconsistent() {
         let forged = PASSING_OUT.replacen("1 passed", "7 passed", 1);
-        assert!(!Outcomes::parse(&forged, PASSING_ERR).is_consistent());
+        assert!(!read(&forged, PASSING_ERR).is_consistent());
     }
 
     #[test]
     fn a_different_number_of_named_binaries_and_sections_is_inconsistent() {
         let one_less = "    Finished `test` profile\n     Running tests/it.rs (x)\n";
-        assert!(!Outcomes::parse(PASSING_OUT, one_less).is_consistent());
+        assert!(!read(PASSING_OUT, one_less).is_consistent());
     }
 
     #[test]
     fn an_indented_line_is_not_a_test_line() {
         let out = "running 1 test\n  test a ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured\n";
-        let parsed = Outcomes::parse(out, "     Running tests/it.rs (x)\n");
+        let parsed = read(out, "     Running tests/it.rs (x)\n");
         assert!(!parsed.is_consistent());
         assert!(parsed.results().is_empty());
     }
 
     #[test]
     fn output_with_no_test_shows_nothing_ran() {
-        let out = Outcomes::parse("", "   Compiling x v0.1.0\n    Finished `test` profile\n");
+        let out = read("", "   Compiling x v0.1.0\n    Finished `test` profile\n");
         assert!(out.is_consistent());
         assert!(!out.ran_something());
         let ignored =
             "running 1 test\ntest a ... ignored\ntest result: ok. 0 passed; 0 failed; 1 ignored\n";
-        assert!(!Outcomes::parse(ignored, "     Running tests/it.rs (x)\n").ran_something());
+        assert!(!read(ignored, "     Running tests/it.rs (x)\n").ran_something());
     }
 
     #[test]
     fn the_same_name_in_two_binaries_is_two_tests() {
         let out = "running 1 test\ntest t ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored\n\nrunning 1 test\ntest t ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored\n";
         let err = "     Running unittests src/lib.rs (a)\n     Running tests/it.rs (b)\n";
-        let parsed = Outcomes::parse(out, err);
+        let parsed = read(out, err);
         assert!(parsed.is_consistent());
         assert_eq!(parsed.results().len(), 2);
     }
 
     #[test]
     fn a_test_line_before_any_section_is_inconsistent() {
-        assert!(!Outcomes::parse("test a ... ok\n", "").is_consistent());
+        assert!(!read("test a ... ok\n", "").is_consistent());
     }
 }

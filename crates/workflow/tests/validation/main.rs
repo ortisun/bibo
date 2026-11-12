@@ -23,5 +23,6 @@ mod current_values;
 mod gates;
 mod negative_gate;
 mod negative_secret;
+mod reports;
 mod schema;
 mod supply;

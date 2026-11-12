@@ -236,7 +236,13 @@ impl Assembler<'_> {
         }
         let own = run.run.as_ref();
         match own {
-            Some(seen) => commands.push(observed(seen)?),
+            Some(seen) => {
+                commands.push(observed(seen)?);
+                // The command that read the test report file back is part of the evidence.
+                if let Some(read) = &seen.report {
+                    commands.push(observed(read)?);
+                }
+            }
             None => commands.push(unrun_command(
                 &run.gate.argv,
                 run.gate.cwd.as_ref().map(|dir| dir.as_str()),
@@ -460,7 +466,8 @@ mod tests {
             count("FAILED"),
             count("ignored")
         ));
-        let parsed = Outcomes::parse(&stdout, "     Running tests/it.rs (x)\n");
+        let parsed =
+            crate::gates::command::libtest::read(&stdout, "     Running tests/it.rs (x)\n");
         assert!(parsed.is_consistent());
         parsed
     }

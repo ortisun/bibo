@@ -5,9 +5,21 @@
 //!
 //! | The supervisor saw | The gate is |
 //! |---|---|
-//! | Exit code 0, and for a test gate the output shows tests that ran | `PASSED` |
+//! | Exit code 0, and for a test gate the test report shows tests that ran | `PASSED` |
 //! | Another exit code from a tool that ran | `FAILED` |
-//! | The tool missing (126, 127), a timeout, a signal, an out-of-memory kill, no exit code, an output that is cut or cannot be read, or a test gate that ran no test | `BLOCKED` |
+//! | The tool missing (126, 127), a timeout, a signal, an out-of-memory kill, no exit code, a test report that is missing, cut, malformed, does not add up or cannot be read, or a test gate that ran no test | `BLOCKED` |
+//!
+//! The test report is the output of the Rust test harness by default, or a JUnit XML or TAP
+//! report when the project manifest says so ([`Reading`]). The rules are the same for every
+//! format, because they are applied to the one model of [`super::outcomes`]:
+//!
+//! | Exit code | The test report | The gate is |
+//! |---|---|---|
+//! | 0 | whole, adds up, at least one test ran, no failed test | `PASSED` |
+//! | 0 | missing, empty, cut, malformed, or its totals disagree with its test cases | `BLOCKED` |
+//! | 0 | lists no test, or only skipped tests | `BLOCKED` |
+//! | 0 | lists a failed test | `BLOCKED`: the report and the exit code disagree |
+//! | not 0 | any | `FAILED`, and the failed tests are named when the report can be trusted |
 //!
 //! `NOT_APPLICABLE` is not an answer of this function: only a rule that is recorded with its
 //! inputs may say that a gate does not apply (policy `gate_integrity.missing_evidence_is`).
@@ -17,7 +29,7 @@ use factory_domain::contracts::gate_report::BlockedCode;
 use factory_ports::sandbox::ExecResult;
 
 use super::definition::Role;
-use super::libtest::{Outcomes, Status};
+use super::outcomes::{Outcomes, ReportKind, Status};
 
 /// The exit code a shell and a container runtime give a program that cannot be run.
 const CANNOT_EXECUTE: i32 = 126;
@@ -60,15 +72,41 @@ pub enum Verdict {
 /// The output of a command, as far as the gate could read it.
 #[derive(Debug)]
 pub enum Reading<'a> {
-    /// Both streams were read.
+    /// Both streams were read. A test gate reads them as the output of the Rust test harness.
     Read {
         /// Standard output.
         stdout: &'a str,
         /// Standard error.
         stderr: &'a str,
     },
+    /// The test report that the project manifest names was read: the standard output of the
+    /// test command, or the report file that the supervisor read back after it.
+    Report {
+        /// The format of the report.
+        kind: ReportKind,
+        /// The text of the report.
+        text: &'a str,
+        /// True when the text was cut at the size limit.
+        cut: bool,
+    },
+    /// The project manifest names a report file, and the supervisor could not read it back: the
+    /// test command did not write it, or the command that reads it failed.
+    NoReport,
     /// The artifact store could not give the output back, or it was not text.
     Unreadable,
+}
+
+impl Reading<'_> {
+    /// What the test report says, when there is one to read. The result may be a report that
+    /// cannot be trusted ([`Outcomes::is_consistent`]).
+    #[must_use]
+    pub fn outcomes(&self) -> Option<Outcomes> {
+        match self {
+            Self::Read { stdout, stderr } => Some(super::libtest::read(stdout, stderr)),
+            Self::Report { kind, text, .. } => Some(kind.read(text)),
+            Self::NoReport | Self::Unreadable => None,
+        }
+    }
 }
 
 /// Interprets one command of a gate.
@@ -133,47 +171,64 @@ fn failed_with_exit_code(role: Role, code: i32, reading: &Reading<'_>) -> Verdic
             "The command ended with exit code {code}, and the gate needs exit code 0."
         ),
     }];
-    if let (true, Reading::Read { stdout, stderr }) = (role.expects_tests(), reading) {
-        let outcomes = Outcomes::parse(stdout, stderr);
-        if outcomes.is_consistent() {
-            failures.extend(
-                outcomes
-                    .ids(Status::Failed)
-                    .into_iter()
-                    .take(MOST_NAMED)
-                    .map(|id| Fail {
-                        check: "test-failed",
-                        message: format!("The test {id} failed."),
-                    }),
-            );
-        }
+    let outcomes = reading.outcomes().filter(|_| role.expects_tests());
+    if let Some(outcomes) = outcomes.filter(Outcomes::is_consistent) {
+        failures.extend(
+            outcomes
+                .ids(Status::Failed)
+                .into_iter()
+                .take(MOST_NAMED)
+                .map(|id| Fail {
+                    check: "test-failed",
+                    message: format!("The test {id} failed."),
+                }),
+        );
     }
     Verdict::Failed(failures)
 }
 
-/// A test command that exited with code 0 passes only if its output shows tests that ran.
+/// A test command that exited with code 0 passes only if its test report shows tests that ran.
 fn tests_ran(exec: &ExecResult, reading: &Reading<'_>) -> Verdict {
-    let Reading::Read { stdout, stderr } = reading else {
-        return blocked(
-            BlockedCode::ToolProbeFailed,
-            "readable test output",
-            "The output of the test command could not be read, so the gate cannot show that tests ran.",
-        );
+    const UNREADABLE: &str =
+        "The output of the test command could not be read, so the gate cannot show that tests ran.";
+    let cut = match reading {
+        Reading::Unreadable => {
+            return blocked(
+                BlockedCode::ToolProbeFailed,
+                "readable test output",
+                UNREADABLE,
+            );
+        }
+        Reading::NoReport => {
+            return blocked(
+                BlockedCode::ToolProbeFailed,
+                "the test report file",
+                "The test report file that the project manifest names could not be read after the test command ended, so the gate cannot show that tests ran.",
+            );
+        }
+        Reading::Read { .. } => exec.stdout_truncated || exec.stderr_truncated,
+        Reading::Report { cut, .. } => *cut,
     };
-    if exec.stdout_truncated || exec.stderr_truncated {
+    if cut {
         return blocked(
             BlockedCode::ToolProbeFailed,
             "complete test output",
             "The output of the test command was cut at the size limit, so the gate cannot show that tests ran.",
         );
     }
-    let outcomes = Outcomes::parse(stdout, stderr);
-    if !outcomes.is_consistent() {
+    let Some(outcomes) = reading.outcomes() else {
         return blocked(
             BlockedCode::ToolProbeFailed,
-            "test output that adds up",
-            "The output of the test command does not add up, so it is not accepted as evidence.",
+            "readable test output",
+            UNREADABLE,
         );
+    };
+    if let Some(problem) = outcomes.problem() {
+        let missing = match reading {
+            Reading::Report { .. } => "a test report that can be trusted",
+            _ => "test output that adds up",
+        };
+        return blocked(BlockedCode::ToolProbeFailed, missing, problem);
     }
     if !outcomes.ran_something() {
         return blocked(
@@ -312,6 +367,180 @@ mod tests {
             interpret(Role::Tests, &exec(Some(0)), &read(failing, err)),
             Verdict::Blocked(_)
         ));
+    }
+
+    /// A JUnit report with these test cases and totals that add up.
+    fn junit(cases: &[(&str, &str)]) -> String {
+        let count = |child: &str| cases.iter().filter(|(_, c)| *c == child).count();
+        let listed: String = cases
+            .iter()
+            .map(|(name, child)| {
+                format!("<testcase classname=\"tests.test_wc\" name=\"{name}\">{child}</testcase>")
+            })
+            .collect();
+        format!(
+            "<testsuites><testsuite name=\"pytest\" tests=\"{}\" failures=\"{}\" errors=\"0\" skipped=\"{}\">{listed}</testsuite></testsuites>",
+            cases.len(),
+            count("<failure/>"),
+            count("<skipped/>"),
+        )
+    }
+
+    fn report(kind: ReportKind, text: &str) -> Reading<'_> {
+        Reading::Report {
+            kind,
+            text,
+            cut: false,
+        }
+    }
+
+    fn blocked_for(verdict: &Verdict) -> (&'static str, &'static str) {
+        match verdict {
+            Verdict::Blocked(why) => (why.missing, why.reason),
+            other => panic!("the gate is not blocked: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_test_gate_passes_on_a_junit_report_and_on_a_tap_report_that_show_tests() {
+        let xml = junit(&[("test_a", ""), ("test_b", "<skipped/>")]);
+        assert_eq!(
+            interpret(
+                Role::Tests,
+                &exec(Some(0)),
+                &report(ReportKind::JunitXml, &xml)
+            ),
+            Verdict::Passed
+        );
+        assert_eq!(
+            interpret(
+                Role::Tests,
+                &exec(Some(0)),
+                &report(ReportKind::Tap, "1..2\nok 1 - a\nok 2 - b # SKIP\n")
+            ),
+            Verdict::Passed
+        );
+    }
+
+    #[test]
+    fn a_missing_report_file_blocks_a_test_gate_that_exited_with_code_zero() {
+        let verdict = interpret(Role::Tests, &exec(Some(0)), &Reading::NoReport);
+        assert_eq!(blocked_for(&verdict).0, "the test report file");
+    }
+
+    #[test]
+    fn a_report_that_is_cut_blocks_even_when_what_is_left_reads_well() {
+        let xml = junit(&[("test_a", "")]);
+        let cut = Reading::Report {
+            kind: ReportKind::JunitXml,
+            text: &xml,
+            cut: true,
+        };
+        let verdict = interpret(Role::Tests, &exec(Some(0)), &cut);
+        assert_eq!(blocked_for(&verdict).0, "complete test output");
+    }
+
+    #[test]
+    fn a_report_that_cannot_be_trusted_blocks_with_its_own_reason() {
+        let whole = junit(&[("test_a", "")]);
+        let wrong_totals = whole.replace("tests=\"1\"", "tests=\"9\"");
+        let truncated = &whole[..whole.len() - 20];
+        for (kind, text, part_of_reason) in [
+            (ReportKind::JunitXml, "", "is empty"),
+            (ReportKind::JunitXml, "plain text", "not well-formed"),
+            (ReportKind::JunitXml, truncated, "ends before"),
+            (ReportKind::JunitXml, wrong_totals.as_str(), "totals"),
+            (
+                ReportKind::JunitXml,
+                "<!DOCTYPE x><testsuites/>",
+                "document type",
+            ),
+            (ReportKind::Tap, "", "no plan"),
+            (
+                ReportKind::Tap,
+                "1..2\nok 1 - a\n",
+                "disagree with its plan",
+            ),
+            (ReportKind::Tap, "1..1\nok 1 - a\nBail out!\n", "bailed out"),
+        ] {
+            let verdict = interpret(Role::Tests, &exec(Some(0)), &report(kind, text));
+            let (missing, reason) = blocked_for(&verdict);
+            assert_eq!(missing, "a test report that can be trusted", "{text}");
+            assert!(reason.contains(part_of_reason), "{text}: {reason}");
+        }
+    }
+
+    #[test]
+    fn a_report_with_no_test_that_ran_blocks_whatever_the_format() {
+        let only_skipped = junit(&[("test_a", "<skipped/>")]);
+        for reading in [
+            report(ReportKind::JunitXml, "<testsuites></testsuites>"),
+            report(ReportKind::JunitXml, &only_skipped),
+            report(ReportKind::Tap, "1..0\n"),
+            report(ReportKind::Tap, "1..1\nok 1 - a # SKIP\n"),
+        ] {
+            let verdict = interpret(Role::Tests, &exec(Some(0)), &reading);
+            assert_eq!(blocked_for(&verdict).0, "at least one test that ran");
+        }
+    }
+
+    #[test]
+    fn exit_code_zero_with_a_failed_test_in_the_report_is_not_accepted_whatever_the_format() {
+        let xml = junit(&[("test_a", ""), ("test_b", "<failure/>")]);
+        for reading in [
+            report(ReportKind::JunitXml, &xml),
+            report(ReportKind::Tap, "1..2\nok 1 - a\nnot ok 2 - b\n"),
+        ] {
+            let verdict = interpret(Role::Tests, &exec(Some(0)), &reading);
+            assert_eq!(
+                blocked_for(&verdict).0,
+                "test output that matches the exit code"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_run_names_the_failed_tests_of_a_report_and_fails_without_one() {
+        let xml = junit(&[("test_a", ""), ("test_fr_002_empty", "<failure/>")]);
+        let Verdict::Failed(failures) = interpret(
+            Role::Tests,
+            &exec(Some(1)),
+            &report(ReportKind::JunitXml, &xml),
+        ) else {
+            panic!("a failed test run is FAILED");
+        };
+        assert!(
+            failures.iter().any(|f| f.check == "test-failed"
+                && f.message.contains("tests.test_wc::test_fr_002_empty"))
+        );
+
+        let Verdict::Failed(failures) = interpret(
+            Role::Tests,
+            &exec(Some(1)),
+            &report(
+                ReportKind::Tap,
+                "1..2\nok 1 - a\nnot ok 2 - counts nothing\n",
+            ),
+        ) else {
+            panic!("a failed test run is FAILED");
+        };
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.message.contains("counts nothing"))
+        );
+
+        for reading in [
+            Reading::NoReport,
+            report(ReportKind::JunitXml, "<testsuites"),
+            Reading::Unreadable,
+        ] {
+            let Verdict::Failed(failures) = interpret(Role::Tests, &exec(Some(1)), &reading) else {
+                panic!("a non-zero exit code is FAILED with or without a report");
+            };
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].check, "exit-code");
+        }
     }
 
     #[test]
