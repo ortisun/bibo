@@ -101,8 +101,9 @@ fn prompts_limits_lines_count_toward_the_limit_with_their_quote_prefixes() {
 
 #[test]
 fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
-    // 10_000 tokens, 25 percent for the prompt, 3 bytes a token: 7_500 bytes.
-    let agent = with_max_tokens("code-reviewer", 10_000);
+    // 20_000 tokens, 25 percent for the prompt, 3 bytes a token: 15_000 bytes. The instructions of
+    // the reviewer take most of that, because the output contract shows the whole answer schema.
+    let agent = with_max_tokens("code-reviewer", 20_000);
     let limits = Limits::default();
     let assembled = assembler_with(limits.clone())
         .assemble_any((
@@ -111,9 +112,9 @@ fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
         ))
         .expect("assembles within the budget");
     let manifest = assembled.manifest();
-    assert_eq!(manifest.budget_bytes, 7_500);
+    assert_eq!(manifest.budget_bytes, 15_000);
     assert!(
-        assembled.text().len() <= 7_500,
+        assembled.text().len() <= 15_000,
         "{}",
         assembled.text().len()
     );
@@ -129,7 +130,7 @@ fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
 
 #[test]
 fn prompts_limits_a_small_input_is_kept_whole_while_large_ones_are_cut_to_a_common_level() {
-    let agent = with_max_tokens("code-reviewer", 10_000);
+    let agent = with_max_tokens("code-reviewer", 20_000);
     let inputs = vec![
         input(&agent, "frozen_specification", "tiny spec"),
         input(&agent, "diff", "d".repeat(100_000)),

@@ -28,7 +28,7 @@
   },
   "resource_limits": {
     "max_wall_time_seconds": 120,
-    "max_tokens": 20000,
+    "max_tokens": 30000,
     "max_cost_usd": 0.25,
     "max_tool_calls": 2,
     "max_delegation_depth": 0

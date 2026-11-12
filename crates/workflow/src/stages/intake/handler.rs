@@ -391,7 +391,7 @@ impl StageHandler for IntakeHandler {
             gates: vec![ORIGINAL_GATE, OUTCOME_GATE, DESIGN_GATE, READABILITY_GATE],
             budget: ContractBudget {
                 wall_time_seconds: 300,
-                max_tokens: 20_000,
+                max_tokens: 30_000,
                 max_cost_usd: 0.25,
                 attempt_timeout_seconds: 240,
                 max_attempts: 3,
