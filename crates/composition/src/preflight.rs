@@ -32,10 +32,14 @@
 //!
 //! # What it does not do
 //!
-//! The attestation has no production source yet. [`NoAttestations`] says "nobody attested", so a
-//! deployment that does not pass another source caps every repository at L0 and says why in the
-//! audit record. Who records the statement, and where, is for the architect and the security
-//! reviewer to decide. The worker README lists it.
+//! It does not judge the statement it is given. The production source is the configuration key
+//! `github.bypass_attestations` (`crate::external::ConfigAttestations`): an entry there lifts the
+//! cap for its repository. Such an entry has no expiry, cannot be withdrawn except by editing the
+//! configuration, is not checked against the designations of the person it names, and leaves no
+//! audit record of its own. Whether the statement should move into the database, with an expiry
+//! and a recorded withdrawal, is for the architect and the security reviewer to decide.
+//! [`NoAttestations`] says "nobody attested" and is what a caller without a source uses: it caps
+//! every repository at L0 and says why in the audit record.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
