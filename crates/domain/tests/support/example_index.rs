@@ -432,6 +432,27 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "project-manifest",
         valid: true,
+        file: "node-jest-junit-report.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/valid/node-jest-junit-report.json"),
+        expect: "",
+    },
+    Example {
+        schema: "project-manifest",
+        valid: true,
+        file: "python-pytest-junit-report.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/valid/python-pytest-junit-report.json"),
+        expect: "",
+    },
+    Example {
+        schema: "project-manifest",
+        valid: true,
+        file: "tap-report-on-standard-output.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/valid/tap-report-on-standard-output.json"),
+        expect: "",
+    },
+    Example {
+        schema: "project-manifest",
+        valid: true,
         file: "word-count-conventional-commit-titles.json",
         text: include_str!("../../../../schemas/examples/project-manifest/valid/word-count-conventional-commit-titles.json"),
         expect: "",
@@ -474,6 +495,13 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "project-manifest",
         valid: false,
+        file: "libtest-report-with-a-path.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/invalid/libtest-report-with-a-path.json"),
+        expect: include_str!("../../../../schemas/examples/project-manifest/invalid/libtest-report-with-a-path.expect"),
+    },
+    Example {
+        schema: "project-manifest",
+        valid: false,
         file: "manifest-does-not-protect-itself.json",
         text: include_str!("../../../../schemas/examples/project-manifest/invalid/manifest-does-not-protect-itself.json"),
         expect: include_str!("../../../../schemas/examples/project-manifest/invalid/manifest-does-not-protect-itself.expect"),
@@ -498,6 +526,20 @@ pub const EXAMPLES: &[Example] = &[
         file: "spec-kit-version-not-pinned.json",
         text: include_str!("../../../../schemas/examples/project-manifest/invalid/spec-kit-version-not-pinned.json"),
         expect: include_str!("../../../../schemas/examples/project-manifest/invalid/spec-kit-version-not-pinned.expect"),
+    },
+    Example {
+        schema: "project-manifest",
+        valid: false,
+        file: "test-report-format-not-in-closed-set.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/invalid/test-report-format-not-in-closed-set.json"),
+        expect: include_str!("../../../../schemas/examples/project-manifest/invalid/test-report-format-not-in-closed-set.expect"),
+    },
+    Example {
+        schema: "project-manifest",
+        valid: false,
+        file: "test-report-on-a-gate-that-is-not-the-test-gate.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/invalid/test-report-on-a-gate-that-is-not-the-test-gate.json"),
+        expect: include_str!("../../../../schemas/examples/project-manifest/invalid/test-report-on-a-gate-that-is-not-the-test-gate.expect"),
     },
     Example {
         schema: "review-verdict",

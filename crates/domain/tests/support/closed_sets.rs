@@ -18,7 +18,7 @@ use factory_domain::contracts::gate_report::{
     BaselineDelta, BlockedCode, DefinitionSource, ExecutorKind, NotApplicableCode,
     NotApplicableDecider, SandboxNetwork,
 };
-use factory_domain::contracts::project_manifest::ReadabilityRule;
+use factory_domain::contracts::project_manifest::{ReadabilityRule, TestReportFormat};
 use factory_domain::contracts::review_verdict::{
     Category, DefectClass, NextAction, ReproductionKind, Severity,
 };
@@ -103,6 +103,7 @@ pub fn all() -> Vec<Vec<&'static str>> {
         BaselineDelta,
         // project manifest
         ReadabilityRule,
+        TestReportFormat,
         // review verdict
         Severity,
         Category,
