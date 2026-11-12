@@ -122,6 +122,12 @@ A project owner who works alone holds every designation and is the only person w
 - **A repository registered before this rule.** The migration `2026-11-03-002600` switches off every enabled repository whose enabler is its attestor, with a `NOTICE`, and writes no audit record. Another person can enable it. A project owner who works alone cannot re-register it (a GitHub repository is registered once), so a database administrator sets the flag by hand with a statement such as `UPDATE repositories SET single_maintainer = true WHERE id = '...'` as the table owner, and writes an audit record that says who asked for it and why. Nobody else can: the API login and the worker have no grant on the column, and a trigger refuses them even if they had one.
 - **Not a tenant setting.** The flag is for one repository. Another repository of the same owner is strict unless it was registered with the switch too.
 
+## Required before you enable the repository: check its own workflows
+
+The factory pushes the code of a job to a `factory/*` branch of your repository and opens a draft pull request. A model wrote that code. GitHub's documentation says that your workflows that start on `push` or `pull_request` run for that branch with your repository's secrets, before anyone has read the change. The factory has no control for this, and the installer does not look at your workflows. This project has not exercised the GitHub behaviour against a real repository.
+
+Do not enable the repository until its owner has done the five steps in [the target repository's own workflows](production.md#the-target-repositorys-own-workflows). In short: no secret, no write token and no self-hosted runner may be within reach of a workflow that a `factory/*` branch starts.
+
 ## What the installer does not do
 
 - It does not run the bootstrap. The bootstrap asks you first and spends model tokens on every directory.

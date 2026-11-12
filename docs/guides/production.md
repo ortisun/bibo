@@ -21,6 +21,7 @@ Each row names the work that stays blocked without it. Tick a row only when you 
 | A fixture repository on GitHub with a branch-protection ruleset | A repository that fails the protection preflight runs at level `L0` and opens no pull request. | [ADR 0009](../adr/0009-operating-defaults-pending-confirmation.md); `policies/security.yaml`, `credentials.repository_requirements` | An organization administrator. |
 | A statement that the App is on no bypass list, with a production source for it | The source does not exist. `NoAttestations` fails closed, so every repository stays at `L0` until a source exists. | Worker README, item 36 of the cross-stage mismatches | The architect and the security owner decide where the statement comes from. |
 | A valid `.factory/project.yaml` on the protected default branch of the target repository | The validation stage reads its gate commands from this file at the base commit. Without it the `format`, `lint`, `build` and `unit-tests` gates are BLOCKED. The test gate reads the output of `cargo test` only, and the supply-chain gate reads Cargo only. | [Prepare a repository](prepare-a-repository.md) | A maintainer of the target repository. |
+| Proof that no workflow of the target repository gives a secret, a write token or a self-hosted runner to a `factory/*` branch | The factory pushes agent-written code to a `factory/*` branch of the same repository and opens a draft pull request. GitHub's documentation says that workflows started by `push` or `pull_request` from such a branch run with the repository's secrets, before a person has read the code. The factory has no control for this and checks nothing. This project has not exercised the GitHub behaviour, so confirm it on your repository. | Threat T-45 in the [threat model](../security/threat-model.md); the section below | The owner of the target repository, with a security approver. |
 | The named requester allowlist in the protected checkout, by numeric GitHub identifier | Only a listed requester can start a job. A designation comes only from this file. | `allowlist/allowlist.yaml`; the format is in the [composition README](../../crates/composition/README.md) | A person names the people. |
 | A second code owner in `.github/CODEOWNERS` | Only one owner is listed. GitHub cannot count the owner's approval of their own pull request, so a protected change by the only owner has no second reviewer. | [`.github/CODEOWNERS`](../../.github/CODEOWNERS) | A person adds a second owner or a team. |
 | A rebuilt and tested agent image, with its new digest in `infra/sandbox-images/images.json` | The image was pinned before its recipe changed (findings RR-14, SBX-4 and IMG-1). The review tested the old image. | [Isolation re-review](../reviews/isolation-core-security-rereview.md); `infra/sandbox-images/test.sh` | A person with Docker rebuilds it. |
@@ -33,6 +34,31 @@ Each row names the work that stays blocked without it. Tick a row only when you 
 | The composed wiring program that the harness calls `FACTORY_E2E_COMPOSED` | E1 and E2 need it to drive the real adapters. It does not exist. | [Worker README](../../apps/worker/README.md), "The end-to-end `Wiring`" | An engineer. |
 
 The constitution of this repository, `.specify/memory/constitution.md`, carries the ratification date 2026-10-27. That is the date it was written. A person has not ratified it yet, as the [worked example](../spec-kit/worked-example.md) notes. A person must.
+
+## The target repository's own workflows
+
+This item is required. Do not run a live job against a repository until it is done.
+
+The delivery stage pushes the commit of a job to the branch `factory/job-<id>` of the target repository and opens a draft pull request from it. A model wrote that code, and the model may have followed hostile text in an issue or a file. The factory's gates ran it in a sandbox that holds none of the repository's secrets. The repository's own continuous integration is a second place where it runs, and the factory does not control that place.
+
+GitHub's documentation says the following. This project has never pushed to a real GitHub repository, so none of it was exercised here.
+
+- A workflow that starts on `push` or `pull_request` from a branch of the same repository receives the repository's secrets.
+- A push made with the token of a GitHub App starts workflows.
+- A draft pull request starts `pull_request` workflows.
+- Secrets are withheld from workflows that a pull request from a fork starts.
+
+The builder cannot edit a workflow file, because the path is protected. It does not need to. A test, a build script or a package script that an existing workflow already runs is enough.
+
+Before the first live job, the owner of the target repository does all of the following and shows the result.
+
+1. List every workflow that starts on `push` or `pull_request`, and every secret each one reads.
+2. Move each secret that matters into an environment. Protect the environment with required reviewers, or with a deployment branch rule that leaves out `factory/*`.
+3. Leave `factory/**` out of the `push` triggers. Set the default permissions of the workflow token to read-only.
+4. Keep `factory/*` branches off self-hosted runners.
+5. Push a harmless commit to a `factory/test` branch by hand, open a draft pull request, and read which workflows ran and what they could reach.
+
+Two stronger options are not built. The factory could deliver from a fork, so that GitHub's rules for fork pull requests apply. The factory could read the repository's Actions settings in a preflight and refuse a repository that fails. Threat T-45 in the [threat model](../security/threat-model.md) records both, and rates the risk as open.
 
 ## Settings to review before the first job
 
