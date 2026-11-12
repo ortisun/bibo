@@ -20,6 +20,7 @@ Each row names the work that stays blocked without it. Tick a row only when you 
 | A registered GitHub App with the permissions in [secrets and credentials](../security/secrets-and-credentials.md), section 3.1, its identifier and its private key file | Per-job installation tokens, narrowed to one repository, need the App. The issue source and the change host are BLOCKED without it. | The same document; `github.app_id` and `github.key_file` in the [configuration reference](../reference/configuration.md) | A person registers the App. |
 | A fixture repository on GitHub with a branch-protection ruleset | A repository that fails the protection preflight runs at level `L0` and opens no pull request. | [ADR 0009](../adr/0009-operating-defaults-pending-confirmation.md); `policies/security.yaml`, `credentials.repository_requirements` | An organization administrator. |
 | A statement that the App is on no bypass list, with a production source for it | The source does not exist. `NoAttestations` fails closed, so every repository stays at `L0` until a source exists. | Worker README, item 36 of the cross-stage mismatches | The architect and the security owner decide where the statement comes from. |
+| A valid `.factory/project.yaml` on the protected default branch of the target repository | The validation stage reads its gate commands from this file at the base commit. Without it the `format`, `lint`, `build` and `unit-tests` gates are BLOCKED. The test gate reads the output of `cargo test` only, and the supply-chain gate reads Cargo only. | [Prepare a repository](prepare-a-repository.md) | A maintainer of the target repository. |
 | The named requester allowlist in the protected checkout, by numeric GitHub identifier | Only a listed requester can start a job. A designation comes only from this file. | `allowlist/allowlist.yaml`; the format is in the [composition README](../../crates/composition/README.md) | A person names the people. |
 | A second code owner in `.github/CODEOWNERS` | Only one owner is listed. GitHub cannot count the owner's approval of their own pull request, so a protected change by the only owner has no second reviewer. | [`.github/CODEOWNERS`](../../.github/CODEOWNERS) | A person adds a second owner or a team. |
 | A rebuilt and tested agent image, with its new digest in `infra/sandbox-images/images.json` | The image was pinned before its recipe changed (findings RR-14, SBX-4 and IMG-1). The review tested the old image. | [Isolation re-review](../reviews/isolation-core-security-rereview.md); `infra/sandbox-images/test.sh` | A person with Docker rebuilds it. |
@@ -106,6 +107,7 @@ The reviewers found no way to approve, merge or mark a pull request ready withou
 
 ## Related
 
+- [Prepare a repository](prepare-a-repository.md): the project manifest and the limits of the gates.
 - [Quickstart](quickstart.md): the test-mode run on a developer machine.
 - [Runbooks](../runbooks/README.md): the situations that exist today.
 - [Threat model](../security/threat-model.md) and [sandbox policy](../security/sandbox-policy.md).

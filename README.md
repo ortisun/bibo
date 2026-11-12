@@ -55,6 +55,7 @@ The API records what people ask for and never runs work. The worker holds the en
 |---|---|
 | Run a job in test mode on your machine | [Quickstart](docs/guides/quickstart.md) |
 | Prepare an existing project and send it tickets | [Onboarding guide](docs/guides/onboarding.md) |
+| Give a repository the manifest that the gates need, and know what the gates can check today | [Prepare a repository](docs/guides/prepare-a-repository.md) |
 | Design a new solution with the Elephant-Goldfish Model (EGM) before the factory builds it | [Design guide](docs/guides/design-with-egm.md) |
 | Show the issues on a GitHub Projects board, new or already there | [Board guide](docs/guides/project-board.md) |
 | Use Claude Code, Codex or both for the design path | [Claude Code and Codex side by side](docs/guides/claude-and-codex.md) |

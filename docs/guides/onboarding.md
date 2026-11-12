@@ -128,6 +128,7 @@ A project owner who works alone holds every designation and is the only person w
 - It does not write to the GitHub repository except the labels, and the board when you ask for one with `--create-project`. It does both only when you pass `--repo`.
 - It does not install the factory's engine, database or worker. See the [local deployment guide](../operations/local-deployment.md).
 - It does not prove the map is good. It proves that every directory with code has a contract file.
+- It does not write `.factory/project.yaml`, the project manifest that the validation stage reads its gate commands from. Without that file on the default branch the build and test gates of every job are BLOCKED. A person writes it: see [Prepare a repository](prepare-a-repository.md).
 
 ## Troubleshooting
 
@@ -158,6 +159,7 @@ A project owner who works alone holds every designation and is the only person w
 
 ## Where to read more
 
+- [Prepare a repository](prepare-a-repository.md): the project manifest, the gates that read Rust tooling only, and the test names that count as acceptance evidence.
 - [ADR 0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md): the decisions, the options that lost and what is not built.
 - [Show the issue workflow on a board](project-board.md) and [Claude Code and Codex side by side](claude-and-codex.md), with their decision records [0018](../adr/0018-project-board-mirror-that-adapts.md) and [0019](../adr/0019-claude-code-and-codex-alike.md).
 - [The issue workflow policy](../../policies/issue-workflow.yaml): every label and every move.
