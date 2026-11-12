@@ -315,6 +315,27 @@ A job that changes no behavior, such as a refactor, has no exemption. The change
 
 The gate does not read what a test asserts. An empty new test that carries the identifier counts. The new tests are not run against the code of the base commit, so the gate does not show that a new test would fail without the change. A copy of an old test under a new name is a new test. The independent code reviewer is told to open each covering test that the report names and to report a test that asserts nothing, cannot fail or does not exercise the scenario. That is the judgment of a model and not a measurement.
 
+## Protect the default branch
+
+Before it admits a job, the factory's protection preflight reads how your default branch is protected. It reads both kinds of protection that GitHub enforces: the rules of active rulesets, and classic branch protection. Where the two differ, it judges the stricter one for each setting: a pull request is required if either asks for one, the larger number of approving reviews counts, and a check that either pins to the factory's App counts as pinned (`with_classic_protection` in `crates/github/src/protection.rs`). The settings it needs are listed in `policies/security.yaml`, `credentials.repository_requirements`. A branch with neither kind runs at level `L0`.
+
+To read classic branch protection, the factory's GitHub App needs these repository permissions, and no more (`policies/security.yaml`, `credentials.github_app`):
+
+| Permission | Level |
+|---|---|
+| Metadata | read |
+| Contents | write |
+| Pull requests | write |
+| Issues | write |
+| Checks | write |
+| Commit statuses | write |
+| Actions | read |
+| Administration | read (added on 2026-11-12 by the owner's decision; `write` is refused) |
+
+An App without `administration: read` cannot read classic protection. The preflight then records that the App was refused the read and caps the repository at `L0`; it does not report the branch as unprotected. An App that holds any of these at a higher level, or holds `workflows`, `secrets` or another forbidden permission, gets no token at all.
+
+The rules of a ruleset and the classic answer are read in the shape GitHub's documentation gives. Neither has been checked against the real GitHub.
+
 ## Make your workflows safe for factory branches
 
 The factory pushes the code of a job to a branch named `factory/job-<id>` of your repository and opens a draft pull request to your default branch. A model wrote that code. GitHub starts your `push` and `pull_request` workflows for it before a person has read it.

@@ -482,7 +482,6 @@
         "visible_to_sandbox": false
       },
       "permissions_forbidden": [
-        "administration",
         "workflows",
         "secrets",
         "environments",
@@ -495,6 +494,7 @@
       ],
       "permissions_required": {
         "actions": "read",
+        "administration": "read",
         "checks": "write",
         "contents": "write",
         "issues": "write",

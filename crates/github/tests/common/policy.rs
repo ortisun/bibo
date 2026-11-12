@@ -85,7 +85,7 @@ pub fn app_policy() -> AppPolicy {
         .expect("required permissions");
     let required: Vec<(String, Level)> = required_block
         .lines()
-        .map(str::trim)
+        .map(|line| line.split('#').next().unwrap_or("").trim())
         .filter_map(|line| line.split_once(": "))
         .map(|(name, level)| {
             (

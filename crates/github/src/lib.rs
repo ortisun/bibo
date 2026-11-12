@@ -77,7 +77,7 @@ pub use encoding::{base64_decode, base64url_encode, percent_encode_component};
 pub use issues::{GithubIssueSource, NormalizedText, normalize_untrusted_text};
 pub use jwt::{AppJwt, JwtError, JwtSigner, RingRs256Signer};
 pub use permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
-pub use protection::protection_from_rules;
+pub use protection::{protection_from_rules, with_classic_protection};
 pub use status::{GithubIssueStatus, MUTATION_PAUSE};
 pub use text::{OutboundPolicy, keeps_link};
 pub use token::{InstallationDirectory, StaticInstallations};

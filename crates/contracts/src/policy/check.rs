@@ -156,6 +156,29 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
         );
     }
 
+    // The App's permissions. A required level is both what the App must hold and the most it may
+    // hold (`audit_app`), so it must be a level GitHub grants, and a permission cannot be required
+    // and forbidden at once. `administration: read` is required since the owner's decision of
+    // 2026-11-12; `administration: write` stays refused because `read` is its ceiling.
+    let app = &policy.credentials.github_app;
+    for (name, level) in &app.permissions_required {
+        let key = format!("credentials.github_app.permissions_required.{name}");
+        if level != "read" && level != "write" {
+            found.add(
+                key.clone(),
+                ProblemKind::Constraint,
+                "a required permission is `read` or `write`",
+            );
+        }
+        if app.permissions_forbidden.iter().any(|f| f == name) {
+            found.add(
+                key,
+                ProblemKind::Constraint,
+                "a permission cannot be both required and forbidden",
+            );
+        }
+    }
+
     // Regular expressions.
     for (i, pattern) in policy.secrets.patterns.iter().enumerate() {
         found.regex(&format!("secrets.patterns[{i}].regex"), &pattern.regex);

@@ -54,6 +54,10 @@ pub(crate) enum TokenClass {
     /// `issues: write` and nothing else, for the status label and the status comment (ports v1.2).
     /// It does not depend on the stage in the scope.
     IssueStatus,
+    /// `administration: read` and `metadata: read`, for the one read of classic branch protection
+    /// that the protection preflight makes ([`PermissionSet::protection_reader`]). It does not
+    /// depend on the stage in the scope, and no other call uses it.
+    ProtectionRead,
 }
 
 /// Where the factory's tenants' installations are. The adapter does not discover them: a tenant
@@ -223,6 +227,7 @@ impl TokenMinter {
             }
             TokenClass::IssueStatus => Ok(PermissionSet::issue_status()),
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
+            TokenClass::ProtectionRead => Ok(PermissionSet::protection_reader()),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),
             // The write credential is never minted for a stage that may not write.
             TokenClass::Push => Err(GitHostError::Forbidden),

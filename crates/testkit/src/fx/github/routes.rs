@@ -1266,6 +1266,7 @@ fn dispatch_repo(
                         json!({
                             "required_approving_review_count": protection.required_approvals,
                             "dismiss_stale_reviews": protection.dismiss_stale_reviews,
+                            "require_code_owner_reviews": protection.require_code_owner_reviews,
                             "bypass_pull_request_allowances": {"apps": protection.bypass_apps.iter().map(|a| json!({"slug": a})).collect::<Vec<_>>()},
                         })
                     } else { Value::Null },

@@ -170,7 +170,9 @@ impl GithubAdapter {
     }
 
     /// The repository protection preflight: reads the rulesets with the Metadata permission and
-    /// judges them, together with the admin's bypass attestation, against the policy.
+    /// classic branch protection with the protection read token (`administration: read`), and
+    /// judges the stricter of the two, together with the admin's bypass attestation, against the
+    /// policy.
     /// `required_approvals` is the number of approving reviews the policy says a pull request
     /// needs (SF-07). A failure to read is an error, which the engine treats as level L0.
     ///

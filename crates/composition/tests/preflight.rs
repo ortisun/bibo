@@ -378,6 +378,36 @@ async fn a_protection_that_cannot_be_read_is_not_a_protection_that_holds() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_protection_the_app_may_not_read_is_named_and_not_taken_for_unprotected() {
+    // A classic protection read refused for want of `administration: read` (the owner's decision
+    // of 2026-11-12 made it required) caps the repository, and the record says which permission
+    // is missing instead of saying that the branch is unprotected.
+    let fixture = fixture().await;
+    let source = Arc::new(FakeIssueSource::new());
+    source
+        .seed_protection(&fixture.repo, protected_as_the_policy_wants())
+        .await;
+    source.refuse_the_protection_read(true);
+    let preflight = recorder(
+        &fixture,
+        source,
+        Arc::new(Attested(fixture.world.requester)),
+    );
+
+    let done = preflight.pass(fixture.tenant).await;
+
+    assert!(!done[0].passed);
+    assert_eq!(
+        done[0].missing,
+        [
+            "The App was refused a read of the protection of the default branch: it needs metadata: read for the rulesets and administration: read for classic branch protection."
+        ]
+    );
+    assert!(!done[0].missing[0].contains("Neither"));
+    assert!(!admission_level_passed(&fixture).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_repository_that_lost_its_protection_is_capped_again_at_the_next_job() {
     let fixture = fixture().await;
     let source = Arc::new(FakeIssueSource::new());

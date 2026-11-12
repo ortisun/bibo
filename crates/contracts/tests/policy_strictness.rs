@@ -618,6 +618,47 @@ fn lb_04_the_bound_on_a_blocked_jobs_token_is_required_and_has_to_make_sense() {
     }
 }
 
+#[test]
+fn the_app_may_read_administration_and_never_hold_it_at_a_higher_level() {
+    // The owner's decision of 2026-11-12: `administration: read` is required, so that the
+    // preflight can read classic branch protection. Its level is also its ceiling, so the App
+    // may not hold `administration: write`; `organization_administration` stays forbidden.
+    let text = real(SECURITY_FILE);
+    let line = "      administration: read";
+    assert!(text.contains(line), "the real policy requires the read");
+    assert!(text.contains("      - organization_administration\n"));
+    assert!(
+        !text.contains("      - administration\n"),
+        "a permission is not both required and forbidden"
+    );
+    // Listed in both places: refused, by the key of the required entry.
+    let both = replace_once(
+        &text,
+        "      - workflows ",
+        "      - administration\n      - workflows ",
+    );
+    let error = refused(load_security_text(&both), "required and forbidden");
+    assert_eq!(
+        error.key.as_deref(),
+        Some("credentials.github_app.permissions_required.administration"),
+        "{error}"
+    );
+    assert!(
+        error.message.contains("both required and forbidden"),
+        "{error}"
+    );
+    // A level GitHub does not grant: refused, by key.
+    let admin = replace_once(&text, line, "      administration: admin");
+    let error = refused(load_security_text(&admin), "an unknown level");
+    assert_eq!(
+        error.key.as_deref(),
+        Some("credentials.github_app.permissions_required.administration"),
+        "{error}"
+    );
+    // The control: the real file loads.
+    load_security_text(&text).expect("the real policy loads");
+}
+
 // ---- NT-POL-01: policy comes only from the protected source ---------------------------------
 
 #[test]

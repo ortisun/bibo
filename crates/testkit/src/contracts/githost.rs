@@ -686,7 +686,7 @@ pub trait IssueSourceSubject: Send + Sync {
     /// Puts a comment on the code host.
     async fn seed_comment(&self, comment: Comment);
 
-    /// The permissions the source asked the code host for so far.
+    /// The permissions the source asked the code host for so far, each as `name:level`.
     async fn permissions_asked(&self) -> Vec<String>;
 
     /// Sets what the repository's protection looks like.
@@ -719,7 +719,7 @@ pub fn issue_source_checks() -> Vec<IssueSourceCheck> {
         protection_is_reported_as_the_repository_has_it,
         a_scope_for_another_repository_cannot_read_an_issue,
         fetch_comment_returns_the_numeric_author_id,
-        repository_protection_never_asks_for_administration,
+        repository_protection_reads_administration_at_most,
     ]
 }
 
@@ -954,7 +954,7 @@ async fn fetch_comment_returns_the_numeric_author_id(
     Ok(())
 }
 
-async fn repository_protection_never_asks_for_administration(
+async fn repository_protection_reads_administration_at_most(
     subject: &dyn IssueSourceSubject,
 ) -> Result<(), String> {
     subject.seed_protection(&repo(), report(true)?).await;
@@ -963,16 +963,19 @@ async fn repository_protection_never_asks_for_administration(
         .repository_protection(&scope(1, 1))
         .await
         .ctx("read the protection")?;
+    // Each entry is `name:level`. Since the owner's decision of 2026-11-12 the source may ask for
+    // `administration: read` to read classic branch protection, and never for more.
     let asked = subject.permissions_asked().await;
     ensure!(
         !asked.is_empty(),
         "the source should say which permissions it used"
     );
     ensure!(
-        !asked
-            .iter()
-            .any(|permission| permission.to_lowercase().contains("administration")),
-        "the App must never hold the Administration permission, but {asked:?} were asked for"
+        asked.iter().all(|permission| {
+            let permission = permission.to_lowercase();
+            !permission.contains("administration") || permission == "administration:read"
+        }),
+        "the App may read administration and do nothing more with it, but {asked:?} were asked for"
     );
     Ok(())
 }

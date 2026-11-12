@@ -220,9 +220,10 @@ pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
 }
 
 /// The permissions the policy forbids the factory's App to hold
-/// (`policies/security.yaml`, `credentials.github_app.permissions_forbidden`).
-pub const FORBIDDEN_PERMISSIONS: [&str; 10] = [
-    "administration",
+/// (`policies/security.yaml`, `credentials.github_app.permissions_forbidden`). `administration`
+/// left this list on 2026-11-12: the owner allowed `administration: read` for the classic
+/// protection read of the preflight, and [`a10`] refuses any other level of it.
+pub const FORBIDDEN_PERMISSIONS: [&str; 9] = [
     "workflows",
     "secrets",
     "environments",
@@ -301,6 +302,17 @@ pub fn a10(ev: &RunEvidence, _env: &Env) -> Verdict {
                     format!("token {} holds the forbidden permission {name}", token.id),
                 );
             }
+        }
+        if let Some(level) = token.permissions.get("administration")
+            && level != "read"
+        {
+            return Verdict::fail(
+                ID,
+                format!(
+                    "token {} holds administration: {level}, above the read the policy allows",
+                    token.id
+                ),
+            );
         }
         if token.repositories.len() != 1 {
             return Verdict::fail(

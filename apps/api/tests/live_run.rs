@@ -451,12 +451,25 @@ async fn the_whole_job() {
             Some(1),
             "{mint:?}"
         );
-        for forbidden in ["administration", "workflows", "secrets", "environments"] {
+        for forbidden in [
+            "organization_administration",
+            "workflows",
+            "secrets",
+            "environments",
+        ] {
             assert!(
                 !mint.granted_permissions.contains_key(forbidden),
                 "{forbidden} in {mint:?}"
             );
         }
+        // `administration: read` is allowed since 2026-11-12, for the classic protection read
+        // only; never a higher level.
+        assert!(
+            mint.granted_permissions
+                .get("administration")
+                .is_none_or(|level| level == "read"),
+            "{mint:?}"
+        );
     }
     rig.revoke_ended_jobs().await;
     let live_tokens: Vec<_> = github

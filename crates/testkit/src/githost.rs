@@ -903,8 +903,8 @@ pub enum IssueSourceDefect {
     IgnoresRepositoryScope,
     /// A fetched comment names its author by a number that is not the author's id.
     ForgesAuthorId,
-    /// `repository_protection` asks for the Administration permission.
-    AsksForAdministration,
+    /// `repository_protection` asks for `administration: write`, above the ceiling of the policy.
+    AsksForAdministrationWrite,
     /// An issue that does not exist is invented.
     InventsUnknownIssue,
 }
@@ -936,8 +936,8 @@ pub const ISSUE_SOURCE_DEFECTS: &[(IssueSourceDefect, &[&str])] = &[
         &["an_unknown_issue_is_not_found"],
     ),
     (
-        IssueSourceDefect::AsksForAdministration,
-        &["repository_protection_never_asks_for_administration"],
+        IssueSourceDefect::AsksForAdministrationWrite,
+        &["repository_protection_reads_administration_at_most"],
     ),
 ];
 
@@ -960,6 +960,8 @@ struct IssueState {
     workflows: BTreeMap<RepoRef, Vec<WorkflowFile>>,
     /// Makes `workflow_files` fail with `Unavailable`, as a host that is down does.
     workflow_read_fails: bool,
+    /// Makes `repository_protection` fail with `Forbidden`, as a refused classic protection read.
+    protection_read_refused: bool,
     permissions_asked: Vec<String>,
 }
 
@@ -1110,6 +1112,15 @@ impl FakeIssueSource {
             .lock()
             .expect("the lock is never poisoned")
             .workflow_read_fails = fails;
+    }
+
+    /// Makes the read of the protection fail with `Forbidden`, as the real adapter does when the
+    /// App lacks `administration: read` for classic branch protection.
+    pub fn refuse_the_protection_read(&self, refused: bool) {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .protection_read_refused = refused;
     }
 
     /// Makes the read of the edit time fail with `Unavailable`, as a code host that is down does.
@@ -1351,12 +1362,20 @@ impl IssueSource for FakeIssueSource {
         scope: &GitScope,
     ) -> Result<ProtectionReport, GitHostError> {
         let mut state = self.state.lock().expect("the lock is never poisoned");
-        state.permissions_asked.push("metadata".to_owned());
-        if self.has(IssueSourceDefect::AsksForAdministration) {
-            state.permissions_asked.push("administration".to_owned());
+        state.permissions_asked.push("metadata:read".to_owned());
+        state
+            .permissions_asked
+            .push("administration:read".to_owned());
+        if self.has(IssueSourceDefect::AsksForAdministrationWrite) {
+            state
+                .permissions_asked
+                .push("administration:write".to_owned());
         }
         if self.has(IssueSourceDefect::AlwaysProtected) {
             return Ok(strong_protection());
+        }
+        if state.protection_read_refused {
+            return Err(GitHostError::Forbidden);
         }
         state
             .protection
@@ -1367,7 +1386,7 @@ impl IssueSource for FakeIssueSource {
 
     async fn workflow_files(&self, scope: &GitScope) -> Result<Vec<WorkflowFile>, GitHostError> {
         let mut state = self.state.lock().expect("the lock is never poisoned");
-        state.permissions_asked.push("contents".to_owned());
+        state.permissions_asked.push("contents:read".to_owned());
         if state.workflow_read_fails {
             return Err(GitHostError::Unavailable);
         }

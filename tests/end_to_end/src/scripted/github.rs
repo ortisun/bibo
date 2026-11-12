@@ -82,8 +82,9 @@ impl Remote {
     /// The protection of the base branch, as the fake holds it.
     ///
     /// The fake answers a protection request only for a token with the administration permission,
-    /// which the factory's App must not hold, so the scripted wiring keeps the protection it
-    /// installed and reads the facts from that. The code owner rule is stated by the scripted
+    /// which only the factory's protection read token holds (`administration: read`, since
+    /// 2026-11-12), so the scripted wiring keeps the protection it installed and reads the facts
+    /// from that. The code owner rule is stated by the scripted
     /// wiring because the fake does not model it.
     #[must_use]
     pub fn protection(&self) -> ProtectionFacts {

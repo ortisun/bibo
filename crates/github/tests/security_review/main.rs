@@ -333,6 +333,9 @@ async fn held_every_request_of_the_adapter_is_on_a_short_list_of_methods_and_rou
         "GET /app",
         "GET /repos/{owner}/{repo}",
         "GET /repos/{owner}/{repo}/branches/{branch}",
+        // Classic branch protection, with the protection read token (the owner's decision of
+        // 2026-11-12).
+        "GET /repos/{owner}/{repo}/branches/{branch}/protection",
         "GET /repos/{owner}/{repo}/contents/{path}",
         "GET /repos/{owner}/{repo}/issues/{number}",
         "GET /repos/{owner}/{repo}/issues/{number}/comments",

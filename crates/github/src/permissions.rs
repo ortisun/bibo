@@ -8,8 +8,13 @@
 //! for a stage never carries more than that stage needs. Every set also names `metadata: read`, which every GitHub App has.
 //!
 //! Section 3.1 and `policies/security.yaml` `credentials.github_app`: the App must hold the
-//! required permissions and none of the forbidden ones, checked at onboarding and on every job
-//! start ([`audit_app`]).
+//! required permissions, none of them above its required level, and none of the forbidden ones,
+//! checked at onboarding and on every job start ([`audit_app`]).
+//!
+//! Since the owner's decision of 2026-11-12 the App holds `administration: read`, so that the
+//! protection preflight can read classic branch protection. Only
+//! [`PermissionSet::protection_reader`] asks for it: no stage token, and nothing a sandbox sees,
+//! carries it.
 
 use std::collections::BTreeMap;
 
@@ -146,6 +151,17 @@ impl PermissionSet {
         Self::of(&[("metadata", Level::Read), ("contents", Level::Read)])
     }
 
+    /// The credential of the one read of classic branch protection
+    /// (`GET /repos/{owner}/{repo}/branches/{branch}/protection`) that the protection preflight
+    /// makes before a job is admitted: `administration: read` and `metadata: read`, nothing else.
+    /// The owner allowed the App `administration: read` on 2026-11-12 for this read alone. No
+    /// stage holds it, it is never handed to a sandbox, and the deterministic code of the
+    /// worker's preflight is its only user (`IssueSource::repository_protection`).
+    #[must_use]
+    pub fn protection_reader() -> Self {
+        Self::of(&[("metadata", Level::Read), ("administration", Level::Read)])
+    }
+
     /// The credential handed to a push: contents write, nothing else.
     #[must_use]
     pub fn push() -> Self {
@@ -235,9 +251,11 @@ impl AppPolicy {
 pub enum AppAudit {
     /// The App holds every required permission and none of the forbidden ones.
     Pass,
-    /// The App holds a forbidden permission. Onboarding is refused and no token is minted.
+    /// The App holds a forbidden permission, or a required one above its required level (such as
+    /// `administration: write`, whose ceiling is `read`). Onboarding is refused and no token is
+    /// minted.
     Refuse {
-        /// The forbidden names the App holds.
+        /// The forbidden names the App holds, then the required names it holds above their level.
         forbidden_held: Vec<String>,
     },
     /// The App lacks a required permission, or holds it at a lower level. The repository runs at
@@ -249,15 +267,27 @@ pub enum AppAudit {
 }
 
 /// Compares the permissions the App reports (`GET /app`, `permissions`) with the policy. A
-/// forbidden permission outranks a missing one: it is the more serious finding.
+/// forbidden permission outranks a missing one: it is the more serious finding. A required level
+/// is also a ceiling: a required permission held above it, or at a level this adapter does not
+/// know (such as `admin`), is refused like a forbidden one.
 #[must_use]
 pub fn audit_app(policy: &AppPolicy, held: &BTreeMap<String, String>) -> AppAudit {
-    let forbidden_held: Vec<String> = policy
+    let mut forbidden_held: Vec<String> = policy
         .forbidden
         .iter()
         .filter(|name| held.contains_key(name.as_str()))
         .cloned()
         .collect();
+    forbidden_held.extend(
+        policy
+            .required
+            .iter()
+            .filter(|(name, ceiling)| {
+                held.get(name.as_str())
+                    .is_some_and(|have| Level::parse(have).is_none_or(|got| got > **ceiling))
+            })
+            .map(|(name, _)| name.clone()),
+    );
     if !forbidden_held.is_empty() {
         return AppAudit::Refuse { forbidden_held };
     }
@@ -265,7 +295,7 @@ pub fn audit_app(policy: &AppPolicy, held: &BTreeMap<String, String>) -> AppAudi
         .required
         .iter()
         .filter(|(name, need)| {
-            // An unknown level (such as `admin`) is above `write`, so it satisfies any need.
+            // An unknown level (such as `admin`) was refused above, as over the ceiling.
             held.get(name.as_str())
                 .is_none_or(|have| Level::parse(have).is_some_and(|got| got < **need))
         })
@@ -295,8 +325,9 @@ mod tests {
                 ("metadata", Level::Read),
                 ("contents", Level::Write),
                 ("checks", Level::Write),
+                ("administration", Level::Read),
             ],
-            &["administration", "workflows"],
+            &["workflows", "organization_administration"],
         )
     }
 
@@ -416,6 +447,39 @@ mod tests {
     }
 
     #[test]
+    fn only_the_protection_reader_holds_administration_and_only_to_read() {
+        // The owner's decision of 2026-11-12: the App may read administration for the classic
+        // protection read of the preflight. That read has a class of its own, and nothing else
+        // carries the permission.
+        let reader = PermissionSet::protection_reader();
+        assert_eq!(
+            reader.entries(),
+            [("administration", Level::Read), ("metadata", Level::Read)]
+        );
+        assert!(!reader.holds("administration", Level::Write));
+        assert!(!reader.holds("contents", Level::Read));
+        assert!(!reader.holds("issues", Level::Read));
+        for stage in StageKind::ALL.iter().copied() {
+            assert!(
+                !PermissionSet::for_stage(stage).holds("administration", Level::Read),
+                "{stage:?}"
+            );
+        }
+        for set in [
+            PermissionSet::comment(),
+            PermissionSet::issue_status(),
+            PermissionSet::fetch(),
+            PermissionSet::push(),
+        ] {
+            assert!(!set.holds("administration", Level::Read), "{set:?}");
+        }
+        // A grant wider than the class is not that class.
+        assert!(reader.contains_all_of(&map(&[("administration", "read"), ("metadata", "read")])));
+        assert!(!reader.contains_all_of(&map(&[("administration", "write")])));
+        assert!(!reader.contains_all_of(&map(&[("contents", "read")])));
+    }
+
+    #[test]
     fn no_set_asks_for_a_forbidden_permission_or_for_statuses() {
         for set in [
             PermissionSet::issue_reader(),
@@ -425,11 +489,16 @@ mod tests {
             PermissionSet::comment(),
             PermissionSet::fetch(),
             PermissionSet::push(),
+            PermissionSet::protection_reader(),
         ] {
-            for (name, _) in set.entries() {
+            for (name, level) in set.entries() {
+                assert!(
+                    !(name == "administration" && level == Level::Write),
+                    "administration is read at most"
+                );
                 assert!(
                     ![
-                        "administration",
+                        "organization_administration",
                         "workflows",
                         "statuses",
                         "secrets",
@@ -479,7 +548,11 @@ mod tests {
 
     #[test]
     fn the_audit_caps_an_app_that_lacks_or_weakens_a_required_permission() {
-        let held = map(&[("metadata", "read"), ("contents", "read")]);
+        let held = map(&[
+            ("metadata", "read"),
+            ("contents", "read"),
+            ("administration", "read"),
+        ]);
         assert_eq!(
             audit_app(&policy(), &held),
             AppAudit::CapAtL0 {
@@ -490,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_forbidden_permission_outranks_a_missing_one() {
-        let held = map(&[("administration", "write")]);
+        let held = map(&[("workflows", "write")]);
         assert!(matches!(
             audit_app(&policy(), &held),
             AppAudit::Refuse { .. }
@@ -503,7 +576,49 @@ mod tests {
             ("metadata", "read"),
             ("contents", "write"),
             ("checks", "write"),
+            ("administration", "read"),
         ]);
         assert_eq!(audit_app(&policy(), &held), AppAudit::Pass);
+    }
+
+    #[test]
+    fn a_required_permission_held_above_its_level_is_refused() {
+        // `administration: read` is required and is also the ceiling: write, or a level this
+        // adapter does not know, is refused like a forbidden permission.
+        for level in ["write", "admin"] {
+            let held = map(&[
+                ("metadata", "read"),
+                ("contents", "write"),
+                ("checks", "write"),
+                ("administration", level),
+            ]);
+            assert_eq!(
+                audit_app(&policy(), &held),
+                AppAudit::Refuse {
+                    forbidden_held: vec!["administration".to_owned()]
+                },
+                "{level}"
+            );
+        }
+        // Without it, the App lacks a required permission and runs at L0.
+        let held = map(&[
+            ("metadata", "read"),
+            ("contents", "write"),
+            ("checks", "write"),
+        ]);
+        assert_eq!(
+            audit_app(&policy(), &held),
+            AppAudit::CapAtL0 {
+                missing: vec!["administration".to_owned()]
+            }
+        );
+        // A forbidden name stays forbidden at any level.
+        let held = map(&[("organization_administration", "read")]);
+        assert_eq!(
+            audit_app(&policy(), &held),
+            AppAudit::Refuse {
+                forbidden_held: vec!["organization_administration".to_owned()]
+            }
+        );
     }
 }

@@ -4498,7 +4498,7 @@ For each suite: checks to add, then the seeded defect that must fail each. A che
 
 **New suites:** `SpecificationProvider` (`run` with a scripted tool in the fake sandbox, then `assemble` on real file bytes: a missing file, a bad id, a hash of the exact bytes, the needs-human path); `OutputValidator` (repeated key, oversize, depth, node budget, hash of bytes, value path equals bytes path); `WebhookVerifier` (good signature, bad signature, legacy only, rotation window, missing header, oversize, constant-time compare is not tested but the use of the rotation list is); `ProcessRunner` (cleared environment, secret redacted in `Debug`, timeout kills the group, cancel kills the group, output cap); `MeteringOps`; `Clock` (never goes back), `IdGenerator` (unique and version 7), `CancelSignal` (never un-cancels).
 
-**Change host** (adds): `a_pull_request_needs_a_pushed_head`, `a_closed_pull_request_is_not_reused`, `base_is_honoured`, `a_check_run_is_updated_not_duplicated`, `a_check_run_carries_the_apps_identity`, `a_comment_is_found_by_its_marker_before_posting`, `fetch_comment_returns_the_numeric_author_id`, `repository_protection_never_asks_for_administration`. Defects: `OpensForUnpushedHead`, `ReusesClosed`, `DuplicatesChecks`, `ForgesAppIdentity`.
+**Change host** (adds): `a_pull_request_needs_a_pushed_head`, `a_closed_pull_request_is_not_reused`, `base_is_honoured`, `a_check_run_is_updated_not_duplicated`, `a_check_run_carries_the_apps_identity`, `a_comment_is_found_by_its_marker_before_posting`, `fetch_comment_returns_the_numeric_author_id`, `repository_protection_reads_administration_at_most`. Defects: `OpensForUnpushedHead`, `ReusesClosed`, `DuplicatesChecks`, `ForgesAppIdentity`.
 
 **The register.** Each suite module exports `checks()` and each test file exports its defect table. `contract_register.rs` in `crates/testkit/tests/` loads every suite and every table and fails when a check is named in no table and has no waiver, when a waiver has no reason or trigger, or when a table names a check that does not exist. A second test, `fake_rules_are_mutation_tested`, applies for each fake a list of single-rule mutations (the deletable rules are marked with `rule!("name", ...)` in the fake's source) and fails when the suite still passes. The review's two survivors (the duplicate task key and the audit limit) are the first two entries.
 
@@ -4609,7 +4609,7 @@ For `s1-github-adapter`. Sources are the pages named in ADR 0014 "What was check
 | Tell an issue comment from a pull request comment in the payload | `issue.pull_request` is present for a pull request | none | UNVERIFIED (page read does not describe it; the adapter records a real delivery as a fixture) |
 | Mark ready for review | GraphQL `markPullRequestReadyForReview` | Pull requests: write | UNVERIFIED; **not implemented** |
 | Read the bypass list | `GET .../rulesets/{id}`, `bypass_actors` | "write access to the ruleset" | UNVERIFIED which App permission; **not used** |
-| Read classic branch protection | `GET .../branches/{branch}/protection` | Administration: read | VERIFIED; **not used**, the policy forbids the permission |
+| Read classic branch protection | `GET .../branches/{branch}/protection` | Administration: read | VERIFIED that the permission is needed; **used since 2026-11-12** by the preflight with its own token (section 16.5); the answer shape is UNVERIFIED |
 | That a status posted with an installation token satisfies a requirement pinned to the App's id | n/a | n/a | UNVERIFIED; **not relied on**. Check runs are used |
 | The exact ruleset rule type names `pull_request`, `required_status_checks`, `non_fast_forward`, `deletion` and their parameter names | n/a | n/a | UNVERIFIED. Record one real response from the fixture repository before coding the parser |
 
@@ -4623,7 +4623,7 @@ The contract test for the real adapter, run only with a test App and a fixture r
 
 ## 15. Questions that need a person
 
-1. Rulesets plus an admin attestation, or `administration: read`? (ADR 0014 d7)
+1. Rulesets plus an admin attestation, or `administration: read`? (ADR 0014 d7) The owner decided on 2026-11-12: both, rulesets and classic protection read with `administration: read`, and the attestation is kept (section 16.5).
 2. Check runs only, and drop `statuses: write`? (d7)
 3. The factory never marks a pull request ready; reword NT-MRG-08? (d7)
 4. Tighten schema version 1 in place? (d8)
@@ -4770,3 +4770,37 @@ repository before the check is trusted.
 **Not tried.** A check in the contract suite with a defect in the fake; a digest of each
 acknowledged workflow, so that a change of its text ends the acknowledgement; a store for the
 acknowledgement with an expiry.
+
+### 16.5 Classic branch protection (owner's decision of 2026-11-12): made, pending architect confirmation
+
+The project owner decided on 2026-11-12 that the GitHub App may hold `administration: read`. Until
+then the policy forbade `administration`, the preflight read the rulesets only, and a repository
+protected only by classic branch protection read as unprotected. This reopens question 1 of
+section 15 and decision 7 of ADR 0014 on that point: the preflight now reads both, and the bypass
+statement of an administrator is still required. **It is pending architect confirmation and the
+independent review that ADR 0016 asks for of every port change; none has covered it.**
+
+| Change | Kind | Where | Notes |
+|---|---|---|---|
+| `ProtectionSource::ClassicProtection` and `ProtectionSource::RulesetsAndClassicProtection` | Additive variants | `crates/ports/src/githost.rs` | Nothing matches `ProtectionSource` exhaustively; the code compares it. `Rulesets` and `NoRulesetRules` keep their names and now also say "and no classic protection"; `NoRulesetRules` is the branch that nothing protects, and its failure sentence says "Neither a ruleset rule nor classic branch protection applies". |
+| The postcondition of `IssueSource::repository_protection` | Documentation of an existing method; no signature change | the same file | It reads the rulesets and classic protection and reports the stricter of the two for each setting: a requirement either sets, the larger known count of approving reviews, the required checks of both. A 404 on the classic read is "no classic protection". A refused classic read (403, or a token GitHub will not mint because the App lacks the permission) is `Forbidden`, never "not protected". |
+| `with_classic_protection` | New function of the adapter | `crates/github/src/protection.rs` | Pure; the adapter's `repository_protection` calls it after the rules. |
+| `TokenClass::ProtectionRead` and `PermissionSet::protection_reader()` (`administration: read`, `metadata: read`) | New token class of the adapter | `crates/github/src/token.rs`, `permissions.rs` | Used for `GET .../branches/{branch}/protection` and nothing else. No stage token and no sandbox gets administration. |
+| `audit_app`: a required level is also a ceiling | Behaviour of the App audit | `crates/github/src/permissions.rs`; `policies/security.yaml` | `administration: read` is required and `administration` left `permissions_forbidden`, so an App with `administration: write` is refused as before. The ceiling applies to every required permission: an App that holds `actions: write`, which the policy never required, is now refused too. The policy check refuses a name that is both required and forbidden. |
+| The composition preflight's sentence for `Forbidden` | Behaviour | `crates/composition/src/preflight.rs` | The record names the missing permission instead of the generic "could not be read". |
+| The fakes | Updated | `crates/testkit/src/fx/github/` (the default App holds `administration: read`; the protection route serves `require_code_owner_reviews`), `crates/testkit/src/githost.rs` (`refuse_the_protection_read`; the defect `AsksForAdministrationWrite`), `crates/testkit/src/contracts/githost.rs` (the check `repository_protection_reads_administration_at_most`) | |
+
+The loopback judgment (`apps/worker/tests/loopback_e2e.rs`) adds the protection route and a fourth
+token class, held as narrowly as the workflow read class: a token of the class may reach the
+protection route (and give itself up) only, no other token may reach that route, and each limit
+has a doctored break. A token that asks for `administration: write` is now caught as "above what
+the policy grants the App" instead of as a forbidden permission.
+
+**UNVERIFIED against the real GitHub:** the member names of the classic answer, `app_id` of `-1`
+or `null` for "any App", the 404 "Branch not protected" for a branch without classic protection,
+the 403 for a token without the permission, and the 422 when minting a token with a permission the
+App does not hold. The fixture `crates/github/tests/fixtures/branch_protection_classic_strong.json`
+is written from the documentation, not recorded.
+
+**Not done.** The bypass allowances of classic protection are readable now and are not judged; the
+statement of an administrator still covers them.
