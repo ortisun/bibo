@@ -47,6 +47,9 @@ pub fn protection_from_rules(
         blocks_deletion: false,
         required_approving_reviews: None,
         required_checks: Vec::new(),
+        // The rules say nothing about workflows. The worker's preflight reads the workflow files
+        // (`IssueSource::workflow_files`) and judges them; this adapter has no YAML reader.
+        exposed_workflows: None,
     };
     for rule in list {
         let parameters = &rule["parameters"];

@@ -468,6 +468,144 @@ pub struct ProtectionReport {
     pub required_approving_reviews: Option<u32>,
     /// The required status checks.
     pub required_checks: Vec<RequiredCheck>,
+    /// The workflows of the default branch that a push or a pull request of the factory would
+    /// start with something worth stealing in reach (threat T-48), each with its reasons. `None`
+    /// means the workflows were not read or not judged, and the preflight does not take that for
+    /// "none is exposed". An adapter that only reads the rules answers `None`; the worker's
+    /// preflight reads the workflow files ([`IssueSource::workflow_files`]), judges them and fills
+    /// the list in.
+    pub exposed_workflows: Option<Vec<ExposedWorkflow>>,
+}
+
+/// One workflow file of the default branch (`.github/workflows/*.yml` or `*.yaml`), as the code
+/// host gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowFile {
+    /// The path in the repository, such as `.github/workflows/ci.yml`.
+    pub path: String,
+    /// The text of the file. `None` when the host listed the file and its text could not be read
+    /// (too large, not UTF-8, a symbolic link). A file with no text is judged as exposed.
+    pub text: Option<String>,
+}
+
+/// Why a workflow counts as exposed to the factory's branches. The set is closed.
+///
+/// Every rule behind these reasons is taken from GitHub's documentation of workflow syntax and of
+/// secrets, and is UNVERIFIED against the real GitHub: this project has run no workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WorkflowExposureReason {
+    /// The file could not be read, or is not a workflow this reader understands.
+    Unreadable,
+    /// It names a secret other than `secrets.GITHUB_TOKEN`.
+    UsesSecrets,
+    /// It gives its token a `write` permission.
+    WritePermissions,
+    /// It, or one of its jobs, declares no `permissions`, so the token has the default of the
+    /// repository, which may be write.
+    PermissionsNotDeclared,
+    /// A job runs on a self-hosted runner.
+    SelfHostedRunner,
+    /// The runner of a job is an expression, a runner group or a label that is not one of
+    /// GitHub's own, so the file does not say where the job runs.
+    RunnerUnknown,
+    /// It starts on `pull_request_target`, which runs with the secrets of the base repository.
+    PullRequestTarget,
+    /// It calls a reusable workflow with `secrets: inherit`.
+    InheritsSecrets,
+    /// It calls a reusable workflow, whose runner and permissions are not read.
+    CallsReusableWorkflow,
+}
+
+impl WorkflowExposureReason {
+    /// Every reason, in the order they are listed.
+    pub const ALL: [Self; 9] = [
+        Self::Unreadable,
+        Self::UsesSecrets,
+        Self::WritePermissions,
+        Self::PermissionsNotDeclared,
+        Self::SelfHostedRunner,
+        Self::RunnerUnknown,
+        Self::PullRequestTarget,
+        Self::InheritsSecrets,
+        Self::CallsReusableWorkflow,
+    ];
+
+    /// The stable code, for records and for a program.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unreadable => "unreadable",
+            Self::UsesSecrets => "uses_secrets",
+            Self::WritePermissions => "write_permissions",
+            Self::PermissionsNotDeclared => "permissions_not_declared",
+            Self::SelfHostedRunner => "self_hosted_runner",
+            Self::RunnerUnknown => "runner_unknown",
+            Self::PullRequestTarget => "pull_request_target",
+            Self::InheritsSecrets => "inherits_secrets",
+            Self::CallsReusableWorkflow => "calls_reusable_workflow",
+        }
+    }
+
+    /// The reason in plain English, as the end of a sentence that starts "the workflow".
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Unreadable => "could not be read as a workflow",
+            Self::UsesSecrets => "reads a secret",
+            Self::WritePermissions => "gives its token a write permission",
+            Self::PermissionsNotDeclared => {
+                "declares no permissions, so its token may be able to write"
+            }
+            Self::SelfHostedRunner => "runs on a self-hosted runner",
+            Self::RunnerUnknown => "runs on a runner that is not a named runner of GitHub",
+            Self::PullRequestTarget => "starts on pull_request_target",
+            Self::InheritsSecrets => "passes every secret to a reusable workflow",
+            Self::CallsReusableWorkflow => "calls a reusable workflow that was not read",
+        }
+    }
+}
+
+/// A workflow that the factory's push or pull request would start, with what it puts in reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExposedWorkflow {
+    /// The path of the workflow file.
+    pub path: String,
+    /// Why it counts as exposed. Never empty, no repeats, in the order of
+    /// [`WorkflowExposureReason::ALL`].
+    pub reasons: Vec<WorkflowExposureReason>,
+}
+
+/// A recorded statement by the owner of a repository: "these workflows are exposed to the
+/// factory's branches on purpose". It covers the exact list of paths it names and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowExposureAcknowledgement {
+    /// The person who made the statement.
+    pub by: PrincipalId,
+    /// When it was recorded.
+    pub at: Timestamp,
+    /// The paths of the workflow files the statement covers.
+    pub workflows: Vec<String>,
+}
+
+/// How the preflight treats exposed workflows: what the policy says, and the owner's statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowRule<'a> {
+    /// True when the policy caps a repository with exposed workflows at L0
+    /// (`credentials.repository_requirements.exposed_workflows: cap_at_l0`). False when the policy
+    /// only records them.
+    pub exposed_caps_at_l0: bool,
+    /// The owner's statement for this repository, when there is one.
+    pub acknowledgement: Option<&'a WorkflowExposureAcknowledgement>,
+}
+
+impl WorkflowRule<'static> {
+    /// The rule of a caller that does not judge workflows. The worker's preflight uses it only
+    /// when the policy says to record exposed workflows and not to cap; the tests of the other
+    /// requirements use it too.
+    pub const RECORD_ONLY: Self = Self {
+        exposed_caps_at_l0: false,
+        acknowledgement: None,
+    };
 }
 
 /// A recorded statement by an organization admin that the factory's App is on no bypass list of
@@ -513,6 +651,15 @@ pub enum PreflightFailure {
     FactoryCheckNotPinned(String),
     /// Nobody attested that the App is on no bypass list.
     BypassNotAttested,
+    /// The workflows of the default branch were not read, so nothing says that none is exposed
+    /// (T-48).
+    WorkflowsNotRead,
+    /// A workflow of the default branch would be started by the factory's push or pull request
+    /// with something worth stealing in reach, and the owner did not acknowledge it (T-48).
+    WorkflowExposed(ExposedWorkflow),
+    /// The owner acknowledged a list of exposed workflows, and it is not the list found now. The
+    /// statement covers nothing until it names exactly the workflows that are exposed (T-48).
+    WorkflowAcknowledgementDoesNotMatch,
 }
 
 /// The outcome of the protection preflight.
@@ -531,10 +678,16 @@ impl ProtectionReport {
     /// require at least `required_approvals` approving reviews (the number that
     /// `policies/approval.yaml` says every pull request needs; a count that is not known fails),
     /// force pushes and deletion are blocked, every name in `factory_checks` is required and pinned
-    /// to `app`, and `attestation` is present. Every failure is listed, not only the first.
+    /// to `app`, `attestation` is present, and no workflow is exposed (see below). Every failure is
+    /// listed, not only the first.
     ///
     /// The count is judged only when a pull request is required: without that rule there is no
     /// review to count, and the repository is capped for that reason already.
+    ///
+    /// Workflows (T-48) are judged when `workflows.exposed_caps_at_l0` is true. A report whose
+    /// workflows were not read fails. A report with exposed workflows fails for each of them,
+    /// unless `workflows.acknowledgement` names exactly the paths that are exposed: one more, one
+    /// fewer or another path and the statement covers nothing.
     #[must_use]
     pub fn evaluate(
         &self,
@@ -542,6 +695,7 @@ impl ProtectionReport {
         factory_checks: &[Slug],
         attestation: Option<&BypassAttestation>,
         required_approvals: u32,
+        workflows: WorkflowRule<'_>,
     ) -> PreflightVerdict {
         let mut failures = Vec::new();
         if self.source == ProtectionSource::NoRulesetRules {
@@ -593,11 +747,54 @@ impl ProtectionReport {
         if attestation.is_none() {
             failures.push(PreflightFailure::BypassNotAttested);
         }
+        if workflows.exposed_caps_at_l0 {
+            match &self.exposed_workflows {
+                None => failures.push(PreflightFailure::WorkflowsNotRead),
+                Some(exposed) if exposed.is_empty() => {}
+                Some(_) if self.exposure_is_acknowledged(workflows.acknowledgement) => {}
+                Some(exposed) => {
+                    failures.extend(
+                        exposed
+                            .iter()
+                            .cloned()
+                            .map(PreflightFailure::WorkflowExposed),
+                    );
+                    if workflows.acknowledgement.is_some() {
+                        failures.push(PreflightFailure::WorkflowAcknowledgementDoesNotMatch);
+                    }
+                }
+            }
+        }
         if failures.is_empty() {
             PreflightVerdict::Pass
         } else {
             PreflightVerdict::CapAtL0(failures)
         }
+    }
+}
+
+impl ProtectionReport {
+    /// True when workflows are exposed and the statement names exactly their paths: the same set,
+    /// compared as text. False when nothing is exposed, when the workflows were not read, when
+    /// there is no statement, and when the two lists differ in any path.
+    #[must_use]
+    pub fn exposure_is_acknowledged(
+        &self,
+        acknowledgement: Option<&WorkflowExposureAcknowledgement>,
+    ) -> bool {
+        let (Some(exposed), Some(statement)) = (&self.exposed_workflows, acknowledgement) else {
+            return false;
+        };
+        if exposed.is_empty() {
+            return false;
+        }
+        let found: std::collections::BTreeSet<&str> = exposed
+            .iter()
+            .map(|workflow| workflow.path.as_str())
+            .collect();
+        let named: std::collections::BTreeSet<&str> =
+            statement.workflows.iter().map(String::as_str).collect();
+        found == named
     }
 }
 
@@ -830,6 +1027,19 @@ pub trait IssueSource: Send + Sync {
         &self,
         scope: &GitScope,
     ) -> Result<ProtectionReport, GitHostError>;
+
+    /// The workflow files of the default branch, at one commit of it: every file directly in
+    /// `.github/workflows` whose name ends in `.yml` or `.yaml`, with its text (T-48). A
+    /// repository without that directory has none, and the answer is an empty list. A read of the
+    /// host, with the right to read contents and nothing more.
+    ///
+    /// The default is `Unavailable`: a source that cannot read files cannot say that there are no
+    /// workflows, and the preflight then caps the repository. A source that could list the files
+    /// and not read all of the list answers `Unavailable` too, never the part it read.
+    async fn workflow_files(&self, scope: &GitScope) -> Result<Vec<WorkflowFile>, GitHostError> {
+        let _ = scope;
+        Err(GitHostError::Unavailable)
+    }
 }
 
 /// Pushes branches, opens draft pull requests, posts comments and check runs. It never merges and
@@ -1133,7 +1343,152 @@ mod tests {
                     integration_id: Some(APP.0),
                 },
             ],
+            exposed_workflows: Some(Vec::new()),
         }
+    }
+
+    /// The rule of the shipped policy: exposed workflows cap the repository, nobody acknowledged.
+    const CAPS: WorkflowRule<'static> = WorkflowRule {
+        exposed_caps_at_l0: true,
+        acknowledgement: None,
+    };
+
+    fn exposed(path: &str, reason: WorkflowExposureReason) -> ExposedWorkflow {
+        ExposedWorkflow {
+            path: path.to_owned(),
+            reasons: vec![reason],
+        }
+    }
+
+    fn acknowledged(paths: &[&str]) -> WorkflowExposureAcknowledgement {
+        WorkflowExposureAcknowledgement {
+            by: PrincipalId::from_uuid(uuid::Uuid::from_u128(11)),
+            at: Timestamp::parse("2026-11-12T10:00:00Z").unwrap(),
+            workflows: paths.iter().map(|path| (*path).to_owned()).collect(),
+        }
+    }
+
+    fn with_statement(
+        report: &ProtectionReport,
+        statement: Option<&WorkflowExposureAcknowledgement>,
+    ) -> PreflightVerdict {
+        report.evaluate(
+            APP,
+            &checks(),
+            Some(&attested()),
+            APPROVALS,
+            WorkflowRule {
+                exposed_caps_at_l0: true,
+                acknowledgement: statement,
+            },
+        )
+    }
+
+    #[test]
+    fn workflows_that_were_not_read_are_never_taken_for_none_exposed() {
+        let mut report = strong();
+        report.exposed_workflows = None;
+        assert_eq!(
+            failures(&report, Some(&attested())),
+            vec![PreflightFailure::WorkflowsNotRead]
+        );
+    }
+
+    #[test]
+    fn every_exposed_workflow_is_a_failure_of_its_own() {
+        let mut report = strong();
+        let first = exposed(".github/workflows/ci.yml", WorkflowExposureReason::UsesSecrets);
+        let second = exposed(
+            ".github/workflows/deploy.yml",
+            WorkflowExposureReason::PullRequestTarget,
+        );
+        report.exposed_workflows = Some(vec![first.clone(), second.clone()]);
+        assert_eq!(
+            failures(&report, Some(&attested())),
+            vec![
+                PreflightFailure::WorkflowExposed(first),
+                PreflightFailure::WorkflowExposed(second),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_statement_covers_exactly_the_workflows_it_names() {
+        let mut report = strong();
+        report.exposed_workflows = Some(vec![
+            exposed(".github/workflows/ci.yml", WorkflowExposureReason::UsesSecrets),
+            exposed(
+                ".github/workflows/deploy.yml",
+                WorkflowExposureReason::SelfHostedRunner,
+            ),
+        ]);
+        // The same set, in another order.
+        let exact = acknowledged(&[".github/workflows/deploy.yml", ".github/workflows/ci.yml"]);
+        assert_eq!(with_statement(&report, Some(&exact)), PreflightVerdict::Pass);
+        assert!(report.exposure_is_acknowledged(Some(&exact)));
+        // One fewer, one more, another path, another case: nothing is covered.
+        for paths in [
+            vec![".github/workflows/ci.yml"],
+            vec![
+                ".github/workflows/ci.yml",
+                ".github/workflows/deploy.yml",
+                ".github/workflows/extra.yml",
+            ],
+            vec![".github/workflows/ci.yml", ".github/workflows/other.yml"],
+            vec![".github/workflows/CI.yml", ".github/workflows/deploy.yml"],
+            vec![],
+        ] {
+            let statement = acknowledged(&paths);
+            assert!(!report.exposure_is_acknowledged(Some(&statement)), "{paths:?}");
+            match with_statement(&report, Some(&statement)) {
+                PreflightVerdict::CapAtL0(list) => {
+                    assert_eq!(list.len(), 3, "{paths:?}: {list:?}");
+                    assert_eq!(
+                        list.last(),
+                        Some(&PreflightFailure::WorkflowAcknowledgementDoesNotMatch)
+                    );
+                }
+                PreflightVerdict::Pass => panic!("{paths:?} was taken as a statement"),
+            }
+        }
+        // A statement is not what makes a repository with nothing exposed pass.
+        assert!(!strong().exposure_is_acknowledged(Some(&exact)));
+        assert_eq!(with_statement(&strong(), Some(&exact)), PreflightVerdict::Pass);
+    }
+
+    #[test]
+    fn a_policy_that_only_records_does_not_cap_for_workflows() {
+        let mut report = strong();
+        report.exposed_workflows = Some(vec![exposed(
+            ".github/workflows/ci.yml",
+            WorkflowExposureReason::UsesSecrets,
+        )]);
+        let verdict = |report: &ProtectionReport| {
+            report.evaluate(
+                APP,
+                &checks(),
+                Some(&attested()),
+                APPROVALS,
+                WorkflowRule::RECORD_ONLY,
+            )
+        };
+        assert_eq!(verdict(&report), PreflightVerdict::Pass);
+        report.exposed_workflows = None;
+        assert_eq!(verdict(&report), PreflightVerdict::Pass);
+    }
+
+    #[test]
+    fn every_reason_has_a_code_and_a_sentence_of_its_own() {
+        let codes: std::collections::BTreeSet<&str> = WorkflowExposureReason::ALL
+            .iter()
+            .map(|reason| reason.code())
+            .collect();
+        let texts: std::collections::BTreeSet<&str> = WorkflowExposureReason::ALL
+            .iter()
+            .map(|reason| reason.text())
+            .collect();
+        assert_eq!(codes.len(), WorkflowExposureReason::ALL.len());
+        assert_eq!(texts.len(), WorkflowExposureReason::ALL.len());
     }
 
     fn checks() -> Vec<Slug> {
@@ -1151,7 +1506,7 @@ mod tests {
         report: &ProtectionReport,
         attestation: Option<&BypassAttestation>,
     ) -> Vec<PreflightFailure> {
-        match report.evaluate(APP, &checks(), attestation, APPROVALS) {
+        match report.evaluate(APP, &checks(), attestation, APPROVALS, CAPS) {
             PreflightVerdict::Pass => Vec::new(),
             PreflightVerdict::CapAtL0(list) => list,
         }
@@ -1160,7 +1515,7 @@ mod tests {
     #[test]
     fn a_strong_pinned_and_attested_repository_passes() {
         assert_eq!(
-            strong().evaluate(APP, &checks(), Some(&attested()), APPROVALS),
+            strong().evaluate(APP, &checks(), Some(&attested()), APPROVALS, CAPS),
             PreflightVerdict::Pass
         );
     }
@@ -1195,7 +1550,7 @@ mod tests {
         // The policy decides the number: the same report is short of a policy that needs two.
         report.required_approving_reviews = Some(1);
         assert_eq!(
-            report.evaluate(APP, &checks(), Some(&attested()), 2),
+            report.evaluate(APP, &checks(), Some(&attested()), 2, CAPS),
             PreflightVerdict::CapAtL0(vec![PreflightFailure::ApprovingReviewsBelowPolicy {
                 found: 1,
                 needed: 2,
@@ -1300,6 +1655,7 @@ mod tests {
             blocks_force_push: false,
             blocks_deletion: false,
             required_checks: Vec::new(),
+            exposed_workflows: Some(Vec::new()),
             ..strong()
         };
         let listed = failures(&report, None);

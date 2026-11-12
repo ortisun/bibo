@@ -516,6 +516,10 @@ pub(crate) struct Repo {
     pub pulls: BTreeMap<u64, Pull>,
     pub checks: Vec<CheckRun>,
     pub statuses: Vec<Value>,
+    /// The files of the default branch that the contents route serves, by path. `None` is a file
+    /// the route lists and gives no text for, as GitHub does for a file over 1 MB. The fake keeps
+    /// one tree for the repository and ignores the `ref` of a request.
+    pub files: BTreeMap<String, Option<String>>,
 }
 
 /// Everything the fake holds. Locked as a whole for each request, so a request is atomic.
@@ -682,9 +686,26 @@ impl FakeGithub {
                 pulls: BTreeMap::new(),
                 checks: Vec::new(),
                 statuses: Vec::new(),
+                files: BTreeMap::new(),
             },
         );
         drop(state);
+        self
+    }
+
+    /// Puts a file on the default branch, for the contents route (`GET .../contents/{path}`): a
+    /// workflow file under `.github/workflows`, for the preflight that reads them. A `text` of
+    /// `None` is a file the route lists and gives no text for.
+    ///
+    /// # Panics
+    /// Panics when the repository is not known.
+    pub fn add_file(&self, repo: &str, path: &str, text: Option<&str>) -> &Self {
+        self.lock()
+            .repos
+            .get_mut(repo)
+            .expect("a known repository")
+            .files
+            .insert(path.to_owned(), text.map(str::to_owned));
         self
     }
 

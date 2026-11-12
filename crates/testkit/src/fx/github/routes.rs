@@ -95,6 +95,8 @@ pub(crate) enum Route {
     Collaborator,
     Branch,
     BranchProtection,
+    /// A file or a directory of the default branch (the workflow files, for the preflight).
+    Contents,
     RefGet,
     RefCreate,
     RefUpdate,
@@ -134,6 +136,7 @@ impl Route {
             Route::Collaborator => "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
             Route::Branch => "GET /repos/{owner}/{repo}/branches/{branch}",
             Route::BranchProtection => "GET /repos/{owner}/{repo}/branches/{branch}/protection",
+            Route::Contents => "GET /repos/{owner}/{repo}/contents/{path}",
             Route::RefGet => "GET /repos/{owner}/{repo}/git/ref/heads/{branch}",
             Route::RefCreate => "POST /repos/{owner}/{repo}/git/refs",
             Route::RefUpdate => "PATCH /repos/{owner}/{repo}/git/refs/heads/{branch}",
@@ -201,6 +204,9 @@ pub(crate) fn match_route(method: &str, path: &str) -> Option<(Route, Vec<String
             } else {
                 (Route::Branch, params(&[o, r, &rest.join("/")]))
             }
+        }
+        ("GET", ["repos", o, r, "contents", rest @ ..]) if !rest.is_empty() => {
+            (Route::Contents, params(&[o, r, &rest.join("/")]))
         }
         ("GET", ["repos", o, r, "git", "ref", "heads", rest @ ..]) if !rest.is_empty() => {
             (Route::RefGet, params(&[o, r, &rest.join("/")]))
@@ -1196,6 +1202,53 @@ fn dispatch_repo(
                 body["protection"] = protection_summary(protection);
             }
             Ok(HttpResponse::json(200, &body))
+        }
+        Route::Contents => {
+            require(token, "contents", "read")?;
+            let files = &state.repos[&full].files;
+            let path = params[2].as_str();
+            let name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_owned();
+            if let Some(text) = files.get(path) {
+                // A file. One the fake has no text for answers as GitHub does for a file over
+                // 1 MB: another encoding and an empty content.
+                let (encoding, content) = match text {
+                    Some(text) => (
+                        "base64",
+                        crate::fx::encoding::base64_encode(
+                            text.as_bytes(),
+                            crate::fx::encoding::Base64Alphabet::Standard,
+                            true,
+                        ),
+                    ),
+                    None => ("none", String::new()),
+                };
+                return Ok(HttpResponse::json(
+                    200,
+                    &json!({"type": "file", "name": name(path), "path": path,
+                        "encoding": encoding, "content": content}),
+                ));
+            }
+            // A directory: its direct children, a deeper path as one `dir` entry.
+            let prefix = format!("{path}/");
+            let mut children: BTreeMap<String, &str> = BTreeMap::new();
+            for file in files.keys() {
+                if let Some(rest) = file.strip_prefix(&prefix) {
+                    match rest.split_once('/') {
+                        Some((directory, _)) => children.insert(directory.to_owned(), "dir"),
+                        None => children.insert(rest.to_owned(), "file"),
+                    };
+                }
+            }
+            if children.is_empty() {
+                return Err(not_found());
+            }
+            let listing: Vec<Value> = children
+                .iter()
+                .map(|(child, kind)| {
+                    json!({"type": kind, "name": child, "path": format!("{prefix}{child}")})
+                })
+                .collect();
+            Ok(HttpResponse::json(200, &Value::Array(listing)))
         }
         Route::BranchProtection => {
             require(token, "administration", "read")?;

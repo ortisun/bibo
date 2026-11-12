@@ -67,6 +67,7 @@ mod token;
 mod ureq_transport;
 mod webhook;
 mod wire;
+mod workflows;
 
 pub use adapter::{DEFAULT_REFRESH_MARGIN, GithubAdapter, GithubConfig, GithubParts};
 pub use changes::{GithubChangeHost, conclusion_for_gate, conclusion_for_gates};

@@ -561,6 +561,8 @@ impl Rig {
                             integration_id: Some(factory_testkit::githost::FAKE_APP_ID.0),
                         })
                         .collect(),
+                    // The preflight reads and judges the workflows itself; the fake has none.
+                    exposed_workflows: None,
                 },
             )
             .await;

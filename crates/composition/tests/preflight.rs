@@ -67,6 +67,8 @@ fn protected_as_the_policy_wants() -> ProtectionReport {
             context: "factory-validation".to_owned(),
             integration_id: Some(FAKE_APP_ID.0),
         }],
+        // As the adapter answers: the preflight reads and judges the workflows itself.
+        exposed_workflows: None,
     }
 }
 

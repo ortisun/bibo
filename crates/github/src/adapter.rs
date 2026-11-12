@@ -10,7 +10,7 @@ use factory_domain::redaction::Redactor;
 use factory_domain::values::Slug;
 use factory_ports::clock::Clock;
 use factory_ports::githost::{
-    AppId, BypassAttestation, GitHostError, GitScope, IssueSource, PreflightVerdict,
+    AppId, BypassAttestation, GitHostError, GitScope, IssueSource, PreflightVerdict, WorkflowRule,
 };
 
 use crate::changes::GithubChangeHost;
@@ -174,6 +174,11 @@ impl GithubAdapter {
     /// `required_approvals` is the number of approving reviews the policy says a pull request
     /// needs (SF-07). A failure to read is an error, which the engine treats as level L0.
     ///
+    /// It does not judge the workflows of the repository (threat T-48): this crate has no YAML
+    /// reader. The worker's preflight (`factory_composition::preflight`) reads them through
+    /// `IssueSource::workflow_files` and judges them; this method is the rules and the statement
+    /// only, and no production code calls it.
+    ///
     /// # Errors
     /// [`GitHostError`] when the rules cannot be read.
     pub async fn preflight(
@@ -184,7 +189,13 @@ impl GithubAdapter {
         required_approvals: u32,
     ) -> Result<PreflightVerdict, GitHostError> {
         let report = self.issue_source().repository_protection(scope).await?;
-        Ok(report.evaluate(self.app_id, factory_checks, attestation, required_approvals))
+        Ok(report.evaluate(
+            self.app_id,
+            factory_checks,
+            attestation,
+            required_approvals,
+            WorkflowRule::RECORD_ONLY,
+        ))
     }
 
     /// The cleanup sweep: revokes the tokens of every job that is not in `running`, whether the

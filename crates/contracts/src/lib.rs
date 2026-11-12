@@ -17,6 +17,7 @@
 //! | [`loader`] | Agent manifests, capability profiles and project manifests into typed values, with file and field in every error | |
 //! | [`registry`] | `FileAgentRegistry`: manifests, prompts with checked hashes, profiles by tag | `AgentRegistry` |
 //! | [`policy`] | `policies/security.yaml` and `policies/approval.yaml` into typed values, with the policy hash | |
+//! | [`workflows`] | Which workflows of a target repository are exposed to the factory's branches (threat T-48), with a reader for real workflow files | |
 //!
 //! # What is not here
 //!
@@ -50,4 +51,5 @@ pub mod registry;
 pub mod schema_engine;
 pub mod schemas;
 pub mod validator;
+pub mod workflows;
 pub mod yaml;

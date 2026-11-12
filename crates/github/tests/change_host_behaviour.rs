@@ -173,6 +173,20 @@ fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
             if needle == "graphql" && path.file_name().is_some_and(|name| name == "edits.rs") {
                 continue;
             }
+            // The one read of the workflow files (the preflight for threat T-48) names the
+            // directory in `workflows.rs`. That file makes no request at all: it only reads the
+            // answers, and the requests are three GETs in `issues.rs` (`workflow_files`).
+            if needle == ".github/workflows"
+                && path.file_name().is_some_and(|name| name == "workflows.rs")
+            {
+                for call in ["Method::", ".call(", "client"] {
+                    assert!(
+                        !code.iter().any(|l| l.contains(call)),
+                        "workflows.rs names the workflow directory and holds {call}"
+                    );
+                }
+                continue;
+            }
             assert!(
                 !code.iter().any(|l| l.contains(needle)),
                 "{} holds {needle}",

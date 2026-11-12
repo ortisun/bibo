@@ -872,6 +872,8 @@ fn report(strong: bool) -> Result<ProtectionReport, String> {
         } else {
             Vec::new()
         },
+        // The report of the rules never judges the workflows: that is another read.
+        exposed_workflows: None,
     })
 }
 
