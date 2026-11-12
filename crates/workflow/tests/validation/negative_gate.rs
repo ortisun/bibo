@@ -19,7 +19,7 @@ use factory_workflow::stages::validation::{JsonManifestReader, ManifestReader, V
 
 use crate::cargo::{TestRun, libtest};
 use crate::gates::{
-    base_run, gate, head_run, it_with_one_more, manifest_with, passing_world, run_of,
+    base_run, gate, head_run, it_with_requirement_tests, manifest_with, passing_world, run_of,
 };
 use crate::world::{MANIFEST, Ran, World, base_files, with};
 
@@ -76,20 +76,27 @@ fn it_edit(from: &str, to: &str) -> String {
 
 #[tokio::test]
 async fn negative_nt_gate_01_a_new_test_file_and_an_appended_test_pass_the_path_rule() {
-    let extra = "#[test]\nfn fr_005_new_file() {}\n";
+    let extra = "#[test]\nfn fr_001_new_file() {\n    assert_eq!(word_count::count(\"a b\"), 2);\n}\n\n#[test]\nfn fr_002_new_file() {\n    assert_eq!(word_count::count(\"a\"), 1);\n}\n\n#[test]\nfn fr_003_new_file() {\n    assert_eq!(word_count::count(\"\"), 0);\n}\n";
     let head = libtest(
         &[
             (
                 "unittests src/lib.rs",
                 &[("tests::unit_counts_words", "ok")],
             ),
-            ("tests/extra.rs", &[("fr_005_new_file", "ok")]),
+            (
+                "tests/extra.rs",
+                &[
+                    ("fr_001_new_file", "ok"),
+                    ("fr_002_new_file", "ok"),
+                    ("fr_003_new_file", "ok"),
+                ],
+            ),
             (
                 "tests/it.rs",
                 &[
-                    ("fr_001_counts_a_line", "ok"),
-                    ("fr_002_counts_one_word", "ok"),
-                    ("fr_003_counts_nothing", "ok"),
+                    ("counts_a_line", "ok"),
+                    ("counts_one_word", "ok"),
+                    ("counts_nothing", "ok"),
                 ],
             ),
             ("doc-tests word_count", &[]),
@@ -104,7 +111,7 @@ async fn negative_nt_gate_01_a_new_test_file_and_an_appended_test_pass_the_path_
     assert_eq!(ran.outcome("test-file-protection"), GateOutcome::Passed);
     assert_eq!(ran.resolution, Resolution::Pass);
 
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (_, ran) = run_change(&[("tests/it.rs", Some(&more))], head_run()).await;
     assert_eq!(ran.outcome("test-file-protection"), GateOutcome::Passed);
     assert_eq!(ran.resolution, Resolution::Pass);
@@ -243,9 +250,9 @@ async fn negative_nt_gate_02_a_test_missing_from_the_run_of_the_candidate_is_fou
             (
                 "tests/it.rs",
                 &[
-                    ("fr_001_counts_a_line", "ok"),
-                    ("fr_002_counts_one_word", "ok"),
-                    ("fr_003_counts_nothing", "ok"),
+                    ("counts_a_line", "ok"),
+                    ("counts_one_word", "ok"),
+                    ("counts_nothing", "ok"),
                 ],
             ),
             ("doc-tests word_count", &[]),
@@ -278,9 +285,9 @@ async fn negative_nt_gate_02_a_test_that_passed_before_and_is_ignored_now_is_fou
     // The test is ignored by a means no marker rule reads. The run is what shows it.
     let head = run_of(
         &[
-            ("fr_001_counts_a_line", "ok"),
-            ("fr_002_counts_one_word", "ignored"),
-            ("fr_003_counts_nothing", "ok"),
+            ("counts_a_line", "ok"),
+            ("counts_one_word", "ignored"),
+            ("counts_nothing", "ok"),
         ],
         0,
     );
@@ -700,7 +707,7 @@ async fn negative_nt_gate_05_the_builders_gate_files_do_not_change_what_runs() {
     ];
     let (w, base, head) = {
         let w = World::new();
-        let more = it_with_one_more();
+        let more = it_with_requirement_tests();
         let mut changes = steering.to_vec();
         changes.push(("tests/it.rs", Some(&more)));
         let (base, head) = w.project(&changes).await;
@@ -771,7 +778,7 @@ async fn negative_nt_gate_05_a_test_target_without_the_harness_is_found() {
 #[tokio::test]
 async fn negative_nt_gate_06_a_forged_report_does_not_hide_a_failing_test() {
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     // The builder commits a report that says everything passed, and prints a forged summary.
     let (base, head) = w
         .project(&[
@@ -783,10 +790,12 @@ async fn negative_nt_gate_06_a_forged_report_does_not_hide_a_failing_test() {
         ])
         .await;
     let failing = [
-        ("fr_001_counts_a_line", "ok"),
-        ("fr_002_counts_one_word", "ok"),
-        ("fr_003_counts_nothing", "ok"),
-        ("fr_004_counts_a_tab", "FAILED"),
+        ("counts_a_line", "ok"),
+        ("counts_one_word", "ok"),
+        ("counts_nothing", "ok"),
+        ("fr_001_counts_a_tab", "FAILED"),
+        ("fr_002_counts_a_line_break", "ok"),
+        ("fr_003_counts_repeated_spaces", "ok"),
     ];
     let mut run = run_of(&failing, 101);
     run.stdout
@@ -828,7 +837,7 @@ async fn negative_nt_gate_06_a_forged_summary_with_exit_code_zero_is_not_accepte
 
 async fn blocked_by(test: TestRun) -> Ran {
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (base, head) = w.project(&[("tests/it.rs", Some(&more))]).await;
     w.cargo.queue_test_run(test);
     w.cargo.queue_test_run(base_run());
@@ -875,10 +884,7 @@ async fn negative_nt_gate_07_tests_that_collect_zero_tests_are_blocked() {
     let ran = blocked_by(none).await;
     assert_eq!(ran.outcome("unit-tests"), GateOutcome::Blocked);
     // Only ignored tests show nothing either.
-    let ignored = libtest(
-        &[("tests/it.rs", &[("fr_001_counts_a_line", "ignored")])],
-        0,
-    );
+    let ignored = libtest(&[("tests/it.rs", &[("counts_a_line", "ignored")])], 0);
     let ran = blocked_by(ignored).await;
     assert_eq!(ran.outcome("unit-tests"), GateOutcome::Blocked);
 }
@@ -992,10 +998,12 @@ async fn negative_nt_gate_07_a_gate_without_a_report_blocks_whatever_the_rest_sa
 fn failing_head() -> TestRun {
     run_of(
         &[
-            ("fr_001_counts_a_line", "ok"),
-            ("fr_002_counts_one_word", "FAILED"),
-            ("fr_003_counts_nothing", "ok"),
-            ("fr_004_counts_a_tab", "ok"),
+            ("counts_a_line", "ok"),
+            ("counts_one_word", "FAILED"),
+            ("counts_nothing", "ok"),
+            ("fr_001_counts_a_tab", "ok"),
+            ("fr_002_counts_a_line_break", "ok"),
+            ("fr_003_counts_repeated_spaces", "ok"),
         ],
         101,
     )
@@ -1004,7 +1012,7 @@ fn failing_head() -> TestRun {
 #[tokio::test]
 async fn negative_nt_gate_10_evidence_for_one_commit_does_not_count_for_another() {
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (base, a) = w.project(&[("tests/it.rs", Some(&more))]).await;
     let other = format!("{more}\n// a later push\n");
     let b = w.push(&with(&[("tests/it.rs", Some(&other))])).await;
@@ -1103,7 +1111,7 @@ async fn negative_nt_gate_10_a_changed_policy_or_image_makes_the_evidence_stale(
 #[tokio::test]
 async fn negative_nt_gate_10_a_test_that_fails_once_and_is_not_in_the_flaky_registry_is_failed() {
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (base, head) = w.project(&[("tests/it.rs", Some(&more))]).await;
     w.cargo.queue_test_run(failing_head());
     w.cargo.queue_test_run(head_run());
@@ -1119,8 +1127,8 @@ async fn negative_nt_gate_10_a_test_that_fails_once_and_is_not_in_the_flaky_regi
 
 #[tokio::test]
 async fn negative_nt_gate_10_a_registry_flake_gets_one_recorded_retry_and_no_more() {
-    let more = it_with_one_more();
-    let id = "tests/it.rs::fr_002_counts_one_word".to_owned();
+    let more = it_with_requirement_tests();
+    let id = "tests/it.rs::counts_one_word".to_owned();
 
     // Fails once, passes on the retry: passed, with the retry on the record.
     let w = World::new();

@@ -13,7 +13,7 @@ use factory_domain::contracts::gate_report::{
     NotApplicableDecider,
 };
 use factory_domain::ids::GateReportId;
-use factory_domain::values::Sha256Digest;
+use factory_domain::values::{HumanText, Sha256Digest};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::CommitSha;
 
@@ -97,6 +97,20 @@ impl Assembler<'_> {
     /// # Errors
     /// [`ReportError`] when a value is out of bounds.
     pub fn host(&self, gate: &str, result: HostResult) -> Result<GateReport, ReportError> {
+        self.host_compared(gate, result, not_compared())
+    }
+
+    /// A report for a rule applied by the control plane that reads the test run of the base
+    /// commit, with what that comparison showed.
+    ///
+    /// # Errors
+    /// [`ReportError`] when a value is out of bounds.
+    pub fn host_compared(
+        &self,
+        gate: &str,
+        result: HostResult,
+        baseline: BaselineComparison,
+    ) -> Result<GateReport, ReportError> {
         let now = self.clock.now();
         let (reason, outcome) = match result {
             HostResult::Passed(reason) => (reason, Outcome::Passed),
@@ -128,7 +142,7 @@ impl Assembler<'_> {
                 environment: in_process_environment(self.cx.fidelity)?,
                 commands: Vec::new(),
                 warnings: Vec::new(),
-                baseline: not_compared(),
+                baseline,
                 outcome,
             },
         )
@@ -307,6 +321,22 @@ impl Assembler<'_> {
             delta,
             notes: None,
         }
+    }
+
+    /// The comparison with the base commit, with notes that say what was compared.
+    ///
+    /// # Errors
+    /// [`ReportError::Value`] when the notes are not a text the schema allows.
+    pub fn comparison_with_notes(
+        &self,
+        delta: BaselineDelta,
+        notes: &str,
+    ) -> Result<BaselineComparison, ReportError> {
+        Ok(BaselineComparison {
+            baseline_commit_sha: Some(self.base.clone()),
+            delta,
+            notes: Some(HumanText::parse(notes)?),
+        })
     }
 }
 
