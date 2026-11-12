@@ -101,6 +101,30 @@ impl EngineError {
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Conflict | Self::Store(StoreError::Unavailable))
     }
+
+    /// True when the error is about this process or its store and not about one job: the
+    /// configuration, a fake adapter in a production run, a store that cannot be reached, a
+    /// commit whose outcome is not known, or a fault inside the store.
+    ///
+    /// Every other error names something that is wrong with one job, one stage run or one
+    /// attempt (a damaged record, a missing handler, a move the state machine does not have). A
+    /// worker that stops for one of those stops for every job, and the job that caused it is
+    /// still there when the worker starts again. So the claim sets such a stage run aside
+    /// ([`Deferral::Faulted`](crate::scheduler::Deferral::Faulted)) and the worker loop fails such
+    /// an attempt ([`Engine::fail_attempt`](super::Engine::fail_attempt)), and both go on.
+    #[must_use]
+    pub fn is_about_the_process(&self) -> bool {
+        matches!(
+            self,
+            Self::Config(_)
+                | Self::FakeRefused(_)
+                | Self::Store(
+                    StoreError::Unavailable
+                        | StoreError::CommitOutcomeUnknown
+                        | StoreError::Internal(_)
+                )
+        )
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +158,17 @@ mod tests {
         assert!(!EngineError::LeaseFenced.is_retryable());
         assert!(!EngineError::NotFound.is_retryable());
         assert!(!EngineError::Duplicate.is_retryable());
+    }
+
+    #[test]
+    fn an_error_about_one_job_is_told_apart_from_one_about_the_process() {
+        assert!(EngineError::Config("a rule").is_about_the_process());
+        assert!(EngineError::Store(StoreError::Unavailable).is_about_the_process());
+        assert!(EngineError::Store(StoreError::CommitOutcomeUnknown).is_about_the_process());
+        assert!(!EngineError::Corrupt("a damaged record").is_about_the_process());
+        assert!(!EngineError::NoHandler(StageKind::Intake).is_about_the_process());
+        assert!(!EngineError::Invalid("a value".to_owned()).is_about_the_process());
+        assert!(!EngineError::Store(StoreError::ChainBroken).is_about_the_process());
+        assert!(!EngineError::Store(StoreError::TenantMismatch).is_about_the_process());
     }
 }

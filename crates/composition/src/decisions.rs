@@ -56,6 +56,14 @@
 //! rejected with a marker that carries the fixed code `not_signed`, and nothing else about it is
 //! read (AUT-12, R-1).
 //!
+//! # While an attempt runs
+//!
+//! A pass runs between attempts. A worker runs one attempt at a time, so a cancel that a person
+//! records while a stage runs would wait for the stage to end. The loop therefore also asks, at
+//! its poll interval while an attempt runs, for the cancel requests of the job it is running
+//! ([`WhileRunning::apply_cancels`]). They go through the same checks and get the same marker.
+//! Only cancels, and only of that job: everything else still waits for the next pass.
+//!
 //! # What it keeps in memory
 //!
 //! A cursor into the tenant's audit log and the decisions seen so far that have no marker. A
@@ -101,7 +109,7 @@ use crate::decision_signing::{
     read_subject,
 };
 use crate::dependency_decisions::DependencyDecisions;
-use crate::hooks::BeforeClaim;
+use crate::hooks::{BeforeClaim, WhileRunning};
 use crate::intake_rejections::IntakeRejections;
 use crate::repository_changes::{ChangeAuthority, RepositoryChanges};
 use crate::seams::{FileAllowlist, designation};
@@ -1261,10 +1269,15 @@ impl ClaimWork {
                 return;
             }
         };
-        match self.markers.mark(tenant, &decision, &marked).await {
+        self.finish(tenant, &decision, &marked).await;
+    }
+
+    /// Writes the marker that ends a decision, and forgets the decision once it is written.
+    async fn finish(&self, tenant: TenantId, decision: &Pending, marked: &Marked) {
+        match self.markers.mark(tenant, decision, marked).await {
             Ok(()) => {
                 // Counted by code, and nothing from the request is in the line (R-13, R-17).
-                tracing::info!(code = outcome_code(&marked), "a decision was dealt with");
+                tracing::info!(code = outcome_code(marked), "a decision was dealt with");
                 self.forget(tenant, decision.sequence);
             }
             Err(Unreadable) => tracing::warn!(
@@ -1782,6 +1795,52 @@ impl BeforeClaim for ClaimWork {
         let turn = self.turn.fetch_add(1, Ordering::Relaxed);
         for tenant in rotated(&self.tenants, turn) {
             self.pass(tenant).await;
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl WhileRunning for ClaimWork {
+    /// Reads the new records of the tenant and deals with the cancel requests for `job`, each by
+    /// the same path as a pass: the word of the API, the age of the request, the allowlist as it
+    /// is now, the engine, and the marker. So a cancel applied here is applied exactly once, and a
+    /// pass that finds it later finds its marker.
+    ///
+    /// Everything else waits for the next pass: admissions, approvals, pauses, the requests about
+    /// other jobs and the records that are not requests. A cancel is therefore applied ahead of
+    /// an older request for the same job that is still waiting, which then meets a job that is
+    /// being cancelled and is refused as out of place.
+    ///
+    /// A cancel that cannot be decided now (the store or the allowlist cannot be read) is left as
+    /// it is, without counting a try: this runs far more often than a pass, and it must not use up
+    /// the tries a pass gives a request before it is rejected ([`MAX_TRIES`]).
+    async fn apply_cancels(&self, tenant: TenantId, job: JobId) {
+        if !self.tenants.contains(&tenant) || !self.read_new_records(tenant).await {
+            return;
+        }
+        let cancels: Vec<Pending> = {
+            let scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
+            scans.get(&tenant).map_or_else(Vec::new, |scan| {
+                scan.pending
+                    .values()
+                    .filter(|pending| {
+                        pending.fields.job == job && pending.fields.verb == Verb::Cancel
+                    })
+                    .take(self.per_pass)
+                    .cloned()
+                    .collect()
+            })
+        };
+        for decision in cancels {
+            let span = job_span_of(&*self.store, tenant, job).await;
+            async {
+                let (verdict, decision) = self.decide(tenant, decision).await;
+                if let Verdict::Done(marked) = verdict {
+                    self.finish(tenant, &decision, &marked).await;
+                }
+            }
+            .instrument(span)
+            .await;
         }
     }
 }

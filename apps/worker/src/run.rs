@@ -8,10 +8,15 @@
 //! # One pass
 //!
 //! 1. If a sweep is due, `Engine::sweep`: end attempts whose lease lapsed, whose deadline passed
-//!    or whose teardown ran out of time. Another worker's lapsed lease is recovered here.
+//!    or whose teardown ran out of time. Another worker's lapsed lease is recovered here. A sweep
+//!    is due when the sweep interval has passed since the last one, by the loop's ticker, whether
+//!    or not the loop found work in between: a queue that never empties does not put it off.
 //! 2. `Engine::claim_next`, which takes at most one attempt (the loop sets `claim_batch` to 1, so
 //!    it never holds a lease it is not running).
 //! 3. Each started attempt runs inside a `factory.job` span with `Engine::run_attempt`.
+//!    While it runs, the loop asks at the poll interval for a cancel of that job and gives it to
+//!    the engine, so a person who cancels a job does not wait for its stage to end. Admissions,
+//!    approvals and every other decision are still applied between attempts only.
 //! 4. With nothing to do the loop waits for the poll interval or for the stop request, whichever
 //!    comes first.
 //!
@@ -25,17 +30,18 @@
 //! sweeper of the next worker moves the attempt to `LEASE_LOST` and the stage run to a retry.
 //! So a lease is never abandoned silently: it is logged, counted, and the exit code says so.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use factory_ports::store::WorkerId;
 use factory_workflow::engine::{AttemptOutcome, Engine, EngineError};
-use factory_workflow::scheduler::{ClaimedAttempt, Ticker};
+use factory_workflow::scheduler::{ClaimedAttempt, Deferral, Ticker};
 use tracing::Instrument;
 
 use factory_composition::config::LoopConfig;
 use factory_composition::drift::DriftPump;
-use factory_composition::hooks::BeforeClaim;
+use factory_composition::hooks::{BeforeClaim, WhileRunning};
 use factory_composition::indexing::ActiveJobs;
 use factory_composition::system::Shutdown;
 use factory_composition::telemetry::job_stretch;
@@ -63,6 +69,12 @@ pub struct LoopSummary {
     pub attempts_run: u32,
     /// Sweeps made.
     pub sweeps: u32,
+    /// Ready stage runs the claim set aside because starting them raised an error about the
+    /// stage run itself (`Deferral::Faulted`). One stage run is counted each time it is set aside.
+    pub set_aside: u32,
+    /// Attempts whose run raised an error about the job and that the loop then failed as a fault
+    /// of the factory, or left for the sweeper when that could not be recorded.
+    pub faulted: u32,
     /// Attempts the loop stopped waiting for at the end of the drain budget.
     pub abandoned: Vec<ClaimedAttempt>,
     /// True when the loop ended because of the stop request or an observer, not an error.
@@ -81,6 +93,7 @@ pub struct WorkerLoop {
     observer: Option<Arc<dyn Observer>>,
     jobs: Option<Arc<ActiveJobs>>,
     before_claim: Vec<Arc<dyn BeforeClaim>>,
+    while_running: Vec<Arc<dyn WhileRunning>>,
     drift: Option<Arc<DriftPump>>,
 }
 
@@ -116,6 +129,7 @@ impl WorkerLoop {
             observer: None,
             jobs: None,
             before_claim: Vec::new(),
+            while_running: Vec::new(),
             drift: None,
         }
     }
@@ -136,6 +150,35 @@ impl WorkerLoop {
     pub fn with_before_claim(mut self, hook: Arc<dyn BeforeClaim>) -> Self {
         self.before_claim.push(hook);
         self
+    }
+
+    /// Asks `hook`, at the poll interval while an attempt runs, to apply the cancel requests of
+    /// the job of that attempt. `factory_composition::decisions::ClaimWork` is the one: without
+    /// it a cancel is read between attempts only, so with one worker it waits for the stage to
+    /// end.
+    #[must_use]
+    pub fn with_cancel_watch(mut self, hook: Arc<dyn WhileRunning>) -> Self {
+        self.while_running.push(hook);
+        self
+    }
+
+    /// Applies the cancel requests of the job of `attempt`, at the poll interval, for as long as
+    /// it is polled. It never completes: the loop selects on it next to the attempt and drops it
+    /// when the attempt ends.
+    ///
+    /// The hook gives the cancel to the engine. The attempt learns of it from its next heartbeat,
+    /// which raises its cancel signal, so the handler and its sandbox run are told to stop within
+    /// one poll interval plus one heartbeat interval of the request.
+    async fn watch_for_cancel(&self, attempt: &ClaimedAttempt) {
+        if self.while_running.is_empty() {
+            return std::future::pending().await;
+        }
+        loop {
+            self.ticker.sleep(self.settings.poll_interval()).await;
+            for hook in &self.while_running {
+                hook.apply_cancels(attempt.tenant, attempt.job).await;
+            }
+        }
     }
 
     /// Tells the loop to note, while an attempt runs, which tenant owns its job. The indexing
@@ -177,14 +220,16 @@ impl WorkerLoop {
     pub async fn run(&self) -> LoopSummary {
         let mut summary = LoopSummary::default();
         let mut sweep_due = true;
-        let mut since_sweep = Duration::ZERO;
+        // The wait until the next sweep. It is made once per sweep and looked at on every pass, so
+        // the time an attempt took counts towards it exactly as the time spent idle does.
+        let mut next_sweep = self.ticker.sleep(self.settings.sweep_interval());
         tracing::info!(worker = self.worker.as_str(), "worker loop started");
         loop {
             if self.shutdown.is_raised() {
                 summary.stopped_cleanly = true;
                 break;
             }
-            if sweep_due {
+            if sweep_due || has_ended(&mut next_sweep).await {
                 match self.engine.sweep().await {
                     Ok(swept) => {
                         summary.sweeps += 1;
@@ -205,7 +250,7 @@ impl WorkerLoop {
                     }
                 }
                 sweep_due = false;
-                since_sweep = Duration::ZERO;
+                next_sweep = self.ticker.sleep(self.settings.sweep_interval());
             }
             for hook in &self.before_claim {
                 hook.before_claim().await;
@@ -214,13 +259,21 @@ impl WorkerLoop {
                 Ok(claimed) => claimed,
                 Err(error) if is_transient(&error) => {
                     tracing::warn!(%error, "the claim failed and will be tried again");
-                    self.idle(&mut since_sweep, &mut sweep_due).await;
+                    self.idle().await;
                     continue;
                 }
                 Err(error) => return self.fail(summary, &error),
             };
+            let set_aside = claimed
+                .deferred
+                .iter()
+                .filter(|(_, reason)| *reason == Deferral::Faulted)
+                .count();
+            summary.set_aside = summary
+                .set_aside
+                .saturating_add(u32::try_from(set_aside).unwrap_or(u32::MAX));
             if claimed.started.is_empty() {
-                self.idle(&mut since_sweep, &mut sweep_due).await;
+                self.idle().await;
                 continue;
             }
             for attempt in claimed.started {
@@ -242,8 +295,13 @@ impl WorkerLoop {
                     Ran::Error(error) => {
                         if is_transient(&error) {
                             tracing::warn!(%error, "an attempt could not record its result; the lease will lapse");
-                        } else {
+                        } else if error.is_about_the_process() {
                             return self.fail(summary, &error);
+                        } else {
+                            summary.faulted += 1;
+                            if let Err(worse) = self.fail_faulted(&attempt, &error).await {
+                                return self.fail(summary, &worse);
+                            }
                         }
                     }
                 }
@@ -251,6 +309,46 @@ impl WorkerLoop {
         }
         tracing::info!(attempts = summary.attempts_run, "worker loop stopped");
         summary
+    }
+
+    /// Deals with an attempt whose run raised `error`, an error about the job and not about this
+    /// process. The loop used to end here, and the worker that replaced it met the same job again.
+    ///
+    /// The failure is recorded against the attempt through the engine (`Engine::fail_attempt`), as
+    /// a fault of the factory, which is never retried: the stage run ends or asks a person, and
+    /// the jobs behind it run. When even that cannot be recorded because of the job (its records
+    /// are damaged), the attempt is left as it is: its lease lapses, the sweeper ends it, and the
+    /// retry rules of the stage bound how often it comes back.
+    ///
+    /// # Errors
+    /// The error of the recording when it is about this process, which ends the loop.
+    async fn fail_faulted(
+        &self,
+        attempt: &ClaimedAttempt,
+        error: &EngineError,
+    ) -> Result<(), EngineError> {
+        tracing::error!(
+            attempt = %attempt.attempt,
+            stage = attempt.kind.as_str(),
+            %error,
+            detail = ?error,
+            "an attempt raised an error about its job; it is failed and the loop goes on"
+        );
+        match self.engine.fail_attempt(attempt).await {
+            Ok(outcome) => {
+                tracing::warn!(attempt = %attempt.attempt, outcome = ?outcome, "the faulted attempt was ended");
+                Ok(())
+            }
+            Err(worse) if worse.is_about_the_process() && !is_transient(&worse) => Err(worse),
+            Err(worse) => {
+                tracing::error!(
+                    attempt = %attempt.attempt,
+                    error = %worse,
+                    "the failure of a faulted attempt could not be recorded; its lease is left to lapse and the sweeper will end it"
+                );
+                Ok(())
+            }
+        }
     }
 
     fn fail(&self, mut summary: LoopSummary, error: &EngineError) -> LoopSummary {
@@ -288,12 +386,17 @@ impl WorkerLoop {
         }
         .instrument(span);
         tokio::pin!(work);
+        // The watch is made once and kept through both phases. It never completes, so it never
+        // ends a `select!` and so never drops a drift request that is being served.
+        let cancel_watch = self.watch_for_cancel(attempt);
+        tokio::pin!(cancel_watch);
         // Phase 1: no stop request yet. The attempt runs; a stop request starts the drain clock.
         let stop = self.shutdown.raised();
         tokio::pin!(stop);
         loop {
             tokio::select! {
                 result = &mut work => return Ran::from(result),
+                () = &mut cancel_watch => {}
                 () = &mut stop => {
                     tracing::info!(attempt = %attempt.attempt, drain_s = self.settings.drain_s, "stop requested; letting the running attempt finish");
                     break;
@@ -307,6 +410,7 @@ impl WorkerLoop {
         loop {
             tokio::select! {
                 result = &mut work => return Ran::from(result),
+                () = &mut cancel_watch => {}
                 () = self.serve_drift() => {}
                 () = &mut drain => {
                     tracing::error!(
@@ -320,16 +424,24 @@ impl WorkerLoop {
         }
     }
 
-    async fn idle(&self, since_sweep: &mut Duration, sweep_due: &mut bool) {
-        let wait = self.settings.poll_interval();
+    async fn idle(&self) {
         tokio::select! {
-            () = self.ticker.sleep(wait) => {}
+            () = self.ticker.sleep(self.settings.poll_interval()) => {}
             () = self.shutdown.raised() => {}
         }
-        *since_sweep += wait;
-        if *since_sweep >= self.settings.sweep_interval() {
-            *sweep_due = true;
-        }
+    }
+}
+
+/// A wait of the loop's ticker.
+type Wait<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// True when `wait` has ended. It looks once and does not wait. The caller replaces a wait that
+/// has ended before it asks again.
+async fn has_ended(wait: &mut Wait<'_>) -> bool {
+    tokio::select! {
+        biased;
+        () = wait.as_mut() => true,
+        () = std::future::ready(()) => false,
     }
 }
 
@@ -374,8 +486,13 @@ impl From<Result<AttemptOutcome, EngineError>> for Ran {
     }
 }
 
-/// An error the loop rides out: the store was busy or a race was lost. Anything else ends the
-/// loop, because a worker that keeps going after a defect hides it.
+/// An error the loop rides out: the store was busy or a race was lost.
+///
+/// Of the others, an error about this process (`EngineError::is_about_the_process`: the
+/// configuration, a store that is broken) ends the loop, because a worker that keeps going after
+/// such a defect hides it. An error about one job does not: it is logged at the error level,
+/// counted in [`LoopSummary`], the attempt is failed, and the other jobs run. Ending the loop for
+/// it stopped every tenant, and the same job was the first thing the next worker met.
 fn is_transient(error: &EngineError) -> bool {
     error.is_retryable()
         || matches!(

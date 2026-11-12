@@ -80,6 +80,10 @@ pub enum Deferral {
     AttemptLimit,
     /// Another worker started it first, or it changed since it was found.
     Superseded,
+    /// Starting it raised an error that is about this stage run or its job and not about the
+    /// worker (a damaged record, a stage with no handler here). It was set aside for a while, so
+    /// that the stage runs behind it get their turn, and the error was logged.
+    Faulted,
 }
 
 impl Deferral {
@@ -107,8 +111,12 @@ impl Engine {
     /// may start.
     ///
     /// # Errors
-    /// The store errors of the lookup. A stage run that cannot start is reported in
-    /// [`Claimed::deferred`], not as an error, so one bad run does not hold back the others.
+    /// The store errors of the lookup, and an error of a start that is about the process
+    /// ([`EngineError::is_about_the_process`]). A stage run that cannot start is reported in
+    /// [`Claimed::deferred`], not as an error, so one bad run does not hold back the others. That
+    /// includes a stage run whose start raises an error about itself: it is set aside for one
+    /// lease time ([`Deferral::Faulted`]). Without that it would stay the oldest ready run, be
+    /// found first by every claim of every worker, and stop them all.
     pub async fn claim_next(&self, worker: &WorkerId) -> Result<Claimed, EngineError> {
         let candidates = {
             let mut tx = self.system_tx().await?;
@@ -135,10 +143,46 @@ impl Engine {
                 Err(EngineError::Conflict | EngineError::LeaseFenced | EngineError::NotFound) => {
                     claimed.deferred.push((run, Deferral::Superseded));
                 }
-                Err(other) => return Err(other),
+                Err(error) if error.is_about_the_process() => return Err(error),
+                Err(error) => {
+                    tracing::error!(
+                        stage_run = %run,
+                        %error,
+                        "a ready stage run cannot be started; it is set aside so the others run"
+                    );
+                    self.set_aside(&candidate).await?;
+                    claimed.deferred.push((run, Deferral::Faulted));
+                }
             }
         }
         Ok(claimed)
+    }
+
+    /// Moves the `not_before` of a candidate that raised an error forward by one lease time, in a
+    /// transaction of its own, because the one that raised the error is gone.
+    ///
+    /// Nothing else is written: the stage run stays `READY` and is tried again after the wait, so
+    /// a fault that passes (a handler that a new release registers, a record that is repaired)
+    /// needs no command to recover from. The engine has no way to fail a stage run that has no
+    /// attempt, and this adds none.
+    async fn set_aside(&self, candidate: &ClaimCandidate) -> Result<(), EngineError> {
+        let mut tx = self.tenant_tx(candidate.tenant).await?;
+        match tx
+            .postpone_stage_run(
+                candidate.stage_run,
+                candidate.version,
+                self.config.lease_ttl,
+            )
+            .await
+        {
+            Ok(_) => Ok(tx.commit().await?),
+            // It changed since it was found, so it is not the same candidate any more.
+            Err(StoreError::Conflict | StoreError::NotFound) => Ok(tx.rollback().await?),
+            Err(other) => {
+                let _ = tx.rollback().await;
+                Err(other.into())
+            }
+        }
     }
 
     /// Applies one candidate: checks `G_LEASE_ACQUIRED`, then starts the attempt (`S03`).

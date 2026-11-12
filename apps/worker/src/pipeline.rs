@@ -352,7 +352,9 @@ pub fn assemble_loop(
         shutdown,
     )
     .with_active_jobs(Arc::clone(&booted.jobs))
-    .with_drift_pump(Arc::clone(&pipeline.drift));
+    .with_drift_pump(Arc::clone(&pipeline.drift))
+    // The hook that applies decisions between attempts also applies a cancel of the running job.
+    .with_cancel_watch(pipeline.hook.clone());
     // The tokens of ended jobs are revoked first, so that a job admitted in this pass starts from
     // a clean slate; then the steps of the pipeline run in their own order.
     for hook in extra_hooks {
