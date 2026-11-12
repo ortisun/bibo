@@ -43,16 +43,28 @@
 //!
 //! | Evidence | Not evidence |
 //! |---|---|
-//! | The exit code, signal, timestamps and redacted streams that the supervisor returned from `exec` | Any file in `/out` or in the workspace that the sandbox wrote |
+//! | The exit code, signal, timestamps and redacted streams that the supervisor returned from `exec` | Any file in `/out` or in the workspace that the sandbox wrote, with the one exception below |
 //! | The committed trees read by `JobRepo` | The builder's account, its transcript or its report |
 //! | The gate definitions at the base commit | Any gate definition in the candidate commit |
+//!
+//! The exception is the test report file of a test gate whose manifest entry names one
+//! (`test_report.path`, a JUnit XML or TAP report). The test runner writes that file in `/out`,
+//! and the supervisor reads it back with a command of its own (`cat`) in the same sandbox, right
+//! after the test command. What that command printed is a redacted stream like any other, it is
+//! listed in the gate report, and it is read as untrusted input by a strict reader
+//! (`gates::command::junit`, `gates::command::tap`). It has the same standing as the standard
+//! output of `cargo test`, which is also text that the test process wrote. No other file that the
+//! sandbox wrote is read.
 //!
 //! # What this does not defend against
 //!
 //! * A test that takes over the output device and prints a whole, coherent libtest report, then
-//!   exits with code 0. The reading rejects forged lines, a forged summary and counts that do not
-//!   add up, but a report that adds up is a report. A stronger defence is a trusted test runner
-//!   in a separate process; it is not in this slice.
+//!   exits with code 0, or a test that writes a whole, coherent report file over the one its test
+//!   runner writes. The reading rejects forged lines, a forged summary and counts that do not add
+//!   up, but a report that adds up is a report. A report file is easier to replace than an output
+//!   stream, because any process of the test run can write it, including one left behind by an
+//!   earlier gate in the same sandbox. A stronger defence is a trusted test runner in a separate
+//!   process; it is not in this slice.
 //! * A covering test that asserts nothing. `acceptance-evidence` counts a test for a requirement
 //!   when the test names it, passes on the candidate and did not pass on the baseline run. It
 //!   does not read the test. See `gates::scope::acceptance` for what that leaves open.

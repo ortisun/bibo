@@ -194,6 +194,19 @@ impl Tamper {
     pub fn live(&self) -> usize {
         self.inner.live_sandboxes().len()
     }
+
+    /// Adds a program to the fake image, or replaces one. The fake sandbox shares its programs
+    /// between its copies, so the program is there for every sandbox made after this call.
+    pub fn add_program(
+        &self,
+        name: &str,
+        program: impl Fn(&[String], &[u8]) -> factory_testkit::sandbox::ProgramOutput
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        let _ = self.inner.clone().with_program(name, program);
+    }
 }
 
 struct TamperSession {

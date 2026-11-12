@@ -1,6 +1,6 @@
 # Prepare a repository for the factory
 
-- Status: written on 2026-11-11 from the code that reads the project manifest, the JSON schema `schemas/project-manifest.schema.json` and the fixture repository `fixtures/repos/word-count`. Each statement below names the file it was read from. Nothing here was run against a real repository: the only manifest the factory has read is the fixture's, in test mode.
+- Status: written on 2026-11-11 from the code that reads the project manifest, the JSON schema `schemas/project-manifest.schema.json` and the fixture repository `fixtures/repos/word-count`. Each statement below names the file it was read from. Nothing here was run against a real repository: the only manifest the factory has read is the fixture's, in test mode. The section on test reports was added on 2026-11-11 with the code that reads test reports in JUnit XML (Extensible Markup Language) and in the Test Anything Protocol (TAP). That code was tested with reports written by hand in the shape of each tool, and no pytest, Jest, Go or Maven run was read.
 - Form: how-to, with a reference table of the keys.
 - Goal: give a repository the one file the validation stage needs, and say what the factory can and cannot check in that repository today.
 
@@ -51,6 +51,9 @@ The last column says what reads the key today. "Checked only" means that the loa
 | `gates[].cwd` | Optional. A directory relative to the repository. The default is the repository root. | The validation stage. |
 | `gates[].timeout_seconds` | A whole number from 1 to 7200. | The validation stage. |
 | `gates[].mandatory` | `true` or `false`. | Checked only. The stage does not read it. See the next section. |
+| `gates[].test_report` | Optional, and allowed on the `unit-tests` gate only. It says how the test results are read. Without it the gate reads the output of the Rust test harness. | The validation stage. See "Test reports from other test runners". |
+| `gates[].test_report.format` | Required inside `test_report`. One of `libtest`, `junit-xml` and `tap`. | The validation stage. |
+| `gates[].test_report.path` | Optional. The report file, as a path relative to the output directory `/out` of the sandbox. It may not start with a slash and may not hold a `..` segment. Without a path the report is the standard output of the command. `libtest` takes no path. | The validation stage. |
 | `protected_paths` | A list of path patterns with no repeats. It must contain `.factory/**`. | The repository intelligence stage records each pattern in the repository profile. The gate that refuses a change to a protected path uses the central policy, not this list. |
 | `spec_kit.cli_version` | The pinned version of the Spec Kit command line tool, for example `1.1.2`. | Checked only. |
 | `spec_kit.integration` | The name of the integration. | Checked only. |
@@ -70,7 +73,7 @@ The stage knows four gate names (`gate_id` in `crates/workflow/src/gates/command
 | `format` | The gate is reported as not defined. That is allowed. | Exit code. |
 | `lint` | The gate is reported as not defined. That is allowed. | Exit code. |
 | `build` | The gate is BLOCKED. | Exit code. |
-| `unit-tests` | The gate is BLOCKED. | The output must show tests that ran. See "Limits that exist today". |
+| `unit-tests` | The gate is BLOCKED. | The test report must show tests that ran. See "Test reports from other test runners". |
 
 An entry with any other name also runs, and it passes on exit code 0.
 
@@ -140,6 +143,122 @@ The next command shows that the fixture still defines the four gates that the ex
 grep -- "- id:" fixtures/repos/word-count/.factory/project.yaml
 ```
 
+## Test reports from other test runners
+
+Exit code 0 is not enough for the `unit-tests` gate. The gate passes only when a test report shows that tests ran. The entry `test_report` of the gate says which report the factory reads. The set of formats is closed (`TestReportFormat` in `crates/domain/src/contracts/project_manifest.rs`).
+
+| `format` | What it is | Where the factory reads it |
+|---|---|---|
+| `libtest` | The output of the Rust test harness, as `cargo test` prints it. This is the format when the gate has no `test_report`, so a manifest written before this key existed works as before. | The two output streams of the command. |
+| `junit-xml` | The JUnit XML report. pytest, jest-junit, go-junit-report, Maven Surefire, Gradle and cargo-nextest can write it. | The file named by `path`, or the standard output when there is no `path`. |
+| `tap` | The Test Anything Protocol, version 13 or 14. | The file named by `path`, or the standard output when there is no `path`. |
+
+### Where the test command writes the report file
+
+The checkout is mounted read-only in the sandbox that runs the gates. The test command can write in two places only: `/out` and `/tmp`. The factory reads the report file from `/out`, so `path` is relative to `/out`, and the test command must be told to write there. With `path: test-report.xml` the command writes `/out/test-report.xml`.
+
+After the test command ends, the supervisor runs `cat /out/<path>` in the same sandbox and reads what it prints (`report_command` in `crates/workflow/src/gates/command/definition.rs`). The gate report lists this command next to the test command. The verify image must hold `cat`.
+
+The sandbox is new for every run, so `/out` holds no report from an earlier job.
+
+### An example for pytest
+
+```yaml
+gates:
+  - id: unit-tests
+    title: Run the tests with pytest
+    argv: [pytest, --junitxml=/out/test-report.xml, -o, cache_dir=/out/pytest-cache]
+    timeout_seconds: 900
+    mandatory: true
+    test_report:
+      format: junit-xml
+      path: test-report.xml
+```
+
+The option `-o cache_dir=/out/pytest-cache` moves the cache of pytest out of the read-only checkout. The whole manifest is in `schemas/examples/project-manifest/valid/python-pytest-junit-report.json`.
+
+### An example for Jest
+
+```yaml
+gates:
+  - id: unit-tests
+    title: Run the tests with Jest
+    argv: [npm, test]
+    timeout_seconds: 900
+    mandatory: true
+    test_report:
+      format: junit-xml
+      path: reports/junit.xml
+```
+
+A gate has no environment variables of its own, so the settings of jest-junit go in `package.json`:
+
+```json
+{
+  "scripts": { "test": "jest --ci --reporters=default --reporters=jest-junit" },
+  "jest-junit": { "outputDirectory": "/out/reports", "outputName": "junit.xml" }
+}
+```
+
+The whole manifest is in `schemas/examples/project-manifest/valid/node-jest-junit-report.json`.
+
+The next command shows that the examples in this repository still name the two report files.
+
+```bash run expect="test-report.xml" expect="reports/junit.xml"
+grep -h -- '"path": ' schemas/examples/project-manifest/valid/python-pytest-junit-report.json schemas/examples/project-manifest/valid/node-jest-junit-report.json
+```
+
+### How a report decides the gate
+
+The rules are the same for the three formats (`crates/workflow/src/gates/command/verdict.rs`). Missing evidence is never a pass.
+
+| Exit code of the test command | The test report | The `unit-tests` gate |
+|---|---|---|
+| 0 | Whole, adds up, at least one test ran and none failed | PASSED |
+| 0 | The report file is not there, or `cat` could not read it | BLOCKED |
+| 0 | Empty, or it ends before its last element closes | BLOCKED |
+| 0 | Cut at the size limit of the stage, which is 4 MiB unless the factory is configured otherwise | BLOCKED |
+| 0 | Not well formed, or it holds something the reader refuses | BLOCKED |
+| 0 | Its totals disagree with the tests it lists | BLOCKED |
+| 0 | It lists no test, or every test in it was skipped | BLOCKED |
+| 0 | It lists a failed test | BLOCKED, because the report and the exit code disagree |
+| Not 0 | Any | FAILED. The failed tests are named when the report can be trusted. |
+
+The report is written inside the sandbox by a program that runs the code of the change, so the factory reads it as untrusted input.
+
+For JUnit XML the factory uses its own small reader (`crates/workflow/src/gates/command/junit.rs`). The reader refuses these things, and the gate is then BLOCKED with the reason in the gate report:
+
+- a document type declaration, an entity declaration, or a processing instruction other than the XML declaration on the first line;
+- an entity reference other than `&lt;`, `&gt;`, `&amp;`, `&apos;`, `&quot;` and the numeric ones;
+- more than 16 MiB of text, more than 32 nested elements, or more than 100000 test cases;
+- a root element that is not `testsuites` or `testsuite`;
+- a `testcase` that is not directly inside a `testsuite`;
+- a `testsuite` with no `tests` attribute, or with a `tests`, `failures`, `errors` or `skipped` attribute that is not equal to the test cases listed in it;
+- a test case with no `name`, or two test cases with the same `classname` and `name`.
+
+A test case with a `failure` or an `error` child failed. A test case with a `skipped` child was skipped. Every other test case passed.
+
+For TAP (`crates/workflow/src/gates/command/tap.rs`) only the lines that start in the first column count. The report needs exactly one plan line (`1..N`) and exactly N test lines. `Bail out!` and two tests with the same description are refused. A test with the directive `# SKIP` was skipped, and so was a test that is `not ok` with the directive `# TODO`.
+
+### How a test is named
+
+The comparison with the base commit and the `acceptance-evidence` gate match tests by name, so the name must be the same in every run.
+
+| Format | The name of a test | Example |
+|---|---|---|
+| `libtest` | The test binary, two colons, the test | `tests/it.rs::fr_001_counts_a_line` |
+| `junit-xml` | `classname`, two colons, `name`. The `name` alone when `classname` is empty or equal to it. | `tests.test_count::test_fr_001_counts_a_line` |
+| `tap` | The description of the test line, or `test N` when the line has none | `fr_001 counts a line` |
+
+With the default settings of jest-junit, two tests with the same title under the same `describe` title in two files get the same name, and the report is refused. Give them different titles, or set `classNameTemplate` to `{filepath}`.
+
+### What was not verified
+
+- The reports that the tests of the factory read were written by hand in the shape of pytest, jest-junit, go-junit-report, Maven Surefire and the Node test runner. No report was recorded from one of these tools, so a version of a tool that writes another shape is not covered.
+- No verify image with Python, Node, Go or Java exists in this repository, so no such test command has run in the sandbox. The two examples above were not run.
+- `go test` prints no JUnit XML by itself. It needs a second program such as `gotestsum` or `go-junit-report`, and a gate cannot use a pipe. The command policy lists neither program today, so a Go repository needs a change of the central policy first.
+- A test that replaces the whole report with a forged one that adds up is not detected. The same is true of the output of `cargo test`. The validation stage says so under "What this does not defend against" (`crates/workflow/src/stages/validation/mod.rs`).
+
 ## What happens when the file is missing or wrong
 
 | Situation | What the validation stage reports |
@@ -159,7 +278,9 @@ The repository intelligence stage runs earlier and behaves differently. With no 
 
 The specification of a job lists requirements, and each has an identifier such as `FR-001`. The `acceptance-evidence` gate passes only when every requirement has at least one test that names it, that ran and passed on the change, and that did not pass on the base commit (`crates/workflow/src/gates/scope/acceptance.rs`).
 
-A test names a requirement by carrying the identifier in its own name. The gate compares in lower case and reads every character that is not a letter or a digit as an underscore. The identifier must be a whole token of the name.
+A test names a requirement by carrying the identifier in its own name. The gate compares in lower case and reads every character that is not a letter or a digit as an underscore. The identifier must be a whole token of the name. The letter case of the identifier does not matter.
+
+The rule is the same for every test report format. It is applied to the whole name of the test, as the table in "How a test is named" gives it. For a JUnit XML report that is the `classname` and the `name`, so the identifier may be in either one.
 
 | Requirement | Test name | Names the requirement |
 |---|---|---|
@@ -167,6 +288,12 @@ A test names a requirement by carrying the identifier in its own name. The gate 
 | `FR-001` | `counts_a_line_fr_001` | Yes. |
 | `FR-001` | `fr_0011_counts_a_line` | No. `fr_0011` is another token. |
 | `FR-001` | `counts_a_line` | No. The name does not carry the identifier. |
+| `FR-001` | `tests.test_count::test_fr_001_counts_a_line` (pytest) | Yes. |
+| `FR-001` | `word count FR-001 counts a line` (Jest) | Yes. |
+| `FR-001` | `example.com/wc::Test_FR_001_CountsALine` (Go) | Yes. |
+| `FR-001` | `example.com/wc::TestFR_001_CountsALine` (Go) | No. The letter `t` of `Test` comes directly before `fr`, so `testfr_001` is another token. Put an underscore after `Test`. |
+| `FR-001` | `com.example.FR_001_Test::countsALine` (JUnit) | Yes. The class name carries the identifier, so every test of the class names the requirement. |
+| `FR-001` | `com.example.CountTest::fr001CountsALine` (JUnit) | No. `fr001` has no separator, so it is another token. |
 
 The identifier of an acceptance scenario of the requirement, such as `AS-001`, counts in the same way.
 
@@ -190,11 +317,11 @@ The gate does not read what a test asserts. An empty new test that carries the i
 
 ## Limits that exist today
 
-The factory was built and tested against one Rust fixture. Two gates read Rust tooling only.
+The factory was built and tested against one Rust fixture.
 
-- **The test gate reads the output of the Rust test harness only.** The `unit-tests` gate parses the output of `cargo test`, which the harness named libtest prints (`crates/workflow/src/gates/command/libtest.rs`). A test command that prints another format is not read as tests that ran, and the gate is BLOCKED (`crates/workflow/src/gates/command/verdict.rs`). A repository whose tests run under pytest, Jest, Go or JUnit cannot pass this gate today.
+- **The test gate reads three report formats and no other.** The `unit-tests` gate reads the output of the Rust test harness, a JUnit XML report or a TAP report. A test command that gives none of them cannot pass the gate, whatever its exit code. Only the Rust path has run against a real tool in the pinned image. The other two were tested with reports written by hand. See "What was not verified".
 - **The supply-chain gate reads Cargo only.** The module says "Only Cargo is implemented" (`crates/workflow/src/gates/supply_chain/mod.rs`). Dependencies declared for npm, pip or Go are not checked by it.
-- **The acceptance rule depends on the test gate.** It reads the test names from the same parsed output, for the change and for the base commit, so it has the same limit.
+- **The acceptance rule depends on the test gate.** It reads the test names from the same test report, for the change and for the base commit, so it works for the same three formats and has the same limits.
 
 The `format`, `lint` and `build` gates read an exit code, so they can run any program that the command policy allows and the verify image holds. The image and the policy were written for Rust.
 

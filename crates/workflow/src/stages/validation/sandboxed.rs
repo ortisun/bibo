@@ -28,7 +28,7 @@ use factory_ports::workspace::{WorkspaceError, WorkspacePurpose, WorkspaceReques
 use super::config::ValidationConfig;
 use crate::gates::command::report::tool_version;
 use crate::gates::command::{
-    CommandGate, Outcomes, Reading, Role, Status, Verdict, Why, interpret,
+    CommandGate, Outcomes, Reading, Role, Status, TestReport, Verdict, Why, interpret,
 };
 use crate::handlers::{StageError, StagePorts};
 
@@ -64,15 +64,45 @@ pub struct Seen {
     pub stdout: Option<String>,
     /// Standard error, when it was read.
     pub stderr: Option<String>,
+    /// The command that read the test report file back after this command, when the gate names
+    /// a report file. Its standard output is the report.
+    pub report: Option<Box<Seen>>,
 }
 
 impl Seen {
-    /// The two streams, when both were read.
+    /// What the gate can read of this command: the two streams for the default format, or the
+    /// test report that the gate names.
     #[must_use]
-    pub fn reading(&self) -> Reading<'_> {
-        match (&self.stdout, &self.stderr) {
-            (Some(stdout), Some(stderr)) => Reading::Read { stdout, stderr },
-            _ => Reading::Unreadable,
+    pub fn reading(&self, report: &TestReport) -> Reading<'_> {
+        match report {
+            TestReport::Libtest => match (&self.stdout, &self.stderr) {
+                (Some(stdout), Some(stderr)) => Reading::Read { stdout, stderr },
+                _ => Reading::Unreadable,
+            },
+            TestReport::Stdout(kind) => match &self.stdout {
+                Some(text) => Reading::Report {
+                    kind: *kind,
+                    text,
+                    cut: self.exec.stdout_truncated,
+                },
+                None => Reading::Unreadable,
+            },
+            TestReport::File(kind, _) => match self.report.as_deref() {
+                // The command that reads the file did not run, or did not end with exit code 0:
+                // the file is not there, or it could not be read.
+                None => Reading::NoReport,
+                Some(read) if read.exec.exit_code != Some(0) || read.exec.timed_out => {
+                    Reading::NoReport
+                }
+                Some(read) => match &read.stdout {
+                    Some(text) => Reading::Report {
+                        kind: *kind,
+                        text,
+                        cut: read.exec.stdout_truncated,
+                    },
+                    None => Reading::Unreadable,
+                },
+            },
         }
     }
 }
@@ -111,7 +141,7 @@ impl GateRun {
             return Verdict::Blocked(blocker.why.clone());
         }
         match &self.run {
-            Some(seen) => interpret(self.gate.role, &seen.exec, &seen.reading()),
+            Some(seen) => interpret(self.gate.role, &seen.exec, &seen.reading(&self.gate.report)),
             None => Verdict::Blocked(Why {
                 code: BlockedCode::EnvironmentUnsupported,
                 missing: "a run of the gate",
@@ -123,9 +153,7 @@ impl GateRun {
     /// What the test run showed, for a test gate that ran.
     #[must_use]
     pub fn outcomes(&self) -> Option<Outcomes> {
-        let seen = self.run.as_ref()?;
-        let (stdout, stderr) = (seen.stdout.as_deref()?, seen.stderr.as_deref()?);
-        Some(Outcomes::parse(stdout, stderr))
+        self.run.as_ref()?.reading(&self.gate.report).outcomes()
     }
 }
 
@@ -323,17 +351,7 @@ async fn run_gate(
         return Ok(run);
     }
     let read_text = gate.role.expects_tests();
-    let first = match observe(
-        session,
-        io,
-        &gate.argv,
-        gate.cwd.as_ref(),
-        gate.timeout,
-        io.cfg.bounds.max_output_bytes,
-        read_text,
-    )
-    .await?
-    {
+    let first = match observe_gate(session, io, gate, read_text).await? {
         Ok(seen) => seen,
         Err(_) => {
             run.blocker = Some(Blocker {
@@ -345,17 +363,7 @@ async fn run_gate(
     };
     if retry_allowed(io, gate, &first) {
         // One recorded retry, only because every failed test is in the central flaky registry.
-        match observe(
-            session,
-            io,
-            &gate.argv,
-            gate.cwd.as_ref(),
-            gate.timeout,
-            io.cfg.bounds.max_output_bytes,
-            read_text,
-        )
-        .await?
-        {
+        match observe_gate(session, io, gate, read_text).await? {
             Ok(second) => {
                 run.first = Some(first);
                 run.run = Some(second);
@@ -373,21 +381,58 @@ async fn run_gate(
     Ok(run)
 }
 
+/// Runs the command of a gate and, when the gate names a test report file, reads the file back
+/// with a second command in the same sandbox.
+///
+/// The report is read only after a test command that ended by itself. The read is an ordinary
+/// observed command: its output is redacted, stored and cut at the same size limit, and a file
+/// that is absent makes the command fail, which the verdict reads as a missing report.
+async fn observe_gate(
+    session: &mut dyn SandboxSession,
+    io: &Io<'_>,
+    gate: &CommandGate,
+    read_text: bool,
+) -> Result<Result<Seen, SandboxError>, StageError> {
+    let mut seen = match observe(
+        session,
+        io,
+        &gate.argv,
+        gate.cwd.as_ref(),
+        gate.timeout,
+        io.cfg.bounds.max_output_bytes,
+        read_text,
+    )
+    .await?
+    {
+        Ok(seen) => seen,
+        Err(error) => return Ok(Err(error)),
+    };
+    let ended_by_itself = seen.exec.exit_code.is_some() && !seen.exec.timed_out;
+    if let (Some(argv), true) = (gate.report_command(), ended_by_itself) {
+        let timeout = Duration::from_secs(io.cfg.bounds.probe_timeout_seconds);
+        let limit = io.cfg.bounds.max_output_bytes;
+        match observe(session, io, &argv, None, timeout, limit, true).await? {
+            Ok(read) => seen.report = Some(Box::new(read)),
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    Ok(Ok(seen))
+}
+
 /// True when the run failed, and every test that failed is in the central flaky registry.
 fn retry_allowed(io: &Io<'_>, gate: &CommandGate, seen: &Seen) -> bool {
     if !gate.role.expects_tests() || io.cfg.flaky_registry.is_empty() {
         return false;
     }
     if !matches!(
-        interpret(gate.role, &seen.exec, &seen.reading()),
+        interpret(gate.role, &seen.exec, &seen.reading(&gate.report)),
         Verdict::Failed(_)
     ) {
         return false;
     }
-    let (Some(stdout), Some(stderr)) = (&seen.stdout, &seen.stderr) else {
+    let Some(outcomes) = seen.reading(&gate.report).outcomes() else {
         return false;
     };
-    let outcomes = Outcomes::parse(stdout, stderr);
     let failed = outcomes.ids(Status::Failed);
     outcomes.is_consistent()
         && !failed.is_empty()
@@ -433,6 +478,7 @@ async fn observe(
                 exec,
                 stdout,
                 stderr,
+                report: None,
             }))
         }
         Err(SandboxError::Cancelled) => Err(StageError::Cancelled),

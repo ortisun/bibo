@@ -276,6 +276,18 @@ const REJECTED_FOR: &[(&str, &str)] = &[
         "gates[0].argv: a gate command must not start a shell",
     ),
     (
+        "project-manifest/libtest-report-with-a-path.json",
+        "gates[1].test_report.path: the libtest format is read from the output of the command",
+    ),
+    (
+        "project-manifest/test-report-format-not-in-closed-set.json",
+        "\"nunit\" is not a valid test report format",
+    ),
+    (
+        "project-manifest/test-report-on-a-gate-that-is-not-the-test-gate.json",
+        "gates[0].test_report: only the gate `unit-tests` reads a test report",
+    ),
+    (
         "project-manifest/manifest-does-not-protect-itself.json",
         "`.factory/**` must be a protected path",
     ),

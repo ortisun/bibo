@@ -133,6 +133,89 @@ impl GateCwd {
 
 string_traits!(GateCwd);
 
+/// The gate whose command is a test run. Only this gate may declare a test report.
+pub const TEST_GATE_ID: &str = "unit-tests";
+
+string_enum! {
+    /// A format in which a test command reports its results. The set is closed: the factory
+    /// reads only these.
+    pub enum TestReportFormat("test report format") {
+        /// What the Rust test harness prints (`cargo test`). Read from the two output streams
+        /// of the command. This is the format of a gate that declares none.
+        Libtest = "libtest",
+        /// The JUnit XML report that pytest (`--junitxml`), jest-junit, go-junit-report, Maven
+        /// Surefire, Gradle and cargo-nextest write.
+        JunitXml = "junit-xml",
+        /// The Test Anything Protocol, version 13 or 14.
+        Tap = "tap",
+    }
+}
+
+/// Where a test command writes its report: a file path relative to the output directory of the
+/// verify sandbox (`/out`), which is the only directory that the test command can write to and
+/// that the factory reads back. The checkout itself is mounted read-only there.
+///
+/// The schema pattern allows a leading slash and `..` segments. This type refuses both, and a
+/// trailing slash, because the report must be one file inside the output directory.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReportPath(String);
+
+impl ReportPath {
+    /// Checks the pattern and refuses an empty path, a leading or trailing slash and `..`.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] when the path is not a relative file path without `..`.
+    pub fn parse(text: &str) -> Result<Self, ValueError> {
+        const WHAT: &str = "test report path";
+        if text.is_empty() || !GATE_CWD_SHAPE.is_match(text) {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "use a relative file path with letters, digits, dots, underscores, hyphens and slashes only",
+            ));
+        }
+        if text.starts_with('/') {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "a test report path is relative to the output directory of the sandbox, so it cannot start with a slash",
+            ));
+        }
+        if climbs(text)
+            || text
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == ".")
+        {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "use a path with no `..`, `.` or empty segment, which could leave the output directory or name a directory",
+            ));
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    /// The path.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+string_traits!(ReportPath);
+
+/// How the result of a test gate is read.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestReportSpec {
+    /// The format of the report.
+    pub format: TestReportFormat,
+    /// The report file, relative to the output directory of the sandbox. Without a path the
+    /// report is read from the standard output of the command. `libtest` takes no path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<ReportPath>,
+}
+
 /// True when `program` is a shell: one of the names the schema lists, written with or without a
 /// directory, in any letter case, with or without `.exe`.
 ///
@@ -188,6 +271,10 @@ pub struct GateCommandSpec {
     pub timeout_seconds: Bounded<1, 7200>,
     /// Whether the gate must pass.
     pub mandatory: bool,
+    /// How the test results are read. Only the `unit-tests` gate may say. A gate that does not
+    /// say is read as `libtest`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_report: Option<TestReportSpec>,
 }
 
 /// The pinned Spec Kit.
@@ -275,6 +362,18 @@ impl ProjectManifest {
                 format!("gates[{index}].argv"),
                 "a gate command must not start a shell; list the program and its arguments directly",
             );
+            if let Some(report) = &gate.test_report {
+                found.require(
+                    gate.id.as_str() == TEST_GATE_ID,
+                    format!("gates[{index}].test_report"),
+                    "only the gate `unit-tests` reads a test report; remove `test_report` from this gate",
+                );
+                found.require(
+                    report.format != TestReportFormat::Libtest || report.path.is_none(),
+                    format!("gates[{index}].test_report.path"),
+                    "the libtest format is read from the output of the command and takes no report path",
+                );
+            }
         }
         found.require(
             self.protected_paths
@@ -288,7 +387,28 @@ impl ProjectManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::names_a_shell;
+    use super::{ReportPath, names_a_shell};
+
+    #[test]
+    fn a_report_path_is_a_relative_file_path_that_cannot_leave_the_output_directory() {
+        for good in ["report.xml", "reports/junit.xml", "a/b/c.tap", "..hidden"] {
+            assert!(ReportPath::parse(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "/out/report.xml",
+            "../report.xml",
+            "reports/../../x",
+            "reports/",
+            "a//b",
+            "./report.xml",
+            "report xml",
+            "report.xml\n",
+            "~/report.xml",
+        ] {
+            assert!(ReportPath::parse(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn shells_are_found_however_they_are_spelled() {
