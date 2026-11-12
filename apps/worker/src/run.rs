@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use factory_ports::store::WorkerId;
 use factory_workflow::engine::{AttemptOutcome, Engine, EngineError};
-use factory_workflow::scheduler::{ClaimedAttempt, Ticker};
+use factory_workflow::scheduler::{ClaimedAttempt, Deferral, Ticker};
 use tracing::Instrument;
 
 use factory_composition::config::LoopConfig;
@@ -66,6 +66,12 @@ pub struct LoopSummary {
     pub attempts_run: u32,
     /// Sweeps made.
     pub sweeps: u32,
+    /// Ready stage runs the claim set aside because starting them raised an error about the
+    /// stage run itself (`Deferral::Faulted`). One stage run is counted each time it is set aside.
+    pub set_aside: u32,
+    /// Attempts whose run raised an error about the job and that the loop then failed as a fault
+    /// of the factory, or left for the sweeper when that could not be recorded.
+    pub faulted: u32,
     /// Attempts the loop stopped waiting for at the end of the drain budget.
     pub abandoned: Vec<ClaimedAttempt>,
     /// True when the loop ended because of the stop request or an observer, not an error.
@@ -224,6 +230,14 @@ impl WorkerLoop {
                 }
                 Err(error) => return self.fail(summary, &error),
             };
+            let set_aside = claimed
+                .deferred
+                .iter()
+                .filter(|(_, reason)| *reason == Deferral::Faulted)
+                .count();
+            summary.set_aside = summary
+                .set_aside
+                .saturating_add(u32::try_from(set_aside).unwrap_or(u32::MAX));
             if claimed.started.is_empty() {
                 self.idle().await;
                 continue;
@@ -247,8 +261,13 @@ impl WorkerLoop {
                     Ran::Error(error) => {
                         if is_transient(&error) {
                             tracing::warn!(%error, "an attempt could not record its result; the lease will lapse");
-                        } else {
+                        } else if error.is_about_the_process() {
                             return self.fail(summary, &error);
+                        } else {
+                            summary.faulted += 1;
+                            if let Err(worse) = self.fail_faulted(&attempt, &error).await {
+                                return self.fail(summary, &worse);
+                            }
                         }
                     }
                 }
@@ -256,6 +275,47 @@ impl WorkerLoop {
         }
         tracing::info!(attempts = summary.attempts_run, "worker loop stopped");
         summary
+    }
+
+    /// Deals with an attempt whose run raised `error`, an error about the job and not about this
+    /// process. The loop used to end here, and the worker that replaced it met the same job again.
+    ///
+    /// The failure is recorded against the attempt through the engine (`Engine::fail_attempt`), as
+    /// a fault of the factory, which is never retried: the stage run ends or asks a person, and
+    /// the jobs behind it run. When even that cannot be recorded because of the job (its records
+    /// are damaged), the attempt is left as it is: its lease lapses, the sweeper ends it, and the
+    /// retry rules of the stage bound how often it comes back.
+    ///
+    /// # Errors
+    /// The error of the recording when it is about this process, which ends the loop.
+    async fn fail_faulted(
+        &self,
+        attempt: &ClaimedAttempt,
+        error: &EngineError,
+    ) -> Result<(), EngineError> {
+        tracing::error!(
+            job = %attempt.job,
+            attempt = %attempt.attempt,
+            stage = attempt.kind.as_str(),
+            %error,
+            detail = ?error,
+            "an attempt raised an error about its job; it is failed and the loop goes on"
+        );
+        match self.engine.fail_attempt(attempt).await {
+            Ok(outcome) => {
+                tracing::warn!(attempt = %attempt.attempt, outcome = ?outcome, "the faulted attempt was ended");
+                Ok(())
+            }
+            Err(worse) if worse.is_about_the_process() && !is_transient(&worse) => Err(worse),
+            Err(worse) => {
+                tracing::error!(
+                    attempt = %attempt.attempt,
+                    error = %worse,
+                    "the failure of a faulted attempt could not be recorded; its lease is left to lapse and the sweeper will end it"
+                );
+                Ok(())
+            }
+        }
     }
 
     fn fail(&self, mut summary: LoopSummary, error: &EngineError) -> LoopSummary {
@@ -387,8 +447,13 @@ impl From<Result<AttemptOutcome, EngineError>> for Ran {
     }
 }
 
-/// An error the loop rides out: the store was busy or a race was lost. Anything else ends the
-/// loop, because a worker that keeps going after a defect hides it.
+/// An error the loop rides out: the store was busy or a race was lost.
+///
+/// Of the others, an error about this process (`EngineError::is_about_the_process`: the
+/// configuration, a store that is broken) ends the loop, because a worker that keeps going after
+/// such a defect hides it. An error about one job does not: it is logged at the error level,
+/// counted in [`LoopSummary`], the attempt is failed, and the other jobs run. Ending the loop for
+/// it stopped every tenant, and the same job was the first thing the next worker met.
 fn is_transient(error: &EngineError) -> bool {
     error.is_retryable()
         || matches!(

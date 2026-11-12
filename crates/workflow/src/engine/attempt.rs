@@ -1207,6 +1207,27 @@ impl Engine {
 
     // ---- recording a failure ----------------------------------------------------------------------
 
+    /// Fails an attempt whose run ended with an error instead of a result, as a fault of the
+    /// factory (`INTERNAL`), and lets the stage run decide what that means. That class is never
+    /// retried, so the stage run ends or asks a person, with the class in the attempt's row and in
+    /// its event.
+    ///
+    /// The worker loop calls it when [`Engine::run_attempt`] returns an error that is about the
+    /// job and not about the process ([`EngineError::is_about_the_process`]). Without it the
+    /// attempt would hold its lease until it lapsed and be started again, to raise the same error.
+    /// An attempt that already ended is left as it is and reported as
+    /// [`AttemptOutcome::LeaseLost`].
+    ///
+    /// # Errors
+    /// The store errors, and the error of a job whose records are too damaged to write to.
+    pub async fn fail_attempt(
+        &self,
+        claimed: &ClaimedAttempt,
+    ) -> Result<AttemptOutcome, EngineError> {
+        self.commit_failure(claimed, FailureClass::Internal, &Notes::default())
+            .await
+    }
+
     /// Fails the attempt with `class` and lets the stage run decide what that means.
     async fn commit_failure(
         &self,

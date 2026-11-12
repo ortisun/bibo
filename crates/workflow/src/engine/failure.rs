@@ -82,22 +82,35 @@ impl Engine {
         if run.value.status != StageRunStatus::Running {
             return Ok(None);
         }
-        let handler = self
-            .handlers
-            .get(run.value.kind)
-            .ok_or(EngineError::NoHandler(run.value.kind))?;
         let upstream = upstream_runs(&timeline, &board);
         let ccx = self.contract_context(cx, &run.value, record, &upstream);
-        let contract = handler
-            .contract(&ccx)
-            .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))?;
+        let resolved = self
+            .handlers
+            .get(run.value.kind)
+            .ok_or(EngineError::NoHandler(run.value.kind))
+            .and_then(|handler| {
+                handler
+                    .contract(&ccx)
+                    .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))
+            });
+        // The contract is read for its retry rules. A fault of the factory is never retried,
+        // whatever the contract says, so it is decided without one: a contract that no longer
+        // resolves is itself such a fault, and it must not keep its own failure from being
+        // recorded. Every other class still needs the contract.
+        let contract = match resolved {
+            Ok(contract) => Some(contract),
+            Err(_) if class == FailureClass::Internal => None,
+            Err(error) => return Err(error),
+        };
+        let retries = contract.as_ref().map(|c| &c.timeout_and_retries);
 
         let window = record.window();
         let facts = RetryFacts {
             class,
-            retry_on: contract.timeout_and_retries.retry_on.as_slice(),
+            retry_on: retries.map_or(&[][..], |rules| rules.retry_on.as_slice()),
             attempts_used: window.attempts_used(),
-            max_attempts: u32::try_from(contract.timeout_and_retries.max_attempts.get())
+            max_attempts: retries
+                .and_then(|rules| u32::try_from(rules.max_attempts.get()).ok())
                 .unwrap_or(1),
             budget_has_room: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
             invalid_output_failures: window.invalid_output_failures(),
@@ -114,11 +127,12 @@ impl Engine {
         match disposition {
             AttemptDisposition::Retry => {
                 let cleared = clear(Guard::RetryAllowed, &GuardFacts::Retry(facts))?;
-                let delay = retry_delay(
-                    &contract.timeout_and_retries.backoff,
-                    window.attempts_used(),
-                    seed_of(attempt),
-                );
+                let Some(rules) = retries else {
+                    return Err(EngineError::Corrupt(
+                        "a retry was decided for a stage run whose contract does not resolve",
+                    ));
+                };
+                let delay = retry_delay(&rules.backoff, window.attempts_used(), seed_of(attempt));
                 // The store sets `not_before` from its own clock, so the back-off needs no wait
                 // for an old lease: the stage run is findable again once the delay has passed.
                 cx.move_stage_run(
