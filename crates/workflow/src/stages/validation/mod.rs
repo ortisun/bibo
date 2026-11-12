@@ -53,6 +53,9 @@
 //!   exits with code 0. The reading rejects forged lines, a forged summary and counts that do not
 //!   add up, but a report that adds up is a report. A stronger defence is a trusted test runner
 //!   in a separate process; it is not in this slice.
+//! * A covering test that asserts nothing. `acceptance-evidence` counts a test for a requirement
+//!   when the test names it, passes on the candidate and did not pass on the baseline run. It
+//!   does not read the test. See `gates::scope::acceptance` for what that leaves open.
 //! * Task scope (`path_access.write_scope_source`): the owned files of the task come from the
 //!   plan, which this stage does not read, so the scope rule is the policy's `write_allow` only.
 //!

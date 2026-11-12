@@ -884,10 +884,7 @@ async fn negative_nt_gate_07_tests_that_collect_zero_tests_are_blocked() {
     let ran = blocked_by(none).await;
     assert_eq!(ran.outcome("unit-tests"), GateOutcome::Blocked);
     // Only ignored tests show nothing either.
-    let ignored = libtest(
-        &[("tests/it.rs", &[("counts_a_line", "ignored")])],
-        0,
-    );
+    let ignored = libtest(&[("tests/it.rs", &[("counts_a_line", "ignored")])], 0);
     let ran = blocked_by(ignored).await;
     assert_eq!(ran.outcome("unit-tests"), GateOutcome::Blocked);
 }

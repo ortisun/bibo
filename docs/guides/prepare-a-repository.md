@@ -149,7 +149,7 @@ grep -- "- id:" fixtures/repos/word-count/.factory/project.yaml
 | The file is valid and has no `build` or no `unit-tests` entry | That gate is BLOCKED. |
 | The command policy refuses the command of an entry | That gate is BLOCKED. |
 
-When the `unit-tests` gate did not run, the `acceptance-evidence` gate is BLOCKED too. It needs a verified test run.
+When the `unit-tests` gate did not run, the `acceptance-evidence` gate is BLOCKED too. It needs a verified test run of the change and a verified test run of the base commit, and it is BLOCKED when either one is missing or cannot be read.
 
 BLOCKED is never a pass. A gate that could not run has shown nothing.
 
@@ -157,11 +157,11 @@ The repository intelligence stage runs earlier and behaves differently. With no 
 
 ## Tests that count as acceptance evidence
 
-The specification of a job lists requirements, and each has an identifier such as `FR-001`. The `acceptance-evidence` gate passes only when every requirement has at least one test that ran, passed and names it (`crates/workflow/src/gates/scope/acceptance.rs`).
+The specification of a job lists requirements, and each has an identifier such as `FR-001`. The `acceptance-evidence` gate passes only when every requirement has at least one test that names it, that ran and passed on the change, and that did not pass on the base commit (`crates/workflow/src/gates/scope/acceptance.rs`).
 
 A test names a requirement by carrying the identifier in its own name. The gate compares in lower case and reads every character that is not a letter or a digit as an underscore. The identifier must be a whole token of the name.
 
-| Requirement | Test name | Covered |
+| Requirement | Test name | Names the requirement |
 |---|---|---|
 | `FR-001` | `fr_001_counts_a_line` | Yes. |
 | `FR-001` | `counts_a_line_fr_001` | Yes. |
@@ -170,7 +170,23 @@ A test names a requirement by carrying the identifier in its own name. The gate 
 
 The identifier of an acceptance scenario of the requirement, such as `AS-001`, counts in the same way.
 
-A requirement with no passed test that names it fails the gate. The builder agent writes these tests during the job. A repository that already uses this naming gives the agent a pattern to follow.
+A name is not enough. The validation stage runs the tests twice: on the change, and on the base commit as it was before the change. A test that names a requirement counts only when the second run does not show it as passed.
+
+| The test on the base commit | The test on the change | Counts for the requirement |
+|---|---|---|
+| Does not exist | Passed | Yes. The report says "new test". |
+| Failed | Passed | Yes. The report says "failed on the base commit". |
+| Ignored | Passed | Yes. The report says "ignored on the base commit". |
+| Passed | Passed | No. The test passed before the change, so it shows nothing about the change. |
+| Any | Failed or ignored | No. |
+
+A requirement with no test that counts fails the gate. The failure says which of two things happened: no passed test names the requirement (`requirement-uncovered`), or the only tests that name it already passed on the base commit (`requirement-covered-only-by-old-tests`). The report lists, for each requirement, the tests that cover it and the reason each one counts, in the notes of its baseline comparison.
+
+The builder agent writes these tests during the job. A repository that already uses this naming gives the agent a pattern to follow. A test that is already in the repository and already passes does not count for a later job, even when its name carries the identifier of that job's requirement.
+
+A job that changes no behavior, such as a refactor, has no exemption. The change must add a test, named after the requirement, that pins the behavior the requirement asks to keep. No field of the specification lets a person say that a requirement needs no new test, and the gate does not take that from an agent.
+
+The gate does not read what a test asserts. An empty new test that carries the identifier counts. The new tests are not run against the code of the base commit, so the gate does not show that a new test would fail without the change. A copy of an old test under a new name is a new test. The independent code reviewer is told to open each covering test that the report names and to report a test that asserts nothing, cannot fail or does not exercise the scenario. That is the judgment of a model and not a measurement.
 
 ## Limits that exist today
 
@@ -178,7 +194,7 @@ The factory was built and tested against one Rust fixture. Two gates read Rust t
 
 - **The test gate reads the output of the Rust test harness only.** The `unit-tests` gate parses the output of `cargo test`, which the harness named libtest prints (`crates/workflow/src/gates/command/libtest.rs`). A test command that prints another format is not read as tests that ran, and the gate is BLOCKED (`crates/workflow/src/gates/command/verdict.rs`). A repository whose tests run under pytest, Jest, Go or JUnit cannot pass this gate today.
 - **The supply-chain gate reads Cargo only.** The module says "Only Cargo is implemented" (`crates/workflow/src/gates/supply_chain/mod.rs`). Dependencies declared for npm, pip or Go are not checked by it.
-- **The acceptance rule depends on the test gate.** It reads the test names from the same parsed output, so it has the same limit.
+- **The acceptance rule depends on the test gate.** It reads the test names from the same parsed output, for the change and for the base commit, so it has the same limit.
 
 The `format`, `lint` and `build` gates read an exit code, so they can run any program that the command policy allows and the verify image holds. The image and the policy were written for Rust.
 
