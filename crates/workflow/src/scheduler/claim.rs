@@ -147,9 +147,7 @@ impl Engine {
                 Err(error) => {
                     tracing::error!(
                         stage_run = %run,
-                        job = %candidate.job,
                         %error,
-                        detail = ?error,
                         "a ready stage run cannot be started; it is set aside so the others run"
                     );
                     self.set_aside(&candidate).await?;

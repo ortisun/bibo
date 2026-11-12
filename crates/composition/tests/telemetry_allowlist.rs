@@ -566,6 +566,11 @@ const REVIEWED: &[(&str, &str, &str)] = &[
     ("crates/storage/src/pg/pool.rs", "pool", "label of the pool"),
     (
         "crates/workflow/src/scheduler/claim.rs",
+        "error",
+        "EngineError of a start that was set aside; its String variants hold adapter error text and no input",
+    ),
+    (
+        "crates/workflow/src/scheduler/claim.rs",
         "guard",
         "guard name, a closed set",
     ),

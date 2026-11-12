@@ -328,7 +328,6 @@ impl WorkerLoop {
         error: &EngineError,
     ) -> Result<(), EngineError> {
         tracing::error!(
-            job = %attempt.job,
             attempt = %attempt.attempt,
             stage = attempt.kind.as_str(),
             %error,
