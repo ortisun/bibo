@@ -721,7 +721,9 @@ def self_test(doc):
         target["control_off"][0] = dict(target["control_off"][0], catches=["negative_nt_not_a_test_of_this_row"])
 
     def proven_by_a_test_double_alone(d):
-        next(r for r in d["rows"] if r["id"] == double_row["id"])["status"] = "proven"
+        # Only used when a row proven on a test double exists (see the guard below).
+        wanted = double_row["id"] if double_row is not None else None
+        next(r for r in d["rows"] if r["id"] == wanted)["status"] = "proven"
 
     def a_product_variant_called_a_double(d):
         target = next(r for r in d["rows"] if r["id"] == row["id"])
