@@ -281,12 +281,16 @@ class Case(unittest.TestCase):
         write_executable(os.path.join(self.bin, "gh"), FAKE_GH)
 
     # -- helpers -----------------------------------------------------------------------------
-    def run_install(self, *args, env=None, with_claude=True, with_gh=True, token=None, shell=()):
+    def run_install(self, *args, env=None, with_claude=True, with_gh=True, token=None, shell=(), tools=False):
+        """tools=False adds --no-tools: the host-tools step has its own tests (HostTools here, test_setup_tools.py)."""
         if not with_claude:
             os.remove(os.path.join(self.bin, "claude"))
         if not with_gh:
             os.remove(os.path.join(self.bin, "gh"))
-        environment = {"PATH": self.bin + ":/usr/bin:/bin", "FAKE_STATE": self.state, "HOME": self.tmp}
+        if not tools:
+            args = ("--no-tools", *args)
+        environment = {"PATH": self.bin + ":/usr/bin:/bin", "FAKE_STATE": self.state, "HOME": self.tmp,
+                       "FACTORY_TOOLS_PREFIX": os.path.join(self.tmp, "factory-tools")}
         if token:
             environment["FACTORY_GITHUB_MCP_TOKEN"] = token
         environment.update(env or {})
@@ -1942,6 +1946,59 @@ class BranchReviewsTool(unittest.TestCase):
         for args in ([], ["judge"], ["judge", "a", "0", "b", "x"], ["nonsense", "a", "0", "b", "0"]):
             done = subprocess.run(["python3", "-I", self.TOOL, *args], capture_output=True, text=True)
             self.assertEqual(done.returncode, 2, args)
+
+
+def read_pins():
+    with open(os.path.join(ROOT, "scripts", "lib", "tool-pins.sh"), encoding="utf-8") as handle:
+        pins = dict(re.findall(r'^PIN_([A-Z]+)="([^"]+)"$', handle.read(), re.M))
+    return {"cargo-nextest": pins["NEXTEST"], "cargo-deny": pins["DENY"], "cargo-audit": pins["AUDIT"],
+            "gitleaks": pins["GITLEAKS"], "actionlint": pins["ACTIONLINT"], "pyright": pins["PYRIGHT"],
+            "shellcheck": pins["SHELLCHECK"]}
+
+
+class HostTools(Case):
+    """The host-tools step runs scripts/setup-tools.sh. Its installs are tested in test_setup_tools.py; here, that the
+    installer runs it, shows its lines and lets its outcome decide READY."""
+
+    def setUp(self):
+        super().setUp()
+        self.pins = read_pins()
+        self.prefix = os.path.join(self.tmp, "factory-tools")
+        for name, text in (("cargo", "echo 'cargo 1.98.0'"), ("node", "echo v22.0.0"), ("npm", "echo 11.0.0"),
+                           ("uv", "echo 'uv 0.13.0'"), ("docker", "echo 'Docker Compose version v2.0.0'")):
+            write_executable(os.path.join(self.bin, name), "#!/bin/sh\n%s\n" % text)
+        for tool, version in self.pins.items():
+            text = "echo 'version: %s'" % version if tool == "shellcheck" else "echo '%s %s'" % (tool, version)
+            write_executable(os.path.join(self.bin, tool), "#!/bin/sh\n%s\n" % text)
+
+    def test_tools_at_their_pins_are_present_and_the_install_is_ready(self):
+        code, out = self.run_install(tools=True)
+        self.assertEqual(code, 0, out)
+        for tool, version in self.pins.items():
+            self.assertTrue(self.has(out, "PRESENT", tool, version), tool + "\n" + out)
+        self.assertTrue(is_ready(out), out)
+
+    def test_check_lists_a_missing_tool_and_installs_nothing(self):
+        os.remove(os.path.join(self.bin, "gitleaks"))
+        code, out = self.run_install("--check", tools=True)
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "WOULD_ADD", "gitleaks", "would install %s" % self.pins["gitleaks"]), out)
+        self.assertFalse(is_ready(out), out)
+        self.assertFalse(os.path.exists(self.prefix), out)
+
+    def test_a_tool_that_needs_a_person_makes_the_install_not_ready(self):
+        write_executable(os.path.join(self.bin, "docker"), "#!/bin/sh\nexit 1\n")
+        code, out = self.run_install(tools=True)
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NEEDS", "docker"), out)
+        self.assertIn("The factory's own tool docker", out)
+
+    def test_no_tools_skips_the_step(self):
+        os.remove(os.path.join(self.bin, "gitleaks"))
+        code, out = self.run_install("--no-tools", tools=True)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.has(out, "SKIPPED", "host-tools", "--no-tools"), out)
+        self.assertNotIn("gitleaks", out)
 
 
 if __name__ == "__main__":

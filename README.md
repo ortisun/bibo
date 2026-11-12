@@ -78,4 +78,4 @@ The API records what people ask for and never runs work. The worker holds the en
 
 ## Working in this repository
 
-The toolchain is pinned in `rust-toolchain.toml`. `scripts/ci.sh` runs every check, on a laptop and in CI alike. The master prompt, `universal_agentic_software_factory_master_prompt.md`, is the source of the requirements.
+The toolchain is pinned in `rust-toolchain.toml`. `scripts/ci.sh` runs every check, on a laptop and in CI alike. `scripts/setup-tools.sh` installs the tools those checks run, at the versions in `scripts/lib/tool-pins.sh`, into `.tools/bin`; add `--check` to see what is missing without changing anything. The master prompt, `universal_agentic_software_factory_master_prompt.md`, is the source of the requirements.

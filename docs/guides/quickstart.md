@@ -15,7 +15,7 @@ You need these programs.
 | Program | Version | Why |
 |---|---|---|
 | Rust toolchain | 1.98.0 | `rust-toolchain.toml` selects it. With `rustup` installed it is fetched when you first run `cargo` in the repository. |
-| `cargo-nextest` | 0.9.137 | Runs the integration tests. |
+| `cargo-nextest` | 0.9.137 | Runs the integration tests. `scripts/setup-tools.sh` installs it, with the factory's other check tools, into `.tools/bin`. |
 | PostgreSQL binaries | 18 | `initdb`, `pg_ctl` and `postgres`, plus `psql`. The tests start a private cluster from them and remove it. On macOS: `brew install postgresql@18`. |
 | Diesel command line | 2.3.11 | Applies the migrations: `cargo install diesel_cli --version 2.3.11 --locked --no-default-features --features postgres`. |
 | `git`, `python3` | any recent | Cloning, and the helper scripts. |
