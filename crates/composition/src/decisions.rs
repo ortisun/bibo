@@ -1269,10 +1269,15 @@ impl ClaimWork {
                 return;
             }
         };
-        match self.markers.mark(tenant, &decision, &marked).await {
+        self.finish(tenant, &decision, &marked).await;
+    }
+
+    /// Writes the marker that ends a decision, and forgets the decision once it is written.
+    async fn finish(&self, tenant: TenantId, decision: &Pending, marked: &Marked) {
+        match self.markers.mark(tenant, decision, marked).await {
             Ok(()) => {
                 // Counted by code, and nothing from the request is in the line (R-13, R-17).
-                tracing::info!(code = outcome_code(&marked), "a decision was dealt with");
+                tracing::info!(code = outcome_code(marked), "a decision was dealt with");
                 self.forget(tenant, decision.sequence);
             }
             Err(Unreadable) => tracing::warn!(
@@ -1805,6 +1810,10 @@ impl WhileRunning for ClaimWork {
     /// other jobs and the records that are not requests. A cancel is therefore applied ahead of
     /// an older request for the same job that is still waiting, which then meets a job that is
     /// being cancelled and is refused as out of place.
+    ///
+    /// A cancel that cannot be decided now (the store or the allowlist cannot be read) is left as
+    /// it is, without counting a try: this runs far more often than a pass, and it must not use up
+    /// the tries a pass gives a request before it is rejected ([`MAX_TRIES`]).
     async fn apply_cancels(&self, tenant: TenantId, job: JobId) {
         if !self.tenants.contains(&tenant) || !self.read_new_records(tenant).await {
             return;
@@ -1824,7 +1833,14 @@ impl WhileRunning for ClaimWork {
         };
         for decision in cancels {
             let span = job_span_of(&*self.store, tenant, job).await;
-            self.deal_with(tenant, decision).instrument(span).await;
+            async {
+                let (verdict, decision) = self.decide(tenant, decision).await;
+                if let Verdict::Done(marked) = verdict {
+                    self.finish(tenant, &decision, &marked).await;
+                }
+            }
+            .instrument(span)
+            .await;
         }
     }
 }
