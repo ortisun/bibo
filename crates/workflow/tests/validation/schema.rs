@@ -3,7 +3,7 @@
 use factory_domain::contracts::{Contract, GateReport};
 use serde_json::Value;
 
-use crate::gates::{base_run, head_run, it_with_one_more, passing_world};
+use crate::gates::{base_run, head_run, it_with_requirement_tests, passing_world};
 use crate::schema_check;
 use crate::world::{Ran, World};
 
@@ -34,7 +34,7 @@ async fn gate_reports_match_the_schema() {
     reports.extend(every_report(&w.run(&base, &head).await));
 
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (base, head) = w
         .project(&[
             ("tests/it.rs", Some(&more)),

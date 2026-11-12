@@ -8,10 +8,10 @@ use serde_json::{Value, json};
 use crate::cargo::{TestRun, libtest};
 use crate::world::{MANIFEST, World, base_files, with};
 
-const IT_BASE: [(&str, &str); 3] = [
-    ("fr_001_counts_a_line", "ok"),
-    ("fr_002_counts_one_word", "ok"),
-    ("fr_003_counts_nothing", "ok"),
+pub const IT_BASE: [(&str, &str); 3] = [
+    ("counts_a_line", "ok"),
+    ("counts_one_word", "ok"),
+    ("counts_nothing", "ok"),
 ];
 
 pub fn run_of(tests: &[(&str, &str)], exit: i32) -> TestRun {
@@ -33,23 +33,31 @@ pub fn base_run() -> TestRun {
     run_of(&IT_BASE, 0)
 }
 
-/// The text of `tests/it.rs` with one more test at the end.
-pub fn it_with_one_more() -> String {
+/// The tests the change adds: one for each requirement of the frozen specification, named after
+/// it. None of them exists on the base commit, which is what makes them acceptance evidence.
+pub const IT_NEW: [(&str, &str); 3] = [
+    ("fr_001_counts_a_tab", "ok"),
+    ("fr_002_counts_a_line_break", "ok"),
+    ("fr_003_counts_repeated_spaces", "ok"),
+];
+
+/// The text of `tests/it.rs` with one new test for each requirement at the end.
+pub fn it_with_requirement_tests() -> String {
     let mut text = base_files()
         .into_iter()
         .find(|(path, _)| path == "tests/it.rs")
         .map(|(_, text)| text)
         .expect("the file exists");
     text.push_str(
-        "\n#[test]\nfn fr_004_counts_a_tab() {\n    assert_eq!(count(\"a\\tb\"), 2);\n}\n",
+        "\n#[test]\nfn fr_001_counts_a_tab() {\n    assert_eq!(count(\"a\\tb\"), 2);\n}\n\n#[test]\nfn fr_002_counts_a_line_break() {\n    assert_eq!(count(\"a\\nb\"), 2);\n}\n\n#[test]\nfn fr_003_counts_repeated_spaces() {\n    assert_eq!(count(\"a   b\"), 2);\n}\n",
     );
     text
 }
 
-/// The tests of a head commit that adds one passing test.
+/// The tests of a head commit that adds one passing test for each requirement.
 pub fn head_run() -> TestRun {
     let mut tests = IT_BASE.to_vec();
-    tests.push(("fr_004_counts_a_tab", "ok"));
+    tests.extend(IT_NEW);
     run_of(&tests, 0)
 }
 
@@ -64,14 +72,14 @@ pub fn gate(id: &str, argv: &[&str]) -> Value {
     json!({ "id": id, "title": format!("Gate {id}"), "argv": argv, "timeout_seconds": 60, "mandatory": true })
 }
 
-/// A passing change: one more test appended to the existing test file.
+/// A passing change: one new test for each requirement, appended to the existing test file.
 pub async fn passing_world() -> (
     World,
     factory_ports::paths::CommitSha,
     factory_ports::paths::CommitSha,
 ) {
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (base, head) = w.project(&[("tests/it.rs", Some(&more))]).await;
     w.cargo.queue_test_run(head_run());
     w.cargo.queue_test_run(base_run());
@@ -159,10 +167,11 @@ async fn the_format_lint_build_and_test_gates_fail_on_a_nonzero_exit() {
         );
     }
     let w = World::new();
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let (base, head) = w.project(&[("tests/it.rs", Some(&more))]).await;
     let mut failing = IT_BASE.to_vec();
-    failing.push(("fr_004_counts_a_tab", "FAILED"));
+    failing.extend(IT_NEW);
+    failing[3].1 = "FAILED";
     w.cargo.queue_test_run(run_of(&failing, 101));
     w.cargo.queue_test_run(base_run());
     let ran = w.run(&base, &head).await;
@@ -204,9 +213,18 @@ async fn conditional_gates_the_project_does_not_define_do_not_apply_by_a_recorde
     let base = w
         .push(&with(&[(".factory/project.json", Some(&manifest))]))
         .await;
+    // A change with a new test for each requirement: a run with no change at all would have no
+    // acceptance evidence, which is another matter than the one this test is about.
+    let more = it_with_requirement_tests();
+    let head = w
+        .push(&with(&[
+            (".factory/project.json", Some(&manifest)),
+            ("tests/it.rs", Some(&more)),
+        ]))
+        .await;
+    w.cargo.queue_test_run(head_run());
     w.cargo.queue_test_run(base_run());
-    w.cargo.queue_test_run(base_run());
-    let ran = w.run(&base, &base).await;
+    let ran = w.run(&base, &head).await;
     for gate in ["format", "lint"] {
         assert_eq!(ran.outcome(gate), GateOutcome::NotApplicable, "{gate}");
         let reason = ran

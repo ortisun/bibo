@@ -17,7 +17,7 @@ use factory_workflow::gates::supply_chain::facts::RegistryRecord;
 use factory_workflow::gates::supply_chain::report::gate;
 use factory_workflow::stages::validation::SUPPLY_CHAIN_GATES;
 
-use crate::gates::{base_run, head_run, it_with_one_more};
+use crate::gates::{base_run, head_run, it_with_requirement_tests};
 use crate::people::{
     APPROVER, REQUESTER, SECURITY, approve, authorized, decide, human, policy_hash, scope,
 };
@@ -77,7 +77,7 @@ async fn project(head: &[(&str, Option<&str>)]) -> (World, CommitSha, CommitSha)
     let base = w
         .push(&crate::world::with(&[("Cargo.lock", Some(&lock))]))
         .await;
-    let more = it_with_one_more();
+    let more = it_with_requirement_tests();
     let mut changes = vec![("tests/it.rs", Some(more.as_str()))];
     changes.extend_from_slice(head);
     let mut files = crate::world::with(&[("Cargo.lock", Some(&lock))]);

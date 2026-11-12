@@ -100,7 +100,7 @@ pub fn base_files() -> Vec<(String, String)> {
     [
         ("Cargo.toml", "[package]\nname = \"word-count\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
         ("src/lib.rs", LIB),
-        ("tests/it.rs", "use word_count::count;\n\n#[test]\nfn fr_001_counts_a_line() {\n    assert_eq!(count(\"one two\"), 2);\n}\n\n#[test]\nfn fr_002_counts_one_word() {\n    assert_eq!(count(\"one\"), 1);\n}\n\n#[test]\nfn fr_003_counts_nothing() {\n    assert_eq!(count(\"\"), 0);\n}\n"),
+        ("tests/it.rs", "use word_count::count;\n\n#[test]\nfn counts_a_line() {\n    assert_eq!(count(\"one two\"), 2);\n}\n\n#[test]\nfn counts_one_word() {\n    assert_eq!(count(\"one\"), 1);\n}\n\n#[test]\nfn counts_nothing() {\n    assert_eq!(count(\"\"), 0);\n}\n"),
         ("tests/holdout/case.rs", "// held out from the builder\n"),
         (".github/workflows/ci.yml", "name: ci\n"),
         ("CHANGELOG.md", "# Changelog\n"),
