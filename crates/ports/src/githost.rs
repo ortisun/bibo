@@ -431,19 +431,32 @@ pub struct RequiredCheck {
     pub integration_id: Option<u64>,
 }
 
-/// How much of the repository's protection the App could read.
+/// Where the protection of the default branch comes from.
+///
+/// GitHub enforces two kinds of protection side by side: the rules of active rulesets
+/// (`GET .../rules/branches/{b}`, Metadata read) and classic branch protection
+/// (`GET .../branches/{b}/protection`, Administration read, which the App holds since the owner's
+/// decision of 2026-11-12). The report is the stricter of the two for each setting.
+///
+/// `ClassicProtection` and `RulesetsAndClassicProtection` were added in ports v1.1 (additive):
+/// before, classic protection was not read and a branch protected only that way read as
+/// `NoRulesetRules`. A source that does not read classic protection (a scripted fake) answers
+/// `Rulesets` or `NoRulesetRules` and means "no classic protection".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtectionSource {
-    /// Rules of active rulesets that apply to the default branch (`GET .../rules/branches/{b}`,
-    /// Metadata read).
+    /// Rules of active rulesets apply to the default branch, and it has no classic protection.
     Rulesets,
-    /// The default branch has no active ruleset rule. It may have classic branch protection, which
-    /// needs the Administration permission to read and which the App must not hold.
+    /// The default branch has no active ruleset rule and no classic branch protection: nothing
+    /// protects it. (The name is kept from before classic protection was read.)
     NoRulesetRules,
+    /// The default branch has classic branch protection and no active ruleset rule.
+    ClassicProtection,
+    /// Both apply, and the report holds the stricter of the two for each setting.
+    RulesetsAndClassicProtection,
 }
 
-/// What the repository's protection looks like, as far as the App can read it without the
-/// Administration permission. It cannot read the bypass list; see [`BypassAttestation`].
+/// What the repository's protection looks like: the rules of the rulesets and classic branch
+/// protection, combined. It does not judge the bypass list; see [`BypassAttestation`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtectionReport {
     /// The default branch the rules were read for.
@@ -463,8 +476,8 @@ pub struct ProtectionReport {
     /// How many approving reviews a pull request needs before it can be merged: the largest
     /// `required_approving_review_count` of the pull request rules that apply (SF-07). `None` means
     /// unknown: no pull request rule gave a count that could be read, and the preflight does not
-    /// take an unknown count for enough. It is read from rulesets only; classic branch protection
-    /// is never read (it needs the Administration permission).
+    /// take an unknown count for enough. When classic branch protection applies too, its count
+    /// takes part, and the largest known count wins.
     pub required_approving_reviews: Option<u32>,
     /// The required status checks.
     pub required_checks: Vec<RequiredCheck>,
@@ -609,8 +622,9 @@ impl WorkflowRule<'static> {
 }
 
 /// A recorded statement by an organization admin that the factory's App is on no bypass list of
-/// the repository. The App cannot check this itself without the Administration permission, which
-/// the policy forbids, so a person says it and the record is part of the audit trail.
+/// the repository. The App does not check this itself: the bypass list of a ruleset is not in the
+/// rules answer, and the preflight does not judge the bypass allowances of classic protection, so
+/// a person says it and the record is part of the audit trail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BypassAttestation {
     /// The admin who made the statement.
@@ -622,7 +636,8 @@ pub struct BypassAttestation {
 /// What the preflight found missing. The set is closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreflightFailure {
-    /// No ruleset rule applies to the default branch.
+    /// No ruleset rule applies to the default branch, and it has no classic branch protection
+    /// either ([`ProtectionSource::NoRulesetRules`]).
     NoRulesetRules,
     /// A pull request is not required.
     PullRequestNotRequired,
@@ -930,9 +945,11 @@ pub enum GitHostError {
 /// # Postconditions
 /// Every fetch is live; a webhook payload is only a hint. `label_actor` returns the person who
 /// applied the label, or `None` when the label is not on the issue. `repository_protection`
-/// reads rulesets only, with the permissions the policy allows (Metadata read), and reports
-/// `ProtectionSource::NoRulesetRules` when none applies; it never asks for the Administration
-/// permission.
+/// reads the rulesets (Metadata read) and classic branch protection (with a token of
+/// `administration: read` and `metadata: read` only, minted for that one read) and reports the
+/// stricter of the two for each setting, or `ProtectionSource::NoRulesetRules` when neither
+/// applies. It never asks for `administration: write`. A refused read of classic protection is
+/// `Forbidden`, never "not protected".
 ///
 /// # Errors
 /// [`GitHostError`]: `NotFound`, `Unauthorized`, `Forbidden`, `RateLimited`, `Unavailable`.
@@ -1021,8 +1038,9 @@ pub trait IssueSource: Send + Sync {
         Ok(TextEdit::Unknown)
     }
 
-    /// Reads the rules that apply to the default branch. A failure to read is an error, which the
-    /// engine treats as level L0.
+    /// Reads the rules and the classic branch protection that apply to the default branch, and
+    /// combines them. A failure to read either is an error, which the engine treats as level L0;
+    /// a classic protection the App was refused (it lacks `administration: read`) is `Forbidden`.
     async fn repository_protection(
         &self,
         scope: &GitScope,

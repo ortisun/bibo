@@ -987,7 +987,10 @@ secrets:
 credentials:
   github_app:
     # Checked when the App is registered and on every job start. Names follow
-    # GitHub's repository permission names.
+    # GitHub's repository permission names. Each required level is also the most
+    # the App may hold of that permission: an App that holds a required
+    # permission at a higher level is refused like one that holds a forbidden
+    # permission (crates/github/src/permissions.rs, audit_app).
     permissions_required:
       metadata: read
       contents: write
@@ -996,8 +999,13 @@ credentials:
       checks: write
       statuses: write
       actions: read
+      # The owner decided on 2026-11-12 that the App may read administration, so
+      # that the protection preflight can read classic branch protection
+      # (GET .../branches/{branch}/protection) next to the rulesets. Read only:
+      # the level above is refused. Only a token minted for that one read
+      # carries it (PermissionSet::protection_reader).
+      administration: read
     permissions_forbidden:
-      - administration
       - workflows                      # the App must not be able to edit workflow files
       - secrets
       - environments

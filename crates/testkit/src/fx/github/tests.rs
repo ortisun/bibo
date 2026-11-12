@@ -368,7 +368,12 @@ fn minting_refuses_what_the_installation_or_the_app_does_not_have() {
         ),
         (
             "a permission the App does not hold",
-            json!({"permissions": {"administration": "read"}}),
+            json!({"permissions": {"workflows": "read"}}),
+            "not granted to this installation",
+        ),
+        (
+            "administration above the App's read",
+            json!({"permissions": {"administration": "write"}}),
             "not granted to this installation",
         ),
         (
@@ -413,7 +418,7 @@ fn minting_refuses_what_the_installation_or_the_app_does_not_have() {
     // Every refused request is still in the log.
     assert_eq!(
         w.github.count("POST /app/installations/{id}/access_tokens"),
-        5
+        6
     );
 }
 
@@ -620,7 +625,8 @@ fn branch_protection_is_summarised_for_pushers_and_detailed_only_for_administrat
         app_id
     );
 
-    // The full protection needs `administration`, which the factory's App must not hold.
+    // The full protection needs `administration: read`, which a token that did not ask for it
+    // does not hold, even though the App does (the owner's decision of 2026-11-12).
     let (status, error) = call(
         &w.github,
         "GET",
@@ -630,22 +636,35 @@ fn branch_protection_is_summarised_for_pushers_and_detailed_only_for_administrat
     );
     assert_eq!(status, 403, "{error}");
 
-    // An App that wrongly holds `administration` can read it, bypass list included.
-    let over_privileged = world();
-    over_privileged
+    // An App without the permission cannot mint a token that reads it.
+    let without = world();
+    without
         .github
-        .set_app(AppConfig::factory_default().with_permission("administration", "read"));
-    over_privileged.github.protect_branch(
+        .set_app(AppConfig::factory_default().without_permission("administration"));
+    let (status, _) = call(
+        &without.github,
+        "POST",
+        "/app/installations/77/access_tokens",
+        Some(&without.github.sample_app_jwt()),
+        Some(&json!({"repositories": ["widgets"], "permissions": {"administration": "read"}})),
+    );
+    assert_eq!(status, 422);
+
+    // The token of the protection read class reads it, bypass list included.
+    let protected = world();
+    protected.github.protect_branch(
         "acme/widgets",
         "main",
-        Protection::satisfying_the_policy(over_privileged.github.app().id),
+        Protection::satisfying_the_policy(protected.github.app().id),
     );
     let admin_token = mint(
-        &over_privileged.github,
-        Some(json!({"repositories": ["widgets"], "permissions": {"administration": "read"}})),
+        &protected.github,
+        Some(
+            json!({"repositories": ["widgets"], "permissions": {"administration": "read", "metadata": "read"}}),
+        ),
     );
     let (status, detail) = call(
-        &over_privileged.github,
+        &protected.github,
         "GET",
         "/repos/acme/widgets/branches/main/protection",
         Some(&admin_token),
@@ -656,6 +675,15 @@ fn branch_protection_is_summarised_for_pushers_and_detailed_only_for_administrat
         detail["required_pull_request_reviews"]["required_approving_review_count"],
         1
     );
+    assert_eq!(
+        detail["required_pull_request_reviews"]["require_code_owner_reviews"],
+        true
+    );
+    assert_eq!(detail["allow_force_pushes"]["enabled"], false);
+    assert_eq!(
+        detail["required_status_checks"]["checks"][0]["app_id"],
+        protected.github.app().id
+    );
     assert!(
         detail["required_pull_request_reviews"]["bypass_pull_request_allowances"]["apps"]
             .as_array()
@@ -664,11 +692,9 @@ fn branch_protection_is_summarised_for_pushers_and_detailed_only_for_administrat
     );
 
     // An unprotected branch is a 404 with GitHub's message.
-    over_privileged
-        .github
-        .unprotect_branch("acme/widgets", "main");
+    protected.github.unprotect_branch("acme/widgets", "main");
     let (status, error) = call(
-        &over_privileged.github,
+        &protected.github,
         "GET",
         "/repos/acme/widgets/branches/main/protection",
         Some(&admin_token),

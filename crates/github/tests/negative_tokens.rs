@@ -332,8 +332,10 @@ async fn lb_03_the_intake_token_is_issues_read_and_metadata_read_whatever_the_ca
         .await
         .unwrap();
     source.labels_ever_applied(&scope, &issue).await.unwrap();
-    // The preflight reads the protection of the default branch under the same scope. It needs the
-    // metadata only, so the narrow token must still serve it.
+    // The preflight reads the protection of the default branch under the same scope. The rules
+    // need the metadata only, so the narrow token must still serve them; classic protection is
+    // read with the protection read token, which is a class of its own and is never the intake
+    // token (the owner's decision of 2026-11-12).
     source
         .repository_protection(&scope)
         .await
@@ -363,6 +365,12 @@ async fn lb_03_the_intake_token_is_issues_read_and_metadata_read_whatever_the_ca
     let mints = world.fake.mints();
     assert!(!mints.is_empty());
     let narrow = as_map(&[("issues", "read"), ("metadata", "read")]);
+    let protection_reader = as_map(&[("administration", "read"), ("metadata", "read")]);
+    let (readers, mints): (Vec<_>, Vec<_>) = mints
+        .into_iter()
+        .partition(|minted| minted.requested_permissions.as_ref() == Some(&protection_reader));
+    assert_eq!(readers.len(), 1, "one protection read token: {readers:?}");
+    assert_eq!(readers[0].granted_permissions, protection_reader);
     for minted in &mints {
         assert_eq!(
             minted.requested_permissions,
@@ -501,7 +509,8 @@ async fn negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_run
             .insert(FIXTURE.to_owned(), value);
     };
 
-    // Classic protection only, or none: the rulesets say nothing, and the reason is named.
+    // No ruleset rule and no classic protection: nothing protects the branch, and the reason is
+    // named. (Classic protection alone is `classic_protection.rs`.)
     set(serde_json::json!([]));
     match world
         .adapter
@@ -613,16 +622,23 @@ async fn negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_run
     );
     set(rules(Some(app_id)));
 
-    // Nothing in the preflight needs the Administration permission or pushes anything.
+    // The preflight reads classic protection (the owner's decision of 2026-11-12) with a token
+    // that holds `administration: read` and `metadata: read` and nothing else; no other token
+    // holds administration at all, and nothing is pushed.
     for mint in world.fake.mints() {
-        assert!(!mint.granted_permissions.contains_key("administration"));
+        match mint.granted_permissions.get("administration") {
+            None => {}
+            Some(level) => {
+                assert_eq!(level, "read");
+                assert_eq!(mint.granted_permissions.len(), 2, "{mint:?}");
+            }
+        }
     }
-    assert_eq!(
-        world
+    assert!(
+        !world
             .fake
             .requests_to("GET /repos/{owner}/{repo}/branches/{branch}/protection")
-            .len(),
-        0
+            .is_empty()
     );
     assert!(
         world.fake.pushes().iter().all(|p| p.token_id.is_none()),

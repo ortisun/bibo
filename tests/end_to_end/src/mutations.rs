@@ -971,8 +971,20 @@ pub fn all() -> Vec<Mutation> {
         Mutation {
             name: "a-token-holds-a-forbidden-permission",
             assertion: "A10",
-            what: "A token holds the administration permission.",
-            expect: "forbidden permission administration",
+            what: "A token holds the workflows permission.",
+            expect: "forbidden permission workflows",
+            base: Production,
+            apply: |ev| {
+                ev.github.tokens[0]
+                    .permissions
+                    .insert("workflows".to_owned(), "read".to_owned());
+            },
+        },
+        Mutation {
+            name: "a-token-holds-administration-write",
+            assertion: "A10",
+            what: "A token holds administration above the read the owner allowed on 2026-11-12.",
+            expect: "administration: write, above the read the policy allows",
             base: Production,
             apply: |ev| {
                 ev.github.tokens[0]

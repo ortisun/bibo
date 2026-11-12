@@ -444,9 +444,10 @@ pub struct InstallationConfig {
     pub installation_id: u64,
 }
 
-/// An administrator's statement that the App is on no bypass list of a repository. The App cannot
-/// read the bypass list itself (it may not hold the Administration permission), so a person says it
-/// and the deployment records it here. Without a statement the repository runs at level L0.
+/// An administrator's statement that the App is on no bypass list of a repository. The App does
+/// not judge the bypass lists itself (a ruleset's list is not in the rules it reads, and the
+/// bypass allowances of classic protection, readable with `administration: read` since
+/// 2026-11-12, are not judged), so a person says it and the deployment records it here. Without a statement the repository runs at level L0.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttestationConfig {

@@ -14,8 +14,11 @@
 //! Before the jobs of a tenant are admitted, for the repository of each `RECEIVED` job it
 //!
 //! 1. reads the protection of the default branch from the code host
-//!    ([`IssueSource::repository_protection`], the port that offers it; the Administration
-//!    permission is never asked for);
+//!    ([`IssueSource::repository_protection`], the port that offers it): the rulesets and classic
+//!    branch protection, the stricter of the two for each setting. Classic protection is read
+//!    with a token of `administration: read` and `metadata: read` only, by this deterministic
+//!    code and never in a sandbox (the owner's decision of 2026-11-12). A read the App is refused
+//!    is named in the record as a missing permission, not taken for "unprotected";
 //! 2. asks for the recorded statement of an administrator that the App is on no bypass list
 //!    ([`BypassAttestations`]), which the App cannot read for itself;
 //! 3. judges both against the policy with [`ProtectionReport::evaluate`], which lists every missing
@@ -77,8 +80,8 @@ use factory_domain::values::{Sha256Digest, Slug};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::clock::IdGenerator;
 use factory_ports::githost::{
-    AppId, BypassAttestation, ExposedWorkflow, GitScope, IssueSource, PreflightFailure,
-    PreflightVerdict, WorkflowExposureAcknowledgement, WorkflowRule,
+    AppId, BypassAttestation, ExposedWorkflow, GitHostError, GitScope, IssueSource,
+    PreflightFailure, PreflightVerdict, WorkflowExposureAcknowledgement, WorkflowRule,
 };
 use factory_ports::paths::RepoRef;
 use factory_ports::store::{
@@ -228,7 +231,8 @@ fn exposure_sentence(workflow: &ExposedWorkflow) -> String {
 fn sentence(failure: &PreflightFailure) -> String {
     match failure {
         PreflightFailure::NoRulesetRules => {
-            "No ruleset rule applies to the default branch.".to_owned()
+            "Neither a ruleset rule nor classic branch protection applies to the default branch."
+                .to_owned()
         }
         PreflightFailure::PullRequestNotRequired => "A pull request is not required.".to_owned(),
         PreflightFailure::CodeOwnerReviewMissing => "Code owner review is not required.".to_owned(),
@@ -389,6 +393,11 @@ impl ProtectionPreflight {
                 }
                 missing
             }
+            // A protection the App may not read is named as such: it is not "unprotected", and
+            // the fix is the App's permissions (`administration: read` since 2026-11-12).
+            Err(GitHostError::Forbidden) => vec![
+                "The App was refused a read of the protection of the default branch: it needs metadata: read for the rulesets and administration: read for classic branch protection.".to_owned(),
+            ],
             // A protection that cannot be read is not a protection that holds.
             Err(_) => vec!["The protection of the default branch could not be read.".to_owned()],
         };

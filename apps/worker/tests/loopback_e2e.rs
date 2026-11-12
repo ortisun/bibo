@@ -86,7 +86,7 @@ fn level(text: &str) -> u8 {
 }
 
 /// The routes an intake that ends at a refusal or at the sandbox may use, and nothing else.
-const INTAKE_ROUTES: [&str; 11] = [
+const INTAKE_ROUTES: [&str; 12] = [
     "GET /app",
     "POST /app/installations/{id}/access_tokens",
     "DELETE /installation/token",
@@ -104,9 +104,14 @@ const INTAKE_ROUTES: [&str; 11] = [
     // workflow read class may make them; see `judge_common`.
     BRANCH_ROUTE,
     CONTENTS_ROUTE,
+    // The read of classic branch protection of the default branch, which the protection
+    // preflight makes next to the rulesets (the owner's decision of 2026-11-12). Only the
+    // protection read class may make it; see `judge_common`.
+    PROTECTION_ROUTE,
 ];
 
 const BRANCH_ROUTE: &str = "GET /repos/{owner}/{repo}/branches/{branch}";
+const PROTECTION_ROUTE: &str = "GET /repos/{owner}/{repo}/branches/{branch}/protection";
 const CONTENTS_ROUTE: &str = "GET /repos/{owner}/{repo}/contents/{path}";
 /// What a token may always do: give itself up.
 const REVOKE_ROUTE: &str = "DELETE /installation/token";
@@ -118,6 +123,12 @@ const REPOSITORY_ROUTE: &str = "GET /repos/{owner}/{repo}";
 /// judgment holds it to the repository, the branch and the contents routes, and to paths under
 /// `.github/workflows`.
 const WORKFLOW_READ_CLASS: [(&str, &str); 2] = [("contents", "read"), ("metadata", "read")];
+
+/// The permissions of the token that reads classic branch protection before a job is admitted.
+/// The owner allowed the App `administration: read` on 2026-11-12 for this read; the judgment
+/// holds this fourth class to the protection route alone, and refuses that route to every other
+/// token.
+const PROTECTION_READ_CLASS: [(&str, &str); 2] = [("administration", "read"), ("metadata", "read")];
 
 /// One request that carried an installation token.
 #[derive(Clone)]
@@ -279,7 +290,9 @@ fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
                 // `metadata: read`. A wider token that is still under the ceilings of the policy
                 // (`contents: read` put back, for instance) is a complaint. The third class reads
                 // the workflow files for the protection preflight (T-48) and holds `contents: read`
-                // and `metadata: read` with no `issues`; where it may be used is judged below.
+                // and `metadata: read` with no `issues`; where it may be used is judged below. The
+                // fourth reads classic branch protection and holds `administration: read` and
+                // `metadata: read` and nothing else; it too is held to its route below.
                 let shape: Vec<(&str, &str)> = permissions
                     .iter()
                     .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
@@ -287,9 +300,10 @@ fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
                 if shape != [("issues", "read"), ("metadata", "read")]
                     && shape != [("issues", "write"), ("metadata", "read")]
                     && shape != WORKFLOW_READ_CLASS
+                    && shape != PROTECTION_READ_CLASS
                 {
                     problems.push(format!(
-                        "token {} has {permissions:?}, which is not the intake read class (issues: read, metadata: read), the reply class (issues: write, metadata: read) or the workflow read class (contents: read, metadata: read)",
+                        "token {} has {permissions:?}, which is not the intake read class (issues: read, metadata: read), the reply class (issues: write, metadata: read), the workflow read class (contents: read, metadata: read) or the protection read class (administration: read, metadata: read)",
                         mint.token_id
                     ));
                 }
@@ -355,6 +369,37 @@ fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
         } else if reads_files {
             problems.push(format!(
                 "token {} is not of the workflow read class and was used on {}",
+                used.token_id, used.route
+            ));
+        }
+    }
+    // The owner's decision of 2026-11-12: the token that can read administration reaches the
+    // classic protection of the branch and nothing else (it may give itself up); and no other
+    // token reaches that route.
+    let protection_readers: BTreeSet<u64> = o
+        .mints
+        .iter()
+        .filter(|mint| {
+            mint.requested_permissions.as_ref().is_some_and(|p| {
+                p.iter()
+                    .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
+                    .eq(PROTECTION_READ_CLASS)
+            })
+        })
+        .map(|mint| mint.token_id)
+        .collect();
+    for used in &o.token_uses {
+        let reads_protection = used.route == PROTECTION_ROUTE;
+        if protection_readers.contains(&used.token_id) {
+            if !reads_protection && used.route != REVOKE_ROUTE {
+                problems.push(format!(
+                    "token {} is of the protection read class and was used on {}, which is not its route",
+                    used.token_id, used.route
+                ));
+            }
+        } else if reads_protection {
+            problems.push(format!(
+                "token {} is not of the protection read class and was used on {}",
                 used.token_id, used.route
             ));
         }
@@ -1038,6 +1083,8 @@ async fn break_doctored_evidence_is_caught_by_each_judgment() {
         judge_refusal(&o, "not_approved"),
         "not narrowed to the one repository",
     );
+    // `administration` is required at `read` since the owner's decision of 2026-11-12, and `read`
+    // is its ceiling: a token that asks for `write` asks for more than the policy grants.
     let mut o = honest.clone_view();
     o.mints[0]
         .requested_permissions
@@ -1046,7 +1093,18 @@ async fn break_doctored_evidence_is_caught_by_each_judgment() {
         .insert("administration".to_owned(), "write".to_owned());
     find(
         judge_refusal(&o, "not_approved"),
-        "forbidden permission administration",
+        "asked for administration: write, above what the policy grants the App",
+    );
+    // A permission the policy still forbids is caught by name.
+    let mut o = honest.clone_view();
+    o.mints[0]
+        .requested_permissions
+        .as_mut()
+        .expect("permissions")
+        .insert("organization_administration".to_owned(), "read".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "forbidden permission organization_administration",
     );
     let mut o = honest.clone_view();
     o.mints[1]
@@ -1086,7 +1144,11 @@ async fn break_doctored_evidence_is_caught_by_each_judgment() {
     let other = honest
         .mints
         .iter()
-        .find(|mint| mint.token_id != reader)
+        .find(|mint| {
+            mint.requested_permissions
+                .as_ref()
+                .is_some_and(|p| p.contains_key("issues"))
+        })
         .expect("a token that reads the issue")
         .token_id;
     let mut o = honest.clone_view();
@@ -1122,6 +1184,72 @@ async fn break_doctored_evidence_is_caught_by_each_judgment() {
     find(
         judge_refusal(&o, "not_approved"),
         "is not of the workflow read class",
+    );
+    // The owner's decision of 2026-11-12. The token of the protection read class is used on a
+    // route that is not its own (it reads an issue, and it reads the workflow files); a token of
+    // another class reads classic protection; and the protection read token asks for one
+    // permission more than its class.
+    let protection_reader = honest
+        .mints
+        .iter()
+        .find(|mint| {
+            mint.requested_permissions
+                .as_ref()
+                .is_some_and(|p| p.contains_key("administration"))
+        })
+        .expect("the run read classic protection, so it minted a token that can")
+        .token_id;
+    assert!(
+        honest
+            .token_uses
+            .iter()
+            .any(|used| used.token_id == protection_reader && used.route == PROTECTION_ROUTE),
+        "the honest run read classic protection with its own token"
+    );
+    for (route, path) in [
+        (
+            "GET /repos/{owner}/{repo}/issues/{number}".to_owned(),
+            format!("/repos/{REPO}/issues/1"),
+        ),
+        (
+            CONTENTS_ROUTE.to_owned(),
+            format!("/repos/{REPO}/contents/.github/workflows"),
+        ),
+        (REPOSITORY_ROUTE.to_owned(), format!("/repos/{REPO}")),
+    ] {
+        let mut o = honest.clone_view();
+        o.token_uses.push(TokenUse {
+            token_id: protection_reader,
+            route,
+            path,
+        });
+        find(
+            judge_refusal(&o, "not_approved"),
+            "is of the protection read class and was used on",
+        );
+    }
+    for intruder in [reader, other] {
+        let mut o = honest.clone_view();
+        o.token_uses.push(TokenUse {
+            token_id: intruder,
+            route: PROTECTION_ROUTE.to_owned(),
+            path: format!("/repos/{REPO}/branches/main/protection"),
+        });
+        find(
+            judge_refusal(&o, "not_approved"),
+            "is not of the protection read class",
+        );
+    }
+    let mut o = honest.clone_view();
+    o.mints
+        .iter_mut()
+        .find(|mint| mint.token_id == protection_reader)
+        .and_then(|mint| mint.requested_permissions.as_mut())
+        .expect("the protection read token")
+        .insert("contents".to_owned(), "read".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "or the protection read class",
     );
     // A second comment (a duplicate answer), a status label and a status comment on a refused issue.
     let mut o = honest.clone_view();

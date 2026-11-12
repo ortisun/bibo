@@ -8,7 +8,9 @@
 //!   never replaced by it.
 //! * `label_actor` reads the issue's event list, the only place the API says who applied a label.
 //!   The webhook's `sender` is never used for this.
-//! * `repository_protection` reads the rulesets with the Metadata permission only.
+//! * `repository_protection` reads the rulesets with the stage token (Metadata read) and classic
+//!   branch protection with a token of its own class (`administration: read`, `metadata: read`),
+//!   and combines them (see `protection.rs`).
 //! * `workflow_files` reads the workflow files of the default branch with the fetch credential
 //!   (`contents: read`), never with the stage token (threat T-48; see `workflows.rs`).
 //!
@@ -31,7 +33,7 @@ use crate::client::Client;
 use crate::edits;
 use crate::encoding::percent_encode_component;
 use crate::parse::{actor, actor_type, repo_path, timestamp};
-use crate::protection::protection_from_rules;
+use crate::protection::{protection_from_rules, with_classic_protection};
 use crate::token::TokenClass;
 use crate::wire::Method;
 use crate::workflows::{WORKFLOW_DIRECTORY, listed_workflows, text_of, workflow_file};
@@ -359,7 +361,35 @@ impl IssueSource for GithubIssueSource {
             // Rules we could not read are rules we cannot rely on.
             return Err(GitHostError::Unavailable);
         }
-        protection_from_rules(default_branch, &serde_json::Value::Array(rules.items))
+        let classic_target = format!(
+            "{}/branches/{}/protection",
+            repo_path(&scope.repo),
+            percent_encode_component(default_branch.as_str())
+        );
+        let report = protection_from_rules(default_branch, &serde_json::Value::Array(rules.items))?;
+        // Classic branch protection, with the token of its own class (`administration: read`,
+        // `metadata: read`), whatever the stage of the scope. UNVERIFIED against the real GitHub:
+        // a 404 is taken for "Branch not protected", the answer the documentation gives for a
+        // branch without classic protection. A 403, or a token the code host would not mint
+        // because the App lacks the permission, is `Forbidden` and stays an error: a protection
+        // the App may not read is never taken for "not protected".
+        let classic = match self
+            .client
+            .call(
+                scope,
+                TokenClass::ProtectionRead,
+                Method::Get,
+                &classic_target,
+                None,
+                true,
+            )
+            .await
+        {
+            Ok(reply) => Some(reply.json),
+            Err(GitHostError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        with_classic_protection(report, classic.as_ref())
     }
 
     async fn workflow_files(&self, scope: &GitScope) -> Result<Vec<WorkflowFile>, GitHostError> {

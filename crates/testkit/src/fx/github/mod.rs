@@ -37,10 +37,14 @@
 //!   `lastEditedAt` of an issue (DR-1, the time the body was last edited) and nothing else; any
 //!   other query, a mutation above all, gets an `errors` body. Use [`FakeGithub::mark_ready`] to
 //!   flip a draft in a test.
-//! * Branch protection is read two ways, as in GitHub. The branch endpoint shows the summary a
-//!   token with push access sees. The protection endpoint needs the `administration` permission,
-//!   which the factory's App must not hold (`policies/security.yaml`, `credentials.github_app`),
-//!   so an adapter that calls it with a stage token gets a 403 here, as it would there.
+//! * Branch protection (the classic kind, seeded with [`FakeGithub::protect_branch`]) is read two
+//!   ways, as in GitHub. The branch endpoint shows the summary a token with push access sees. The
+//!   protection endpoint needs a token that holds `administration: read`: the factory's App holds
+//!   it since the owner's decision of 2026-11-12 (`policies/security.yaml`,
+//!   `credentials.github_app`), and only the adapter's protection read token asks for it, so an
+//!   adapter that calls it with a stage token gets a 403 here, as it would there. A branch with no
+//!   seeded protection answers 404 "Branch not protected". The shape of the answer is written from
+//!   GitHub's documentation and UNVERIFIED against the real GitHub. The fake has no rulesets.
 
 mod routes;
 pub mod webhook;
@@ -105,6 +109,9 @@ impl AppConfig {
             ("checks", "write"),
             ("statuses", "write"),
             ("actions", "read"),
+            // Required since the owner's decision of 2026-11-12, for the classic protection read
+            // of the preflight; `read` is also its ceiling.
+            ("administration", "read"),
         ]
         .into_iter()
         .map(|(name, level)| (name.to_owned(), level.to_owned()))
@@ -208,6 +215,9 @@ pub struct Protection {
     pub enforce_admins: bool,
     /// Whether a new commit dismisses earlier approvals.
     pub dismiss_stale_reviews: bool,
+    /// Whether a code owner must approve. The fake does not enforce it on a merge; it is served on
+    /// the protection endpoint for the preflight.
+    pub require_code_owner_reviews: bool,
     /// Whether force pushes are allowed.
     pub allow_force_pushes: bool,
     /// Whether the branch can be deleted.
@@ -231,6 +241,7 @@ impl Protection {
             require_pull_request: true,
             enforce_admins: true,
             dismiss_stale_reviews: true,
+            require_code_owner_reviews: true,
             allow_force_pushes: false,
             allow_deletions: false,
             bypass_apps: Vec::new(),

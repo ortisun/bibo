@@ -1,5 +1,6 @@
-//! The ruleset reader: a response of the rules for a branch becomes a protection report, and the
-//! report becomes a verdict. The responses are the fixtures in `tests/fixtures/`, written by hand
+//! The ruleset and classic protection readers: a response of the rules for a branch, with the
+//! classic protection answer when there is one, becomes a protection report, and the report
+//! becomes a verdict. The responses are the fixtures in `tests/fixtures/`, written by hand
 //! from the documented shape and not recorded (see the README there): these tests show that the
 //! reader understands that shape, not that GitHub sends it.
 //!
@@ -9,7 +10,7 @@
 
 use factory_domain::ids::PrincipalId;
 use factory_domain::values::{Slug, Timestamp};
-use factory_github::protection_from_rules;
+use factory_github::{protection_from_rules, with_classic_protection};
 use factory_ports::clock::Uuid;
 use factory_ports::githost::{
     AppId, BypassAttestation, PreflightFailure, PreflightVerdict, ProtectionSource, RequiredCheck,
@@ -90,11 +91,42 @@ fn a_missing_attestation_caps_a_strong_repository_and_says_why() {
 }
 
 #[test]
-fn a_repository_with_only_classic_protection_is_capped_at_l0_with_a_named_reason() {
-    let classic = report(include_str!("fixtures/rules_branches_empty.json"));
-    assert_eq!(classic.source, ProtectionSource::NoRulesetRules);
-    assert_eq!(classic.required_approving_reviews, None);
-    match classic.evaluate(
+fn a_repository_with_only_classic_protection_passes_once_the_classic_answer_is_read() {
+    // The rules answer is empty; the classic answer (read with `administration: read` since the
+    // owner's decision of 2026-11-12) asks for everything the policy needs.
+    let rules = report(include_str!("fixtures/rules_branches_empty.json"));
+    let classic = with_classic_protection(
+        rules,
+        Some(&fixture(include_str!(
+            "fixtures/branch_protection_classic_strong.json"
+        ))),
+    )
+    .expect("a report");
+    assert_eq!(classic.source, ProtectionSource::ClassicProtection);
+    assert_eq!(classic.required_approving_reviews, Some(1));
+    assert_eq!(
+        classic.evaluate(
+            APP,
+            &checks(),
+            Some(&attestation()),
+            1,
+            WorkflowRule::RECORD_ONLY
+        ),
+        PreflightVerdict::Pass
+    );
+}
+
+#[test]
+fn a_repository_with_neither_rules_nor_classic_protection_is_capped_at_l0_with_a_named_reason() {
+    // GitHub's 404 "Branch not protected" on the classic read: nothing to add.
+    let unprotected = with_classic_protection(
+        report(include_str!("fixtures/rules_branches_empty.json")),
+        None,
+    )
+    .expect("a report");
+    assert_eq!(unprotected.source, ProtectionSource::NoRulesetRules);
+    assert_eq!(unprotected.required_approving_reviews, None);
+    match unprotected.evaluate(
         APP,
         &checks(),
         Some(&attestation()),
@@ -105,7 +137,7 @@ fn a_repository_with_only_classic_protection_is_capped_at_l0_with_a_named_reason
             assert_eq!(reasons.first(), Some(&PreflightFailure::NoRulesetRules));
             assert!(reasons.contains(&PreflightFailure::PullRequestNotRequired));
         }
-        PreflightVerdict::Pass => panic!("a repository without ruleset rules must not pass"),
+        PreflightVerdict::Pass => panic!("an unprotected repository must not pass"),
     }
 }
 
