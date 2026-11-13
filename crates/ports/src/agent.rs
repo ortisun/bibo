@@ -507,8 +507,11 @@ pub struct RoutingNeed {
     pub probed: ProbedCapabilities,
     /// The model that made the work this stage reviews, for a reviewing stage. The router then
     /// never returns a model that is not independent of it under the rule of independence of the
-    /// routing policy, and refuses when no allowed model is. `None` for a stage that reviews
-    /// nobody's work (SF-17, `docs/architecture/ports-v1.1.md` section 16.1).
+    /// routing policy, and refuses when no allowed model is. When no model of the asked tier is
+    /// independent, the router looks at the other tiers of the stage, so that a rule that asks
+    /// only for another model can reach a model the policy lists at another tier. `None` for a
+    /// stage that reviews nobody's work (SF-17, `docs/architecture/ports-v1.1.md` sections 16.1
+    /// and 16.6).
     pub author: Option<ModelSelection>,
 }
 
@@ -519,6 +522,45 @@ pub struct RoutingDecision {
     pub model: ModelSelection,
     /// The flag set for the stage.
     pub flag_set: FlagSet,
+    /// For a need that names an author and a stage that a rule of independence governs: how the
+    /// chosen model differs from the author's. `None` for every other need, and from a router
+    /// that does not read the routing policy (`docs/architecture/ports-v1.1.md` section 16.6).
+    pub independence: Option<ReviewIndependence>,
+}
+
+/// How far the model chosen for a reviewing stage is from the model that made the work it
+/// reviews. The order is from the strongest to the weakest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndependenceKind {
+    /// Another provider, so another family as well.
+    OtherProvider,
+    /// The same provider and another family.
+    OtherFamily,
+    /// The same family and another model. A weaker check than another family: two models of one
+    /// family share their training and tend to share their blind spots (ADR 0020, amendment of
+    /// 2026-11-13).
+    SameFamilyOtherModel,
+}
+
+impl IndependenceKind {
+    /// The short name, as the audit record and the evidence write it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OtherProvider => "other-provider",
+            Self::OtherFamily => "other-family",
+            Self::SameFamilyOtherModel => "same-family-other-model",
+        }
+    }
+}
+
+/// The author a reviewing stage was routed against, and how the chosen model differs from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewIndependence {
+    /// The model that made the work under review.
+    pub author: ModelSelection,
+    /// How the chosen model differs from it.
+    pub kind: IndependenceKind,
 }
 
 /// Why no route was found. The set is closed.

@@ -290,14 +290,49 @@ fn a_stage_with_two_roles_gets_the_larger_ceiling_of_the_two() {
 
 // ---- reviewer independence --------------------------------------------------------------------
 
+/// The owner chose `must_differ_by: model` for every reviewing rule on 2026-11-13 (ADR 0020,
+/// amendment): in subscription mode only Claude runs, and another Claude model is the best
+/// reviewer available. A reviewer is never the author's own model.
 #[test]
-fn a_reviewer_is_never_of_the_family_of_the_builder() {
+fn every_reviewing_rule_asks_for_another_model_and_never_the_authors_own() {
     let policy = real();
-    let rule = policy
+    for reviewer in [
+        "code_reviewer",
+        "documentation_reviewer",
+        "specification_reviewer",
+    ] {
+        let rule = policy.rule_for_reviewer(reviewer).expect("a rule");
+        assert_eq!(rule.must_differ_by, DifferBy::Model, "{reviewer}");
+        for author in ["claude-sonnet-5-5", "claude-opus-5-5", "gpt-6.1-sol"] {
+            assert!(
+                !policy.independent(rule, author, author),
+                "{reviewer} {author}"
+            );
+            let reviewers: Vec<&str> = policy
+                .independent_reviewers(rule, author)
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            assert!(!reviewers.contains(&author), "{reviewer} {author}");
+            assert_eq!(reviewers.len(), 2, "{reviewer} {author}");
+        }
+    }
+    let code = policy.rule_for_reviewer("code_reviewer").expect("a rule");
+    assert!(policy.independent(code, "claude-sonnet-5-5", "claude-opus-5-5"));
+    assert!(policy.independent(code, "claude-opus-5-5", "claude-sonnet-5-5"));
+}
+
+/// The rule of `family` still works as before, for a deployment or a project that asks for it
+/// (a project may make a rule stronger): a Claude builder is then reviewed only by the model of
+/// the other family.
+#[test]
+fn a_reviewer_under_the_family_rule_is_never_of_the_family_of_the_builder() {
+    let policy = real();
+    let mut rule = policy
         .rule_for_reviewer("code_reviewer")
         .expect("a rule")
         .clone();
-    assert_eq!(rule.must_differ_by, DifferBy::Family);
+    rule.must_differ_by = DifferBy::Family;
     for builder in ["claude-sonnet-5-5", "claude-opus-5-5"] {
         assert!(!policy.independent(&rule, builder, "claude-sonnet-5-5"));
         assert!(!policy.independent(&rule, builder, "claude-opus-5-5"));
@@ -514,9 +549,12 @@ fn a_request_cap_above_the_security_policy_is_refused() {
 
 #[test]
 fn a_rule_of_independence_that_no_author_could_satisfy_is_refused() {
-    // Both reviewers are limited to the claude family: a builder on claude can never be reviewed
-    // independently, so the review could never run.
+    // Under the rule of family, with both reviewers limited to the claude family: a builder on
+    // claude can never be reviewed independently, so the review could never run.
     let mut policy = real();
+    for rule in &mut policy.independence.rules {
+        rule.must_differ_by = DifferBy::Family;
+    }
     let reviewer = policy
         .roles
         .iter_mut()
@@ -607,15 +645,24 @@ fn every_way_to_widen_the_policy_is_reported_by_its_key() {
         ["models[claude-sonnet-5-5].prices"],
         "a lower price makes the broker count less"
     );
+    // The shipped rule is the weakest (`model`), so a project can only make it stronger.
+    assert!(widen(&|p| p.independence.rules[0].must_differ_by = DifferBy::Family).is_empty());
+    let mut by_family = central.clone();
+    by_family.independence.rules[0].must_differ_by = DifferBy::Family;
+    let mut weakened = by_family.clone();
+    weakened.independence.rules[0].must_differ_by = DifferBy::Model;
     assert_eq!(
-        widen(&|p| p.independence.rules[0].must_differ_by = DifferBy::Model),
-        ["independence.rules[code_review_not_by_the_builders_family].must_differ_by"]
+        check_tighten(&by_family, &weakened)
+            .into_iter()
+            .map(|looser| looser.key)
+            .collect::<Vec<_>>(),
+        ["independence.rules[code_review_not_by_the_builders_model].must_differ_by"]
     );
     assert_eq!(
         widen(&|p| {
             p.independence.rules.remove(0);
         }),
-        ["independence.rules[code_review_not_by_the_builders_family]"]
+        ["independence.rules[code_review_not_by_the_builders_model]"]
     );
     assert!(
         widen(&|p| p.roles[5].escalate_after_failed_repairs = 1)

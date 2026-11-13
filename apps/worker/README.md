@@ -795,7 +795,7 @@ change.
     `word-count` is not on the image's `PATH`, so `docs-commands` was `BLOCKED` ("the program could not be built or
     run"). It runs `/out/target/debug/word-count` now. The default of `documentation.binary` is still the bare name,
     which the pipeline completes; a path in the setting is left alone.
-45. **The specification reviewer ran on the writer's family. Open, owner `workflow`.** `specification_review_not_by_the_writers_family`
+45. **The specification reviewer ran on the writer's family. Fixed on 2026-11-13** (the reviewer is routed against the writer's model, the token holds both, and the rule is now `must_differ_by: model`, id `specification_review_not_by_the_writers_model`; ADR 0020, amendment). The original finding: `specification_review_not_by_the_writers_family`
     is in the routing policy, but the author is passed only to `REVIEW` (SF-17, `ports-v1.1.md` 16.1). In the run
     the provider saw `claude-sonnet-5-5` for both the writer and the reviewer of the specification. The writer's
     model is known inside the same stage run (the route of the writer's skill), so the smallest change is to keep it

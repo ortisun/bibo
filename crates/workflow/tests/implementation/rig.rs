@@ -977,6 +977,9 @@ pub struct Options {
     /// The router finds no model independent of the author of the work under review, as the
     /// policy router does when only the builder's family is served.
     pub no_independent_reviewer: bool,
+    /// The router finds a reviewer of the author's own family but another model, as the policy
+    /// router does in subscription mode under `must_differ_by: model`.
+    pub same_family_reviewer: bool,
 }
 
 /// A router that refuses every need that names an author, and routes every other need as the
@@ -994,6 +997,28 @@ impl ModelRouter for NoIndependentReviewer {
             return Err(RoutingError::NoRoute);
         }
         self.0.route(need)
+    }
+}
+
+/// A router that answers every need that names an author as the router it wraps does, and says
+/// the chosen model is of the author's own family: the answer of the policy router in
+/// subscription mode, where Claude Opus reviews the work of Claude Sonnet.
+pub struct SameFamilyReviewer(pub Arc<dyn ModelRouter>);
+
+impl ModelRouter for SameFamilyReviewer {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError> {
+        let mut decision = self.0.route(need)?;
+        if let Some(author) = &need.author {
+            decision.independence = Some(factory_ports::agent::ReviewIndependence {
+                author: author.clone(),
+                kind: factory_ports::agent::IndependenceKind::SameFamilyOtherModel,
+            });
+        }
+        Ok(decision)
     }
 }
 
@@ -1016,6 +1041,7 @@ impl Default for Options {
             reviewer: None,
             budget: None,
             no_independent_reviewer: false,
+            same_family_reviewer: false,
         }
     }
 }
@@ -1124,6 +1150,9 @@ impl Rig {
         deps.registry = Arc::new(registry);
         if options.no_independent_reviewer {
             deps.router = Arc::new(NoIndependentReviewer(deps.router.clone()));
+        }
+        if options.same_family_reviewer {
+            deps.router = Arc::new(SameFamilyReviewer(deps.router.clone()));
         }
 
         let ledger = Arc::new(RigLedger::new(log.clone()));

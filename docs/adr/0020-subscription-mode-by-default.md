@@ -1,6 +1,6 @@
 # 0020: Run the factory on the owner's Claude subscription by default
 
-- Status: **Decided by the owner on 2026-11-12.** Built on the branch `feat/subscription-mode`. No independent review has covered it.
+- Status: **Decided by the owner on 2026-11-12.** Built on the branch `feat/subscription-mode`. No independent review has covered it. **Amended by the owner on 2026-11-13**: in subscription mode another Claude model reviews (see [Amendment of 2026-11-13](#amendment-of-2026-11-13-another-claude-model-reviews)); the paragraphs of "What is lost" about the reviewers describe the state before it.
 - Date: 2026-11-12
 - Deciders: the owner ("Delete essa necessidade de chave. Vou usar a fabrica em subscription mode": remove the need for a key; I will use the factory in subscription mode). The engineer wrote the design and the code.
 - Reverses: [ADR 0009](0009-operating-defaults-pending-confirmation.md) item 2, and the "subscription logins are off" stance of `policies/security.yaml` and [secrets and credentials](../security/secrets-and-credentials.md) sections 4.1 and 4.5.
@@ -41,6 +41,25 @@ Can the broker design survive with a subscription as the real credential, so tha
 - **A provider-side spend limit.** None exists for a subscription. The factory's ceilings and the plan's own limits are the only bounds.
 - **A credential that belongs to the factory.** The token is tied to the owner's personal account. If it leaks, the owner's account is exposed until the owner revokes it.
 - **Certainty about the provider's terms.** Whether automated use of the subscription is allowed is the owner's responsibility. This record does not assert what any provider's terms say.
+
+## Amendment of 2026-11-13: another Claude model reviews
+
+The owner's decision: in subscription mode there is no reviewer of another model family, so **another Claude model reviews**. Claude Opus reviews what Claude Sonnet wrote, and Claude Sonnet reviews what Claude Opus wrote. Built on the branch `feat/same-family-reviewer-and-public-fixture`.
+
+| Where | What changed |
+|---|---|
+| Policy | The three rules of `independence` in `policies/model_routing.yaml` say `must_differ_by: model`, and their ids say `model` (`code_review_not_by_the_builders_model`, `documentation_review_not_by_the_writers_model`, `specification_review_not_by_the_writers_model`). Prices, dates and `policy.status` were not touched. A project may still make a rule stronger (`family`, `provider`), never weaker. |
+| Router (`crates/composition/src/routing.rs`) | A need that names an author is tried at the tier the stage asked for, then at the larger tiers, then at the smaller ones, until a served model that the rule accepts is found. The policy lists Claude Opus only at the `large` tier, so the review of Sonnet's work goes there. The decision names the author and says how far the chosen model is from it (`RoutingDecision::independence`: `other-provider`, `other-family` or `same-family-other-model`; [ports 16.6](../architecture/ports-v1.1.md)). |
+| api_key mode | The reviewing routes list the model of the other family first, so with both providers served the reviewer is still of another family. `must_differ_by: family` keeps working for a deployment or a project that asks for it: then a Claude author in subscription mode has no reviewer and the review waits for a person, as before. |
+| Documentation review | The documenting stage records the writer's model in `documentation-result` (`writer_model`), and the engine and the documentation review stage route the reviewer against it. |
+| Specification review | The engine routes the writer, then the reviewer against the writer's model, and the job token of the stage run holds both models. The specification stage routes its reviewer the same way. |
+| The wait | A review waits for a person (`independent-reviewer-unavailable`) only when no served model differs from the author's at any tier, for example when only the author's own model is served. |
+| Approval of that wait | Refused. The state machine's `S14` would pass the review with no review verdict, so the engine refuses an approval of a review run that waits with `independent-reviewer-unavailable`, records the refusal in the audit log, and leaves the wait as it was. Rework, reject, answer and cancel work as before. |
+| Evidence | Every reviewing stage run whose reviewer was routed against a known author writes an audit record `review-independence <kind>: <reviewer> reviews the work of <author> in <stage>`. The code review and the documentation review write the same facts into their records (`review-record`, `documentation-review-record`, key `independence`), and the evidence manifest of the pull request lists a review by the same family among its limitations, naming both models. |
+
+**What this costs.** A review by another model of the same family is a weaker check than one by another family. Two models of one family share most of their training and tend to share their blind spots, so a mistake that Sonnet makes is more likely to pass Opus than to pass a model of another family. The factory records each such review as the weaker kind, in the audit log and in the evidence, and does not call it cross-family. The specification review's distance is in the audit log only: the specification stage keeps its reviewer's record inside its own evidence, which the manifest does not read.
+
+**Cost.** The reviewer runs on Claude Opus, which the policy prices higher than Claude Sonnet. The stage ceilings and the job ceiling are unchanged, so a review on Opus stops sooner at the same ceiling.
 
 ## What was verified
 

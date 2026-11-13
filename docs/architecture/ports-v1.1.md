@@ -4804,3 +4804,25 @@ is written from the documentation, not recorded.
 
 **Not done.** The bypass allowances of classic protection are readable now and are not judged; the
 statement of an administrator still covers them.
+
+### 16.6 How far a reviewer is from the author (owner's decision of 2026-11-13): made, pending architect confirmation
+
+In subscription mode only Claude runs, and the owner chose that another Claude model reviews
+(`must_differ_by: model`, [ADR 0020, amendment of 2026-11-13](../adr/0020-subscription-mode-by-default.md)).
+A review by the same family is weaker than one by another family, so the evidence must say which
+kind each review was. The router is the only component that reads the families of the policy, so
+it says it in its answer.
+
+| Change | Kind | Where | Notes |
+|---|---|---|---|
+| `RoutingDecision::independence: Option<ReviewIndependence>` | Additive field | `crates/ports/src/agent.rs` | `ReviewIndependence { author, kind }`, `IndependenceKind::{OtherProvider, OtherFamily, SameFamilyOtherModel}` with `as_str` (`other-provider`, `other-family`, `same-family-other-model`). `PolicyModelRouter` sets it for a need that names an author and a stage that a rule governs; every other answer, and every fake router, says `None`. |
+| `StageHandler::reviewer_routing_need` | Added, default `None` | `crates/workflow/src/handlers/mod.rs` | Not a port: the engine's own trait. The specification stage returns its reviewer's need; the engine routes it against the writer's model and puts both models in the job token. |
+| The meaning of `RoutingNeed::author` | Widened, no type change | `crates/ports/src/agent.rs` | When the asked tier has no model independent of the author, the router tries the larger tiers, then the smaller ones. Claude Opus is listed only at the `large` tier, so this is how it reviews Sonnet's work. A need with no author routes exactly as before. |
+
+The implementors and literals updated in the same change: `PolicyModelRouter`, the testkit's
+`StaticModelRouter`, and the test routers of the workflow rig. Tests: the router tests in
+`crates/composition/tests/policy_wiring.rs` (subscription mode: Opus reviews Sonnet's work and
+Sonnet reviews Opus's, at the code review, the documentation review and the specification review;
+api_key mode: the other provider; the rule of family: a person), the review tests in
+`crates/workflow/tests/implementation/review.rs` (the audit record and the review record), and the
+delivery test `a_review_by_the_same_family_is_listed_among_the_limitations`.

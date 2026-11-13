@@ -57,8 +57,10 @@ impl HumanReason {
         match self {
             Self::AgentRequested => "The agent asked for a person.",
             Self::NoIndependentReviewer => {
-                "No model that the policy accepts as independent of the builder is available, so \
-                 the review waits for a person (policies/model_routing.yaml, independence)."
+                "No model that the policy accepts as independent of the author of the work is \
+                 available at any tier, so the review waits for a person \
+                 (policies/model_routing.yaml, independence). A person cannot approve the review \
+                 in the reviewer's place: send the work back, reject it or cancel the job."
             }
         }
     }

@@ -355,6 +355,7 @@ async fn review_in(
     };
     let token = ctx.job_token.ok_or(StageError::Internal)?;
     let model = route.model.model.as_str().to_owned();
+    let independence = super::independence::record(&route);
     let request = AgentRunRequest {
         attempt: ctx.attempt,
         agent: VersionedRef {
@@ -480,6 +481,8 @@ async fn review_in(
             "version": manifest.version.to_string(),
             "runtime": ports.runtime.id().as_str(),
         },
+        // How far the reviewer's model is from the builder's, from the router's decision.
+        (super::independence::KEY): independence,
         "findings": {
             "reported": wrapped.reported_findings,
             "kept": wrapped.verdict.findings.len(),

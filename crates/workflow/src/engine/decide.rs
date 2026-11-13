@@ -24,7 +24,7 @@ use factory_domain::machines::guards::{
 use factory_domain::machines::rework::{
     HumanReworkDecision, HumanReworkRequest, decide_human_rework,
 };
-use factory_domain::state::{Guard, StageRunEvent};
+use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole, StageKind};
 use factory_ports::store::{
@@ -35,6 +35,7 @@ use serde_json::json;
 use super::Engine;
 use super::decision::{DecisionKind, DecisionReport};
 use super::error::EngineError;
+use super::failure::HumanReason;
 use super::gate::ReworkMove;
 use super::ledger::ClaimSpec;
 use super::links;
@@ -88,6 +89,29 @@ impl Engine {
         let timeline = Timeline::load(&mut *tx, subject.job).await?;
         if timeline.has_applied(actor.command) {
             return Err(EngineError::Duplicate);
+        }
+        // A review that waits because no model was independent of the author has no verdict. An
+        // approval would pass it on nobody's review, so it is refused here, before the state
+        // machine's `S14` could apply. The person sends the work back, rejects it or cancels.
+        if matches!(decision, Decision::Approve { .. })
+            && run.value.status == StageRunStatus::WaitingForHuman
+            && timeline
+                .run(run.value.id)
+                .and_then(|record| record.wait_reason.as_deref())
+                == Some(HumanReason::NoIndependentReviewer.code())
+        {
+            drop(tx);
+            self.record_denial(
+                actor,
+                subject,
+                AuditAction::new(AuditKind::ApprovalGrantedOrRejected, AuditDecision::Denied),
+            )
+            .await?;
+            return Err(EngineError::Refused(
+                "the review waits because no model independent of the author was available, and \
+                 an approval would pass it with no review verdict; send the work back, reject it \
+                 or cancel the job",
+            ));
         }
         let cx = Cx::new(self, &job.value, actor.command);
         let applied = self

@@ -1030,13 +1030,14 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
         }
         StageKind::Review => format!(
             "WAITING FOR YOU: the code review of job {job_id} waits for a person.\n\
-             In subscription mode only Claude runs, and the policy (policies/model_routing.yaml, independence)\n\
-             wants a reviewer of another model family than the builder, so no model may review this work.\n\
+             No model other than the builder's own was available to review the work, at any tier\n\
+             (policies/model_routing.yaml, independence). In subscription mode Claude Opus reviews\n\
+             Claude Sonnet's work; check that the broker serves both Claude models.\n\
              What you can do now:\n\
              Send the work back:  {base} rework {job_id} {run_id} target=IMPLEMENTATION \"<what to change>\"\n\
              Reject the job:      {base} reject {job_id} {run_id} \"No independent reviewer is available.\"\n\
-             Approving a review in a person's place is not built: a job cannot pass this wait.\n\
-             See docs/guides/first-real-run.md, \"The review waits for a person\"."
+             The factory refuses an approval here: the review would pass with no review verdict.\n\
+             See docs/guides/first-real-run.md, \"Who reviews the code\"."
         ),
         other => format!(
             "WAITING FOR YOU: the stage {} of job {job_id} waits for a person. See: {base} status {job_id} --gates",
@@ -1231,7 +1232,7 @@ const REAL_LIMITATIONS: [&str; 6] = [
     "The statement that the factory's App is not on the bypass list of the fixture's ruleset is the owner's, written in the run's configuration (github.bypass_attestations): the App cannot read the bypass list. The fixture setup script creates the ruleset with no bypass actor.",
     "enforce_admins in the protection facts is not read from GitHub (the adapter's report does not carry it) and is recorded as false; no assertion reads it.",
     "The advisory database is a stand-in with the fixed date 2026-10-27 and no advisory. The change the issue asks for adds no dependency.",
-    "Subscription mode: only Claude runs. The code review waits for a person when no model of another family than the builder's is available (policies/model_routing.yaml, independence). The documentation reviewer and the specification reviewer route without the author's model, so their independence rule is not applied (finding of this work; see docs/guides/first-real-run.md).",
+    "Subscription mode: only Claude runs, so no reviewer is of another model family than the author. The code review, the documentation review and the specification review are made by another Claude model than the one that wrote the work (policies/model_routing.yaml, independence, must_differ_by: model; ADR 0020, amendment of 2026-11-13). That is a weaker check than a review by another family: two models of one family tend to share blind spots. The audit log records each such review, and the evidence manifest lists the code review and the documentation review among its limitations when it happened.",
     "The spend is what the broker metered at the list price of policies/model_routing.yaml. On a subscription it is how much of the plan the job used, counted in dollars, not what the owner pays.",
 ];
 

@@ -101,6 +101,48 @@ async fn manifest_is_complete_and_honest() {
     assert!(blocked["disposition_ledger_entry_id"].is_string());
 }
 
+/// A review made by another model of the author's own family (subscription mode, ADR 0020
+/// amendment of 2026-11-13) is listed among the limitations, for the code review and for the
+/// documentation review, with the two models named. A review by another provider is not.
+#[tokio::test]
+async fn a_review_by_the_same_family_is_listed_among_the_limitations() {
+    let world = World::with(Scenario {
+        review_independence: Some("same-family-other-model"),
+        ..Scenario::default()
+    });
+    let ran = world.run().await;
+    assert_eq!(ran.problem, None);
+    let lines = limitations(&ran.manifest);
+    for review in ["code review", "documentation review"] {
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with(&format!("The {review} was made by")))
+            .unwrap_or_else(|| panic!("no line for the {review}: {lines:#?}"));
+        assert!(
+            line.contains("claude-opus-5-5")
+                && line.contains("claude-sonnet-5-5")
+                && line.contains("same family")
+                && line.contains("weaker check"),
+            "{line}"
+        );
+    }
+    let manifest = EvidenceManifest::from_json_value(ran.manifest.clone()).expect("parses");
+    manifest.validate().expect("follows its contract");
+
+    for kind in [Some("other-provider"), None] {
+        let world = World::with(Scenario {
+            review_independence: kind,
+            ..Scenario::default()
+        });
+        let ran = world.run().await;
+        let lines = limitations(&ran.manifest);
+        assert!(
+            !lines.iter().any(|line| line.contains("same family")),
+            "{kind:?}: {lines:#?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn pull_request_body() {
     let world = World::new();

@@ -148,6 +148,9 @@ fn refusal_of(error: &WorkspaceError) -> Option<(&'static str, Vec<(String, Stri
 struct Outcome {
     head: CommitSha,
     writer_ran: bool,
+    /// The runtime and the model the writer ran on, when it ran. The documentation reviewer is
+    /// routed against it (`writer_selection`).
+    writer_model: Option<(String, String)>,
     changes: Vec<(String, &'static str)>,
     additions: u64,
     deletions: u64,
@@ -292,6 +295,7 @@ pub(super) async fn execute(
         Outcome {
             head: candidate.head.clone(),
             writer_ran: false,
+            writer_model: None,
             changes: Vec::new(),
             additions: 0,
             deletions: 0,
@@ -331,6 +335,12 @@ pub(super) async fn execute(
         "code_head": candidate.head.as_str(),
         "head_commit": outcome.head.as_str(),
         "writer_ran": outcome.writer_ran,
+        // The engine's own routing answer, not the writer's account: the documentation reviewer
+        // is routed against it, so that it is independent of the writer.
+        "writer_model": outcome.writer_model.as_ref().map(|(runtime, model)| json!({
+            "runtime": runtime,
+            "model": model,
+        })),
         "changes": outcome.changes.iter()
             .map(|(path, kind)| json!({ "path": path, "kind": kind }))
             .collect::<Vec<_>>(),
@@ -572,6 +582,10 @@ async fn write_in(
         }
     };
     let token = ctx.job_token.ok_or(StageError::Internal)?;
+    let writer_model = (
+        route.model.runtime.as_str().to_owned(),
+        route.model.model.as_str().to_owned(),
+    );
     let request = AgentRunRequest {
         attempt: ctx.attempt,
         agent: VersionedRef {
@@ -610,6 +624,7 @@ async fn write_in(
     let mut outcome = Outcome {
         head: on.clone(),
         writer_ran: true,
+        writer_model: Some(writer_model),
         changes: Vec::new(),
         additions: 0,
         deletions: 0,

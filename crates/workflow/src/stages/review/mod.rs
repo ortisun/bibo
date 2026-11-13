@@ -17,6 +17,7 @@
 //! | `handler` | `ReviewHandler`, its configuration and its stage contract |
 //! | `run` | `execute` |
 //! | `gates` | `evaluate` |
+//! | `independence` | How far the reviewer's model was from the author's, as the record keeps it |
 //!
 //! # Rules this stage keeps
 //!
@@ -51,6 +52,7 @@ pub mod evidence;
 pub mod findings;
 pub mod gates;
 pub mod handler;
+pub mod independence;
 pub mod locate;
 mod run;
 

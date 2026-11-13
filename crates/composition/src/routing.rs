@@ -29,7 +29,18 @@
 //! * A reviewing stage names the model of the author in `RoutingNeed::author`, and
 //!   [`PolicyModelRouter::route`] then drops every candidate that is not independent of it. When
 //!   candidates remain and none is independent the answer is [`RoutingError::NoRoute`] (the engine
-//!   fails the stage closed); [`PolicyModelRouter::route_after_author`] keeps the finer answer.
+//!   sends the stage to a person); [`PolicyModelRouter::route_after_author`] keeps the finer answer.
+//!
+//! # A reviewer at another tier (owner decision of 2026-11-13)
+//!
+//! When no served model of the asked tier is independent of the author, the router looks at the
+//! other tiers of the same stage: the larger ones first, from the nearest, then the smaller ones.
+//! The policy lists Claude Opus only at the large tier, so a rule of `must_differ_by: model` sends
+//! the review of Sonnet's work to Opus there, in subscription mode, where no model of another
+//! family runs. With `must_differ_by: family` and both providers served, the standard route lists
+//! the model of the other family first and nothing changes. The decision says how the chosen
+//! model differs from the author's (`RoutingDecision::independence`), so that the engine can
+//! record a review by the same family as the weaker check it is.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -44,8 +55,8 @@ use factory_domain::values::NonEmptyString;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_egress::broker::{CapPolicy, ModelPrice, PerRequestCaps, PriceTable, Provider};
 use factory_ports::agent::{
-    CostMicroUsd, FlagSet, JobTokenRequest, ModelRouter, ModelSelection, RequestCaps,
-    RoutingDecision, RoutingError, RoutingNeed, RuntimeId,
+    CostMicroUsd, FlagSet, IndependenceKind, JobTokenRequest, ModelRouter, ModelSelection,
+    RequestCaps, ReviewIndependence, RoutingDecision, RoutingError, RoutingNeed, RuntimeId,
 };
 
 /// Why the policy cannot be used to route.
@@ -400,9 +411,12 @@ impl PolicyModelRouter {
 
     /// The same answer as [`ModelRouter::route`], for a stage that reviews the work of an author
     /// whose model is known: a candidate that is not independent of the author under the policy's
-    /// rule for the reviewing role is dropped. When candidates remain and none is independent the
-    /// answer is [`AuthorRoutingError::NoIndependentModel`], and the policy says the stage then
-    /// waits for a person. A stage that reviews nobody's work routes as `route` does.
+    /// rule for the reviewing role is dropped. When the asked tier has no independent model the
+    /// other tiers of the stage are tried, the larger ones first (see the module notes). When
+    /// candidates are served and none is independent at any tier the answer is
+    /// [`AuthorRoutingError::NoIndependentModel`], and the policy says the stage then waits for a
+    /// person. The decision names the author and how the chosen model differs from it. A stage
+    /// that reviews nobody's work routes as `route` does.
     ///
     /// [`ModelRouter::route`] calls this when the need names an author (`RoutingNeed::author`).
     ///
@@ -418,8 +432,9 @@ impl PolicyModelRouter {
             .roles_of_stage(need.stage.as_str())
             .filter_map(|role| self.policy.rule_for_reviewer(&role.role))
             .collect();
+        let asked = tier_of(need);
         if rules.is_empty() {
-            return Ok(self.route_filtered(need, |_| true)?);
+            return Ok(self.route_filtered(need, asked, |_| true)?);
         }
         let independent = |model: &Model| {
             rules.iter().all(|rule| {
@@ -427,18 +442,63 @@ impl PolicyModelRouter {
                     .independent(rule, author.model.as_str(), &model.id)
             })
         };
-        // Candidates the deployment serves exist, and not one is independent of the author: the
-        // policy sends the stage to a person, which is not the same as a runtime being excluded.
-        let served: Vec<&Model> = self
-            .policy
-            .candidates(need.stage.as_str(), tier_of(need))
-            .into_iter()
-            .filter(|model| self.serves(model))
-            .collect();
-        if !served.is_empty() && !served.iter().any(|model| independent(model)) {
+        // The asked tier first, then the others (see the module notes). A tier is tried only when
+        // the deployment serves a model of it that is independent of the author.
+        let mut served_anywhere = false;
+        let mut refusal = None;
+        for tier in tiers_from(asked) {
+            let served: Vec<&Model> = self
+                .policy
+                .candidates(need.stage.as_str(), tier)
+                .into_iter()
+                .filter(|model| self.serves(model))
+                .collect();
+            served_anywhere |= !served.is_empty();
+            if !served.iter().any(|model| independent(model)) {
+                continue;
+            }
+            match self.route_filtered(need, tier, independent) {
+                Ok(mut decision) => {
+                    decision.independence = self.independence_of(author, &decision.model);
+                    return Ok(decision);
+                }
+                Err(error) => {
+                    refusal.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = refusal {
+            return Err(error.into());
+        }
+        // Candidates the deployment serves exist, and not one is independent of the author at
+        // any tier: the policy sends the stage to a person, which is not the same as a runtime
+        // being excluded.
+        if served_anywhere {
             return Err(AuthorRoutingError::NoIndependentModel);
         }
-        Ok(self.route_filtered(need, independent)?)
+        Ok(self.route_filtered(need, asked, independent)?)
+    }
+
+    /// How `chosen` differs from `author`, read from the models of the policy. `None` when the
+    /// policy does not know one of them.
+    fn independence_of(
+        &self,
+        author: &ModelSelection,
+        chosen: &ModelSelection,
+    ) -> Option<ReviewIndependence> {
+        let wrote = self.policy.model(author.model.as_str())?;
+        let reviews = self.policy.model(chosen.model.as_str())?;
+        let kind = if wrote.provider != reviews.provider {
+            IndependenceKind::OtherProvider
+        } else if wrote.family != reviews.family {
+            IndependenceKind::OtherFamily
+        } else {
+            IndependenceKind::SameFamilyOtherModel
+        };
+        Some(ReviewIndependence {
+            author: author.clone(),
+            kind,
+        })
     }
 
     fn serves(&self, model: &Model) -> bool {
@@ -450,9 +510,10 @@ impl PolicyModelRouter {
     fn route_filtered(
         &self,
         need: &RoutingNeed,
+        tier: Tier,
         accept: impl Fn(&Model) -> bool,
     ) -> Result<RoutingDecision, RoutingError> {
-        let candidates = self.policy.candidates(need.stage.as_str(), tier_of(need));
+        let candidates = self.policy.candidates(need.stage.as_str(), tier);
         if candidates.is_empty() {
             return Err(RoutingError::NoRoute);
         }
@@ -487,6 +548,7 @@ impl PolicyModelRouter {
             return Ok(RoutingDecision {
                 model: selection,
                 flag_set: FlagSet::for_stage(need.stage),
+                independence: None,
             });
         }
         Err(match (any_left, missing) {
@@ -495,6 +557,25 @@ impl PolicyModelRouter {
             (true, None) => RoutingError::NoRoute,
         })
     }
+}
+
+/// The tiers to look at for a reviewer, in order: `asked`, then the larger tiers from the
+/// nearest, then the smaller tiers from the nearest.
+fn tiers_from(asked: Tier) -> Vec<Tier> {
+    let all = [Tier::Small, Tier::Standard, Tier::Large];
+    let mut order = vec![asked];
+    order.extend(
+        all.iter()
+            .copied()
+            .filter(|tier| tier.rank() > asked.rank()),
+    );
+    order.extend(
+        all.iter()
+            .rev()
+            .copied()
+            .filter(|tier| tier.rank() < asked.rank()),
+    );
+    order
 }
 
 fn tier_of(need: &RoutingNeed) -> Tier {
@@ -512,7 +593,7 @@ impl ModelRouter for PolicyModelRouter {
 
     fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError> {
         match &need.author {
-            None => self.route_filtered(need, |_| true),
+            None => self.route_filtered(need, tier_of(need), |_| true),
             // Candidates exist and none is independent of the author: the stage waits for a person,
             // which the engine reads as a route that does not exist.
             Some(author) => {

@@ -3,15 +3,24 @@
 # first real end-to-end run (scenario E1, docs/guides/first-real-run.md).
 #
 # USAGE
-#   scripts/setup-fixture-repository.sh --check --app-id ID [--owner @LOGIN ...] OWNER/NAME
+#   scripts/setup-fixture-repository.sh --check --app-id ID [--public|--private] [--owner @LOGIN ...] OWNER/NAME
 #       Show every step and every gh call it would make, the files it would push and the ruleset
 #       it would create. Calls nothing on GitHub and changes nothing.
-#   scripts/setup-fixture-repository.sh --app-id ID [--owner @LOGIN ...] OWNER/NAME
+#   scripts/setup-fixture-repository.sh --app-id ID [--public|--private] [--owner @LOGIN ...] OWNER/NAME
 #       Do it. Run it once, as the owner, with gh logged in (gh auth login).
 #   scripts/setup-fixture-repository.sh --help
 #
+#   Example, for the factory's own fixture:
+#       scripts/setup-fixture-repository.sh --app-id ID ortisun/factory-fixture-word-count
+#
 #   --app-id ID      The id of the factory's GitHub App (scripts/github_app_manifest.py prints it).
 #                    The ruleset pins the two required checks to it.
+#   --public         Make the repository public. The default. GitHub Free offers rulesets only on
+#                    public repositories, and the factory needs the ruleset. Everything in the
+#                    repository, its issues, its pull requests and the factory's comments can then
+#                    be read by anyone: put nothing private in it or in a test issue.
+#   --private        Make the repository private. Needs GitHub Pro, Team or Enterprise for the
+#                    ruleset; on GitHub Free step 5 is refused.
 #   --owner @LOGIN   A code owner. Repeat for more. Default: the login gh is signed in as. The
 #                    approval policy lets the owner approve their own low-risk request, so one real
 #                    owner is enough; the placeholder handles of the template are all replaced.
@@ -24,9 +33,11 @@
 #        .agents/skills/speckit-*), which the specification stage needs in the repository;
 #        the fixture's constitution, .specify/memory/constitution.md, from
 #        fixtures/recordings/playbook/word-count/constitution.md (review it: you own it).
+#      checks that nothing in the copy looks like a secret (a private key, a provider key or a
+#      GitHub token, or a file named .env, *.pem or *.key) and stops if anything does,
 #      and makes one commit on main with git (no gh call).
-#   3. Creates the PRIVATE repository and pushes the copy:
-#        gh repo create OWNER/NAME --private --description ... --source DIR --remote origin --push
+#   3. Creates the repository, public unless --private is given, and pushes the copy:
+#        gh repo create OWNER/NAME --public --description ... --source DIR --remote origin --push
 #   4. Creates the label the factory starts on:
 #        gh label create factory --repo OWNER/NAME --color 5319e7 --description ...
 #   5. Creates the branch ruleset the protection preflight requires (policies/security.yaml,
@@ -37,15 +48,16 @@
 #        gh api --method POST repos/OWNER/NAME/rulesets --input RULESET.json
 #   6. Reads the rulesets back:                             gh api repos/OWNER/NAME/rulesets
 #
-#   Rulesets on a private repository need GitHub Pro, Team or Enterprise. On GitHub Free step 5
-#   is refused; the script stops there and says so.
+#   Rulesets on a private repository need GitHub Pro, Team or Enterprise. On GitHub Free only a
+#   public repository has them, which is why public is the default. With --private on GitHub Free
+#   step 5 is refused; the script stops there and says so.
 #
 #   It never installs the App (you do that on the App's page, for this repository only), never
 #   gives anybody access, and never deletes anything.
 #
 # EXIT CODES
-#   0 done (or, with --check, shown), 1 a step failed, 2 wrong usage, 3 BLOCKED (gh or git missing,
-#   or gh not logged in).
+#   0 done (or, with --check, shown), 1 a step failed (or the copy holds something that looks like
+#   a secret), 2 wrong usage, 3 BLOCKED (gh or git missing, or gh not logged in).
 
 set -euo pipefail
 
@@ -63,6 +75,8 @@ die() {
 check=0
 app_id=""
 repo=""
+visibility=public
+visibility_given=""
 owners=()
 while [ "$#" -gt 0 ]; do
   case $1 in
@@ -71,6 +85,11 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     --check) check=1 ;;
+    --public | --private)
+      [ -z "$visibility_given" ] || [ "$visibility_given" = "$1" ] || die "give --public or --private, not both" 2
+      visibility_given=$1
+      visibility=${1#--}
+      ;;
     --app-id)
       [ "$#" -ge 2 ] || die "--app-id needs a value" 2
       app_id=$2
@@ -203,6 +222,20 @@ cp "$CONSTITUTION" "$copy/.specify/memory/constitution.md"
 } >"$copy/CODEOWNERS"
 grep -q '@example-org/' "$copy/CODEOWNERS" && die "a placeholder handle is left in CODEOWNERS"
 say "  $(find "$copy" -type f | wc -l | tr -d ' ') files in $copy"
+# Nothing that looks like a secret goes to GitHub, least of all to a public repository. The
+# patterns are a private key, an Anthropic or OpenAI key, a GitHub token, and AWS's key id.
+secret_pattern='BEGIN [A-Z ]*PRIVATE KEY|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{32,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}'
+suspects=$(
+  {
+    grep -rIlE "$secret_pattern" "$copy" || true
+    find "$copy" -type f \( -name '.env' -o -name '.env.*' -o -name '*.pem' -o -name '*.key' \) -print
+  } | sed "s|^$copy/||" | sort -u
+)
+if [ -n "$suspects" ]; then
+  printf '%s\n' "$suspects" | sed 's/^/    /' >&2
+  die "the copy holds files that look like secrets (listed above); nothing was pushed. Remove them from the fixture and run the script again."
+fi
+say "  nothing in the copy looks like a secret"
 say "  CODEOWNERS:"
 sed 's/^/    /' "$copy/CODEOWNERS"
 if [ "$check" -eq 0 ]; then
@@ -215,8 +248,12 @@ if [ "$check" -eq 0 ]; then
 fi
 say "  git init -b main; git add -A; git commit (in the copy)"
 
-say "== 3. The private repository"
-gh_call repo create "$repo" --private \
+say "== 3. The $visibility repository"
+if [ "$visibility" = public ]; then
+  say "  Public: anyone can read its code, its issues, its pull requests and the factory's comments."
+  say "  Put nothing private in it, and nothing private in a test issue."
+fi
+gh_call repo create "$repo" "--$visibility" \
   --description "The word-count fixture of the software factory's end-to-end run" \
   --source "$copy" --remote origin --push
 
@@ -235,7 +272,10 @@ else
   say "  gh api --method POST repos/$repo/rulesets --input $ruleset_file"
   if ! gh api --method POST "repos/$repo/rulesets" --input "$ruleset_file" >/dev/null; then
     rm -f "$ruleset_file"
-    die "GitHub refused the ruleset. Rulesets on a private repository need GitHub Pro, Team or Enterprise; the repository is made and pushed, and without the ruleset the factory runs it at L0 and opens no pull request."
+    if [ "$visibility" = private ]; then
+      die "GitHub refused the ruleset. Rulesets on a private repository need GitHub Pro, Team or Enterprise; on GitHub Free make the repository public instead (the default). The repository is made and pushed, and without the ruleset the factory runs it at L0 and opens no pull request."
+    fi
+    die "GitHub refused the ruleset. The repository is made and pushed, and without the ruleset the factory runs it at L0 and opens no pull request. Check that your gh login may administer $repo."
   fi
   rm -f "$ruleset_file"
 fi

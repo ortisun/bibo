@@ -229,6 +229,7 @@ impl ModelRouter for StaticModelRouter {
             } else {
                 FlagSet::for_stage(need.stage)
             },
+            independence: None,
         })
     }
 }
