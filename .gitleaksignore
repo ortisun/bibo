@@ -1,0 +1,7 @@
+# Findings of the secret scan (scripts/ci.sh, step secret-scan) that were checked by a person and are
+# not secrets. One gitleaks fingerprint per line. Each entry says what the value is and who checked it.
+#
+# A made-up subscription token, `sk-ant-oat01-` followed by the sixteen letters a to p, in a unit test
+# of the end-to-end harness. Checked on 2026-11-13: it is not the owner's token and was never pushed.
+# The test now builds the value at run time; this line covers the commit that still holds the literal.
+6d891388de7d4c7b01063844396d71469b6a8d12:tests/end_to_end/src/prerequisites.rs:policy_anthropic_api_key:908
