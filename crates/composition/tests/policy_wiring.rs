@@ -26,9 +26,9 @@ use factory_domain::values::NonEmptyString;
 use factory_domain::vocabulary::{RiskTier, StageKind};
 use factory_egress::broker::{BrokerCore, BrokerParts, MemoryAudit, SystemEntropy};
 use factory_ports::agent::{
-    BrokerError, Capability, CapabilityObservation, CostMicroUsd, InvalidTokenRequest,
-    JobTokenRequest, ModelBroker, ModelSelection, ProbedCapabilities, RoutingError, RoutingNeed,
-    RuntimeCapabilities, RuntimeId, Usage,
+    BrokerError, Capability, CapabilityObservation, CostMicroUsd, IndependenceKind,
+    InvalidTokenRequest, JobTokenRequest, ModelBroker, ModelSelection, ProbedCapabilities,
+    RoutingError, RoutingNeed, RuntimeCapabilities, RuntimeId, Usage,
 };
 use factory_ports::clock::IdGenerator;
 
@@ -280,12 +280,18 @@ fn a_need_that_names_the_author_is_routed_to_an_independent_reviewer() {
     );
 
     // Break: the other family's runtime failed. The plain route would fall back to the builder's
-    // family; with the author in the need, the router refuses instead of reviewing its own work.
+    // own model; with the author in the need, the router takes another model instead (the rule
+    // is `must_differ_by: model`), at the large tier, and never the builder's own.
     let mut fallen_back = review.clone();
     fallen_back.exclude = vec![RuntimeId::new("codex-cli").expect("runtime")];
     assert_eq!(
-        router.route(&fallen_back).unwrap_err(),
-        RoutingError::AllExcluded
+        router
+            .route(&fallen_back)
+            .expect("another model reviews")
+            .model
+            .model
+            .as_str(),
+        "claude-opus-5-5"
     );
     let mut forgotten = fallen_back.clone();
     forgotten.author = None;
@@ -625,9 +631,42 @@ fn a_model_no_provider_of_the_deployment_serves_is_never_offered() {
     assert_eq!(router.route(&large).unwrap_err(), RoutingError::AllExcluded);
 }
 
+/// The repository policy with every reviewing rule set to `must_differ_by: family`, as a project
+/// may ask (a project may make a rule stronger, never weaker).
+fn reviewers_differ_by_family() -> ModelRoutingPolicy {
+    let mut policy = (*loaded().policy).clone();
+    for rule in &mut policy.independence.rules {
+        rule.must_differ_by = DifferBy::Family;
+    }
+    policy
+}
+
+fn only_claude(policy: ModelRoutingPolicy) -> PolicyModelRouter {
+    PolicyModelRouter::new(Arc::new(policy))
+        .expect("the policy passes its own rules")
+        .with_enabled(BTreeSet::from([
+            "claude-sonnet-5-5".to_owned(),
+            "claude-opus-5-5".to_owned(),
+        ]))
+}
+
+/// The reviewing stages, each with the need it routes its reviewer with. The specification
+/// reviewer shares its stage with the writer and asks for no capability of its own.
+fn reviewing_needs() -> Vec<RoutingNeed> {
+    let mut specification = need(StageKind::Specification);
+    specification.required = Vec::new();
+    vec![
+        need(StageKind::Review),
+        need(StageKind::DocumentationReview),
+        specification,
+    ]
+}
+
+/// Under `must_differ_by: family` (api_key mode), the review goes to the other family, and the
+/// router never falls back to the builder's family.
 #[test]
 fn the_reviewer_of_the_family_of_the_builder_is_refused_by_the_router() {
-    let policy = loaded().policy;
+    let policy = Arc::new(reviewers_differ_by_family());
     let both = PolicyModelRouter::new(Arc::clone(&policy)).expect("router");
     let builder_used = selection("claude-code-cli", "claude-sonnet-5-5");
 
@@ -636,9 +675,12 @@ fn the_reviewer_of_the_family_of_the_builder_is_refused_by_the_router() {
         .route_after_author(&need(StageKind::Review), &builder_used)
         .expect("an independent reviewer");
     assert_eq!(decision.model.model.as_str(), "gpt-6.1-sol");
+    let independence = decision.independence.expect("the router says how far");
+    assert_eq!(independence.kind, IndependenceKind::OtherProvider);
+    assert_eq!(independence.author, builder_used);
 
     // If that runtime fails and is excluded, the router does not fall back to the builder's
-    // family: it says every candidate is gone.
+    // family, at any tier: it says every candidate is gone.
     let mut excluded = need(StageKind::Review);
     excluded.exclude = vec![RuntimeId::new("codex-cli").expect("runtime")];
     assert_eq!(
@@ -650,67 +692,43 @@ fn the_reviewer_of_the_family_of_the_builder_is_refused_by_the_router() {
     use factory_ports::agent::ModelRouter as _;
     let plain = both.route(&excluded).expect("the plain route falls back");
     assert_eq!(plain.model.model.as_str(), "claude-sonnet-5-5");
+    assert_eq!(plain.independence, None);
 
-    // With only the builder's provider served, no model is independent, and the policy sends the
-    // stage to a person.
-    let only_claude = PolicyModelRouter::new(Arc::clone(&policy))
-        .expect("router")
-        .with_enabled(BTreeSet::from([
-            "claude-sonnet-5-5".to_owned(),
-            "claude-opus-5-5".to_owned(),
-        ]));
-    assert_eq!(
-        only_claude
-            .route_after_author(&need(StageKind::Review), &builder_used)
-            .unwrap_err(),
-        AuthorRoutingError::NoIndependentModel
-    );
+    // With only the builder's provider served, no model of any tier is independent, and the
+    // policy sends the stage to a person.
+    let claude = only_claude(reviewers_differ_by_family());
+    for reviewing in reviewing_needs() {
+        assert_eq!(
+            claude
+                .route_after_author(&reviewing, &builder_used)
+                .unwrap_err(),
+            AuthorRoutingError::NoIndependentModel,
+            "{:?}",
+            reviewing.stage
+        );
+    }
     // A stage that reviews nobody's work routes as usual.
-    let intake = only_claude
+    let intake = claude
         .route_after_author(&need(StageKind::Intake), &builder_used)
         .expect("routes");
     assert_eq!(intake.model.model.as_str(), "claude-sonnet-5-5");
+    assert_eq!(intake.independence, None);
     let _ = Path::new("");
 }
 
-// ---- the owner's option: a reviewer that differs by model, not by family ---------------------
+// ---- the owner's decision of 2026-11-13: a reviewer that differs by model --------------------
 //
-// With only Claude models served, no reviewer is of another family than a Claude builder, so a
-// review waits for a person. The owner may choose a weaker rule, `must_differ_by: model`, for the
-// code review and the documentation review. These tests change the parsed repository policy in
-// memory; `policies/model_routing.yaml` itself is the owner's to change.
-
-const REVIEW_RULES: [&str; 2] = [
-    "code_review_not_by_the_builders_family",
-    "documentation_review_not_by_the_writers_family",
-];
-
-/// The repository policy with the two review rules weakened to `must_differ_by: model`.
-fn reviewers_differ_by_model() -> ModelRoutingPolicy {
-    let mut policy = (*loaded().policy).clone();
-    for rule in &mut policy.independence.rules {
-        if REVIEW_RULES.contains(&rule.id.as_str()) {
-            rule.must_differ_by = DifferBy::Model;
-        }
-    }
-    policy
-}
-
-fn only_claude(policy: ModelRoutingPolicy) -> PolicyModelRouter {
-    PolicyModelRouter::new(Arc::new(policy))
-        .expect("the changed policy passes its own rules")
-        .with_enabled(BTreeSet::from([
-            "claude-sonnet-5-5".to_owned(),
-            "claude-opus-5-5".to_owned(),
-        ]))
-}
+// In subscription mode only Claude runs, so no reviewer is of another family than a Claude
+// author. The owner set every reviewing rule to `must_differ_by: model` (ADR 0020, amendment):
+// another Claude model reviews. Claude Opus is listed only at the large tier, so the router looks
+// at the other tiers of the stage when the asked tier has no independent model.
 
 /// Listing `claude-opus-5-5` among the `standard` candidates of the review stages is refused by
 /// the policy's own check: the policy lists it as a `large` model, and a route lists only models
-/// of its own tier. So that edit alone cannot be the owner's option.
+/// of its own tier. That is why the router looks at the large tier instead.
 #[test]
 fn claude_opus_on_the_standard_route_of_a_review_is_refused_by_the_policy_check() {
-    let mut policy = reviewers_differ_by_model();
+    let mut policy = (*loaded().policy).clone();
     for route in &mut policy.routes {
         if ["REVIEW", "DOCUMENTATION_REVIEW"].contains(&route.stage.as_str())
             && route.tier == Tier::Standard
@@ -735,45 +753,105 @@ fn claude_opus_on_the_standard_route_of_a_review_is_refused_by_the_policy_check(
     assert!(PolicyModelRouter::new(Arc::new(policy)).is_err());
 }
 
-/// With the two review rules at `must_differ_by: model` and nothing else changed, the policy
-/// passes its own check, and `claude-opus-5-5` is independent of a `claude-sonnet-5-5` builder or
-/// writer. The routes still decide which tier offers it: the `large` route of each review stage
-/// lists `claude-opus-5-5`, so a review asked at that tier runs on it; the `standard` route does
-/// not, so a review asked at the standard tier, as the stages ask today, still waits.
+/// Subscription mode with the shipped policy: the work of Claude Sonnet is reviewed by Claude
+/// Opus, found at the large tier although the stage asked for the standard one, and the decision
+/// says it is a review by the same family. This holds for the code review, the documentation
+/// review and the specification review.
 #[test]
-fn with_reviewers_that_differ_by_model_claude_opus_reviews_sonnet_work_on_the_large_route() {
-    let policy = reviewers_differ_by_model();
+fn in_subscription_mode_claude_opus_reviews_the_work_of_claude_sonnet() {
+    let policy = (*loaded().policy).clone();
     assert_eq!(routing_problems(&policy), Vec::new());
-    for id in REVIEW_RULES {
-        let rule = policy
-            .independence
-            .rules
-            .iter()
-            .find(|rule| rule.id == id)
-            .expect("the rule");
-        assert!(policy.independent(rule, "claude-sonnet-5-5", "claude-opus-5-5"));
-        assert!(!policy.independent(rule, "claude-sonnet-5-5", "claude-sonnet-5-5"));
+    for rule in &policy.independence.rules {
+        assert_eq!(rule.must_differ_by, DifferBy::Model, "{}", rule.id);
     }
     let router = only_claude(policy);
     let author = selection("claude-code-cli", "claude-sonnet-5-5");
-    for stage in [StageKind::Review, StageKind::DocumentationReview] {
-        let mut large = need(stage);
-        large.tier = RecommendedTier::Large;
+    for reviewing in reviewing_needs() {
+        assert_eq!(reviewing.tier, RecommendedTier::Standard);
         let decision = router
-            .route_after_author(&large, &author)
-            .expect("an independent reviewer");
+            .route_after_author(&reviewing, &author)
+            .expect("another Claude model reviews");
         assert_eq!(
             decision.model.model.as_str(),
             "claude-opus-5-5",
-            "{stage:?}"
+            "{:?}",
+            reviewing.stage
         );
-        // The standard route offers only the author's own model: the review waits.
+        let independence = decision
+            .independence
+            .as_ref()
+            .expect("the router says how far");
+        assert_eq!(independence.kind, IndependenceKind::SameFamilyOtherModel);
+        assert_eq!(independence.author, author);
+        // The port's answer is the same.
+        use factory_ports::agent::ModelRouter as _;
+        let mut named = reviewing.clone();
+        named.author = Some(author.clone());
+        assert_eq!(router.route(&named).expect("routes"), decision);
+    }
+}
+
+/// When Claude Opus wrote the work (a builder that escalated), Claude Sonnet reviews it at the
+/// standard tier the stage asked for.
+#[test]
+fn in_subscription_mode_claude_sonnet_reviews_the_work_of_claude_opus() {
+    let router = only_claude((*loaded().policy).clone());
+    let author = selection("claude-code-cli", "claude-opus-5-5");
+    for reviewing in reviewing_needs() {
+        let decision = router
+            .route_after_author(&reviewing, &author)
+            .expect("another Claude model reviews");
         assert_eq!(
-            router
-                .route_after_author(&need(stage), &author)
-                .unwrap_err(),
+            decision.model.model.as_str(),
+            "claude-sonnet-5-5",
+            "{:?}",
+            reviewing.stage
+        );
+        assert_eq!(
+            decision.independence.map(|found| found.kind),
+            Some(IndependenceKind::SameFamilyOtherModel)
+        );
+    }
+}
+
+/// With both providers served (api_key mode) and the shipped rule of `model`, the reviewing
+/// routes still give the model of the other family first: a review by the same family happens
+/// only when no other family is served.
+#[test]
+fn with_both_providers_served_the_reviewer_is_still_of_the_other_family() {
+    let router = PolicyModelRouter::new(loaded().policy).expect("router");
+    let author = selection("claude-code-cli", "claude-sonnet-5-5");
+    for reviewing in reviewing_needs() {
+        let decision = router
+            .route_after_author(&reviewing, &author)
+            .expect("an independent reviewer");
+        assert_eq!(
+            decision.model.model.as_str(),
+            "gpt-6.1-sol",
+            "{:?}",
+            reviewing.stage
+        );
+        assert_eq!(
+            decision.independence.map(|found| found.kind),
+            Some(IndependenceKind::OtherProvider)
+        );
+    }
+}
+
+/// A deployment that serves only the author's own model has no reviewer at all, at any tier, and
+/// the stage waits for a person.
+#[test]
+fn with_only_the_authors_model_served_the_review_waits_for_a_person() {
+    let router = PolicyModelRouter::new(loaded().policy)
+        .expect("router")
+        .with_enabled(BTreeSet::from(["claude-sonnet-5-5".to_owned()]));
+    let author = selection("claude-code-cli", "claude-sonnet-5-5");
+    for reviewing in reviewing_needs() {
+        assert_eq!(
+            router.route_after_author(&reviewing, &author).unwrap_err(),
             AuthorRoutingError::NoIndependentModel,
-            "{stage:?}"
+            "{:?}",
+            reviewing.stage
         );
     }
 }

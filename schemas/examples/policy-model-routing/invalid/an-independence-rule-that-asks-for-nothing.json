@@ -370,21 +370,21 @@
     "on_no_independent_model": "wait_for_human",
     "rules": [
       {
-        "id": "code_review_not_by_the_builders_family",
+        "id": "code_review_not_by_the_builders_model",
         "author_role": "builder",
         "reviewer_role": "code_reviewer"
       },
       {
-        "id": "documentation_review_not_by_the_writers_family",
+        "id": "documentation_review_not_by_the_writers_model",
         "author_role": "technical_writer",
         "reviewer_role": "documentation_reviewer",
-        "must_differ_by": "family"
+        "must_differ_by": "model"
       },
       {
-        "id": "specification_review_not_by_the_writers_family",
+        "id": "specification_review_not_by_the_writers_model",
         "author_role": "specification_writer",
         "reviewer_role": "specification_reviewer",
-        "must_differ_by": "family"
+        "must_differ_by": "model"
       }
     ]
   },

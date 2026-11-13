@@ -213,16 +213,31 @@ routes:
 # 4. Reviewer independence
 # -----------------------------------------------------------------------------
 # A reviewer must not be the same kind of model as the agent whose work it
-# reviews. `must_differ_by: family` means the two models must be of different
-# families. `provider` and `model` are the weaker and the stronger choices.
-# When no allowed model differs, the reviewing stage does not run on a model of
-# the author's kind; it waits for a person (`on_no_independent_model`).
+# reviews. `must_differ_by` says how the two models must differ: `model` (not
+# the same model), `family` (not of the same family) or `provider` (not from
+# the same provider), from the weakest to the strongest. A project may make a
+# rule stronger, never weaker.
+#
+# The owner chose `model` on 2026-11-13 (ADR 0020, amendment). In subscription
+# mode only Claude runs, so no model of another family is available, and a
+# reviewer of the same family but another model is the best the factory has:
+# Claude Opus reviews what Claude Sonnet wrote, and the other way round. The
+# router looks at the other tiers of the stage when the asked tier has no such
+# model, because Opus is listed only at the large tier. With both providers
+# served (api_key mode), the reviewing routes still list the model of the other
+# family first, so the reviewer is of another family whenever one is served.
+# A review by the same family is a weaker check than one by another family; the
+# audit log and the evidence of the job say so each time it happens.
+#
+# When no allowed model differs, the reviewing stage does not run on the
+# author's model; it waits for a person (`on_no_independent_model`), and a
+# person cannot approve that wait in the reviewer's place.
 independence:
   on_no_independent_model: wait_for_human
   rules:
-    - { id: code_review_not_by_the_builders_family,        author_role: builder,              reviewer_role: code_reviewer,          must_differ_by: family }
-    - { id: documentation_review_not_by_the_writers_family, author_role: technical_writer,     reviewer_role: documentation_reviewer, must_differ_by: family }
-    - { id: specification_review_not_by_the_writers_family, author_role: specification_writer, reviewer_role: specification_reviewer, must_differ_by: family }
+    - { id: code_review_not_by_the_builders_model,         author_role: builder,              reviewer_role: code_reviewer,          must_differ_by: model }
+    - { id: documentation_review_not_by_the_writers_model,  author_role: technical_writer,     reviewer_role: documentation_reviewer, must_differ_by: model }
+    - { id: specification_review_not_by_the_writers_model,  author_role: specification_writer, reviewer_role: specification_reviewer, must_differ_by: model }
 
 # -----------------------------------------------------------------------------
 # 5. Job ceilings
