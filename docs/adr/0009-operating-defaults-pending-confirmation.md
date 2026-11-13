@@ -21,6 +21,8 @@ Several choices need a person's decision: legal, commercial or risk acceptance t
 
 ### 2. Model credentials are API keys with hard spend limits, behind a broker
 
+> **Reversed on 2026-11-12 by the owner. See [ADR 0020](0020-subscription-mode-by-default.md).** The factory now runs on the owner's Claude subscription by default (`credentials.model_providers.mode: subscription`), with the subscription token held by the broker as the API key was. API keys behind the broker remain the alternative mode, `api_key`. The text below is kept as the record of the earlier default.
+
 - Alternative: subscription (OAuth) logins.
 - Why: the factory cannot broker or meter a subscription login, and it may conflict with provider terms. `--bare` in Claude Code ignores OAuth by design.
 - Cost: **a real-provider adapter test, and any live end-to-end run with real agents, is BLOCKED until a human supplies API keys with a provider-side spend limit.** Both tools on this machine are logged in by subscription only. Fake-runtime results in test mode do not substitute for it and must be labelled as such.

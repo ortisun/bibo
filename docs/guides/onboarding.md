@@ -7,6 +7,8 @@
 **Objective.** The design tools and the issue workflow are in place, and the project has been mapped. The design tool is the Elephant-Goldfish Model (EGM), a plugin for Claude Code and for Codex that drafts designs with an agent that knows the project and reviews them with fresh agents that do not. Everything below works with either tool, or with both: see [Claude Code and Codex side by side](claude-and-codex.md). The factory also uses GitHub's server for the Model Context Protocol (MCP), which lets that session read and update issues.
 **Done when.** `scripts/install.sh --checkout PATH --repo OWNER/NAME` prints `READY` and exits with code 0, a person has merged the map, an operator has registered the repository and confirmed the map, and an approver has enabled it.
 
+**Model credentials.** The factory needs no provider API key. The worker runs agents on the owner's Claude subscription, through a token the owner makes once with `claude setup-token` and keeps in a private file on the worker's machine ([ADR 0020](../adr/0020-subscription-mode-by-default.md#how-the-owner-turns-it-on)). The design tools below are your own Claude Code or Codex sessions and use your own login, as before.
+
 The order matters. The factory takes tickets only after the project is mapped. A project that was installed but never mapped is not ready, and the installer says so.
 
 ## Before you start
