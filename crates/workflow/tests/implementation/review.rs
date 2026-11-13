@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use factory_domain::contracts::{Contract, ReviewVerdict};
 use factory_domain::machines::failure::FailureClass;
-use factory_domain::state::StageRunStatus;
-use factory_domain::values::{Slug, Uri};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::state::{JobStatus, StageRunStatus};
+use factory_domain::values::{HumanText, Slug, Uri};
+use factory_domain::vocabulary::{HumanRole, StageKind};
 use factory_ports::agent::BrokerEndpoint;
 use factory_ports::sandbox::SandboxProfile;
 use factory_testkit::agent::AdversarialScript;
+use factory_workflow::commands::{Decision, JobCommand, Subject};
 use factory_workflow::engine::AttemptOutcome;
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::stages::implementation::{StageBudget, WorkspaceAccess};
@@ -639,4 +640,233 @@ async fn needs_human_and_block_do_not_loop() {
         StageRunStatus::Blocked
     );
     assert_eq!(rig.runs_of(StageKind::Implementation).await.len(), 1);
+}
+
+// ---- no model independent of the builder -----------------------------------------------------
+
+/// A rig whose router finds no model independent of the builder, run to the review stage, and
+/// the outcome of the review stage run's attempt.
+async fn at_review_with_no_independent_model() -> (Rig, AttemptOutcome) {
+    let rig = Rig::build(Options {
+        no_independent_reviewer: true,
+        ..Options::through_review()
+    })
+    .await;
+    rig.run_to_review().await;
+    let (claimed, outcome) = rig.run_next().await;
+    assert_eq!(claimed.kind, StageKind::Review);
+    (rig, outcome)
+}
+
+/// The policy says a review with no model independent of the builder waits for a person
+/// (`policies/model_routing.yaml`, `on_no_independent_model: wait_for_human`). The stage run
+/// waits (`S07`) and the job waits (`J03`), with the reason named in the timeline and in the
+/// audit log. Nothing fails, and no reviewer runs.
+#[tokio::test]
+async fn a_review_with_no_independent_model_waits_for_a_person_with_the_reason_named() {
+    let (rig, outcome) = at_review_with_no_independent_model().await;
+    assert_eq!(outcome, AttemptOutcome::NeedsHuman);
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(
+        rig.world.view(rig.job).await.status,
+        JobStatus::WaitingForHuman
+    );
+    // No reviewer ran: the stage stopped before any agent was started.
+    assert_eq!(rig.runtime.runs("code-reviewer"), 0);
+    assert_eq!(rig.verdict().await, None);
+
+    let events = rig.world.events(rig.job).await;
+    let waiting = events
+        .iter()
+        .find(|event| event.event_type.as_str() == "stage_run.waiting_for_human")
+        .expect("the stage run waits for a person");
+    assert_eq!(
+        waiting.payload.get("cause").and_then(Value::as_str),
+        Some("independent-reviewer-unavailable")
+    );
+    assert_eq!(
+        waiting.payload.get("stage_kind").and_then(Value::as_str),
+        Some("REVIEW")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type.as_str() == "job.waiting_for_human"),
+        "the job waits for a person"
+    );
+    // The attempt ended failed, with the class that says the policy refused every model.
+    let failed = events
+        .iter()
+        .rfind(|event| event.event_type.as_str() == "attempt.failed")
+        .expect("the attempt ended");
+    assert_eq!(
+        failed.payload.get("failure_class").and_then(Value::as_str),
+        Some(FailureClass::PolicyDenied.as_str())
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.event_type.as_str() == "stage_run.failed"
+                || event.event_type.as_str() == "job.failed"),
+        "nothing failed"
+    );
+
+    let audit = rig.world.audit(rig.job).await;
+    let named = audit
+        .iter()
+        .find(|record| {
+            record
+                .event
+                .reason
+                .starts_with("independent-reviewer-unavailable")
+        })
+        .expect("the audit log names the reason");
+    assert_eq!(named.event.action.as_str(), "authorization_decision.denied");
+    assert!(
+        named
+            .event
+            .reason
+            .contains("policies/model_routing.yaml, independence"),
+        "{}",
+        named.event.reason
+    );
+}
+
+/// From the wait, an approver sends the work back to the implementation stage (`S15`): the
+/// review run ends `REWORK_REQUESTED`, a new implementation run is made, and the job goes on.
+#[tokio::test]
+async fn from_the_wait_a_person_can_send_the_work_back_to_the_builder() {
+    let (rig, _) = at_review_with_no_independent_model().await;
+    let review = rig.run_of(StageKind::Review).await;
+    let approver = rig.world.person("approver-1", &[HumanRole::Approver]).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(approver),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::RequestRework {
+                target: StageKind::Implementation,
+            },
+        )
+        .await
+        .expect("the engine accepts the rework");
+    let view = rig.world.view(rig.job).await;
+    assert_eq!(view.status, JobStatus::Active);
+    let reviews = rig.runs_of(StageKind::Review).await;
+    assert_eq!(reviews[0].1, StageRunStatus::ReworkRequested);
+    assert_eq!(rig.runs_of(StageKind::Implementation).await.len(), 2);
+    assert_eq!(view.code_rework_rounds, 1);
+}
+
+/// From the wait, an approver can reject the work (`S16`), and the job ends rejected.
+#[tokio::test]
+async fn from_the_wait_a_person_can_reject_the_work() {
+    let (rig, _) = at_review_with_no_independent_model().await;
+    let review = rig.run_of(StageKind::Review).await;
+    let approver = rig.world.person("approver-1", &[HumanRole::Approver]).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(approver),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::Reject {
+                reason: HumanText::parse("Nobody independent of the builder reviewed this change.")
+                    .expect("a text"),
+            },
+        )
+        .await
+        .expect("the engine accepts the rejection");
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::Failed
+    );
+    assert_eq!(rig.world.view(rig.job).await.status, JobStatus::Rejected);
+}
+
+/// From the wait, an operator can cancel the job (`J09`), and the waiting review run is
+/// cancelled with it (`S19`).
+#[tokio::test]
+async fn from_the_wait_a_person_can_cancel_the_job() {
+    let (rig, _) = at_review_with_no_independent_model().await;
+    let operator = rig.world.person("operator-1", &[HumanRole::Operator]).await;
+    rig.engine
+        .control(&rig.world.actor(operator), rig.job, JobCommand::Cancel)
+        .await
+        .expect("the engine accepts the cancel");
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::Cancelled
+    );
+    assert_eq!(rig.world.view(rig.job).await.status, JobStatus::Cancelled);
+}
+
+/// The state machine also lets an approver approve the waiting review (`S14`). The review then
+/// passes on the person's judgment, recorded in the ledger, with no reviewer verdict stored.
+#[tokio::test]
+async fn from_the_wait_an_approver_can_pass_the_review_on_their_own_judgment() {
+    let (rig, _) = at_review_with_no_independent_model().await;
+    let review = rig.run_of(StageKind::Review).await;
+    let approver = rig.world.person("approver-1", &[HumanRole::Approver]).await;
+    let seen = rig.world.head(rig.job).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(approver),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::Approve {
+                evidence_seen: seen,
+                warnings_decided: true,
+            },
+        )
+        .await
+        .expect("the engine accepts the approval");
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::Passed
+    );
+    assert_eq!(rig.verdict().await, None);
+}
+
+/// An answer sends the review back to `READY` (`S13`). It starts again, nothing has changed in
+/// the router, and it waits again for the same reason: it never sits `READY` unseen.
+#[tokio::test]
+async fn an_answer_starts_the_review_again_and_it_waits_again() {
+    let (rig, _) = at_review_with_no_independent_model().await;
+    let review = rig.run_of(StageKind::Review).await;
+    let approver = rig.world.person("approver-1", &[HumanRole::Approver]).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(approver),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::Answer {
+                text: "Please review it anyway.".to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the engine accepts the answer");
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::Ready
+    );
+    let (claimed, outcome) = rig.run_next().await;
+    assert_eq!(claimed.stage_run, review);
+    assert_eq!(outcome, AttemptOutcome::NeedsHuman);
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(rig.runtime.runs("code-reviewer"), 0);
 }

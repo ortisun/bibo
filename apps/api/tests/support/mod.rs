@@ -129,6 +129,32 @@ pub struct Options {
     pub report_schema: Option<SchemaVersion>,
     /// The signing keys, when a test needs a rotation (a previous key). Otherwise a new random key.
     pub decision_keys: Option<Arc<factory_composition::decision_signing::DecisionKeys>>,
+    /// A real run (`real/mod.rs`): tenant A is the owner's, with GitHub's real numbers, and the
+    /// allowlist is the owner's file.
+    pub real: Option<RealSeed>,
+}
+
+/// Tenant A of a real run: GitHub's real numbers and the one person who runs it.
+#[derive(Clone)]
+pub struct RealSeed {
+    /// The tenant the owner's allowlist names.
+    pub tenant: TenantId,
+    /// The App's installation on the fixture repository.
+    pub installation: u64,
+    /// GitHub's numeric id of the fixture repository.
+    pub github_repository: u64,
+    /// `owner/name`.
+    pub full_name: String,
+    /// The default branch.
+    pub default_branch: String,
+    /// The commit of the default branch the repository's project map is attested at.
+    pub map_commit: String,
+    /// The owner's numeric GitHub id.
+    pub owner_github_id: u64,
+    /// The owner's login, for display.
+    pub owner_login: String,
+    /// The text of the owner's allowlist file.
+    pub allowlist_text: String,
 }
 
 impl Default for Options {
@@ -144,6 +170,7 @@ impl Default for Options {
             serve_tenant_b_to_everyone: false,
             report_schema: None,
             decision_keys: None,
+            real: None,
         }
     }
 }
@@ -174,7 +201,10 @@ impl Env {
 
     pub async fn start_with(options: Options) -> Self {
         let db = server().clone_database().await;
-        let a = seed_tenant(&db, 0, 1000).await;
+        let a = match &options.real {
+            Some(seed) => seed_real_tenant(&db, seed).await,
+            None => seed_tenant(&db, 0, 1000).await,
+        };
         let b = seed_tenant(&db, 1, 2000).await;
 
         let checkout =
@@ -182,7 +212,10 @@ impl Env {
         std::fs::create_dir_all(checkout.join("allowlist")).expect("the checkout directory");
         std::fs::write(
             checkout.join("allowlist/allowlist.yaml"),
-            allowlist_text(&[&a, &b]),
+            match &options.real {
+                Some(seed) => seed.allowlist_text.clone(),
+                None => allowlist_text(&[&a, &b]),
+            },
         )
         .expect("the allowlist file");
 
@@ -469,6 +502,50 @@ async fn seed_tenant(db: &TestDb, position: usize, base: u64) -> Tenant {
         operator: seed_person(db, id, base + 3, "operator-one").await,
         security: seed_person(db, id, base + 5, "security-one").await,
         outsider: seed_person(db, id, base + 4, "outsider-one").await,
+    }
+}
+
+/// Tenant A of a real run. The owner is the requester, the approver, the operator and the
+/// security approver (they work alone), and attested and enabled the repository: a
+/// single-maintainer repository (finding REG-6). The outsider is a made-up person nobody lists.
+async fn seed_real_tenant(db: &TestDb, seed: &RealSeed) -> Tenant {
+    let id = seed.tenant;
+    let repository = RepositoryId::from_uuid(random_uuid());
+    let slug = format!("owner-{}", &id.as_uuid().simple().to_string()[..8]);
+    db.run(&format!(
+        "INSERT INTO tenants (id, slug, display_name) VALUES ('{}', '{slug}', 'The owner')",
+        id.as_uuid(),
+    ))
+    .await;
+    let owner = seed_person(db, id, seed.owner_github_id, &seed.owner_login).await;
+    let ceiling = "L1";
+    db.run(&format!(
+        "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
+                full_name, default_branch, autonomy_ceiling, enabled, project_map_commit, \
+                project_map_attested_by_principal_id, enabled_by_principal_id, single_maintainer) \
+           VALUES ('{tenant}', '{repository}', {installation}, {github}, '{full_name}', '{branch}', \
+                '{ceiling}', true, '{commit}', '{owner}', '{owner}', true);",
+        tenant = id.as_uuid(),
+        repository = repository.as_uuid(),
+        installation = seed.installation,
+        github = seed.github_repository,
+        full_name = seed.full_name,
+        branch = seed.default_branch,
+        commit = seed.map_commit,
+        owner = owner.principal.as_uuid(),
+    ))
+    .await;
+    Tenant {
+        id,
+        repository,
+        installation: seed.installation,
+        github_repository: seed.github_repository,
+        full_name: seed.full_name.clone(),
+        requester: owner.clone(),
+        approver: owner.clone(),
+        operator: owner.clone(),
+        security: owner,
+        outsider: seed_person(db, id, 4_000_000_777, "not-on-the-allowlist").await,
     }
 }
 

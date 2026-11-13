@@ -403,7 +403,7 @@ mod tests {
             report
                 .blocked
                 .iter()
-                .any(|b| b.contains("FACTORY_E2E_MODEL_API_KEY"))
+                .any(|b| b.contains("FACTORY_E2E_REQUESTER_ALLOWLIST"))
         );
         assert!(
             report

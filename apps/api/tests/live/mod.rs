@@ -485,6 +485,78 @@ impl Lab {
     }
 }
 
+/// What the world and the pipeline are built from: the lab of the loopback run, or the bench of a
+/// real run (`real/mod.rs`), which has the real provider behind its broker.
+pub trait Bench {
+    /// The root of the repository: the policies, the agents and the images catalog.
+    fn root(&self) -> &Path;
+    /// The scratch directory of this run.
+    fn scratch(&self) -> &Path;
+    /// The policies.
+    fn policies(&self) -> &LoadedPolicies;
+    /// The routing policy.
+    fn routing(&self) -> &LoadedRouting;
+    /// The one redactor.
+    fn redactor(&self) -> &Arc<Redactor>;
+    /// The broker core behind the broker's listener.
+    fn core(&self) -> &Arc<BrokerCore>;
+    /// How the model credentials are held.
+    fn mode(&self) -> ProviderCredentialMode;
+    /// The profile the pipeline is assembled in.
+    fn profile(&self) -> factory_composition::profile::Profile;
+    /// The commit of the stage definitions the pipeline records.
+    fn definition_commit(&self) -> String;
+
+    /// The broker the engine issues tokens through: the broker core behind the routing policy,
+    /// exactly as the worker builds it.
+    fn policy_broker(&self) -> Arc<dyn ModelBroker> {
+        Arc::new(PolicyBroker::new(
+            self.core().clone(),
+            Arc::clone(&self.routing().policy),
+            self.core().clone() as Arc<dyn JobSpend>,
+        ))
+    }
+
+    /// The image catalog for this host.
+    fn catalog(&self) -> ImageCatalog {
+        let text = std::fs::read_to_string(self.root().join("infra/sandbox-images/images.json"))
+            .expect("the catalog");
+        ImageCatalog::from_json(&text, "linux/arm64").expect("a catalog")
+    }
+}
+
+impl Bench for Lab {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn scratch(&self) -> &Path {
+        &self.scratch
+    }
+    fn policies(&self) -> &LoadedPolicies {
+        &self.policies
+    }
+    fn routing(&self) -> &LoadedRouting {
+        &self.routing
+    }
+    fn redactor(&self) -> &Arc<Redactor> {
+        &self.redactor
+    }
+    fn core(&self) -> &Arc<BrokerCore> {
+        &self.core
+    }
+    // The lab runs both tools, Claude Code and Codex, so it runs the policy in API-key mode: in the
+    // default subscription mode Codex is unavailable (ADR 0020).
+    fn mode(&self) -> ProviderCredentialMode {
+        ProviderCredentialMode::ApiKey
+    }
+    fn profile(&self) -> factory_composition::profile::Profile {
+        factory_composition::profile::Profile::Local
+    }
+    fn definition_commit(&self) -> String {
+        "1405df66cbe219b0bf6355bc3d60361a8376b6b4".to_owned()
+    }
+}
+
 pub fn write_private(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::write(path, text).expect("a secret file");
@@ -558,12 +630,26 @@ pub struct World {
 /// Builds the real providers (Docker sandbox, git workspaces, Spec Kit), probes the runtimes in a
 /// real `agent` sandbox, and assembles the outside world from the configuration.
 pub async fn build_world(
-    lab: &Lab,
+    lab: &impl Bench,
     env: &Env,
     config_text: &str,
     store: Arc<dyn Store>,
     artifacts: Arc<dyn factory_ports::artifact::ArtifactStore>,
     spec_skills: Option<factory_runtime::SkillBundle>,
+) -> World {
+    build_world_over(lab, env, config_text, store, artifacts, spec_skills, None).await
+}
+
+/// [`build_world`], with the GitHub transport passed through `github_transport`: a real run keeps a
+/// record of each request the adapter sends.
+pub async fn build_world_over(
+    lab: &impl Bench,
+    env: &Env,
+    config_text: &str,
+    store: Arc<dyn Store>,
+    artifacts: Arc<dyn factory_ports::artifact::ArtifactStore>,
+    spec_skills: Option<factory_runtime::SkillBundle>,
+    github_transport: Option<factory_composition::external::GithubTransportWrapper>,
 ) -> World {
     let config = Arc::new(
         FactoryConfig::from_yaml(config_text).unwrap_or_else(|error| {
@@ -573,8 +659,8 @@ pub async fn build_world(
     let jobs = Arc::new(ActiveJobs::new());
     let providers = assemble(ProviderInputs {
         config: &config,
-        policies: &lab.policies,
-        redactor: Arc::clone(&lab.redactor),
+        policies: lab.policies(),
+        redactor: Arc::clone(lab.redactor()),
         artifacts: Arc::clone(&artifacts),
         clock: Arc::new(SystemClock),
         ids: Arc::new(RandomIds::new().expect("random")),
@@ -587,25 +673,24 @@ pub async fn build_world(
     // The start-up probe, in a real sandbox of the real agent image.
     let registering = Arc::new(RegisteringBroker::new(
         lab.policy_broker(),
-        Arc::clone(&lab.redactor),
+        Arc::clone(lab.redactor()),
     ));
     let specs = PolicySpecs::new(
-        Arc::clone(&lab.policies.security),
+        Arc::clone(&lab.policies().security),
         lab.catalog(),
         Arc::clone(&registering),
-        lab.scratch.join("probe-specs"),
+        lab.scratch().join("probe-specs"),
     );
-    let enabled = enabled_models(&lab.routing.policy, &config.broker.upstreams).expect("enabled");
-    let model = first_selection(&lab.routing.policy, StageKind::Intake, &enabled)
+    let enabled = enabled_models(&lab.routing().policy, &config.broker.upstreams).expect("enabled");
+    let model = first_selection(&lab.routing().policy, StageKind::Intake, &enabled)
         .expect("a model for INTAKE");
     let parts = RuntimeParts {
         config: Arc::clone(&config),
         artifacts: Arc::clone(&artifacts),
-        redactor: Arc::clone(&lab.redactor),
-        attestation: lab.core.clone(),
+        redactor: Arc::clone(lab.redactor()),
+        attestation: lab.core().clone(),
         spec_skills: None,
-        // The lab runs both tools, which only the API-key mode allows (ADR 0020).
-        mode: ProviderCredentialMode::ApiKey,
+        mode: lab.mode(),
     };
     let ids = RandomIds::new().expect("random");
     let probe = probe_at_startup(ProbeInputs {
@@ -620,21 +705,22 @@ pub async fn build_world(
     })
     .await;
 
-    // The lab runs both tools, Claude Code and Codex, so it runs the policy in API-key mode: in the
-    // default subscription mode Codex is unavailable (ADR 0020).
-    let mut api_key_mode = (*lab.policies.security).clone();
-    api_key_mode.credentials.model_providers.mode = ProviderCredentialMode::ApiKey;
+    // The bench says how the model credentials are held: the lab runs both tools, which only the
+    // API-key mode allows; a real run uses the default subscription mode (ADR 0020).
+    let mut in_mode = (*lab.policies().security).clone();
+    in_mode.credentials.model_providers.mode = lab.mode();
     let external = assemble_external(ExternalInputs {
         config: &config,
-        security: &api_key_mode,
-        routing: &lab.routing,
-        redactor: Arc::clone(&lab.redactor),
+        security: &in_mode,
+        routing: lab.routing(),
+        redactor: Arc::clone(lab.redactor()),
         clock: Arc::new(SystemClock),
         artifacts,
         jobs: Arc::clone(&jobs),
-        attestation: lab.core.clone(),
+        attestation: lab.core().clone(),
         spec_skills,
         probes: probe.clone(),
+        github_transport: github_transport.clone(),
     });
     let (built, blocked) = match external {
         Ok(world) => (Some(world), Vec::new()),
@@ -674,6 +760,11 @@ impl LiveRig {
     /// Assembles the pipeline from the world, as the worker's `assemble_loop` does.
     pub async fn start(lab: &Lab, env: Env, world: World, github: &github::GitHub) -> Self {
         let _ = github;
+        Self::assemble(lab, env, world).await
+    }
+
+    /// Assembles the pipeline from the world on any bench.
+    pub async fn assemble(lab: &impl Bench, env: Env, world: World) -> Self {
         assert!(
             world.blocked.is_empty(),
             "BLOCKED: the outside world cannot be assembled:\n{}",
@@ -698,7 +789,7 @@ impl LiveRig {
         let allowlist = Arc::new(FileAllowlist::in_checkout(&env.checkout));
         let settings = factory_composition::config::StageSettings {
             label: "factory".to_owned(),
-            definition_commit: Some("1405df66cbe219b0bf6355bc3d60361a8376b6b4".to_owned()),
+            definition_commit: Some(lab.definition_commit()),
             ..Default::default()
         };
         let sweep = factory_composition::token_sweep::RevokeEndedJobs::new(
@@ -709,18 +800,18 @@ impl LiveRig {
         );
         let pipeline = factory_composition::pipeline::assemble_pipeline(
             factory_composition::pipeline::PipelineInputs {
-                profile: factory_composition::profile::Profile::Local,
+                profile: lab.profile(),
                 settings,
-                definitions_root: lab.root.clone(),
-                policies: lab.policies.clone(),
-                redactor: Arc::clone(&lab.redactor),
+                definitions_root: lab.root().to_path_buf(),
+                policies: lab.policies().clone(),
+                redactor: Arc::clone(lab.redactor()),
                 store: Arc::clone(&store_dyn),
                 artifacts: Arc::clone(&artifacts),
                 clock: Arc::new(SystemClock),
                 ids: Arc::new(RandomIds::new().expect("random")),
                 providers: world.providers.clone(),
                 catalog: lab.catalog(),
-                sandbox_scratch: lab.scratch.join("specs"),
+                sandbox_scratch: lab.scratch().join("specs"),
                 broker: lab.policy_broker(),
                 external: built.ports,
                 allowlist,

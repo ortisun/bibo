@@ -18,18 +18,12 @@ pub struct Need {
     pub why: &'static str,
 }
 
-/// The prerequisites of the scenarios that use real adapters (E1 and E2).
-pub const REAL_NEEDS: [Need; 6] = [
-    Need {
-        what: "an API key for the model provider with a provider-side hard spend limit",
-        variable: "FACTORY_E2E_MODEL_API_KEY",
-        why: "the agent tools run behind a broker that holds the real key; this harness runs both tools, and Codex is unavailable in the default subscription mode (ADR 0020)",
-    },
-    Need {
-        what: "the provider-side hard spend limit of that key, stated in US dollars",
-        variable: "FACTORY_E2E_MODEL_SPEND_LIMIT_USD",
-        why: "a key cannot report its own limit, and the run must never be able to spend more than the person who owns the key allowed",
-    },
+/// The prerequisites of the scenarios that use real adapters (E1 and E2): the things only the
+/// owner can provide. The run uses the factory's default, subscription mode (ADR 0020): the model
+/// credential is the owner's Claude subscription token in a file, which has a default place and is
+/// checked by [`crate::prerequisites`], and the money a run may use is the factory's own job budget,
+/// which the policy names. Neither is a variable the owner must set.
+pub const REAL_NEEDS: [Need; 4] = [
     Need {
         what: "a registered GitHub App (its id)",
         variable: "FACTORY_E2E_GITHUB_APP_ID",
@@ -46,7 +40,7 @@ pub const REAL_NEEDS: [Need; 6] = [
         why: "a repository that fails the protection preflight runs at level L0 and opens no pull request",
     },
     Need {
-        what: "the named requester allowlist in protected configuration",
+        what: "the named requester allowlist (a file in the factory's allowlist format that names the requester and the approver by numeric GitHub id)",
         variable: "FACTORY_E2E_REQUESTER_ALLOWLIST",
         why: "requester authorization is part of what the scenario shows",
     },

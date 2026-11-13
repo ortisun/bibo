@@ -191,6 +191,7 @@ pub async fn external_ports(
         attestation: booted.broker.core.clone(),
         spec_skills,
         probes,
+        github_transport: None,
     });
     match (built, skills_blocked) {
         (Ok(world), None) => Ok(world),

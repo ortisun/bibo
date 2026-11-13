@@ -837,6 +837,24 @@ pub fn all() -> Vec<Mutation> {
             },
         },
         Mutation {
+            name: "the-requester-approved-their-own-request-of-medium-risk",
+            assertion: "A9",
+            what: "The approval is recorded for the requester, and the job's risk is medium.",
+            expect: "approved their own request",
+            base: Production,
+            apply: |ev| {
+                let requester = ev.job.requester.clone();
+                ev.facts.insert("risk_tier".to_owned(), json!("medium"));
+                for record in ev
+                    .audit
+                    .iter_mut()
+                    .filter(|r| r.action == "approval_granted_or_rejected.granted")
+                {
+                    record.actor.clone_from(&requester);
+                }
+            },
+        },
+        Mutation {
             name: "a-service-account-approved",
             assertion: "A9",
             what: "The approval is recorded for a service account, not a person.",

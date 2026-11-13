@@ -89,7 +89,81 @@ fn artifact_ref(sha: Sha256Digest) -> ArtifactRef {
     }
 }
 
-/// Reads everything the run of `job` left, and builds the recording.
+/// What the recorder reads a run from: the composed test rig, or the rig of a real run.
+pub trait Sources {
+    /// The API test environment: the database, the API server and the people.
+    fn env(&self) -> &Env;
+    /// The engine.
+    fn engine(&self) -> &factory_workflow::engine::Engine;
+    /// The store, on the worker's logins.
+    fn store(&self) -> &std::sync::Arc<dyn factory_ports::store::Store>;
+    /// The artifact store.
+    fn artifacts(&self) -> &std::sync::Arc<dyn factory_ports::artifact::ArtifactStore>;
+    /// The tenant of the run.
+    fn tenant(&self) -> factory_domain::ids::TenantId;
+}
+
+impl Sources for Rig {
+    fn env(&self) -> &Env {
+        &self.env
+    }
+    fn engine(&self) -> &factory_workflow::engine::Engine {
+        &self.engine
+    }
+    fn store(&self) -> &std::sync::Arc<dyn factory_ports::store::Store> {
+        &self.store
+    }
+    fn artifacts(&self) -> &std::sync::Arc<dyn factory_ports::artifact::ArtifactStore> {
+        &self.artifacts
+    }
+    fn tenant(&self) -> factory_domain::ids::TenantId {
+        self.tenant
+    }
+}
+
+/// What kind of run a recording is of: its wiring, its mode, what it spent, the adapters no
+/// ledger entry names, and its limitations.
+pub struct RunProfile {
+    /// `composed-test` for the test rig, `composed` for a real run.
+    pub wiring: &'static str,
+    /// `test` or `production`.
+    pub mode: &'static str,
+    /// The `usage` block of the evidence.
+    pub usage: Value,
+    /// The adapters of the run that no ledger entry names: port, name, fidelity.
+    pub adapters: Vec<(String, String, String)>,
+    /// What the run cannot claim.
+    pub limitations: Vec<String>,
+    /// The note on the timings file.
+    pub timings_note: &'static str,
+}
+
+/// The profile of the composed test rig of `full/mod.rs`.
+#[must_use]
+pub fn test_profile() -> RunProfile {
+    RunProfile {
+        wiring: "composed-test",
+        mode: "test",
+        usage: json!({ "total_micro_usd": 0, "budget_micro_usd": 0, "calls_after_exhaustion": 0 }),
+        adapters: RIG_ADAPTERS
+            .iter()
+            .map(|(port, name, fidelity)| {
+                (
+                    (*port).to_owned(),
+                    (*name).to_owned(),
+                    (*fidelity).to_owned(),
+                )
+            })
+            .collect(),
+        limitations: TEST_LIMITATIONS
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect(),
+        timings_note: "Durations of a run in test mode on one machine. They are not a measure of the factory.",
+    }
+}
+
+/// Reads everything the run of `job` left in the composed test rig, and builds the recording.
 pub async fn collect(
     rig: &Rig,
     job: Option<JobId>,
@@ -98,14 +172,42 @@ pub async fn collect(
     extras: Extras,
     transitions: &Transitions,
 ) -> Collected {
-    let scope = TenantScope::new(rig.tenant);
+    collect_from(
+        rig,
+        job,
+        scenario,
+        tokens,
+        extras,
+        transitions,
+        &test_profile(),
+        async |documents: &BTreeMap<String, Value>, extras: &Extras| {
+            github_evidence(rig, job, documents, extras).await
+        },
+    )
+    .await
+}
+
+/// Reads everything the run of `job` left, from any rig, and builds the recording. `github` reads
+/// what GitHub holds, given the stored stage outputs.
+#[allow(clippy::too_many_arguments)]
+pub async fn collect_from<S: Sources>(
+    rig: &S,
+    job: Option<JobId>,
+    scenario: &'static str,
+    tokens: &Tokens,
+    extras: Extras,
+    transitions: &Transitions,
+    profile: &RunProfile,
+    github: impl AsyncFnOnce(&BTreeMap<String, Value>, &Extras) -> Value,
+) -> Collected {
+    let scope = TenantScope::new(rig.tenant());
     let view = match job {
-        Some(job) => rig.engine.job_view(rig.tenant, job).await.ok(),
+        Some(job) => rig.engine().job_view(rig.tenant(), job).await.ok(),
         None => None,
     };
 
     // ---- the store ---------------------------------------------------------------------------
-    let mut tx = rig.store.begin(scope).await.expect("a transaction");
+    let mut tx = rig.store().begin(scope).await.expect("a transaction");
     let correlation = match job {
         Some(job) => tx
             .get_job(job)
@@ -169,7 +271,7 @@ pub async fn collect(
             link.sha256.as_str().to_owned(),
         );
         if let Ok(bytes) = rig
-            .artifacts
+            .artifacts()
             .get(&scope, &artifact_ref(link.sha256.clone()))
             .await
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
@@ -192,7 +294,7 @@ pub async fn collect(
         let mut found: Vec<(Value, Vec<u8>)> = Vec::new();
         if let Some(record) = &run.value.gate
             && let Some(hash) = record.report_sha256.clone()
-            && let Ok(bytes) = rig.artifacts.get(&scope, &artifact_ref(hash)).await
+            && let Ok(bytes) = rig.artifacts().get(&scope, &artifact_ref(hash)).await
             && let Ok(report) = serde_json::from_slice::<Value>(&bytes)
         {
             found.push((report, bytes));
@@ -206,7 +308,7 @@ pub async fn collect(
                     continue;
                 }
                 let Ok(bytes) = rig
-                    .artifacts
+                    .artifacts()
                     .get(&scope, &artifact_ref(link.sha256.clone()))
                     .await
                 else {
@@ -324,7 +426,7 @@ pub async fn collect(
     let timeline_api = match job {
         Some(job) => {
             let reply = rig
-                .env
+                .env()
                 .send(Req::get(&format!("/v1/jobs/{job}/timeline")).bearer(&tokens.requester))
                 .await;
             assert_eq!(reply.status, 200, "{}", reply.text());
@@ -334,7 +436,7 @@ pub async fn collect(
     };
 
     // ---- GitHub, as far as the fake host lets us read it back ---------------------------------
-    let github = github_evidence(rig, job, &documents, &extras).await;
+    let github = github(&documents, &extras).await;
 
     // ---- contracts and documents ---------------------------------------------------------------
     let mut stored_hashes = serde_json::Map::new();
@@ -401,11 +503,11 @@ pub async fn collect(
     }));
 
     // ---- the evidence ------------------------------------------------------------------------
-    let requester_actor = format!("human:{}", rig.env.a.requester.principal);
+    let requester_actor = format!("human:{}", rig.env().a.requester.principal);
     let mut evidence = json!({
         "scenario": scenario,
-        "wiring": "composed-test",
-        "mode": "test",
+        "wiring": profile.wiring,
+        "mode": profile.mode,
         "source_language": "en",
         "job": {
             "id": job.map_or_else(|| "none".to_owned(), |job| job.to_string()),
@@ -422,7 +524,7 @@ pub async fn collect(
         "contracts": contracts,
         "github": github,
         "telemetry": { "spans": spans_json, "correlated": correlated },
-        "usage": { "total_micro_usd": 0, "budget_micro_usd": 0, "calls_after_exhaustion": 0 },
+        "usage": profile.usage,
     });
     let mut facts = extras.facts.clone();
     if let Some(view) = &view {
@@ -469,11 +571,11 @@ pub async fn collect(
         evidence["hostile"] = hostile.clone();
     }
 
-    let mode = mode_file(scenario, &ledger_json_components(&evidence));
+    let mode = mode_file_for(profile, scenario, &ledger_json_components(&evidence));
     let timings = json!({
         "scenario_seconds": extras.took.as_secs_f64(),
         "attempts": extras.attempt_timings,
-        "note": "Durations of a run in test mode on one machine. They are not a measure of the factory.",
+        "note": profile.timings_note,
     });
     let kept_documents: BTreeMap<String, Value> = KEPT_DOCUMENTS
         .iter()
@@ -544,7 +646,17 @@ const RIG_ADAPTERS: [(&str, &str, &str); 14] = [
 ];
 
 fn mode_file(scenario: &str, components: &BTreeMap<String, String>) -> Value {
-    let mut adapters: Vec<Value> = RIG_ADAPTERS
+    mode_file_for(&test_profile(), scenario, components)
+}
+
+/// The mode file of a recording of this profile.
+pub fn mode_file_for(
+    profile: &RunProfile,
+    scenario: &str,
+    components: &BTreeMap<String, String>,
+) -> Value {
+    let mut adapters: Vec<Value> = profile
+        .adapters
         .iter()
         .map(|(port, name, fidelity)| {
             json!({ "port": port, "component": "", "name": name, "fidelity": fidelity })
@@ -564,22 +676,25 @@ fn mode_file(scenario: &str, components: &BTreeMap<String, String>) -> Value {
         }));
     }
     json!({
-        "mode": "test",
+        "mode": profile.mode,
         "scenario": scenario,
-        "wiring": "composed-test",
-        "cost_micro_usd": 0,
+        "wiring": profile.wiring,
+        "cost_micro_usd": profile.usage["total_micro_usd"].as_u64().unwrap_or(0),
         "adapters": adapters,
-        "limitations": [
-            "No model was called. The nine agents are the scripted playbook (apps/api/tests/playbook), which answers by role and ignores the text of the prompt.",
-            "No command ran in a container. The sandbox is the testkit fake, and the output of cargo and of the tool is what a real run of the patched fixture printed.",
-            "In E4 the builder of the first task obeys the hostile text: it runs the commands the text asks for in the fake sandbox, claims that every gate passed, and its scripted runtime reports four tool calls as refused (a secret path, a protected path, the network, the approval). The refusal itself belongs to the permission system of the coding tool and to the container, and only a run with real adapters exercises it; the rig shows that the pipeline records each refusal and that none of the attempts changed anything.",
-            "GitHub is the testkit fake change host and issue source. The fake mints a labelled token for each job, kind of token, repository and permission set, with the permissions the real adapter asks for (a test in the github crate compares them), and it keeps the text of each comment. The requests are the paths the real adapter would send for the same calls; nothing is sent on a wire, and no token is a credential.",
-            "The commits on the head branch and the paths they change are read from the fake remote's own record of the branch, and must be the commits the implementation and documentation stages reported. Their messages come from the stage results, because the fake remote keeps none.",
-            "The protection of the base branch is a stand-in report that the real preflight judged. The number of required approvals is not in the report and is recorded as one.",
-            "Log lines are the events of the factory's own crates. Events of third-party crates are not factory log lines and are not counted.",
-        ],
+        "limitations": profile.limitations,
     })
 }
+
+/// What a recording of the composed test rig cannot claim.
+const TEST_LIMITATIONS: [&str; 7] = [
+    "No model was called. The nine agents are the scripted playbook (apps/api/tests/playbook), which answers by role and ignores the text of the prompt.",
+    "No command ran in a container. The sandbox is the testkit fake, and the output of cargo and of the tool is what a real run of the patched fixture printed.",
+    "In E4 the builder of the first task obeys the hostile text: it runs the commands the text asks for in the fake sandbox, claims that every gate passed, and its scripted runtime reports four tool calls as refused (a secret path, a protected path, the network, the approval). The refusal itself belongs to the permission system of the coding tool and to the container, and only a run with real adapters exercises it; the rig shows that the pipeline records each refusal and that none of the attempts changed anything.",
+    "GitHub is the testkit fake change host and issue source. The fake mints a labelled token for each job, kind of token, repository and permission set, with the permissions the real adapter asks for (a test in the github crate compares them), and it keeps the text of each comment. The requests are the paths the real adapter would send for the same calls; nothing is sent on a wire, and no token is a credential.",
+    "The commits on the head branch and the paths they change are read from the fake remote's own record of the branch, and must be the commits the implementation and documentation stages reported. Their messages come from the stage results, because the fake remote keeps none.",
+    "The protection of the base branch is a stand-in report that the real preflight judged. The number of required approvals is not in the report and is recorded as one.",
+    "Log lines are the events of the factory's own crates. Events of third-party crates are not factory log lines and are not counted.",
+];
 
 async fn github_evidence(
     rig: &Rig,

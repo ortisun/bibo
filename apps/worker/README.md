@@ -531,6 +531,26 @@ Until then `scripts/e2e.sh --scenario E1 --scenario E2` is `BLOCKED` on its own 
   `docs/reference/commands.md`, which `scripts/docs-check.sh` compares with the code.
 * Nothing here changes `scripts/e2e.sh`: with no composed program it still reports `BLOCKED` for E1 and E2 and exits 3.
 
+**Status after the work for the first real run: built, not run against GitHub or the provider.** The program is
+`scripts/e2e-composed.sh`, and `scripts/e2e.sh` uses it for E1 and E2 when `FACTORY_E2E_COMPOSED` names no other.
+It is not a second `[[bin]]`: its two commands run two ignored tests of `apps/api/tests/real_e2e.rs`, which reuse the
+live-adapters rig with the real GitHub and the real provider behind the broker in subscription mode, and the recorder
+of E3 to E9, which now reads any rig through the `Sources` trait (`collect_from`). That kept the collector in test
+code, where it already was, and needed no new crate edge. The three open decisions were taken this way, each written
+down in `apps/api/tests/real/mod.rs`:
+
+* `ProtectionFacts` from GitHub: every field of the adapter's `ProtectionReport`; `app_may_bypass` is the owner's
+  statement (`github.bypass_attestations`); `enforce_admins` is not in the report, is recorded as false, and no
+  assertion reads it.
+* The requester's credential: the owner's own `gh` login, used only to file the issue and apply the label. The job is
+  then submitted through the API (`POST /v1/jobs`), never through a webhook.
+* No new binary, so no page in `docs/reference/commands.md`; the owner's guide is
+  [`docs/guides/first-real-run.md`](../../docs/guides/first-real-run.md).
+
+The composition library gained one optional input for it: `ExternalInputs::github_transport`, a wrapper around the
+GitHub transport, which the run uses to record the method and path of each request and the permissions and
+repositories of each installation token it asks for. The worker passes none.
+
 ## Seams
 
 Every injection trait the stages and the engine declare, with what the composition crate does about it.

@@ -14,7 +14,7 @@ use factory_domain::machines::invalidation::ArtifactChange;
 use factory_domain::state::StageRunStatus;
 use factory_domain::vocabulary::{ExecutionMode, Fidelity, StageKind};
 use factory_ports::clock::IdGenerator;
-use factory_ports::store::{NewOriginalRequest, RequestSource, Store};
+use factory_ports::store::{NewOriginalRequest, RequestSource};
 use factory_testkit::agent::{AdversarialScript, FakeAgentRuntimeSubject, Performed};
 use factory_testkit::clock::FakeCancel;
 use factory_testkit::contracts::agent::AgentRuntimeSubject;
