@@ -493,7 +493,12 @@ fn run_one(
     } else {
         // A real run. Every prerequisite is looked for, and every one that is missing is named,
         // before anything starts.
-        let external = External::from_lookup(&env_lookup);
+        // A real scenario uses the repository's own program when the variable names none.
+        let external = if scenario.adapters == Adapters::Real {
+            External::for_real_run(&env_lookup, root)
+        } else {
+            External::from_lookup(&env_lookup)
+        };
         let mut reasons = Vec::new();
         if let Err(Blocked(found)) = &external {
             reasons.extend(found.iter().cloned());

@@ -23,6 +23,10 @@ use crate::scenarios::Scenario;
 /// The environment variable that names the program.
 pub const PROGRAM_VARIABLE: &str = "FACTORY_E2E_COMPOSED";
 
+/// The composed wiring program of this repository, relative to its root: it runs the real
+/// scenario through `apps/api/tests/real_e2e.rs` (see the head of the script).
+pub const DEFAULT_PROGRAM: &str = "scripts/e2e-composed.sh";
+
 /// A wiring that runs a program.
 pub struct External {
     program: PathBuf,
@@ -47,6 +51,32 @@ impl External {
             )));
         }
         Ok(Self { program })
+    }
+
+    /// The wiring of a real run: the program `FACTORY_E2E_COMPOSED` names, or, when the variable is
+    /// not set, the repository's own program `scripts/e2e-composed.sh`.
+    ///
+    /// # Errors
+    /// [`Blocked`] when the variable names a file that does not exist, or neither is there.
+    pub fn for_real_run(
+        lookup: &dyn Fn(&str) -> Option<String>,
+        root: &std::path::Path,
+    ) -> Result<Self, Blocked> {
+        if lookup(PROGRAM_VARIABLE).is_some_and(|p| !p.trim().is_empty()) {
+            return Self::from_lookup(lookup);
+        }
+        let program = root.join(DEFAULT_PROGRAM);
+        if program.is_file() {
+            Ok(Self { program })
+        } else {
+            Self::from_lookup(lookup)
+        }
+    }
+
+    /// The program this wiring runs.
+    #[must_use]
+    pub fn program(&self) -> &std::path::Path {
+        &self.program
     }
 
     fn call(&self, args: &[&str]) -> Result<String, Blocked> {
@@ -118,6 +148,15 @@ mod tests {
             panic!("expected a block");
         };
         assert!(reasons[0].contains(PROGRAM_VARIABLE));
+    }
+
+    #[test]
+    fn a_real_run_without_the_variable_uses_the_program_of_the_repository() {
+        let root = crate::repository_root();
+        let wiring = External::for_real_run(&|_| None, &root).expect("the program is there");
+        assert_eq!(wiring.program(), root.join(DEFAULT_PROGRAM));
+        let named = |name: &str| (name == PROGRAM_VARIABLE).then(|| "/no/such/program".to_owned());
+        assert!(External::for_real_run(&named, &root).is_err());
     }
 
     #[test]

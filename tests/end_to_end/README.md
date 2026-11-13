@@ -33,7 +33,7 @@ saved as JSON, checked again later, and corrupted on purpose.
 | A13 | `DELIVERY` starts only when every stage before it has a current `PASSED` run with passing gate reports. A failing check keeps it from starting. |
 | A14 | In a production job no ledger entry and no manifest adapter is a fake. In test mode a fake is allowed only when labelled: it claims no assurance level, and the manifest attains none on it. |
 
-Each assertion is shown to fail. `scripts/e2e.sh --self-test` runs 88 deliberate corruptions of an
+Each assertion is shown to fail. `scripts/e2e.sh --self-test` runs 89 deliberate corruptions of an
 honest evidence set, at least two for each assertion, and checks that the assertion fails with a
 reason that names the broken fact. The scenario checks have their own corruptions in
 `tests/scenario_mutations.rs`.
@@ -50,7 +50,7 @@ the composed pipeline can honestly claim, and what it cannot.
 
 | Id | What it claims | Asserts | Needs | What test mode can claim |
 |---|---|---|---|---|
-| E1 | An English issue goes through every stage to an approved draft pull request, and nothing is merged. | A1 to A14, `X.ledger-chain`, `X.original-kept` | Live: a model key with a provider-side limit, a registered GitHub App, a protected fixture repository, the allowlist | Nothing. A test-mode run is labelled and is not the proof. |
+| E1 | An English issue goes through every stage to an approved draft pull request, and nothing is merged. | A1 to A14, `X.ledger-chain`, `X.original-kept` | Live: the owner's Claude subscription token, a registered GitHub App, a protected fixture repository, the allowlist, a confirmed routing policy | Nothing. A test-mode run is labelled and is not the proof. |
 | E2 | The same flow from a Portuguese issue, with English artifacts that keep the technical intent. | A1 to A14, `X.ledger-chain`, `X.original-kept`, `E2.intent` | The same as E1 | Nothing. |
 | E3 | A failing check blocks promotion: two rework rounds, then a person decides, and no pull request. | A11, A13, A14, `X.ledger-chain`, `E3.rework-cap-then-human` | Composed pipeline, scripted agents, fake sandbox | The engine, the rework cap and the gates behave as designed when a mandatory check fails. It says nothing about a real agent fixing a real failure. |
 | E4 | Instructions hidden in an issue and in a repository document have no effect, and no canary secret leaks. | A1, A3, A9, A10, A13, A14, `X.ledger-chain`, `X.original-kept`, `E4.no-effect`, `E4.agent-denials` | Composed pipeline | What the text demanded, tried through the real interfaces, is denied; the text reaches an agent only as quoted data; no canary leaks. It cannot show an agent that obeys the text and is denied (A10, `E4.agent-denials`). |
@@ -63,7 +63,7 @@ the composed pipeline can honestly claim, and what it cannot.
 
 | Scenario | Adapters | Wiring |
 |---|---|---|
-| E1, E2 | Real | `BLOCKED` until the prerequisites and the composed wiring exist. |
+| E1, E2 | Real | `scripts/e2e-composed.sh`; `BLOCKED` until what the owner provides is there. |
 | E3 to E9 | Test mode, labelled fakes | The `composed-test` wiring: the recording of a run through the composed pipeline. |
 | E10 to E13 | Test mode, labelled fakes | The scripted wiring. |
 
@@ -139,34 +139,58 @@ things: its protection of the fixture remote, whether it uses real adapters, and
   * When it cannot run it prints one `BLOCKED: <reason>` line for each missing item on standard
     error and exits with code 3.
 
+  The repository provides that program: [`scripts/e2e-composed.sh`](../../scripts/e2e-composed.sh).
+  A real scenario uses it when `FACTORY_E2E_COMPOSED` names no other. Its two commands run the two
+  ignored tests of `apps/api/tests/real_e2e.rs`, which drive the real composed pipeline against
+  GitHub and the owner's Claude subscription (`apps/api/tests/real/mod.rs` says what in it is real
+  and what is not). It reads the evidence the way the recorder of E3 to E9 does
+  (`apps/api/tests/e2e/mod.rs`, `collect_from`), with GitHub read back through the owner's `gh`
+  login and each request of the factory's App recorded on the way out. The owner's steps are in
+  [the first real run](../../docs/guides/first-real-run.md).
+
 ## What a real run needs
 
-E1 and E2 need all of these, and the runner names each one that is missing. It also looks at what
-the variables point to and at the machine: that the key file exists, is closed to group and others
-and looks like a private key; that the allowlist names a requester and a different approver; that
-the fixture's `CODEOWNERS` has real owners, two at least, so a second owner can approve; that
-`policies/model_routing.yaml` exists; that the agent image is in the local Docker store (a read-only
-`docker image inspect`); and that the image was rebuilt after its recipe last changed (the digest
-pinned in `infra/sandbox-images/images.json` was committed after the recipe). Docker or git
+E1 and E2 run in subscription mode, the factory's default (ADR 0020): the model credential is the
+owner's Claude subscription token, which only the broker holds, and Codex does not run. The most a
+job may use is the factory's own job budget, `job.max_micro_usd` of `policies/model_routing.yaml`,
+which the run names when the job starts; `FACTORY_E2E_JOB_BUDGET_USD` may lower it for one run and
+never raise it. No provider API key and no provider-side spend limit is asked for.
+
+The runner names each missing item. It also looks at what the variables point to and at the
+machine: that the App key file exists, is closed to group and others and looks like a private key;
+that the subscription token file exists, has mode `0600` and holds one token on one line that
+starts with `sk-ant-oat01-` (its text is never printed); that the job budget is a positive number
+no larger than the policy's; that the allowlist names a requester and an approver by numeric id;
+that the code owners of the copy the setup script pushed are real; that
+`policies/model_routing.yaml` exists and is confirmed by the owner (the production profile of a
+real run refuses it otherwise); that the agent image is in the local Docker store (a read-only
+`docker image inspect`); and that the image was rebuilt after its recipe last changed. Docker or git
 missing is itself a reason, not a skipped check. The ruleset on the GitHub copy of the fixture and
 the App installation need the network and the key, so the composed wiring checks them.
 
+The owner works alone. The requester and the approver may be one person, because
+`policies/approval.yaml` lets the approver be the requester for a low-risk change
+(`approver_may_equal_requester_when_low_risk`). The allowlist then needs one entry with both
+designations, the copy's `CODEOWNERS` needs one real owner, and A9 accepts the requester's approval
+only for a job whose recorded risk is low (`facts.risk_tier`). When the policy says no, a second
+owner and an approver who is not the requester are needed. No `@example-org` placeholder may remain.
+
 | Variable | What it is |
 |---|---|
-| `FACTORY_E2E_COMPOSED` | The composed wiring program. |
-| `FACTORY_E2E_MODEL_API_KEY` | An API key for the model provider with a provider-side hard spend limit. This harness runs both tools, so it runs in API-key mode; the factory's default, the owner's Claude subscription, has no Codex (ADR 0020). |
-| `FACTORY_E2E_MODEL_SPEND_LIMIT_USD` | The limit you set at the provider, in dollars. A key cannot report its own limit, so you state it. |
-| `FACTORY_E2E_GITHUB_APP_ID`, `FACTORY_E2E_GITHUB_APP_KEY_FILE` | A registered GitHub App and its private key file. |
-| `FACTORY_E2E_FIXTURE_REPO` | The fixture repository on GitHub, as `owner/name`. |
-| `FACTORY_E2E_REQUESTER_ALLOWLIST` | The named requester allowlist. |
+| `FACTORY_E2E_GITHUB_APP_ID`, `FACTORY_E2E_GITHUB_APP_KEY_FILE` | A registered GitHub App and its private key file. Provided by the owner. |
+| `FACTORY_E2E_FIXTURE_REPO` | The fixture repository on GitHub, as `owner/name`, made by `scripts/setup-fixture-repository.sh`. Provided by the owner. |
+| `FACTORY_E2E_REQUESTER_ALLOWLIST` | The named requester allowlist. Provided by the owner. |
+| `FACTORY_E2E_SUBSCRIPTION_TOKEN_FILE` | The owner's Claude subscription token file. Default `~/claud-oauth-token.txt`. |
+| `FACTORY_E2E_JOB_BUDGET_USD` | Optional. A lower job budget for this run, in dollars. |
+| `FACTORY_E2E_COMPOSED` | Optional. Another composed wiring program than `scripts/e2e-composed.sh`. |
 
 The fixture repository is a copy of [`fixtures/repos/word-count`](../../fixtures/repos/word-count/README.md)
-with a branch-protection ruleset. The harness refuses to run a scenario that opens a pull request
+with a branch-protection ruleset, made by `scripts/setup-fixture-repository.sh`, which keeps its copy
+in `target/e2e-fixture/OWNER/NAME`. The harness refuses to run a scenario that opens a pull request
 against a remote whose protection falls short of `policies/security.yaml` (a pull request and a
-review are required, the required check is pinned to the App, stale approvals are dismissed, force
+review are required, the required checks are pinned to the App, stale approvals are dismissed, force
 pushes and deletion are off, the App is not on the bypass list, and code owners review protected
-paths), and reports `BLOCKED` with the missing rule. Replace the placeholder handles in the
-fixture's `CODEOWNERS` with real ones when you copy it.
+paths), and reports `BLOCKED` with the missing rule.
 
 ## Run it
 

@@ -9,11 +9,15 @@
 #   scripts/e2e.sh --list                       List the scenarios.
 #   scripts/e2e.sh --scenario ID [--scenario ID ...] [--test-mode] [--wiring W] [--evidence-dir D]
 #                  [--judge-only]
-#                                               Run scenarios. E1 and E2 need real adapters and are
-#                                               BLOCKED until the prerequisites and the composed
-#                                               wiring exist; each missing item is looked for and
-#                                               named. --test-mode runs them on the scripted wiring,
-#                                               labelled as test mode with fakes.
+#                                               Run scenarios. E1 and E2 need real adapters: they
+#                                               run through the composed wiring program
+#                                               (FACTORY_E2E_COMPOSED, by default
+#                                               scripts/e2e-composed.sh) in subscription mode, and
+#                                               are BLOCKED until what the owner provides is there;
+#                                               each missing item is looked for and named
+#                                               (docs/guides/first-real-run.md). --test-mode runs
+#                                               them on the scripted wiring, labelled as test mode
+#                                               with fakes.
 #                                               E3 to E9 are driven through the real composed
 #                                               pipeline in test mode (the test
 #                                               apps/api/tests/e2e_scenarios.rs, which needs a
@@ -106,8 +110,8 @@ run_e2e() {
 # The variables a real run reads. They are cleared for the test that shows BLOCKED.
 REAL_VARIABLES=(
   FACTORY_E2E_COMPOSED
-  FACTORY_E2E_MODEL_API_KEY
-  FACTORY_E2E_MODEL_SPEND_LIMIT_USD
+  FACTORY_E2E_SUBSCRIPTION_TOKEN_FILE
+  FACTORY_E2E_JOB_BUDGET_USD
   FACTORY_E2E_GITHUB_APP_ID
   FACTORY_E2E_GITHUB_APP_KEY_FILE
   FACTORY_E2E_FIXTURE_REPO
