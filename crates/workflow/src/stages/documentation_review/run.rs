@@ -499,7 +499,7 @@ pub(super) async fn execute(
     let reviewed = review_in(handler, ctx, workspace.as_ref(), &manifest, &assembled).await;
     // The checkout goes whatever happened.
     let _ = workspace.dispose().await;
-    let (output, usage, denials, runtime_version, model) = reviewed?;
+    let (output, usage, denials, runtime_version, model, independence) = reviewed?;
 
     // The answer, checked twice and wrapped.
     let validated = handler
@@ -584,6 +584,8 @@ pub(super) async fn execute(
             "version": manifest.version.to_string(),
             "runtime": ports.runtime.id().as_str(),
         },
+        // How far the reviewer's model is from the writer's, from the router's decision.
+        (crate::stages::review::independence::KEY): independence,
         "findings": {
             "reported": wrapped.reported_findings,
             "kept": wrapped.verdict.findings.len(),
@@ -608,6 +610,7 @@ type Reviewed = (
     Vec<factory_ports::agent::Denial>,
     String,
     Option<String>,
+    Value,
 );
 
 async fn review_in(
@@ -627,6 +630,14 @@ async fn review_in(
         true,
     )
     .await?;
+    // The same author the engine routed the token against, read from the same stored result, so
+    // that the model the reviewer is run with is one the token allows.
+    let author = crate::stages::documenting::writer_selection(
+        ports.artifacts,
+        &TenantScope::new(ctx.identity.tenant),
+        ctx.upstream,
+    )
+    .await;
     let need = RoutingNeed {
         stage: StageKind::DocumentationReview,
         tier: RecommendedTier::Standard,
@@ -634,7 +645,7 @@ async fn review_in(
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: handler.probes.probed(),
-        author: None,
+        author,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
@@ -645,6 +656,7 @@ async fn review_in(
     };
     let token = ctx.job_token.ok_or(StageError::Internal)?;
     let model = route.model.model.as_str().to_owned();
+    let independence = crate::stages::review::independence::record(&route);
     let request = AgentRunRequest {
         attempt: ctx.attempt,
         agent: VersionedRef {
@@ -681,5 +693,6 @@ async fn review_in(
             .runtime_version
             .unwrap_or_else(|| "unknown".to_owned()),
         Some(model),
+        independence,
     ))
 }

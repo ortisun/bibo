@@ -133,6 +133,40 @@ impl SpecificationHandler {
     }
 }
 
+impl SpecificationHandler {
+    /// What the writer of the specification needs: a runtime that runs the Spec Kit skills.
+    pub(super) fn writer_need(&self) -> RoutingNeed {
+        RoutingNeed {
+            stage: StageKind::Specification,
+            tier: RecommendedTier::Standard,
+            required: vec![Capability::SkillInvocation],
+            risk: RiskTier::Medium,
+            exclude: Vec::new(),
+            probed: self.probes.probed(),
+            author: None,
+        }
+    }
+
+    /// What the reviewer of the specification needs, routed against the model of the writer
+    /// (`author`), so that the routing policy's rule of independence for the specification
+    /// reviewer holds. The engine routes the same need when it issues the token, so the model
+    /// chosen here is one the token allows.
+    pub(super) fn reviewer_need(
+        &self,
+        author: Option<factory_ports::agent::ModelSelection>,
+    ) -> RoutingNeed {
+        RoutingNeed {
+            stage: StageKind::Specification,
+            tier: RecommendedTier::Standard,
+            required: Vec::new(),
+            risk: RiskTier::Medium,
+            exclude: Vec::new(),
+            probed: self.probes.probed(),
+            author,
+        }
+    }
+}
+
 #[async_trait]
 impl StageHandler for SpecificationHandler {
     fn fidelity(&self) -> Fidelity {
@@ -153,16 +187,12 @@ impl StageHandler for SpecificationHandler {
         StageKind::Specification
     }
 
-    fn routing_need(&self, ctx: &ContractContext<'_>) -> Option<RoutingNeed> {
-        Some(RoutingNeed {
-            stage: ctx.identity.kind,
-            tier: RecommendedTier::Standard,
-            required: vec![Capability::SkillInvocation],
-            risk: RiskTier::Medium,
-            exclude: Vec::new(),
-            probed: self.probes.probed(),
-            author: None,
-        })
+    fn routing_need(&self, _ctx: &ContractContext<'_>) -> Option<RoutingNeed> {
+        Some(self.writer_need())
+    }
+
+    fn reviewer_routing_need(&self, _ctx: &ContractContext<'_>) -> Option<RoutingNeed> {
+        Some(self.reviewer_need(None))
     }
 
     fn contract(&self, ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {

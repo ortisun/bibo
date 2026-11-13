@@ -239,6 +239,9 @@ pub struct Scenario {
     pub documentation_outcome: &'static str,
     /// What the documentation reviewer's verdict says it read.
     pub documentation_review: ReviewBinding,
+    /// The kind of independence the code review and the documentation review recorded, as the
+    /// router said it (`same-family-other-model`, `other-provider`). `None` stores no record.
+    pub review_independence: Option<&'static str>,
 }
 
 /// A review verdict that is valid and is not a pass: the example of a review that asks for
@@ -282,6 +285,7 @@ impl Default for Scenario {
             documentation_verdict: "PASS",
             documentation_outcome: "PASSED",
             documentation_review: ReviewBinding::Reports,
+            review_independence: None,
         }
     }
 }
@@ -801,6 +805,32 @@ impl World {
                 serde_json::json!(spec.sha256)
             };
         let documentation_review = self.store_json(&review).await;
+        // The records the two reviewing stages store next to their verdicts, with the router's
+        // word on how far the reviewer was from the author.
+        let mut records = Vec::new();
+        if let Some(kind) = self.scenario.review_independence {
+            for (stage, name, author) in [
+                (StageKind::Review, "review-record", "claude-sonnet-5-5"),
+                (
+                    StageKind::DocumentationReview,
+                    "documentation-review-record",
+                    "claude-sonnet-5-5",
+                ),
+            ] {
+                let record = self
+                    .store_json(&serde_json::json!({
+                        "kind": name,
+                        "reviewer_ran": true,
+                        "independence": {
+                            "author_model": author,
+                            "reviewer_model": "claude-opus-5-5",
+                            "kind": kind,
+                        },
+                    }))
+                    .await;
+                records.push((stage, name, record));
+            }
+        }
 
         let mut add = |kind: StageKind, name: &'static str, artifact: ArtifactRef| {
             if self.scenario.missing == Some(name) {
@@ -838,6 +868,9 @@ impl World {
             "documentation-review",
             documentation_review,
         );
+        for (stage, name, record) in records {
+            add(stage, name, record);
+        }
         runs
     }
 

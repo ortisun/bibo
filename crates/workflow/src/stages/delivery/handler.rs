@@ -306,6 +306,7 @@ impl StageHandler for DeliveryHandler {
                 adapter("store", AdapterKind::Store, self.deps.sources.fidelity()),
             ],
             expected_gates: &VALIDATION_GATES.map(|(gate, _)| gate),
+            same_family_reviews: same_family_reviews(ports.artifacts, &scope, ctx.upstream).await,
             title: pr::safe_title(
                 dossier.specification.title.as_str(),
                 target.issue.number,
@@ -498,6 +499,44 @@ fn count_lines(patch: &[u8]) -> (u64, u64) {
         }
     }
     (added, removed)
+}
+
+/// The reviews of the job that another model of the author's own family made, read from the
+/// records the code review and the documentation review stored next to their verdicts. A record
+/// that cannot be read says nothing here; the verdicts themselves are read and checked by the
+/// dossier.
+async fn same_family_reviews(
+    artifacts: &dyn factory_ports::artifact::ArtifactStore,
+    scope: &TenantScope,
+    upstream: &[crate::handlers::UpstreamRun],
+) -> Vec<(
+    &'static str,
+    crate::stages::review::independence::SameFamilyReview,
+)> {
+    let mut found = Vec::new();
+    for (review, kind, name) in [
+        (
+            "code review",
+            StageKind::Review,
+            crate::stages::review::RECORD,
+        ),
+        (
+            "documentation review",
+            StageKind::DocumentationReview,
+            crate::stages::documenting::DOCUMENTATION_REVIEW_RECORD,
+        ),
+    ] {
+        let Some((_, stored)) = super::input::upstream_output(upstream, kind, name) else {
+            continue;
+        };
+        let Ok(bytes) = artifacts.get(scope, stored).await else {
+            continue;
+        };
+        if let Some(same) = crate::stages::review::independence::same_family_review(&bytes) {
+            found.push((review, same));
+        }
+    }
+    found
 }
 
 #[cfg(test)]

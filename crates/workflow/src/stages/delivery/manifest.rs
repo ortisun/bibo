@@ -9,7 +9,9 @@
 //!
 //! A manifest that hides a gap is worse than none. [`build`] therefore writes, in `limitations`,
 //! one sentence for **every gate that did not run** (no report, a gate that does not apply, a gate
-//! that was blocked and then decided by a person) and one for **every adapter that was not real**.
+//! that was blocked and then decided by a person), one for **every adapter that was not real**, and
+//! one for **every review made by another model of the same family as the author**, a weaker
+//! check than a review by another family (ADR 0020, amendment of 2026-11-13).
 //! It also says that the pull request is a draft that a person must review, mark ready and merge.
 //! `PRODUCTION_READY` is listed as not attained, because the factory does not deploy.
 //!
@@ -39,6 +41,7 @@ use factory_ports::paths::RepoRef;
 use super::input::Dossier;
 use super::seams::LedgerState;
 use crate::handlers::RunIdentity;
+use crate::stages::review::independence::SameFamilyReview;
 
 /// The size of the change, measured from the patch the job's object store exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +92,9 @@ pub struct ManifestInputs<'a> {
     pub adapters: Vec<AdapterReport>,
     /// The gates the validation stage always reports.
     pub expected_gates: &'a [&'a str],
+    /// The reviews that another model of the author's own family made, each with a short name of
+    /// the review such as `code review`, as the reviewing stages recorded them.
+    pub same_family_reviews: Vec<(&'static str, SameFamilyReview)>,
     /// The title of the manifest. It is the cleaned title of the pull request
     /// ([`safe_title`](super::pr::safe_title)), never the raw title of the specification, so a
     /// secret or markup in that title is not stored with the evidence.
@@ -262,6 +268,12 @@ pub fn build(i: &ManifestInputs<'_>) -> Result<EvidenceManifest, ManifestError> 
                 adapter.name
             ));
         }
+    }
+    for (review, by) in &i.same_family_reviews {
+        limitations.push(format!(
+            "The {review} was made by {}, another model of the same family as {}, which made the work, because no model of another family was available. That is a weaker check than a review by another family.",
+            by.reviewer_model, by.author_model
+        ));
     }
     limitations.push(
         "The pull request is a draft. A person reviews it, marks it ready and merges it on the code host; the factory does neither."

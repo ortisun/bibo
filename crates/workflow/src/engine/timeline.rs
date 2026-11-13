@@ -115,6 +115,10 @@ pub(crate) struct RunRecord {
     /// block event the engine itself wrote. Empty for a run that never blocked, and for a block
     /// whose event carries none, which no override may then pass.
     pub(crate) blocks: Vec<(String, String)>,
+    /// The reason code of the run's latest move to `WAITING_FOR_HUMAN`, read from the event the
+    /// engine wrote, such as `independent-reviewer-unavailable`. `None` for a run that never
+    /// waited, or whose latest wait names no reason.
+    pub(crate) wait_reason: Option<String>,
 }
 
 impl RunRecord {
@@ -176,6 +180,7 @@ impl RunRecord {
             rejected: false,
             dependency_decisions,
             blocks: Vec::new(),
+            wait_reason: None,
         })
     }
 
@@ -478,6 +483,16 @@ impl Timeline {
             ("stage_run.failed", "S16") => {
                 let id = aggregate_run(event);
                 self.run_mut(id)?.rejected = true;
+                Ok(())
+            }
+            // Every wait for a person names its reason in the event's reason code, when it has
+            // one. The newest wait of a run replaces an older one: events are read in order.
+            ("stage_run.waiting_for_human", _) => {
+                let id = aggregate_run(event);
+                self.run_mut(id)?.wait_reason = event
+                    .reason_code
+                    .as_ref()
+                    .map(|code| code.as_str().to_owned());
                 Ok(())
             }
             // The block event names the gate and the code of each block. The newest block of a
@@ -785,6 +800,7 @@ mod tests {
                 rejected: false,
                 dependency_decisions: Vec::new(),
                 blocks: Vec::new(),
+                wait_reason: None,
             }],
             ..Timeline::default()
         }

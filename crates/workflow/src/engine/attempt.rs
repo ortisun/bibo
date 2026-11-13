@@ -91,10 +91,32 @@ enum NoToken {
     NoIndependentReviewer,
 }
 
+/// What a review of each kind of independence is worth, in one sentence for the audit log.
+#[must_use]
+pub(crate) const fn review_independence_sentence(
+    kind: factory_ports::agent::IndependenceKind,
+) -> &'static str {
+    match kind {
+        factory_ports::agent::IndependenceKind::OtherProvider
+        | factory_ports::agent::IndependenceKind::OtherFamily => {
+            "The reviewer is of another family than the author."
+        }
+        factory_ports::agent::IndependenceKind::SameFamilyOtherModel => {
+            "The reviewer is another model of the same family as the author, which is a weaker \
+             check than a reviewer of another family (policies/model_routing.yaml, independence; \
+             ADR 0020)."
+        }
+    }
+}
+
 /// Everything the handler needs, read before the handler runs.
 struct Prepared {
     contract: StageContract,
     need: Option<factory_ports::agent::RoutingNeed>,
+    /// The need of a reviewer that runs inside the same stage run as the writer it reviews (the
+    /// specification reviewer). Its author is the model the router chose for `need`, filled in
+    /// when the token is issued, and the token then holds both models.
+    reviewer_need: Option<factory_ports::agent::RoutingNeed>,
     upstream: Vec<UpstreamRun>,
     human_inputs: Vec<ArtifactRef>,
     handler: std::sync::Arc<dyn StageHandler>,
@@ -428,27 +450,44 @@ impl Engine {
             .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))?;
         let identity = Self::identity(&cx, &run.value);
         let mut need = handler.routing_need(&ccx);
+        let reviewer_need = handler.reviewer_routing_need(&ccx);
         // A reviewing stage is routed against the model that made the work it reviews, read from
-        // the store and not from this process, because another worker may have run the builder.
-        // When no model is independent of it, the stage run waits for a person (`issue_token`).
-        // Only REVIEW is routed this way: the documenting stage does not store the model of its
-        // writer, and the specification writer and reviewer share one stage run and one token.
+        // the store and not from this process, because another worker may have run the author's
+        // stage. When no model is independent of it, the stage run waits for a person
+        // (`issue_token`). REVIEW reads the builder from the implementation evidence and
+        // DOCUMENTATION_REVIEW reads the writer from the documentation result. The specification
+        // reviewer runs inside the specification stage run: its author is the writer's route,
+        // known when the token is issued (`reviewer_need`).
         if let Some(need) = need.as_mut()
             && need.author.is_none()
-            && need.stage == factory_domain::vocabulary::StageKind::Review
         {
-            need.author = crate::stages::implementation::evidence::builder_selection(
-                self.deps.artifacts.as_ref(),
-                &TenantScope::new(claimed.tenant),
-                &upstream,
-            )
-            .await;
+            let scope = TenantScope::new(claimed.tenant);
+            need.author = match need.stage {
+                factory_domain::vocabulary::StageKind::Review => {
+                    crate::stages::implementation::evidence::builder_selection(
+                        self.deps.artifacts.as_ref(),
+                        &scope,
+                        &upstream,
+                    )
+                    .await
+                }
+                factory_domain::vocabulary::StageKind::DocumentationReview => {
+                    crate::stages::documenting::writer_selection(
+                        self.deps.artifacts.as_ref(),
+                        &scope,
+                        &upstream,
+                    )
+                    .await
+                }
+                _ => None,
+            };
         }
         self.ensure_contract_stored(claimed.tenant, &run.value, &contract)
             .await?;
         Ok(Prepared {
             contract,
             need,
+            reviewer_need,
             upstream,
             human_inputs: record.human_inputs.clone(),
             handler,
@@ -580,13 +619,35 @@ impl Engine {
         let Some(need) = &prepared.need else {
             return Ok(Ok(None));
         };
-        let decision = match self.deps.router.route(need) {
+        let decision = match self.route_reviewer_aware(need) {
             Ok(decision) => decision,
-            Err(_) if self.refused_only_for_independence(need) => {
-                return Ok(Err(NoToken::NoIndependentReviewer));
-            }
-            Err(_) => return Ok(Err(NoToken::Failed(FailureClass::PolicyDenied))),
+            Err(refusal) => return Ok(Err(refusal)),
         };
+        // A reviewer inside the same stage run is routed against the model just chosen for the
+        // writer, and the token holds both models.
+        let reviewer = match &prepared.reviewer_need {
+            None => None,
+            Some(reviewer_need) => {
+                let mut reviewer_need = reviewer_need.clone();
+                reviewer_need.author = Some(decision.model.clone());
+                match self.route_reviewer_aware(&reviewer_need) {
+                    Ok(reviewer) => Some(reviewer),
+                    Err(refusal) => return Ok(Err(refusal)),
+                }
+            }
+        };
+        for routed in std::iter::once(&decision).chain(reviewer.as_ref()) {
+            if let Some(independence) = &routed.independence {
+                self.audit_review_independence(claimed, &routed.model, independence)
+                    .await?;
+            }
+        }
+        let mut allowed_models = vec![decision.model];
+        if let Some(reviewer) = reviewer
+            && !allowed_models.contains(&reviewer.model)
+        {
+            allowed_models.push(reviewer.model);
+        }
         let micro = (prepared.contract.budget.max_cost_usd.as_f64() * 1_000_000.0).round();
         let ceiling = CostMicroUsd(if micro.is_finite() && micro > 0.0 {
             micro as u64
@@ -606,7 +667,7 @@ impl Engine {
             job: claimed.job,
             stage: claimed.kind,
             cost_ceiling: ceiling,
-            allowed_models: vec![decision.model],
+            allowed_models,
             ttl: Duration::from_secs(attempt_seconds.saturating_add(300)),
             per_request: None,
         };
@@ -627,6 +688,51 @@ impl Engine {
             }
             Err(_) => Ok(Err(NoToken::Failed(FailureClass::Internal))),
         }
+    }
+
+    /// Routes a need, and says why it has no route: only because of its author (the stage run
+    /// waits for a person), or for another reason (the attempt fails with `POLICY_DENIED`).
+    fn route_reviewer_aware(
+        &self,
+        need: &factory_ports::agent::RoutingNeed,
+    ) -> Result<factory_ports::agent::RoutingDecision, NoToken> {
+        match self.deps.router.route(need) {
+            Ok(decision) => Ok(decision),
+            Err(_) if self.refused_only_for_independence(need) => {
+                Err(NoToken::NoIndependentReviewer)
+            }
+            Err(_) => Err(NoToken::Failed(FailureClass::PolicyDenied)),
+        }
+    }
+
+    /// Records, in the audit log, which model reviews whose work and how far apart the two are.
+    /// A review by another model of the same family is recorded as the weaker check it is (ADR
+    /// 0020, amendment of 2026-11-13). The names come from the routing policy, a closed set.
+    async fn audit_review_independence(
+        &self,
+        claimed: &ClaimedAttempt,
+        reviewer: &factory_ports::agent::ModelSelection,
+        independence: &factory_ports::agent::ReviewIndependence,
+    ) -> Result<(), EngineError> {
+        let reason = format!(
+            "review-independence {}: {} reviews the work of {} in {}. {}",
+            independence.kind.as_str(),
+            reviewer.model.as_str(),
+            independence.author.model.as_str(),
+            claimed.kind.as_str(),
+            review_independence_sentence(independence.kind),
+        );
+        let mut tx = self.tenant_tx(claimed.tenant).await?;
+        let job = tx.get_job(claimed.job).await?;
+        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        cx.audit_engine_because(
+            &mut *tx,
+            AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Granted),
+            reason,
+        )
+        .await?;
+        cx.commit(tx).await?;
+        Ok(())
     }
 
     /// True when a need that names an author has no route only because of the author: the same

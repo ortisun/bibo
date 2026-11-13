@@ -25,7 +25,6 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::contracts::specification_contract::QuestionId;
 use factory_domain::contracts::{
@@ -35,10 +34,8 @@ use factory_domain::machines::guards::EnvironmentCause;
 use factory_domain::policy::RepoKind;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{HumanText, MediaType, Sha256Digest, Slug};
-use factory_domain::vocabulary::{Fidelity, RiskTier, StageKind};
-use factory_ports::agent::{
-    AgentRunRequest, AssembledPrompt, Capability, Denial, RoutingNeed, Usage,
-};
+use factory_domain::vocabulary::Fidelity;
+use factory_ports::agent::{AgentRunRequest, AssembledPrompt, Capability, Denial, Usage};
 use factory_ports::paths::{CommitSha, RepoGlob, RepoPath};
 use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::{ExecArgv, ExecRequest, SandboxSession};
@@ -418,15 +415,7 @@ async fn run_skill_in(
     }
 
     let token = ctx.job_token.ok_or(StageError::Internal)?;
-    let need = RoutingNeed {
-        stage: StageKind::Specification,
-        tier: RecommendedTier::Standard,
-        required: vec![Capability::SkillInvocation],
-        risk: RiskTier::Medium,
-        exclude: Vec::new(),
-        probed: h.probes.probed(),
-        author: None,
-    };
+    let need = h.writer_need();
     let route = match ports.router.route(&need) {
         Ok(route) => route,
         Err(_) => {
@@ -845,15 +834,15 @@ async fn review_in(
             return Err(StageError::Internal);
         }
     };
-    let need = RoutingNeed {
-        stage: StageKind::Specification,
-        tier: RecommendedTier::Standard,
-        required: Vec::new(),
-        risk: RiskTier::Medium,
-        exclude: Vec::new(),
-        probed: h.probes.probed(),
-        author: None,
-    };
+    // The reviewer is routed against the writer's model: the writer's route is a pure function
+    // of the same need, so asking again gives the model the writer ran on. The engine issued the
+    // token for both models the same way.
+    let writer = ports
+        .router
+        .route(&h.writer_need())
+        .ok()
+        .map(|route| route.model);
+    let need = h.reviewer_need(writer);
     let route = match ports.router.route(&need) {
         Ok(route) => route,
         Err(_) => {

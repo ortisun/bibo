@@ -12,7 +12,7 @@ use factory_ports::agent::BrokerEndpoint;
 use factory_ports::sandbox::SandboxProfile;
 use factory_testkit::agent::AdversarialScript;
 use factory_workflow::commands::{Decision, JobCommand, Subject};
-use factory_workflow::engine::AttemptOutcome;
+use factory_workflow::engine::{AttemptOutcome, EngineError};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::stages::implementation::{StageBudget, WorkspaceAccess};
 use factory_workflow::stages::review::{GRANTED_TOOLS, ReviewConfig, ReviewDeps, ReviewHandler};
@@ -807,15 +807,19 @@ async fn from_the_wait_a_person_can_cancel_the_job() {
     assert_eq!(rig.world.view(rig.job).await.status, JobStatus::Cancelled);
 }
 
-/// The state machine also lets an approver approve the waiting review (`S14`). The review then
-/// passes on the person's judgment, recorded in the ledger, with no reviewer verdict stored.
+/// The state machine's `S14` would let an approver approve the waiting review, and the review
+/// would then pass with no reviewer verdict at all. The engine refuses that approval: a review
+/// that waits because no independent model was available is never passed on nobody's review. The
+/// refusal is audited, nothing moves, and the person can still send the work back.
 #[tokio::test]
-async fn from_the_wait_an_approver_can_pass_the_review_on_their_own_judgment() {
+async fn from_the_wait_an_approver_cannot_pass_the_review_without_a_verdict() {
     let (rig, _) = at_review_with_no_independent_model().await;
     let review = rig.run_of(StageKind::Review).await;
     let approver = rig.world.person("approver-1", &[HumanRole::Approver]).await;
     let seen = rig.world.head(rig.job).await;
-    rig.engine
+    let events_before = rig.world.events(rig.job).await.len();
+    let refused = rig
+        .engine
         .decide(
             &rig.world.actor(approver),
             Subject {
@@ -828,12 +832,150 @@ async fn from_the_wait_an_approver_can_pass_the_review_on_their_own_judgment() {
             },
         )
         .await
-        .expect("the engine accepts the approval");
+        .expect_err("the engine refuses the approval");
+    assert!(
+        matches!(refused, EngineError::Refused(text) if text.contains("no review verdict")),
+        "{refused:?}"
+    );
     assert_eq!(
         rig.status_of(StageKind::Review).await,
-        StageRunStatus::Passed
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(
+        rig.world.view(rig.job).await.status,
+        JobStatus::WaitingForHuman
     );
     assert_eq!(rig.verdict().await, None);
+    assert_eq!(
+        rig.world.events(rig.job).await.len(),
+        events_before,
+        "no move was made"
+    );
+    let audit = rig.world.audit(rig.job).await;
+    assert!(
+        audit
+            .iter()
+            .any(|record| record.event.action.as_str() == "approval_granted_or_rejected.denied"),
+        "the refusal is in the audit log"
+    );
+
+    // The person can still send the work back from the same wait.
+    rig.engine
+        .decide(
+            &rig.world.actor(approver),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::Reject {
+                reason: HumanText::parse("Nobody independent of the builder reviewed this change.")
+                    .expect("a text"),
+            },
+        )
+        .await
+        .expect("a rejection is still accepted");
+    assert_eq!(
+        rig.status_of(StageKind::Review).await,
+        StageRunStatus::Failed
+    );
+}
+
+/// The refusal is bound to the reason of the wait, which the engine reads from the reason code of
+/// the latest `stage_run.waiting_for_human` event of the run: a wait for another reason (the agent
+/// asked a question) is approved as before by the state machine's `S14`.
+#[tokio::test]
+async fn the_wait_names_its_reason_where_the_engine_reads_it() {
+    let (rig, _) = at_review_with_no_independent_model().await;
+    let events = rig.world.events(rig.job).await;
+    let waiting = events
+        .iter()
+        .rfind(|event| event.event_type.as_str() == "stage_run.waiting_for_human")
+        .expect("the stage run waits");
+    assert_eq!(
+        waiting.reason_code.as_ref().map(|code| code.as_str()),
+        Some("independent-reviewer-unavailable")
+    );
+}
+
+// ---- a reviewer of the same family but another model ----------------------------------------
+
+/// In subscription mode the policy router sends the review of Claude Sonnet's work to Claude
+/// Opus (`must_differ_by: model`). The review runs, and the audit log and the review's record say
+/// it was a review by the same family, the weaker check (ADR 0020, amendment of 2026-11-13).
+#[tokio::test]
+async fn a_review_by_another_model_of_the_same_family_runs_and_is_recorded_as_such() {
+    let rig = Rig::build(Options {
+        same_family_reviewer: true,
+        ..Options::through_review()
+    })
+    .await;
+    rig.run_to_review().await;
+    rig.reviewer_returns(pass());
+    let (claimed, outcome) = rig.run_next().await;
+    assert_eq!(claimed.kind, StageKind::Review);
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(rig.runtime.runs("code-reviewer"), 1);
+
+    let audit = rig.world.audit(rig.job).await;
+    let recorded = audit
+        .iter()
+        .find(|record| {
+            record
+                .event
+                .reason
+                .starts_with("review-independence same-family-other-model")
+        })
+        .expect("the audit log says the review is by the same family");
+    assert_eq!(
+        recorded.event.action.as_str(),
+        "authorization_decision.granted"
+    );
+    assert!(
+        recorded.event.reason.contains("weaker check") && recorded.event.reason.contains("REVIEW"),
+        "{}",
+        recorded.event.reason
+    );
+
+    let record = rig
+        .deliverable(StageKind::Review, "review-record")
+        .await
+        .expect("the review record");
+    assert_eq!(
+        record["independence"]["kind"].as_str(),
+        Some("same-family-other-model"),
+        "{record}"
+    );
+    assert!(
+        record["independence"]["author_model"].is_string(),
+        "{record}"
+    );
+    assert!(
+        record["independence"]["reviewer_model"].is_string(),
+        "{record}"
+    );
+}
+
+/// With a router that does not say how far the reviewer is (a fake, or a stage routed with no
+/// known author), nothing is recorded as a review by the same family.
+#[tokio::test]
+async fn a_review_with_no_word_on_independence_records_none() {
+    let rig = Rig::through_review().await;
+    rig.run_to_review().await;
+    rig.reviewer_returns(pass());
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    let audit = rig.world.audit(rig.job).await;
+    assert!(
+        !audit
+            .iter()
+            .any(|record| record.event.reason.starts_with("review-independence")),
+        "nothing to record"
+    );
+    let record = rig
+        .deliverable(StageKind::Review, "review-record")
+        .await
+        .expect("the review record");
+    assert!(record["independence"].is_null(), "{record}");
 }
 
 /// An answer sends the review back to `READY` (`S13`). It starts again, nothing has changed in

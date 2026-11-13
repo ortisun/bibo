@@ -100,6 +100,15 @@ pub trait StageHandler: Send + Sync {
         None
     }
 
+    /// The need of a reviewer that runs inside the same stage run as the writer whose work it
+    /// reviews, such as the specification reviewer. The engine routes it against the model it
+    /// chose for [`routing_need`](Self::routing_need) (the need's `author`), and the job token of
+    /// the attempt holds both models. When no model is independent of the writer, the stage run
+    /// waits for a person before any agent runs. The default is no such reviewer.
+    fn reviewer_routing_need(&self, _ctx: &ContractContext<'_>) -> Option<RoutingNeed> {
+        None
+    }
+
     /// Resolves the contract for this run from the manifest, the profile, the policy and the
     /// inputs.
     ///
