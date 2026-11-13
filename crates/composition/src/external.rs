@@ -288,6 +288,28 @@ pub fn github_adapter(
     redactor: Arc<Redactor>,
     clock: Arc<dyn Clock>,
 ) -> Result<GithubAdapter, (&'static str, String)> {
+    github_adapter_over(profile, github, security, redactor, clock, None)
+}
+
+/// Wraps the transport the GitHub adapter sends its requests through. The end-to-end run uses it
+/// to keep a record of each request (its method and path, never a header or a token) and of the
+/// permissions each minted installation token asked for. The worker passes none.
+pub type GithubTransportWrapper = Arc<
+    dyn Fn(Arc<dyn factory_github::Transport>) -> Arc<dyn factory_github::Transport> + Send + Sync,
+>;
+
+/// [`github_adapter`], with the transport passed through `wrap` when one is given.
+///
+/// # Errors
+/// The key and the reason, for the item that cannot be built.
+pub fn github_adapter_over(
+    profile: Profile,
+    github: &GithubConfig,
+    security: &SecurityPolicy,
+    redactor: Arc<Redactor>,
+    clock: Arc<dyn Clock>,
+    wrap: Option<&GithubTransportWrapper>,
+) -> Result<GithubAdapter, (&'static str, String)> {
     let pem = github
         .key_file
         .read()
@@ -334,7 +356,13 @@ pub fn github_adapter(
     Ok(GithubAdapter::new(
         config,
         GithubParts {
-            transport: Arc::new(UreqTransport::new(base)),
+            transport: {
+                let plain: Arc<dyn factory_github::Transport> = Arc::new(UreqTransport::new(base));
+                match wrap {
+                    Some(wrap) => wrap(plain),
+                    None => plain,
+                }
+            },
             signer: Arc::new(signer),
             clock,
             redactor,
@@ -653,6 +681,9 @@ pub struct ExternalInputs<'a> {
     pub spec_skills: Option<SkillBundle>,
     /// What the start-up probe came to.
     pub probes: ProbeReport,
+    /// A wrapper around the GitHub transport, for a run that records its requests. The worker
+    /// passes `None`.
+    pub github_transport: Option<GithubTransportWrapper>,
 }
 
 /// The ports the pipeline is assembled from, and the GitHub adapter they came from, which the
@@ -681,6 +712,7 @@ pub fn assemble_external(inputs: ExternalInputs<'_>) -> Result<ExternalWorld, Ve
         attestation,
         spec_skills,
         probes,
+        github_transport,
     } = inputs;
     let mut blocked: Vec<BlockedItem> = Vec::new();
     let both_github = |blocked: &mut Vec<BlockedItem>, key: &'static str, reason: String| {
@@ -707,12 +739,13 @@ pub fn assemble_external(inputs: ExternalInputs<'_>) -> Result<ExternalWorld, Ve
             "is empty; the App reaches no repository until an installation is listed for it"
                 .to_owned(),
         ),
-        Some(github) => match github_adapter(
+        Some(github) => match github_adapter_over(
             config.profile,
             github,
             security,
             Arc::clone(&redactor),
             Arc::clone(&clock),
+            github_transport.as_ref(),
         ) {
             Ok(adapter) => {
                 github_ports = Some((

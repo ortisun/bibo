@@ -635,6 +635,7 @@ pub async fn build_world(
         attestation: lab.core.clone(),
         spec_skills,
         probes: probe.clone(),
+        github_transport: None,
     });
     let (built, blocked) = match external {
         Ok(world) => (Some(world), Vec::new()),

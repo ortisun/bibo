@@ -89,6 +89,10 @@ pub struct Env {
     pub stages: Vec<StageSpec>,
     /// The readability catalog that the gate uses.
     pub catalog: Arc<Catalog>,
+    /// Whether `policies/approval.yaml` lets the approver be the requester for a low-risk change
+    /// (`approver_may_equal_requester_when_low_risk`): the owner who works alone approves their
+    /// own low-risk request.
+    pub self_approval_when_low_risk: bool,
 }
 
 impl fmt::Debug for Env {
@@ -111,7 +115,13 @@ impl Env {
         let stages = stages_in_slice(&text, 1)?;
         let catalog = Catalog::embedded()
             .map_err(|error| format!("the readability catalog did not load: {error:?}"))?;
-        Ok(Self { stages, catalog })
+        Ok(Self {
+            stages,
+            catalog,
+            self_approval_when_low_risk: crate::prerequisites::self_approval_allowed_when_low_risk(
+                repository_root,
+            ),
+        })
     }
 
     /// The spec of one stage.

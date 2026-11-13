@@ -90,7 +90,7 @@ pub fn a3(ev: &RunEvidence, _env: &Env) -> Verdict {
 /// A9: the job waited in `WAITING_FOR_HUMAN` until an authorized approval, then completed. The pull
 /// request was not merged and the base branch is unchanged.
 #[must_use]
-pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
+pub fn a9(ev: &RunEvidence, env: &Env) -> Verdict {
     const ID: &str = "A9";
     let Some(approval) = the_passed_run(ev, "APPROVAL") else {
         return Verdict::fail(ID, "APPROVAL has no single PASSED run");
@@ -149,12 +149,22 @@ pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
         .filter(|record| record.action == "approval_granted_or_rejected.granted")
         .collect();
     // A job has two gates a person decides: the specification draft and the pull request. Each
-    // leaves a granted record. Every one of them must be a person other than the requester, and
-    // the last one is the approval of the pull request, whose judgment the ledger must hold under
-    // the APPROVAL run.
+    // leaves a granted record. Every one of them must be a person, other than the requester unless
+    // the approval policy lets the requester approve a low-risk change and this job's risk, as the
+    // approval stage recorded it, is low (the owner who works alone). The last one is the approval
+    // of the pull request, whose judgment the ledger must hold under the APPROVAL run.
+    let low_risk = ev
+        .facts
+        .get("risk_tier")
+        .and_then(serde_json::Value::as_str)
+        == Some("low");
+    let self_approval = env.self_approval_when_low_risk && low_risk;
     for record in &approvals {
-        if record.actor == ev.job.requester {
-            return Verdict::fail(ID, "the requester approved their own request");
+        if record.actor == ev.job.requester && !self_approval {
+            return Verdict::fail(
+                ID,
+                "the requester approved their own request, and the policy allows that only for a low-risk change",
+            );
         }
         if !record.actor.starts_with("human:") {
             return Verdict::fail(

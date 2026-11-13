@@ -190,7 +190,7 @@ fn blocked_self_test(root: &Path) -> i32 {
             "FACTORY_E2E_GITHUB_APP_ID",
             "FACTORY_E2E_GITHUB_APP_KEY_FILE",
             "FACTORY_E2E_FIXTURE_REPO",
-            "FACTORY_E2E_MODEL_API_KEY",
+            "FACTORY_E2E_REQUESTER_ALLOWLIST",
         ] {
             check(&format!("{id} names {needed}"), text.contains(needed));
         }

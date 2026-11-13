@@ -148,6 +148,7 @@ impl Lab {
             attestation: self.core.clone(),
             spec_skills: None,
             probes,
+            github_transport: None,
         }
     }
 }
