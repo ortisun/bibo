@@ -18,9 +18,10 @@ use factory_composition::startup::{
     LoadedRouting, StartupFailure, confirm_routing, load_policy, load_routing,
 };
 use factory_composition::system::{RandomIds, SystemClock};
+use factory_contracts::policy::routing::routing_problems;
 use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::ids::{JobId, TenantId};
-use factory_domain::policy::routing::ModelRoutingPolicy;
+use factory_domain::policy::routing::{DifferBy, ModelRoutingPolicy, Tier};
 use factory_domain::values::NonEmptyString;
 use factory_domain::vocabulary::{RiskTier, StageKind};
 use factory_egress::broker::{BrokerCore, BrokerParts, MemoryAudit, SystemEntropy};
@@ -670,4 +671,109 @@ fn the_reviewer_of_the_family_of_the_builder_is_refused_by_the_router() {
         .expect("routes");
     assert_eq!(intake.model.model.as_str(), "claude-sonnet-5-5");
     let _ = Path::new("");
+}
+
+// ---- the owner's option: a reviewer that differs by model, not by family ---------------------
+//
+// With only Claude models served, no reviewer is of another family than a Claude builder, so a
+// review waits for a person. The owner may choose a weaker rule, `must_differ_by: model`, for the
+// code review and the documentation review. These tests change the parsed repository policy in
+// memory; `policies/model_routing.yaml` itself is the owner's to change.
+
+const REVIEW_RULES: [&str; 2] = [
+    "code_review_not_by_the_builders_family",
+    "documentation_review_not_by_the_writers_family",
+];
+
+/// The repository policy with the two review rules weakened to `must_differ_by: model`.
+fn reviewers_differ_by_model() -> ModelRoutingPolicy {
+    let mut policy = (*loaded().policy).clone();
+    for rule in &mut policy.independence.rules {
+        if REVIEW_RULES.contains(&rule.id.as_str()) {
+            rule.must_differ_by = DifferBy::Model;
+        }
+    }
+    policy
+}
+
+fn only_claude(policy: ModelRoutingPolicy) -> PolicyModelRouter {
+    PolicyModelRouter::new(Arc::new(policy))
+        .expect("the changed policy passes its own rules")
+        .with_enabled(BTreeSet::from([
+            "claude-sonnet-5-5".to_owned(),
+            "claude-opus-5-5".to_owned(),
+        ]))
+}
+
+/// Listing `claude-opus-5-5` among the `standard` candidates of the review stages is refused by
+/// the policy's own check: the policy lists it as a `large` model, and a route lists only models
+/// of its own tier. So that edit alone cannot be the owner's option.
+#[test]
+fn claude_opus_on_the_standard_route_of_a_review_is_refused_by_the_policy_check() {
+    let mut policy = reviewers_differ_by_model();
+    for route in &mut policy.routes {
+        if ["REVIEW", "DOCUMENTATION_REVIEW"].contains(&route.stage.as_str())
+            && route.tier == Tier::Standard
+        {
+            route.candidates = ["gpt-6.1-sol", "claude-opus-5-5", "claude-sonnet-5-5"]
+                .map(String::from)
+                .to_vec();
+        }
+    }
+    let problems = routing_problems(&policy);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    for problem in &problems {
+        assert!(
+            problem.path.ends_with(".candidates")
+                && problem.message.contains("`claude-opus-5-5`")
+                && problem
+                    .message
+                    .contains("the route is for the Standard tier"),
+            "{problem:?}"
+        );
+    }
+    assert!(PolicyModelRouter::new(Arc::new(policy)).is_err());
+}
+
+/// With the two review rules at `must_differ_by: model` and nothing else changed, the policy
+/// passes its own check, and `claude-opus-5-5` is independent of a `claude-sonnet-5-5` builder or
+/// writer. The routes still decide which tier offers it: the `large` route of each review stage
+/// lists `claude-opus-5-5`, so a review asked at that tier runs on it; the `standard` route does
+/// not, so a review asked at the standard tier, as the stages ask today, still waits.
+#[test]
+fn with_reviewers_that_differ_by_model_claude_opus_reviews_sonnet_work_on_the_large_route() {
+    let policy = reviewers_differ_by_model();
+    assert_eq!(routing_problems(&policy), Vec::new());
+    for id in REVIEW_RULES {
+        let rule = policy
+            .independence
+            .rules
+            .iter()
+            .find(|rule| rule.id == id)
+            .expect("the rule");
+        assert!(policy.independent(rule, "claude-sonnet-5-5", "claude-opus-5-5"));
+        assert!(!policy.independent(rule, "claude-sonnet-5-5", "claude-sonnet-5-5"));
+    }
+    let router = only_claude(policy);
+    let author = selection("claude-code-cli", "claude-sonnet-5-5");
+    for stage in [StageKind::Review, StageKind::DocumentationReview] {
+        let mut large = need(stage);
+        large.tier = RecommendedTier::Large;
+        let decision = router
+            .route_after_author(&large, &author)
+            .expect("an independent reviewer");
+        assert_eq!(
+            decision.model.model.as_str(),
+            "claude-opus-5-5",
+            "{stage:?}"
+        );
+        // The standard route offers only the author's own model: the review waits.
+        assert_eq!(
+            router
+                .route_after_author(&need(stage), &author)
+                .unwrap_err(),
+            AuthorRoutingError::NoIndependentModel,
+            "{stage:?}"
+        );
+    }
 }

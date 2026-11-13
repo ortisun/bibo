@@ -29,19 +29,37 @@ use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::scheduler::retry_delay;
 
-/// Why a running stage run goes to a person when no failure class decides it. The only reason
-/// left is that the agent asked: a stage that cannot run because its environment is missing no
-/// longer goes to a person, it is blocked (`S21`).
+/// Why a running stage run goes to a person when no failure class decides it: the agent asked,
+/// or the policy says a person decides here. A stage that cannot run because its environment is
+/// missing does not go to a person, it is blocked (`S21`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HumanReason {
     /// The agent returned a structured request for a person.
     AgentRequested,
+    /// A reviewing stage has no model that the routing policy accepts as independent of the
+    /// model that made the work, and the policy says the stage then waits for a person
+    /// (`policies/model_routing.yaml`, section 4, `on_no_independent_model: wait_for_human`).
+    NoIndependentReviewer,
 }
 
 impl HumanReason {
-    const fn code(self) -> &'static str {
+    /// The short machine code of the reason: the cause of the move in the timeline.
+    pub(crate) const fn code(self) -> &'static str {
         match self {
             Self::AgentRequested => "agent-requested-a-human",
+            Self::NoIndependentReviewer => "independent-reviewer-unavailable",
+        }
+    }
+
+    /// The reason in words, for the audit record. The factory's own fixed text, never a
+    /// person's or a model's.
+    pub(crate) const fn explanation(self) -> &'static str {
+        match self {
+            Self::AgentRequested => "The agent asked for a person.",
+            Self::NoIndependentReviewer => {
+                "No model that the policy accepts as independent of the builder is available, so \
+                 the review waits for a person (policies/model_routing.yaml, independence)."
+            }
         }
     }
 
@@ -49,9 +67,9 @@ impl HumanReason {
         EscalationFacts {
             budget_limit_hit: false,
             attempt_limit_reached: false,
-            agent_requested_a_human: true,
+            agent_requested_a_human: matches!(self, Self::AgentRequested),
             stagnation_detected: false,
-            policy_requires_human_decision: false,
+            policy_requires_human_decision: matches!(self, Self::NoIndependentReviewer),
         }
     }
 }
@@ -241,7 +259,7 @@ impl Engine {
     }
 
     /// Sends a running stage run to a person for a reason that is not a failure class: the agent
-    /// asked, or the stage fails closed.
+    /// asked, or the policy requires a person here.
     ///
     /// # Errors
     /// Any error of a guard, a move or a read.

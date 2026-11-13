@@ -9,6 +9,9 @@
 //! * a failure is classified, the attempt fails (`A05`, or `A02` before the sandbox was up, or
 //!   `A06` for a timeout), and the stage run retries, asks a person or fails (see
 //!   [`failure`](super::failure));
+//! * a reviewing stage for which the routing policy has no model independent of the author waits
+//!   for a person (`S07`) before any agent runs, with the cause `independent-reviewer-unavailable`
+//!   (`policies/model_routing.yaml`, section 4, `on_no_independent_model: wait_for_human`);
 //! * a lost lease writes nothing at all. The sweeper ends the attempt, and every write the worker
 //!   would make is refused by the epoch check (INV-05).
 //!
@@ -61,7 +64,9 @@ use crate::scheduler::{ClaimedAttempt, Pulse};
 pub enum AttemptOutcome {
     /// The output was valid and stored, and the stage run moved on.
     Succeeded,
-    /// The agent asked for a person. The stage run waits for an answer.
+    /// The stage run waits for a person: the agent asked for one, or the routing policy has no
+    /// reviewer independent of the author (the attempt then ended failed with `POLICY_DENIED`
+    /// before any agent ran).
     NeedsHuman,
     /// The attempt failed. The stage run retries, waits for a person or fails, as `then` says.
     Failed {
@@ -74,6 +79,16 @@ pub enum AttemptOutcome {
     LeaseLost,
     /// The engine cancelled the attempt (the job is cancelling, or the stage run was replaced).
     Cancelled,
+}
+
+/// Why an attempt got no job token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoToken {
+    /// The attempt fails with this class, and the retry rules decide the rest.
+    Failed(FailureClass),
+    /// A reviewing stage has no model the routing policy accepts as independent of the author.
+    /// The stage run waits for a person.
+    NoIndependentReviewer,
 }
 
 /// Everything the handler needs, read before the handler runs.
@@ -223,8 +238,13 @@ impl Engine {
         let notes = Notes::default();
         let token = match self.issue_token(claimed, &prepared).await? {
             Ok(token) => token,
-            Err(class) => {
+            Err(NoToken::Failed(class)) => {
                 return self.commit_failure(claimed, class, &notes).await;
+            }
+            Err(NoToken::NoIndependentReviewer) => {
+                return self
+                    .commit_wait_for_person(claimed, HumanReason::NoIndependentReviewer, &notes)
+                    .await;
             }
         };
         let reference = token.as_ref().map(|issued| JobTokenRef { id: issued.id });
@@ -410,6 +430,9 @@ impl Engine {
         let mut need = handler.routing_need(&ccx);
         // A reviewing stage is routed against the model that made the work it reviews, read from
         // the store and not from this process, because another worker may have run the builder.
+        // When no model is independent of it, the stage run waits for a person (`issue_token`).
+        // Only REVIEW is routed this way: the documenting stage does not store the model of its
+        // writer, and the specification writer and reviewer share one stage run and one token.
         if let Some(need) = need.as_mut()
             && need.author.is_none()
             && need.stage == factory_domain::vocabulary::StageKind::Review
@@ -547,18 +570,22 @@ impl Engine {
 
     /// Issues the job token for a stage that runs an agent, bound to this tenant, job and stage,
     /// with the stage's cost ceiling and only the model the router chose. A stage that runs no
-    /// agent gets none. The inner error is the failure class when the token cannot be issued: the
-    /// stage fails closed and never runs without a token it needs.
+    /// agent gets none. The inner error says why the token cannot be issued: the stage fails
+    /// closed, or waits for a person, and never runs without a token it needs.
     async fn issue_token(
         &self,
         claimed: &ClaimedAttempt,
         prepared: &Prepared,
-    ) -> Result<Result<Option<IssuedJobToken>, FailureClass>, EngineError> {
+    ) -> Result<Result<Option<IssuedJobToken>, NoToken>, EngineError> {
         let Some(need) = &prepared.need else {
             return Ok(Ok(None));
         };
-        let Ok(decision) = self.deps.router.route(need) else {
-            return Ok(Err(FailureClass::PolicyDenied));
+        let decision = match self.deps.router.route(need) {
+            Ok(decision) => decision,
+            Err(_) if self.refused_only_for_independence(need) => {
+                return Ok(Err(NoToken::NoIndependentReviewer));
+            }
+            Err(_) => return Ok(Err(NoToken::Failed(FailureClass::PolicyDenied))),
         };
         let micro = (prepared.contract.budget.max_cost_usd.as_f64() * 1_000_000.0).round();
         let ceiling = CostMicroUsd(if micro.is_finite() && micro > 0.0 {
@@ -596,10 +623,28 @@ impl Engine {
                 Ok(Ok(Some(token)))
             }
             Err(factory_ports::agent::BrokerError::Unavailable) => {
-                Ok(Err(FailureClass::ProviderError))
+                Ok(Err(NoToken::Failed(FailureClass::ProviderError)))
             }
-            Err(_) => Ok(Err(FailureClass::Internal)),
+            Err(_) => Ok(Err(NoToken::Failed(FailureClass::Internal))),
         }
+    }
+
+    /// True when a need that names an author has no route only because of the author: the same
+    /// need without the author has one. The router then refused every candidate as not
+    /// independent of the author, and the routing policy says the stage waits for a person
+    /// (`on_no_independent_model: wait_for_human`). The port has no error of its own for this,
+    /// so the engine asks the question twice instead; routing is a pure function of the need and
+    /// never calls a provider.
+    ///
+    /// A need with no author, or one that has no route even without the author (no candidate
+    /// served, a capability missing), is not this case: the stage fails closed as before.
+    fn refused_only_for_independence(&self, need: &factory_ports::agent::RoutingNeed) -> bool {
+        if need.author.is_none() {
+            return false;
+        }
+        let mut without_author = need.clone();
+        without_author.author = None;
+        self.deps.router.route(&without_author).is_ok()
     }
 
     /// Adds what an attempt spent to `factory_spend_usd_total`, in dollars, by provider and stage.
@@ -1255,59 +1300,8 @@ impl Engine {
         }
         let job = tx.get_job(claimed.job).await?;
         let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
-        let from = attempt.value.status;
         let recorded = async {
-            let now = tx.database_time().await?;
-            let (event, cleared, end) = match class {
-                FailureClass::TimedOut => {
-                    let facts = GuardFacts::Deadline(DeadlineFacts {
-                        now,
-                        attempt_deadline: attempt.value.deadline_at,
-                    });
-                    let cleared = clear(Guard::DeadlinePassed, &facts)?;
-                    // A timeout is a status of the attempt, not a failure class in its row.
-                    (
-                        AttemptEvent::DeadlineExceeded,
-                        cleared,
-                        AttemptEnd::default(),
-                    )
-                }
-                _ => {
-                    let facts = GuardFacts::Epoch(EpochFacts {
-                        sent_epoch: claimed.epoch.get(),
-                        stored_epoch: attempt.value.epoch.get(),
-                    });
-                    let cleared = clear(Guard::EpochCurrent, &facts)?;
-                    // Before the sandbox was up, the only failure the attempt machine has is
-                    // `provision_failed`. The class is in the row and in the event.
-                    (
-                        class
-                            .attempt_event(from)
-                            .unwrap_or(AttemptEvent::ProvisionFailed),
-                        cleared,
-                        AttemptEnd {
-                            failure_class: Some(class),
-                            ..AttemptEnd::default()
-                        },
-                    )
-                }
-            };
-            let cause = class.as_str().to_ascii_lowercase().replace('_', "-");
-            cx.move_attempt(
-                &mut *tx,
-                &attempt,
-                claimed.epoch,
-                Step::new(event, cleared)
-                    .cause(&cause)
-                    .payload(payload::attempt_event(
-                        claimed.kind,
-                        claimed.stage_run,
-                        claimed.attempt_number,
-                        Some(class),
-                    )),
-                end,
-            )
-            .await?;
+            Self::end_attempt_failed(&mut *tx, &cx, claimed, &attempt, class).await?;
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
                 .await?;
             let disposition = self
@@ -1326,6 +1320,120 @@ impl Engine {
         Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(Some(then)) => AttemptOutcome::Failed { class, then },
             Ok(None) => AttemptOutcome::Cancelled,
+            Err(outcome) => outcome,
+        })
+    }
+
+    /// Ends the attempt as failed with `class`, in `tx`: `deadline_exceeded` for a timeout, and
+    /// otherwise the failure the attempt machine has from the attempt's state, with the class in
+    /// the row and in the event.
+    async fn end_attempt_failed(
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        claimed: &ClaimedAttempt,
+        attempt: &factory_ports::store::Versioned<factory_ports::store::Attempt>,
+        class: FailureClass,
+    ) -> Result<(), EngineError> {
+        let now = tx.database_time().await?;
+        let (event, cleared, end) = match class {
+            FailureClass::TimedOut => {
+                let facts = GuardFacts::Deadline(DeadlineFacts {
+                    now,
+                    attempt_deadline: attempt.value.deadline_at,
+                });
+                let cleared = clear(Guard::DeadlinePassed, &facts)?;
+                // A timeout is a status of the attempt, not a failure class in its row.
+                (
+                    AttemptEvent::DeadlineExceeded,
+                    cleared,
+                    AttemptEnd::default(),
+                )
+            }
+            _ => {
+                let facts = GuardFacts::Epoch(EpochFacts {
+                    sent_epoch: claimed.epoch.get(),
+                    stored_epoch: attempt.value.epoch.get(),
+                });
+                let cleared = clear(Guard::EpochCurrent, &facts)?;
+                // Before the sandbox was up, the only failure the attempt machine has is
+                // `provision_failed`. The class is in the row and in the event.
+                (
+                    class
+                        .attempt_event(attempt.value.status)
+                        .unwrap_or(AttemptEvent::ProvisionFailed),
+                    cleared,
+                    AttemptEnd {
+                        failure_class: Some(class),
+                        ..AttemptEnd::default()
+                    },
+                )
+            }
+        };
+        let cause = class.as_str().to_ascii_lowercase().replace('_', "-");
+        cx.move_attempt(
+            tx,
+            attempt,
+            claimed.epoch,
+            Step::new(event, cleared)
+                .cause(&cause)
+                .payload(payload::attempt_event(
+                    claimed.kind,
+                    claimed.stage_run,
+                    claimed.attempt_number,
+                    Some(class),
+                )),
+            end,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Sends the stage run to a person before any agent ran, because the policy says a person
+    /// decides here (`S07`), in one transaction: the attempt ends failed with `POLICY_DENIED`,
+    /// since the policy refused every model it could have run on; an audit record states the
+    /// reason in words; and the stage run waits for a person with the reason's code as the cause
+    /// of the move. Settling the job then moves it to `WAITING_FOR_HUMAN` (`J03`).
+    ///
+    /// No retry is tried: the same need gets the same answer from the router, so a retry would
+    /// only spend the attempt limit. From the wait a person sends the work back, rejects it,
+    /// answers or cancels, by the moves of `WAITING_FOR_HUMAN`.
+    async fn commit_wait_for_person(
+        &self,
+        claimed: &ClaimedAttempt,
+        reason: HumanReason,
+        notes: &Notes,
+    ) -> Result<AttemptOutcome, EngineError> {
+        let mut tx = self.tenant_tx(claimed.tenant).await?;
+        let attempt = tx.get_attempt(claimed.attempt).await?;
+        if attempt.value.status.is_terminal() {
+            return Ok(AttemptOutcome::LeaseLost);
+        }
+        let job = tx.get_job(claimed.job).await?;
+        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
+        let recorded = async {
+            Self::end_attempt_failed(&mut *tx, &cx, claimed, &attempt, FailureClass::PolicyDenied)
+                .await?;
+            self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
+                .await?;
+            // The stage run was cancelled or replaced while the attempt started: nothing waits.
+            let run = tx.get_stage_run(claimed.stage_run).await?;
+            if run.value.status != factory_domain::state::StageRunStatus::Running {
+                return Ok(false);
+            }
+            cx.audit_engine_because(
+                &mut *tx,
+                AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                format!("{}: {}", reason.code(), reason.explanation()),
+            )
+            .await?;
+            self.escalate_running(&mut *tx, &cx, claimed.stage_run, reason)
+                .await?;
+            Ok::<bool, EngineError>(true)
+        }
+        .await;
+        Ok(match self.conclude(tx, &cx, recorded).await? {
+            Ok(true) => AttemptOutcome::NeedsHuman,
+            Ok(false) => AttemptOutcome::Cancelled,
             Err(outcome) => outcome,
         })
     }
