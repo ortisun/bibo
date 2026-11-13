@@ -71,6 +71,7 @@ The API records what people ask for and never runs work. The worker holds the en
 | Know what the factory stores as evidence | [Artifacts](docs/reference/artifacts.md) |
 | Fix a job that is stuck | [Runbooks](docs/runbooks/README.md) |
 | Prepare for a live run | [Production guide](docs/guides/production.md) |
+| Run the end-to-end proof E1 for real, on your GitHub and your Claude subscription | [The first real run](docs/guides/first-real-run.md) |
 | Understand the design | [Architecture overview](docs/architecture/overview.md) and the [decision records](docs/adr/README.md) |
 | Read what independent reviewers found | [Reviews](docs/reviews/) and the [threat model](docs/security/threat-model.md) |
 
