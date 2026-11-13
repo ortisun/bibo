@@ -20,8 +20,8 @@ use factory_domain::state::TaskNodeStatus;
 use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug, Uri};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::{
-    AgentRunReport, AgentRuntime, BrokerEndpoint, JobTokenRef, ProbeError, ProbedCapabilities,
-    RuntimeCapabilities, RuntimeId,
+    AgentRunReport, AgentRuntime, BrokerEndpoint, JobTokenRef, ModelRouter, ProbeError,
+    ProbedCapabilities, RoutingDecision, RoutingError, RoutingNeed, RuntimeCapabilities, RuntimeId,
 };
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
 use factory_ports::clock::CancelSignal;
@@ -974,6 +974,27 @@ pub struct Options {
     pub reviewer: Option<AgentManifest>,
     /// The limits of the implementation stage, when a test needs smaller ones.
     pub budget: Option<StageBudget>,
+    /// The router finds no model independent of the author of the work under review, as the
+    /// policy router does when only the builder's family is served.
+    pub no_independent_reviewer: bool,
+}
+
+/// A router that refuses every need that names an author, and routes every other need as the
+/// router it wraps does: the answer of the policy router when no served model is independent of
+/// the author (`AuthorRoutingError::NoIndependentModel`, which the port reads as `NoRoute`).
+pub struct NoIndependentReviewer(pub Arc<dyn ModelRouter>);
+
+impl ModelRouter for NoIndependentReviewer {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError> {
+        if need.author.is_some() {
+            return Err(RoutingError::NoRoute);
+        }
+        self.0.route(need)
+    }
 }
 
 impl Default for Options {
@@ -994,6 +1015,7 @@ impl Default for Options {
             review: false,
             reviewer: None,
             budget: None,
+            no_independent_reviewer: false,
         }
     }
 }
@@ -1100,6 +1122,9 @@ impl Rig {
         deps.workspaces = spy_workspaces;
         deps.runtime = runtime.clone();
         deps.registry = Arc::new(registry);
+        if options.no_independent_reviewer {
+            deps.router = Arc::new(NoIndependentReviewer(deps.router.clone()));
+        }
 
         let ledger = Arc::new(RigLedger::new(log.clone()));
         let rework = Arc::new(RigRework::new());

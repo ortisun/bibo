@@ -218,6 +218,10 @@ impl Engine {
         let upstream = upstream_runs(&timeline, &board);
         let ccx = self.contract_context(&cx, &run.value, record, &upstream);
         let contract = handler.contract(&ccx);
+        // The need is asked without the author of the work under review, on purpose. A review
+        // with no model independent of its author must start, so that the attempt can send it to
+        // a person (`S07`, cause `independent-reviewer-unavailable`). Asked with the author here,
+        // the check would defer the stage run, and it would sit `READY` with nobody told.
         let capability_ok = handler
             .routing_need(&ccx)
             .is_none_or(|need| self.deps.router.route(&need).is_ok());
