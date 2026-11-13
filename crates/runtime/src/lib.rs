@@ -31,6 +31,7 @@ pub mod target;
 mod toolspan;
 pub mod trust;
 
+pub use claude::argv::ClaudeCredential;
 pub use claude::{ClaudeCodeConfig, ClaudeCodeRuntime};
 pub use codex::{CodexConfig, CodexRuntime};
 pub use io::RunIo;

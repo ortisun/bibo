@@ -11,8 +11,10 @@
 //!   neither stops the `env` block of a repository `settings.json` nor loads any skill.
 //! * `--disable-slash-commands` in every stage except specification.
 //! * `--no-session-persistence`, so the tool writes no transcript of its own.
-//! * `apiKeyHelper` in a `--settings` document: the credential is a file that a helper prints, never
-//!   a variable.
+//! * The credential (ADR 0020). In API-key mode, `apiKeyHelper` in a `--settings` document: the
+//!   credential is a file that a helper prints, never a variable. In subscription mode (the
+//!   default), no `--settings`: the job token reaches the tool as `CLAUDE_CODE_OAUTH_TOKEN`, read
+//!   from its file by the launcher line of `crate::command`, and never written into this vector.
 //! * An explicit `--model`: the default is the most expensive model.
 //! * `--max-turns` (hidden, behavior-probed) and `--max-budget-usd` as second lines of defense behind
 //!   the broker.
@@ -193,9 +195,22 @@ pub enum ArgvRefused {
     BadBudget,
 }
 
+/// How the job token reaches Claude Code. The broker swaps it for the real credential either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClaudeCredential {
+    /// API-key mode: an `apiKeyHelper` in `--settings` prints the token file.
+    #[default]
+    ApiKeyHelper,
+    /// Subscription mode (ADR 0020): the token is the tool's OAuth token, `CLAUDE_CODE_OAUTH_TOKEN`,
+    /// set by the launcher line from the token file. No `--settings` document is written.
+    OauthToken,
+}
+
 /// What a Claude Code run needs to know to build its command line.
 #[derive(Debug, Clone)]
 pub struct Plan<'a> {
+    /// How the job token reaches the tool.
+    pub credential: ClaudeCredential,
     /// The stage's flag set.
     pub flag_set: FlagSet,
     /// The model, as the provider spells it.
@@ -235,12 +250,16 @@ pub fn build(plan: &Plan<'_>, target: &VerifiedTarget) -> Result<Vec<String>, Ar
         Flag::NoSessionPersistence.name().to_owned(),
         format!("{}=user", Flag::SettingSources.name()),
         Flag::StrictMcpConfig.name().to_owned(),
-        format!("{}={settings}", Flag::Settings.name()),
+    ];
+    if plan.credential == ClaudeCredential::ApiKeyHelper {
+        args.push(format!("{}={settings}", Flag::Settings.name()));
+    }
+    args.extend([
         format!("{}={}", Flag::Model.name(), plan.model),
         format!("{}={}", Flag::MaxTurns.name(), plan.max_turns.max(1)),
         format!("{}={:.4}", Flag::MaxBudgetUsd.name(), plan.max_budget_usd),
         format!("{}={tools}", Flag::Tools.name()),
-    ];
+    ]);
     if plan.flag_set == FlagSet::Standard {
         args.push(Flag::DisableSlashCommands.name().to_owned());
     }

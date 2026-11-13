@@ -34,6 +34,7 @@ fn verified() -> VerifiedTarget {
 fn claude_args(flag_set: FlagSet, granted: &[AllowedTool]) -> Vec<String> {
     claude_argv::build(
         &claude_argv::Plan {
+            credential: claude_argv::ClaudeCredential::ApiKeyHelper,
             flag_set,
             model: "claude-sonnet-5-5",
             max_turns: 7,
@@ -188,6 +189,7 @@ fn argument_safety_the_model_is_always_explicit_and_cannot_carry_a_second_argume
     ] {
         let refused = claude_argv::build(
             &claude_argv::Plan {
+                credential: claude_argv::ClaudeCredential::ApiKeyHelper,
                 flag_set: FlagSet::Standard,
                 model: bad,
                 max_turns: 3,
@@ -435,6 +437,99 @@ async fn argument_safety_the_prompt_travels_on_standard_input_and_the_vector_nam
             .any(|a| a == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
     );
     assert!(run.argv.iter().any(|a| a == "CLAUDE_CODE_MAX_RETRIES=2"));
+}
+
+/// ADR 0020, subscription mode: no `--settings` document, the job token reaches the tool as
+/// `CLAUDE_CODE_OAUTH_TOKEN` through the fixed launcher line, and the token value, a credential
+/// variable name or the repository's settings are never in the vector. The hostile-workspace flags
+/// stay.
+#[tokio::test]
+async fn argument_safety_in_subscription_mode_the_token_is_read_by_the_launcher_never_an_argument()
+{
+    use factory_runtime::command::{LAUNCHER_SHELL, OAUTH_TOKEN_LAUNCHER};
+    let h = Harness::new();
+    let mut s = ScriptedSession::new(&h, Tool::Claude, Step::exits(0, ""));
+    let watch = s.watch();
+    let req = request(
+        &h,
+        "claude-code-cli",
+        "claude-sonnet-5-5",
+        "http://egress:8080",
+    );
+    let config = ClaudeCodeConfig {
+        credential: claude_argv::ClaudeCredential::OauthToken,
+        ..ClaudeCodeConfig::default()
+    };
+    let runtime = ClaudeCodeRuntime::new(config.clone(), h.io.clone(), h.attestation());
+    let _ = runtime.run(&mut s, req, &NeverCancelled).await;
+    let run = watch.tool_run().expect("the tool ran");
+    let argv = &run.argv;
+    // env -i NAME=value ... timeout ... /bin/sh -c <line> <tool> <flags>
+    let known: Vec<&str> = EnvName::ALL.iter().map(|n| n.as_str()).collect();
+    let end = argv
+        .iter()
+        .position(|a| a == "/usr/bin/timeout")
+        .expect("the soft deadline wrapper");
+    for pair in &argv[2..end] {
+        let (name, _) = pair.split_once('=').expect("NAME=value");
+        assert!(known.contains(&name), "{name} is not an allowed variable");
+    }
+    assert!(argv.iter().any(|a| a == "CLAUDE_CODE_PROMPT_CACHE_TTL=5m"));
+    let shell = argv
+        .iter()
+        .position(|a| a == LAUNCHER_SHELL)
+        .expect("the launcher");
+    assert_eq!(argv[shell + 1], "-c");
+    assert_eq!(argv[shell + 2], OAUTH_TOKEN_LAUNCHER);
+    assert_eq!(
+        argv[shell + 3],
+        config.binary,
+        "the tool is a positional parameter"
+    );
+    assert!(OAUTH_TOKEN_LAUNCHER.contains(JOB_TOKEN_TARGET));
+    assert!(OAUTH_TOKEN_LAUNCHER.ends_with("exec \"$0\" \"$@\""));
+    let flags = &argv[shell + 4..];
+    assert!(
+        !flags.iter().any(|a| a.starts_with("--settings")),
+        "{flags:?}"
+    );
+    assert!(flags.iter().any(|a| a == "--setting-sources=user"));
+    assert!(flags.iter().any(|a| a == "--strict-mcp-config"));
+    assert!(flags.iter().any(|a| a == "--disable-slash-commands"));
+    for a in argv.iter().filter(|a| *a != OAUTH_TOKEN_LAUNCHER) {
+        for forbidden in ["OAUTH", "API_KEY", "Bearer", "x-api-key", "sfjt_"] {
+            assert!(!a.contains(forbidden), "{forbidden} in {a}");
+        }
+    }
+}
+
+#[test]
+fn argument_safety_the_api_key_mode_keeps_its_helper_and_the_subscription_mode_drops_it() {
+    let plan = |credential| claude_argv::Plan {
+        credential,
+        flag_set: FlagSet::Standard,
+        model: "claude-sonnet-5-5",
+        max_turns: 3,
+        max_budget_usd: 1.0,
+        tools: Vec::new(),
+    };
+    let helper = claude_argv::build(
+        &plan(claude_argv::ClaudeCredential::ApiKeyHelper),
+        &verified(),
+    )
+    .expect("arguments");
+    assert!(helper.iter().any(|a| a.starts_with("--settings=")));
+    let oauth = claude_argv::build(
+        &plan(claude_argv::ClaudeCredential::OauthToken),
+        &verified(),
+    )
+    .expect("arguments");
+    assert!(!oauth.iter().any(|a| a.starts_with("--settings")));
+    assert_eq!(
+        helper.len(),
+        oauth.len() + 1,
+        "only the settings document differs"
+    );
 }
 
 #[tokio::test]

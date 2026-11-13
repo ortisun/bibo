@@ -7,8 +7,12 @@
 //!
 //! What the adapter does to keep the container as the only boundary (spike sections 4.3 to 4.8):
 //!
-//! * **Credential.** A `--settings` document names an `apiKeyHelper` that prints the job token
-//!   file. The token is in no variable, no argument and no log.
+//! * **Credential.** In subscription mode (the default, ADR 0020) the job token is the tool's OAuth
+//!   token: a fixed launcher line (`/bin/sh -c`) reads the token file into
+//!   `CLAUDE_CODE_OAUTH_TOKEN` and starts the tool, so the token is in no argument, no container
+//!   variable and no log, and the tool keeps it out of its shell tool's environment. In API-key mode
+//!   a `--settings` document names an `apiKeyHelper` that prints the job token file. Either way the
+//!   broker swaps the job token for the real credential.
 //! * **Traffic.** `ANTHROPIC_BASE_URL` is the broker. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
 //!   stops telemetry and the update check. Retries are capped at `CLAUDE_CODE_MAX_RETRIES`.
 //! * **Repository configuration.** `--setting-sources=user` and `--strict-mcp-config` leave the
@@ -35,7 +39,10 @@ use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::SandboxSession;
 
 use crate::attest::{Attestor, Claim, rejected_note};
-use crate::command::{EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin};
+use crate::command::{
+    EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, OAUTH_TOKEN_LAUNCHER, ToolCommand,
+    ToolEnv, broker_origin,
+};
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
 use crate::io::RunIo;
@@ -80,6 +87,9 @@ pub struct ClaudeCodeConfig {
     pub max_turns_cap: u32,
     /// The skills the specification stage may see. `None` makes that stage unavailable.
     pub spec_skills: Option<SkillBundle>,
+    /// How the job token reaches the tool. The composition root sets it from
+    /// `credentials.model_providers.mode` of the security policy.
+    pub credential: argv::ClaudeCredential,
 }
 
 impl Default for ClaudeCodeConfig {
@@ -93,6 +103,7 @@ impl Default for ClaudeCodeConfig {
             transcript_cap_bytes: 16 * 1024 * 1024,
             max_turns_cap: 200,
             spec_skills: None,
+            credential: argv::ClaudeCredential::default(),
         }
     }
 }
@@ -273,6 +284,7 @@ impl ClaudeCodeRuntime {
         }
 
         let plan = argv::Plan {
+            credential: self.config.credential,
             flag_set: req.flag_set,
             model: req.model.model.as_str(),
             max_turns: u32::try_from(req.limits.max_tool_calls.get())
@@ -306,16 +318,23 @@ impl ClaudeCodeRuntime {
             })
             // The tool's own skills are not the factory's to offer; the stage sees the pinned ones.
             .and_then(|e| e.set(EnvName::ClaudeDisableBundledSkills, "1"));
+        let env = match self.config.credential {
+            argv::ClaudeCredential::OauthToken => {
+                env.and_then(|e| e.set(EnvName::ClaudePromptCacheTtl, "5m"))
+            }
+            argv::ClaudeCredential::ApiKeyHelper => env,
+        };
         let Ok(env) = env else {
             return early(never_started(), version);
         };
+        let (program, args) = launch(&self.config, args);
         let soft = u32::try_from(req.limits.max_wall_time_seconds.get())
             .unwrap_or(u32::MAX)
             .max(1);
         let command = ToolCommand {
             env,
             soft_deadline_seconds: soft,
-            program: self.config.binary.clone(),
+            program,
             args,
         };
         let hard = Duration::from_secs(u64::from(soft) + u64::from(HARD_DEADLINE_MARGIN_SECONDS));
@@ -353,6 +372,24 @@ impl ClaudeCodeRuntime {
             }
         };
         assemble(&self.io, version, &req, end).await
+    }
+}
+
+/// The program and arguments that start the tool. In subscription mode the tool is started by the
+/// fixed launcher line, which sets its OAuth token from the job token file: `/bin/sh -c <line>
+/// <tool> <args>`, where the tool and its arguments are positional parameters of the line.
+fn launch(config: &ClaudeCodeConfig, args: Vec<String>) -> (String, Vec<String>) {
+    match config.credential {
+        argv::ClaudeCredential::ApiKeyHelper => (config.binary.clone(), args),
+        argv::ClaudeCredential::OauthToken => {
+            let mut wrapped = vec![
+                "-c".to_owned(),
+                OAUTH_TOKEN_LAUNCHER.to_owned(),
+                config.binary.clone(),
+            ];
+            wrapped.extend(args);
+            (LAUNCHER_SHELL.to_owned(), wrapped)
+        }
     }
 }
 
