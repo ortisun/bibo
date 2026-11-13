@@ -229,7 +229,6 @@ actions:
   - { id: raise_budget_ceiling,           min_level: L1, requires: human,            approver_roles: [org_admin], threats: [T-26] }
   - { id: install_spec_kit_or_tooling,    min_level: L1, requires: human,            approver_roles: [repo_admin], when: "the master prompt forbids running installation scripts without authorization" }
   - { id: change_authority_allowlist,     min_level: L1, requires: human,            approver_roles: [org_admin], when: "adds, removes or widens a designation; adding or widening security_approver or org_admin needs two distinct org_admins and never self-granted", threats: [T-23, T-24] }
-  - { id: accept_subscription_login_exception, min_level: L1, requires: human,       approver_roles: [org_admin, security_approver], when: "both sign; needs a written provider-terms determination, a named demo profile, a dedicated host, a fixture repository only and an expiry of at most 30 days (secrets-and-credentials.md section 4.5)", threats: [T-19, T-20] }
   - { id: waive_failed_gate,              min_level: L1, requires: human,            approver_roles: [security_approver], when: "only gates NOT listed in security.yaml gate_integrity.nonwaivable_gates; waiver has an owner and an expiry", threats: [T-13] }
   - { id: accept_residual_risk,           min_level: L1, requires: human,            approver_roles: [security_approver], when: "owner and expiry recorded", threats: [T-31] }
   - { id: send_code_to_new_model_provider, min_level: L1, requires: human,           approver_roles: [org_admin], threats: [T-20, T-28] }
@@ -275,7 +274,6 @@ always_human:
   - send_code_to_new_model_provider
   - install_spec_kit_or_tooling
   - change_authority_allowlist
-  - accept_subscription_login_exception
   - acknowledge_documentation_warning
   - unblock_blocked_stage_run
   - register_repository

@@ -962,7 +962,7 @@ secrets:
     min_shannon_bits_per_char: 4.2
     action: flag                       # flag only; blocking on entropy alone causes false positives
   exact_values:
-    register_from: [job_tokens, webhook_secret, app_private_key, database_credentials, broker_keys, object_store_keys]
+    register_from: [job_tokens, webhook_secret, app_private_key, database_credentials, broker_keys, subscription_token, object_store_keys]
     min_length: 8
     encodings: [raw, base64_std, base64_url, base64_no_pad, hex_lower, hex_upper, url_percent, json_escaped]
     split_detection: sliding_window    # matches across chunk boundaries of streamed output
@@ -978,7 +978,7 @@ secrets:
     model_context:         { on_match: redact, applies_to: [prompts, tool_results, retrieved_context] }
     dashboard_and_api:     { on_match: redact, applies_to: [api_responses, dashboard_payloads] }
   redactor_failure: drop_content_and_fail_step   # never write raw content because the redactor errored
-  never_in_model_context: [github_tokens, app_private_key, webhook_secret, broker_keys, job_tokens, database_credentials, evaluation_holdouts, other_tenant_data, builder_self_justification_for_reviewers]
+  never_in_model_context: [github_tokens, app_private_key, webhook_secret, broker_keys, subscription_token, job_tokens, database_credentials, evaluation_holdouts, other_tenant_data, builder_self_justification_for_reviewers]
   threats: [T-16, T-17, T-18, T-19, T-20]
 
 # -----------------------------------------------------------------------------
@@ -1045,7 +1045,21 @@ credentials:
     rotation_days: 180
     overlapping_secrets_during_rotation: true
   model_providers:
-    delivery: broker_injected          # real key stays in the broker; sandbox gets a per-job token
+    # Owner decision of 2026-11-12 (ADR 0020, which reverses ADR 0009 item 2): the factory runs on
+    # the owner's Claude subscription by default. Two modes, one per deployment:
+    #   subscription : the default. The broker holds the owner's long-lived Claude subscription
+    #                  token (made with `claude setup-token`) and sends it upstream as
+    #                  `Authorization: Bearer`. No provider API key and no provider-side spend
+    #                  limit is required; spend is bounded by the factory's own ceilings (counted at
+    #                  list price, section `budgets`) and by the plan's own limits. Codex is
+    #                  unavailable in this mode: its ChatGPT login is not brokered, and the factory
+    #                  says so by name (BLOCKED) rather than falling back.
+    #   api_key      : the alternative. Provider API keys with a provider-side hard spend limit,
+    #                  held by the broker (`real_keys`), for both providers.
+    # In both modes the sandbox holds only the per-job token, and the real credential stays in
+    # the broker: never in a sandbox, never in a log, never in a command line.
+    mode: subscription                 # enum: subscription | api_key
+    delivery: broker_injected          # the real credential stays in the broker; sandbox gets a per-job token
     job_token:
       prefix: sfjt_
       entropy_bits: 256
@@ -1053,7 +1067,19 @@ credentials:
       ttl: job_wall_clock_plus_300s
       scope: [provider, model_allowlist, max_tokens, max_usd]
       revoked_on: [job_end, budget_exhausted, posture_violation]
-    real_keys:
+    subscription_token:                # mode subscription only
+      providers: [anthropic]           # the only provider whose subscription the broker relays
+      made_with: claude_setup_token    # a long-lived token, prefix sk-ant-oat01- (secrets.patterns anthropic_api_key matches it)
+      store: secret_manager            # or a secret file of mode 0600 named by broker.upstreams[].key_file
+      held_by: [model_broker]
+      sent_upstream_as: authorization_bearer
+      registered_for_redaction_as: subscription_token
+      provider_side_spend_limit_required: false
+      spend_bounded_by: [factory_budget_ceilings, provider_plan_limits]
+      unavailable_runtimes: [codex-cli]
+      never_in_sandbox: true
+      rotation_days: 180
+    real_keys:                         # mode api_key only
       store: secret_manager
       dedicated_per_deployment: true
       hard_spend_limit_required: true
@@ -1061,25 +1087,6 @@ credentials:
     # Not needed for the two accepted tools: both can be redirected to the broker and both read the
     # credential from a file (spike 4.3 and 4.5). It applies only to a future CLI that cannot be.
     fallback_if_cli_cannot_use_broker: documented_residual_risk   # see secrets-and-credentials.md section 4.4
-    # Default (ADR 0009 item 2): API keys with a provider-side hard spend limit,
-    # held by the broker. Subscription (OAuth) logins, such as a claude.ai or a
-    # ChatGPT login, cannot be brokered or metered by the factory, and whether
-    # automated use is allowed by the provider's terms is a question for a person.
-    # They are off. The only way they run is a documented exception that a human
-    # signs; its required content is in secrets-and-credentials.md section 4.5.
-    subscription_logins:
-      allowed: false
-      reason: cannot_be_brokered_or_metered
-      never_in_sandbox: true
-      never_for_tenant_or_customer_data: true
-      exception:
-        enabled: false
-        decision_requires: [org_admin, security_approver, written_provider_terms_determination]
-        scope: named_demo_profile_on_a_dedicated_host_with_fixture_repository_only
-        max_days_until_expiry: 30
-        evidence_label: host_subscription_demo
-        counts_as_real_provider_smoke_test: only_if_the_signed_decision_says_so
-        runs_without: [--bare]            # --bare never reads OAuth or keychain (claude --help), so a login cannot use it. The factory flags do not rely on --bare, so nothing is lost: the run keeps --setting-sources user and --strict-mcp-config
   rotation_slas:
     leaked_or_suspected_hours: 1
     high_privilege_days: 90

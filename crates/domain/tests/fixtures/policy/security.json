@@ -527,32 +527,34 @@
         ],
         "ttl": "job_wall_clock_plus_300s"
       },
+      "mode": "subscription",
       "real_keys": {
         "dedicated_per_deployment": true,
         "hard_spend_limit_required": true,
         "rotation_days": 180,
         "store": "secret_manager"
       },
-      "subscription_logins": {
-        "allowed": false,
-        "exception": {
-          "counts_as_real_provider_smoke_test": "only_if_the_signed_decision_says_so",
-          "decision_requires": [
-            "org_admin",
-            "security_approver",
-            "written_provider_terms_determination"
-          ],
-          "enabled": false,
-          "evidence_label": "host_subscription_demo",
-          "max_days_until_expiry": 30,
-          "runs_without": [
-            "--bare"
-          ],
-          "scope": "named_demo_profile_on_a_dedicated_host_with_fixture_repository_only"
-        },
-        "never_for_tenant_or_customer_data": true,
+      "subscription_token": {
+        "held_by": [
+          "model_broker"
+        ],
+        "made_with": "claude_setup_token",
         "never_in_sandbox": true,
-        "reason": "cannot_be_brokered_or_metered"
+        "provider_side_spend_limit_required": false,
+        "providers": [
+          "anthropic"
+        ],
+        "registered_for_redaction_as": "subscription_token",
+        "rotation_days": 180,
+        "sent_upstream_as": "authorization_bearer",
+        "spend_bounded_by": [
+          "factory_budget_ceilings",
+          "provider_plan_limits"
+        ],
+        "store": "secret_manager",
+        "unavailable_runtimes": [
+          "codex-cli"
+        ]
       }
     },
     "repository_requirements": {
@@ -1867,6 +1869,7 @@
         "app_private_key",
         "database_credentials",
         "broker_keys",
+        "subscription_token",
         "object_store_keys"
       ],
       "split_detection": "sliding_window"
@@ -1876,6 +1879,7 @@
       "app_private_key",
       "webhook_secret",
       "broker_keys",
+      "subscription_token",
       "job_tokens",
       "database_credentials",
       "evaluation_holdouts",

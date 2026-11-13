@@ -98,13 +98,25 @@ fn the_security_policy_says_what_the_other_work_packages_depend_on() {
 
     // The one-line controls the threat model relies on.
     assert!(!policy.egress.allow_wildcards);
-    assert!(
-        !policy
-            .credentials
-            .model_providers
-            .subscription_logins
-            .allowed
+    // ADR 0020: the owner's subscription is the default, and its token stays in the broker.
+    let providers = &policy.credentials.model_providers;
+    assert_eq!(
+        providers.mode,
+        factory_contracts::policy::security::ProviderCredentialMode::Subscription
     );
+    assert!(providers.subscription_token.never_in_sandbox);
+    assert_eq!(providers.subscription_token.held_by, ["model_broker"]);
+    assert!(
+        !providers
+            .subscription_token
+            .provider_side_spend_limit_required
+    );
+    assert_eq!(
+        providers.subscription_token.unavailable_runtimes,
+        ["codex-cli"]
+    );
+    // The API-key mode keeps its provider-side limit.
+    assert!(providers.real_keys.hard_spend_limit_required);
     assert!(policy.sandbox.fail_closed);
     assert!(!policy.gate_integrity.reviewer_verdict_can_override_gate);
 }

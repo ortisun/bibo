@@ -179,6 +179,45 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
         }
     }
 
+    // ADR 0020: the subscription token is the owner's own login. Only the broker holds it, it never
+    // reaches a sandbox, only Anthropic's subscription is relayed, and the redactor knows it by an
+    // exact value.
+    let subscription = &policy.credentials.model_providers.subscription_token;
+    let sub = "credentials.model_providers.subscription_token";
+    if !subscription.never_in_sandbox {
+        found.add(
+            format!("{sub}.never_in_sandbox"),
+            ProblemKind::Constraint,
+            "the subscription token never reaches a sandbox; this must be true",
+        );
+    }
+    if subscription.held_by != ["model_broker"] {
+        found.add(
+            format!("{sub}.held_by"),
+            ProblemKind::Constraint,
+            "only the model broker holds the subscription token: `[model_broker]`",
+        );
+    }
+    if subscription.providers != ["anthropic"] {
+        found.add(
+            format!("{sub}.providers"),
+            ProblemKind::Constraint,
+            "only the Anthropic subscription can be relayed by the broker: `[anthropic]`",
+        );
+    }
+    if !policy
+        .secrets
+        .exact_values
+        .register_from
+        .contains(&subscription.registered_for_redaction_as)
+    {
+        found.add(
+            format!("{sub}.registered_for_redaction_as"),
+            ProblemKind::UnknownReference,
+            "the kind the subscription token is registered under must be listed in secrets.exact_values.register_from",
+        );
+    }
+
     // Regular expressions.
     for (i, pattern) in policy.secrets.patterns.iter().enumerate() {
         found.regex(&format!("secrets.patterns[{i}].regex"), &pattern.regex);
