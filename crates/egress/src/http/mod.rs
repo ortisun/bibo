@@ -12,5 +12,7 @@ pub mod server;
 pub mod usage;
 pub mod wire;
 
-pub use secret::{KeyError, ProviderKey};
-pub use server::{BrokerServer, BrokerServerConfig, ServerLimits, StartError, UpstreamConfig};
+pub use secret::{KeyError, ProviderKey, SUBSCRIPTION_TOKEN_PREFIX, TokenError};
+pub use server::{
+    BrokerServer, BrokerServerConfig, ServerLimits, StartError, UpstreamConfig, UpstreamCredential,
+};

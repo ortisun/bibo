@@ -108,6 +108,14 @@ pub enum Outcome {
     /// The provider answered with an error, or could not be reached, and nothing was billed as
     /// far as the broker can tell. The request still counts as a request.
     NoCharge,
+    /// The provider answered 429: its own rate limit was reached (in subscription mode, the plan's
+    /// limit, ADR 0020). Nothing is charged and the token stays valid, as for
+    /// [`Outcome::NoCharge`], and the audit stream records it by name (`provider_rate_limited`)
+    /// with the delay the provider asked for, in seconds, when it gave one.
+    ProviderRateLimited {
+        /// The provider's retry delay in whole seconds, when it gave one in that form.
+        retry_after: Option<u32>,
+    },
     /// The request was forwarded, but the usage could not be read: the stream ended early, the
     /// client went away, or the answer had no usage in it. The broker charges the worst case for
     /// one request.
@@ -705,8 +713,16 @@ impl BrokerCore {
             record.in_flight = record.in_flight.saturating_sub(1);
             let ceiling = record.ceiling;
             let job = record.job;
+            if let Outcome::ProviderRateLimited { retry_after } = outcome {
+                events.push(AuditKind::ProviderRateLimited {
+                    token,
+                    job,
+                    provider,
+                    retry_after_secs: retry_after,
+                });
+            }
             let (added, usage_read) = match outcome {
-                Outcome::NoCharge => (Usage::default(), true),
+                Outcome::NoCharge | Outcome::ProviderRateLimited { .. } => (Usage::default(), true),
                 Outcome::Counted(counts) => match self.prices.cost(provider, model, &counts) {
                     Some(cost) => (
                         Usage {

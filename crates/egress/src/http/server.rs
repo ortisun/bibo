@@ -13,12 +13,20 @@
 //! 4. Ask the core for a permit: audience, model list, price, caps, rate. The request is counted
 //!    here.
 //! 5. Clamp the output token limit to the per-request cap, build the upstream request from an
-//!    allowlist of headers, add the real key, and call the provider with no redirects and no proxy.
+//!    allowlist of headers, add the real credential, and call the provider with no redirects and
+//!    no proxy. The credential is an API key (`x-api-key` for Anthropic, a bearer token for
+//!    OpenAI) or, in subscription mode (ADR 0020), the owner's Claude subscription token, sent as
+//!    `Authorization: Bearer` with the OAuth beta.
 //! 6. Stream the answer back (events are written as they are read) while reading usage from it,
 //!    with the key scrubbed out, then settle the permit with what the answer reported. Of the
 //!    provider's headers only a media type and a retry delay come back.
 //!
-//! The real key exists in this module in one place: the credential header of the upstream request.
+//! The real credential exists in this module in one place: the credential header of the upstream
+//! request.
+//!
+//! A provider's 429 is its own rate limit (in subscription mode, the plan's). It is charged
+//! nothing, it does not revoke the token, it is recorded by name (`provider_rate_limited`) and it
+//! reaches the tool as a 429 with the broker's own fixed body and the provider's retry delay.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -61,14 +69,29 @@ pub enum StartError {
     /// The listener could not bind.
     #[error("the listener could not bind")]
     Bind,
+    /// A subscription upstream was asked for a provider whose subscription the broker cannot relay.
+    /// Only the Anthropic (Claude) subscription can be; Codex's ChatGPT login cannot (ADR 0020).
+    #[error("the broker relays a subscription for anthropic only")]
+    SubscriptionNotRelayed,
 }
 
-/// Where the broker sends requests for one provider, and the key it signs them with.
+/// The kind of credential an upstream signs its requests with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamCredential {
+    /// A provider API key: `x-api-key` for Anthropic, `Authorization: Bearer` for OpenAI.
+    ApiKey,
+    /// The owner's Claude subscription token (`claude setup-token`, prefix `sk-ant-oat01-`), sent as
+    /// `Authorization: Bearer` with the OAuth beta. Anthropic only.
+    SubscriptionToken,
+}
+
+/// Where the broker sends requests for one provider, and the credential it signs them with.
 #[derive(Debug, Clone)]
 pub struct UpstreamConfig {
     provider: Provider,
     base: String,
     key: ProviderKey,
+    credential: UpstreamCredential,
 }
 
 impl UpstreamConfig {
@@ -98,7 +121,33 @@ impl UpstreamConfig {
             provider,
             base: format!("{scheme}://{authority}"),
             key,
+            credential: UpstreamCredential::ApiKey,
         })
+    }
+
+    /// An upstream signed with the owner's Claude subscription token (ADR 0020). The base URL is
+    /// checked as in [`UpstreamConfig::new`].
+    ///
+    /// # Errors
+    /// [`StartError::SubscriptionNotRelayed`] for any provider but Anthropic, or the errors of
+    /// [`UpstreamConfig::new`].
+    pub fn subscription(
+        provider: Provider,
+        base_url: &str,
+        token: ProviderKey,
+    ) -> Result<Self, StartError> {
+        if provider != Provider::Anthropic {
+            return Err(StartError::SubscriptionNotRelayed);
+        }
+        let mut upstream = Self::new(provider, base_url, token)?;
+        upstream.credential = UpstreamCredential::SubscriptionToken;
+        Ok(upstream)
+    }
+
+    /// The kind of credential this upstream signs with.
+    #[must_use]
+    pub const fn credential(&self) -> UpstreamCredential {
+        self.credential
     }
 }
 
@@ -175,6 +224,7 @@ pub struct BrokerServerConfig {
 struct Upstream {
     base: String,
     key: ProviderKey,
+    credential: UpstreamCredential,
 }
 
 struct Shared {
@@ -214,6 +264,7 @@ impl BrokerServer {
             let slot = Upstream {
                 base: upstream.base,
                 key: upstream.key,
+                credential: upstream.credential,
             };
             if upstreams.insert(upstream.provider, slot).is_some() {
                 return Err(StartError::DuplicateProvider);
@@ -465,8 +516,14 @@ fn serve_model_request(
     };
     // The beta header decides, before the body is read, whether this is a request the broker
     // forwards at all. Two copies of the header are as unreadable as a bad value.
+    let subscription = shared
+        .upstreams
+        .get(&provider)
+        .is_some_and(|u| u.credential == UpstreamCredential::SubscriptionToken);
     let beta = if head.has("anthropic-beta") && head.header("anthropic-beta").is_none() {
         Err(Violation::BetaHeader)
+    } else if subscription {
+        headers::subscription_beta_header(provider, head.header("anthropic-beta"))
     } else {
         headers::beta_header(provider, head.header("anthropic-beta"))
     };
@@ -504,6 +561,16 @@ fn serve_model_request(
         Ok(object) => object,
         Err(violation) => return refuse_shape(stream, violation),
     };
+    // On the owner's subscription the provider answers a request that does not open with a Claude
+    // Code identity with a 429 that reads like a plan limit (owner's live check, 2026-11-12). The
+    // broker refuses it here by name, so a 429 that comes back is a real limit. It checks and never
+    // rewrites: the system prompt is forwarded as it came.
+    if subscription
+        && wire == Wire::AnthropicMessages
+        && let Err(violation) = shape::check_subscription_identity(&object)
+    {
+        return refuse_shape(stream, violation);
+    }
     let Some(model) = object
         .get("model")
         .and_then(Value::as_str)
@@ -625,6 +692,8 @@ fn build_upstream_request(
         url.push('?');
         url.push_str(query);
     }
+    // The broker's own user agent in both modes: the owner's live check of 2026-11-12 found that
+    // the provider accepts a subscription token with it (ADR 0020).
     let mut builder = ureq::http::Request::builder()
         .method("POST")
         .uri(url)
@@ -646,9 +715,13 @@ fn build_upstream_request(
                 .header("anthropic-version")
                 .filter(|v| header_value_ok(v))
                 .unwrap_or("2023-06-01");
-            builder = builder
-                .header("anthropic-version", version)
-                .header("x-api-key", upstream.key.expose());
+            builder = builder.header("anthropic-version", version);
+            builder = match upstream.credential {
+                UpstreamCredential::ApiKey => builder.header("x-api-key", upstream.key.expose()),
+                UpstreamCredential::SubscriptionToken => {
+                    builder.header("authorization", format!("Bearer {}", upstream.key.expose()))
+                }
+            };
         }
         Provider::OpenAi => {
             builder = builder.header("authorization", format!("Bearer {}", upstream.key.expose()));
@@ -690,6 +763,24 @@ fn forward(
     if (300..400).contains(&status) || status == 401 || status == 403 {
         permit.settle(Outcome::NoCharge);
         return respond_error(stream, 502, "upstream_rejected_request", &[]);
+    }
+    // The provider's own rate limit (in subscription mode, the plan's). Nothing is charged, the
+    // token stays valid, the audit names it, and the tool gets a 429 it retries on, with the
+    // provider's delay when it gave one in seconds. The provider's body is not passed: it names the
+    // account and its limits, and the tool needs only the status.
+    if status == 429 {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(headers::response_retry_after);
+        permit.settle(Outcome::ProviderRateLimited { retry_after });
+        let seconds = retry_after.map(|s| s.to_string());
+        let extra: Vec<(&str, &str)> = seconds
+            .as_deref()
+            .map(|s| vec![("Retry-After", s)])
+            .unwrap_or_default();
+        return respond_error(stream, 429, "provider_rate_limited", &extra);
     }
     let content_type = response
         .headers()
@@ -738,7 +829,9 @@ fn forward(
     // Only a successful answer whose usage could be read has an end the broker will attest.
     let end = match outcome {
         Outcome::Counted(_) => answer_end_from_json(provider, &raw),
-        Outcome::NoCharge | Outcome::Unreadable => AnswerEnd::Failed,
+        Outcome::NoCharge | Outcome::ProviderRateLimited { .. } | Outcome::Unreadable => {
+            AnswerEnd::Failed
+        }
     };
     let clean = shared
         .redactor
@@ -857,6 +950,9 @@ fn error_message(kind: &str) -> &'static str {
         "too_many_in_flight" => "Too many requests are in progress. Retry later.",
         "upstream_unavailable" => "The model provider could not be reached.",
         "upstream_rejected_request" => "The model provider refused the broker's request.",
+        "provider_rate_limited" => {
+            "The model provider's rate limit for this account was reached. Retry later."
+        }
         "overloaded" => "The broker is busy. Retry later.",
         "request_shape" => "The request holds content that this broker does not forward.",
         _ => "The request was refused.",
