@@ -8,7 +8,9 @@
 
 A job stays in the state `WAITING_FOR_HUMAN`. No stage advances. Nobody has answered the factory.
 
-A job waits for a person in these cases: the specification draft needs approval, the pull request needs approval, an agent asked for a person, a budget limit was reached, a gate returned `NEEDS_HUMAN`, or the original request changed after it was authorized and the requester must confirm.
+A job waits for a person in these cases: the specification draft needs approval, the pull request needs approval, an agent asked for a person, a budget limit was reached, a gate returned `NEEDS_HUMAN`, the original request changed after it was authorized and the requester must confirm, or the code review found no model that the routing policy accepts as independent of the builder.
+
+The last case has the reason `independent-reviewer-unavailable`. It is the normal result in subscription mode, where only Claude models run (see [the decision record on subscription mode](../adr/0020-subscription-mode-by-default.md)). No reviewer ran. Send the work back with `rework ... target=IMPLEMENTATION`, reject it, or cancel the job. An approval passes the review on your own judgment, so read the diff first. An answer only starts the review again, and it waits again for the same reason.
 
 ## Before you begin
 
