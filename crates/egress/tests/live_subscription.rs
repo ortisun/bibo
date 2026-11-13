@@ -94,7 +94,7 @@ fn live_broker(
         cache_read: 3_000_000,
         output: 150_000_000,
     };
-    let table = PriceTable::new().with_model(Provider::Anthropic, &model, price);
+    let table = PriceTable::new().with_model(Provider::Anthropic, model, price);
     let rig = Rig::with_prices(CapPolicy::default(), Arc::new(table));
     let server = BrokerServer::start(
         BrokerServerConfig {
