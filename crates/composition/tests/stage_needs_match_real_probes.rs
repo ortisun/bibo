@@ -65,8 +65,10 @@ fn the_scan_sees_the_needs_it_guards() {
         .flat_map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
         .filter(|line| line.contains("required:") && line.contains("Capability::"))
         .count();
+    // Two today: the specification writer's need (one place since the writer and the reviewer of
+    // the specification are built by `SpecificationHandler`) and the documenting writer's.
     assert!(
-        needs >= 3,
+        needs >= 2,
         "the scan saw {needs} needs that name a capability"
     );
 }
