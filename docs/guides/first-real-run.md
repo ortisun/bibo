@@ -22,6 +22,8 @@ Three things are not real, and the evidence says so in its list of limitations:
 - The App cannot read the bypass list of a ruleset. The run records your statement that the App is not on it. The setup script makes the ruleset with nobody on the bypass list.
 - The advisory database is a stand-in. The change the issue asks for adds no dependency.
 
+One thing is real and weaker than the policy's best: every review is made by another Claude model, not by a model of another family. See [Who reviews the code](#who-reviews-the-code).
+
 ## Who does what
 
 You work alone, so you are the requester and the approver. The approval policy allows this for a low-risk change (`policies/approval.yaml`, `approver_may_equal_requester_when_low_risk: true`). The word-count change is meant to be low risk. The harness accepts your approval of your own request only when the job's recorded risk is low.
@@ -39,7 +41,7 @@ You need these on your Mac:
 - Rust (the repository pins the version) and Python 3.
 - PostgreSQL. Set `FACTORY_DB_ADMIN_URL` to a server the run may make a database on, or install PostgreSQL 16 or later so the run can start a private one.
 - Your Claude subscription token in `~/claud-oauth-token.txt`, as one line, with mode `600`. The section "How the owner turns it on" of the decision record on subscription mode says how to make it. The live check `cargo test -p factory-egress --test live_subscription -- --ignored` already passed with it.
-- A GitHub plan that has rulesets on private repositories: GitHub Pro, Team or Enterprise. On GitHub Free, step 4 stops at the ruleset.
+- A GitHub account or organization where you may create a repository. The fixture repository is **public** by default, because GitHub Free offers rulesets only on public repositories and the factory needs the ruleset. The `ortisun` organization is on GitHub Free. On GitHub Pro, Team or Enterprise you may make it private with `--private`.
 
 ## The steps, in order
 
@@ -51,9 +53,9 @@ Read each model's price on the provider's price page. Write the prices and the d
 
 The job budget is `job.max_micro_usd` in the same file: 10 dollars today. The run prints it when the job starts. To give one run less, set `FACTORY_E2E_JOB_BUDGET_USD`, for example `export FACTORY_E2E_JOB_BUDGET_USD=5`. A run can lower the budget and never raise it.
 
-### 2. Decide what happens at the review
+### 2. Know who reviews
 
-Read [The review waits for a person](#the-review-waits-for-a-person) below. With today's policy, E1 stops at the code review and cannot complete in subscription mode. Decide before the run whether that is the run you want.
+Read [Who reviews the code](#who-reviews-the-code) below. In subscription mode another Claude model reviews each piece of work, and the evidence records that as a weaker check than a review by another family. Make sure the broker serves both Claude models (the `anthropic` entry of `broker.upstreams` lists no models, or lists both `claude-sonnet-5-5` and `claude-opus-5-5`); otherwise the reviews wait for a person.
 
 ### 3. Make the GitHub App
 
@@ -78,24 +80,26 @@ scripts/github_app_manifest.py convert CODE
 
 ### 4. Make the fixture repository
 
-Look first. The `--check` mode makes no call to GitHub and changes nothing:
+The factory's fixture repository is `ortisun/factory-fixture-word-count`. Look first. The `--check` mode makes no call to GitHub and changes nothing:
 
-```bash no-run reason="it reads the App id of your App; the repository name is yours"
-scripts/setup-fixture-repository.sh --check --app-id APP_ID YOURNAME/word-count-fixture
+```bash no-run reason="it reads the App id of your App"
+scripts/setup-fixture-repository.sh --check --app-id APP_ID ortisun/factory-fixture-word-count
 ```
 
 Then make it:
 
-```bash no-run reason="it creates a private repository on your GitHub account"
-scripts/setup-fixture-repository.sh --app-id APP_ID YOURNAME/word-count-fixture
+```bash no-run reason="it creates a public repository in the ortisun organization"
+scripts/setup-fixture-repository.sh --app-id APP_ID ortisun/factory-fixture-word-count
 ```
+
+**The repository is public.** GitHub Free offers rulesets only on public repositories, and the `ortisun` organization is on GitHub Free, so `--public` is the default. Anyone can then read the fixture's code, its issues, its pull requests, the factory's check runs and the factory's comments. Put nothing private in the repository, and nothing private in a test issue: no token, no key, no password, no personal data, no text you would not publish. The factory does its part: it never writes a credential into the repository or an issue, the run files the issue from the tracked file `tests/end_to_end/issues/json-output-en.json`, the token of your subscription is registered with the redactor before anything can print it, and the pull request's title, body and the reviewer's words are redacted before they are stored or sent. The script also refuses to push a copy that holds anything that looks like a secret (a private key, a provider key, a GitHub token, or a file named `.env`, `*.pem` or `*.key`). On GitHub Pro, Team or Enterprise you may pass `--private` instead.
 
 The script makes these `gh` calls, in this order, and no others:
 
 | Step | Call |
 |---|---|
 | Who you are, when you give no `--owner` | `gh api user --jq .login` |
-| The private repository, with the copy pushed | `gh repo create OWNER/NAME --private --description ... --source DIR --remote origin --push` |
+| The repository, public unless you pass `--private`, with the copy pushed | `gh repo create OWNER/NAME --public --description ... --source DIR --remote origin --push` |
 | The label the factory starts on | `gh label create factory --repo OWNER/NAME --color 5319e7 --description ...` |
 | The ruleset | `gh api --method POST repos/OWNER/NAME/rulesets --input RULESET.json` |
 | The ruleset, read back | `gh api repos/OWNER/NAME/rulesets` |
@@ -134,7 +138,7 @@ entries:
 ```bash no-run reason="it calls GitHub and the model provider with your credentials"
 export FACTORY_E2E_GITHUB_APP_ID=APP_ID
 export FACTORY_E2E_GITHUB_APP_KEY_FILE=~/.config/software-factory/github-app/github-app.private-key.pem
-export FACTORY_E2E_FIXTURE_REPO=YOURNAME/word-count-fixture
+export FACTORY_E2E_FIXTURE_REPO=ortisun/factory-fixture-word-count
 export FACTORY_E2E_REQUESTER_ALLOWLIST=~/factory-allowlist.yaml
 scripts/e2e.sh --scenario E1
 ```
@@ -153,26 +157,28 @@ The run talks to you on the terminal, and it writes the same lines to `target/e2
 | When | What you do |
 |---|---|
 | The specification draft waits | Read it with `factory-cli show-draft`. Approve it with `factory-cli approve JOB STAGE_RUN head=H evidence=sha256:D`, or reject it with `factory-cli reject`. The run prints the exact values. |
-| The code review waits | See the next section. |
+| A review waits (rare: only when no other Claude model is served) | See the next section. The factory refuses an approval there. |
 | The draft pull request waits | Read it on GitHub. Approve it with `factory-cli approve`, or reject it. Approving merges nothing: the pull request stays a draft. |
 
 A decision may wait 240 minutes. Set `FACTORY_E2E_HUMAN_WAIT_MINUTES` to change that. When the time is up, the run stops and records what it has.
 
-## The review waits for a person
+## Who reviews the code
 
-The policy wants the code reviewer to be a model of another family than the builder (`policies/model_routing.yaml`, section 4, `independence`). In subscription mode only Claude runs. So no model may review the builder's work, and the policy says the review then waits for a person.
+The policy wants every reviewer to be another model than the one that wrote the work (`policies/model_routing.yaml`, section 4, `independence`, `must_differ_by: model`). In subscription mode only Claude runs, so no reviewer of another model family exists. The owner decided on 2026-11-13 that another Claude model reviews instead ([the decision record on subscription mode](../adr/0020-subscription-mode-by-default.md), amendment of 2026-11-13):
 
-The factory now does exactly that. The review stage run and the job go to `WAITING_FOR_HUMAN`, with the reason `independent-reviewer-unavailable` in the audit record. Before this work, the job failed there instead.
+- Claude Opus reviews what Claude Sonnet wrote, and Claude Sonnet reviews what Claude Opus wrote.
+- This holds for the code review, the documentation review and the specification review. The documenting stage records which model wrote the documentation, and the specification reviewer is routed against the specification writer's model.
+- The policy lists Claude Opus only at the large tier, so the router looks there when the standard tier offers only the author's own model.
 
-From that wait you can send the work back (`factory-cli rework JOB STAGE_RUN target=IMPLEMENTATION ...`), reject the job (`factory-cli reject`), or cancel it (`factory-cli cancel`). There is no command that lets a person approve the review in the model's place, so the job cannot get past the review. E1 then ends without a pull request, and the harness reports it as failed. It says which assertions failed, which is the honest answer.
+A review by another model of the same family is a **weaker check** than a review by another family: two models of one family tend to share blind spots. The run says so each time:
 
-To let E1 complete on Claude alone, you have to decide one of these first:
+- the audit log has a record `review-independence same-family-other-model: <reviewer> reviews the work of <author> in <stage>` for each such review;
+- the evidence manifest of the pull request lists the code review and the documentation review among its limitations, with both models named;
+- the run's own list of limitations (`mode.json`) says it.
 
-- **Pay for an independent reviewer.** Switch `credentials.model_providers.mode` in `policies/security.yaml` to `api_key`, and give the broker an OpenAI key and an Anthropic key, each with a spend limit at the provider. The reviewers then run on an OpenAI model. This run's program does not support that mode yet; it stops with a `BLOCKED` line.
-- **Accept a reviewer of the same family but another model.** Change the two rules `code_review_not_by_the_builders_family` and `documentation_review_not_by_the_writers_family` to `must_differ_by: model`. The policy's own check accepts that. It is not enough alone: the review stages ask for the standard tier, and the only other Claude model is Claude Opus, which the policy lists at the large tier. The review stage would also have to ask for the large tier when no standard model is independent. That is a code change, which needs your decision first.
-- **Let a person stand in for the reviewer.** A new decision that records a person's review verdict, and that the delivery stage accepts in place of the model's. That is a larger change, and it puts a person's judgment in the evidence where the policy expects a model's.
+The review waits for a person, with the reason `independent-reviewer-unavailable`, only when no model other than the author's own is served at any tier. In this run that means the broker does not serve both Claude models. From that wait you can send the work back (`factory-cli rework JOB STAGE_RUN target=IMPLEMENTATION ...`), reject the job (`factory-cli reject`), or cancel it (`factory-cli cancel`). The factory refuses an approval there, because it would pass the review with no review verdict, and it records the refusal in the audit log.
 
-Two more reviewers do not apply the independence rule today, in either mode. The documentation reviewer is routed without the writer's model, because the documenting stage does not record which model wrote the documentation. The specification reviewer shares one stage and one job token with the specification writer, so it always runs on the writer's model. The evidence of the run lists this among its limitations.
+In `api_key` mode, with both providers served, the reviewing routes list the model of the other family first, so the reviewer is still of another family. A project that wants that strength always can set `must_differ_by: family` in its own routing policy; in subscription mode its reviews then wait for a person.
 
 ## What the run writes
 

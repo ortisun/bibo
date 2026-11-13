@@ -6,7 +6,9 @@ library only, and no network: nothing here calls GitHub. Run it with:
 * scripts/github_app_manifest.py writes a manifest whose permissions are exactly the ones
   policies/security.yaml requires, with no webhook and no event, and a page that posts it.
 * scripts/setup-fixture-repository.sh --check shows the gh calls it would make, a CODEOWNERS with
-  real owners only, and a ruleset that pins both checks to the App, and changes nothing.
+  real owners only, and a ruleset that pins both checks to the App, and changes nothing. The
+  repository is public unless --private is given (GitHub Free has rulesets only on public
+  repositories), and the copy holds nothing that looks like a secret.
 """
 
 from __future__ import annotations
@@ -102,7 +104,9 @@ class TheFixtureSetupInCheckMode(unittest.TestCase):
         done = setup("--check", "--app-id", "424242", "--owner", "@the-owner", "someone/fixture")
         self.assertEqual(done.returncode, 0, done.stderr)
         out = done.stdout
-        self.assertIn("gh repo create someone/fixture --private", out)
+        self.assertIn("gh repo create someone/fixture --public", out)
+        self.assertIn("anyone can read its code, its issues", out)
+        self.assertIn("nothing in the copy looks like a secret", out)
         self.assertIn("gh label create factory --repo someone/fixture", out)
         self.assertIn("gh api --method POST repos/someone/fixture/rulesets --input", out)
         self.assertIn("gh api repos/someone/fixture/rulesets", out)
@@ -121,7 +125,28 @@ class TheFixtureSetupInCheckMode(unittest.TestCase):
         self.assertIn('{ "type": "non_fast_forward" }', out)
         self.assertIn('{ "type": "deletion" }', out)
 
+    def test_the_factorys_fixture_is_public_by_default_and_private_on_request(self) -> None:
+        public = setup("--check", "--app-id", "424242", "ortisun/factory-fixture-word-count")
+        self.assertEqual(public.returncode, 0, public.stderr)
+        self.assertIn("== 3. The public repository", public.stdout)
+        self.assertIn("gh repo create ortisun/factory-fixture-word-count --public", public.stdout)
+        self.assertIn("gh repo create ortisun/factory-fixture-word-count --public", setup(
+            "--check", "--app-id", "424242", "--public", "ortisun/factory-fixture-word-count"
+        ).stdout)
+        private = setup("--check", "--app-id", "424242", "--private", "someone/fixture")
+        self.assertEqual(private.returncode, 0, private.stderr)
+        self.assertIn("gh repo create someone/fixture --private", private.stdout)
+        self.assertNotIn("--public", private.stdout)
+        self.assertNotIn("anyone can read", private.stdout)
+
+    def test_the_usage_explains_why_public_is_the_default(self) -> None:
+        out = setup("--help").stdout
+        self.assertIn("--public", out)
+        self.assertIn("GitHub Free offers rulesets only on", out)
+        self.assertIn("ortisun/factory-fixture-word-count", out)
+
     def test_wrong_usage_is_refused(self) -> None:
+        self.assertEqual(setup("--check", "--app-id", "1", "--public", "--private", "a/b").returncode, 2)
         self.assertEqual(setup("--check", "--app-id", "x", "a/b").returncode, 2)
         self.assertEqual(setup("--check", "--app-id", "1", "not-a-repository").returncode, 2)
         self.assertEqual(setup("--check", "--app-id", "1", "--owner", "@example-org/core", "a/b").returncode, 2)
