@@ -154,7 +154,7 @@ the App installation need the network and the key, so the composed wiring checks
 | Variable | What it is |
 |---|---|
 | `FACTORY_E2E_COMPOSED` | The composed wiring program. |
-| `FACTORY_E2E_MODEL_API_KEY` | An API key for the model provider with a provider-side hard spend limit. A subscription login does not count. |
+| `FACTORY_E2E_MODEL_API_KEY` | An API key for the model provider with a provider-side hard spend limit. This harness runs both tools, so it runs in API-key mode; the factory's default, the owner's Claude subscription, has no Codex (ADR 0020). |
 | `FACTORY_E2E_MODEL_SPEND_LIMIT_USD` | The limit you set at the provider, in dollars. A key cannot report its own limit, so you state it. |
 | `FACTORY_E2E_GITHUB_APP_ID`, `FACTORY_E2E_GITHUB_APP_KEY_FILE` | A registered GitHub App and its private key file. |
 | `FACTORY_E2E_FIXTURE_REPO` | The fixture repository on GitHub, as `owner/name`. |

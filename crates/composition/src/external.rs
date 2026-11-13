@@ -34,6 +34,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use factory_domain::ids::{AttemptId, JobId, PrincipalId, TenantId};
 use factory_domain::policy::SecurityPolicy;
+use factory_domain::policy::security::ProviderCredentialMode;
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Timestamp;
@@ -55,7 +56,8 @@ use factory_ports::sandbox::{SandboxProvider, TeardownReason};
 use factory_ports::store::InstallationId;
 use factory_runtime::probe::NeverCancelled;
 use factory_runtime::{
-    ClaudeCodeConfig, ClaudeCodeRuntime, CodexConfig, CodexRuntime, RunIo, SkillBundle,
+    ClaudeCodeConfig, ClaudeCodeRuntime, ClaudeCredential, CodexConfig, CodexRuntime, RunIo,
+    SkillBundle,
 };
 
 use crate::advisory::FileAdvisoryDatabase;
@@ -349,8 +351,12 @@ pub fn github_adapter(
 fn claude_config(
     tool: Option<&RuntimeToolConfig>,
     skills: Option<SkillBundle>,
+    mode: ProviderCredentialMode,
 ) -> ClaudeCodeConfig {
-    let mut config = ClaudeCodeConfig::default();
+    let mut config = ClaudeCodeConfig {
+        credential: claude_credential(mode),
+        ..ClaudeCodeConfig::default()
+    };
     if let Some(tool) = tool {
         if let Some(binary) = &tool.binary {
             config.binary.clone_from(binary);
@@ -361,6 +367,30 @@ fn claude_config(
     }
     config.spec_skills = skills;
     config
+}
+
+/// How the job token reaches Claude Code in a mode: as its OAuth token on the owner's subscription,
+/// through the API-key helper otherwise (ADR 0020).
+#[must_use]
+pub const fn claude_credential(mode: ProviderCredentialMode) -> ClaudeCredential {
+    match mode {
+        ProviderCredentialMode::Subscription => ClaudeCredential::OauthToken,
+        ProviderCredentialMode::ApiKey => ClaudeCredential::ApiKeyHelper,
+    }
+}
+
+/// The reason Codex does not run in subscription mode, said wherever the factory meets it.
+pub const CODEX_UNAVAILABLE_IN_SUBSCRIPTION_MODE: &str = "lists openai, and Codex (codex-cli) is unavailable in subscription mode: its ChatGPT login cannot be brokered, and the factory does not fall back to another tool (ADR 0020). Remove the openai entry, or set credentials.model_providers.mode to api_key in policies/security.yaml and give each provider an API key";
+
+/// The runtimes a mode runs: in subscription mode only Claude Code, whatever else is configured.
+fn runtime_ids_in(config: &FactoryConfig, mode: ProviderCredentialMode) -> Vec<RuntimeId> {
+    runtime_ids(config)
+        .into_iter()
+        .filter(|id| {
+            mode == ProviderCredentialMode::ApiKey
+                || id.as_str() == factory_runtime::claude::RUNTIME_NAME
+        })
+        .collect()
 }
 
 fn codex_config(tool: Option<&RuntimeToolConfig>) -> CodexConfig {
@@ -389,6 +419,8 @@ pub struct RuntimeParts {
     pub attestation: Arc<dyn TurnAttestation>,
     /// The skills the specification stage may see, when the installation can supply them.
     pub spec_skills: Option<SkillBundle>,
+    /// The credential mode of the security policy (`credentials.model_providers.mode`).
+    pub mode: ProviderCredentialMode,
 }
 
 fn io_for(parts: &RuntimeParts, tenant: TenantId) -> RunIo {
@@ -404,12 +436,13 @@ fn io_for(parts: &RuntimeParts, tenant: TenantId) -> RunIo {
 #[must_use]
 pub fn runtimes_for_tenant(parts: &RuntimeParts, tenant: TenantId) -> Vec<Arc<dyn AgentRuntime>> {
     let mut runtimes: Vec<Arc<dyn AgentRuntime>> = Vec::new();
-    for id in runtime_ids(&parts.config) {
+    for id in runtime_ids_in(&parts.config, parts.mode) {
         if id.as_str() == factory_runtime::claude::RUNTIME_NAME {
             runtimes.push(Arc::new(ClaudeCodeRuntime::new(
                 claude_config(
                     parts.config.runtimes.claude_code.as_ref(),
                     parts.spec_skills.clone(),
+                    parts.mode,
                 ),
                 io_for(parts, tenant),
                 Arc::clone(&parts.attestation),
@@ -429,7 +462,7 @@ pub fn runtimes_for_tenant(parts: &RuntimeParts, tenant: TenantId) -> Vec<Arc<dy
 /// serves every tenant ([`TenantRuntimes`]). `None` when no provider is configured.
 #[must_use]
 pub fn runtime_set(parts: &RuntimeParts, jobs: &Arc<ActiveJobs>) -> Option<Arc<RuntimeSet>> {
-    let members: Vec<Arc<dyn AgentRuntime>> = runtime_ids(&parts.config)
+    let members: Vec<Arc<dyn AgentRuntime>> = runtime_ids_in(&parts.config, parts.mode)
         .into_iter()
         .map(|id| {
             let parts = parts.clone();
@@ -445,6 +478,7 @@ pub fn runtime_set(parts: &RuntimeParts, jobs: &Arc<ActiveJobs>) -> Option<Arc<R
                                 claude_config(
                                     parts.config.runtimes.claude_code.as_ref(),
                                     parts.spec_skills.clone(),
+                                    parts.mode,
                                 ),
                                 io_for(&parts, tenant),
                                 Arc::clone(&parts.attestation),
@@ -695,6 +729,23 @@ pub fn assemble_external(inputs: ExternalInputs<'_>) -> Result<ExternalWorld, Ve
         },
     }
 
+    // ADR 0020: in subscription mode Codex is unavailable, and the factory says so by name rather
+    // than running without it.
+    let mode = security.credentials.model_providers.mode;
+    if mode == ProviderCredentialMode::Subscription
+        && config
+            .broker
+            .upstreams
+            .iter()
+            .any(|u| u.provider == "openai")
+    {
+        blocked.push(BlockedItem {
+            label: "agent runtime codex-cli",
+            key: "broker.upstreams",
+            reason: CODEX_UNAVAILABLE_IN_SUBSCRIPTION_MODE.to_owned(),
+        });
+    }
+
     // The router and the runtime need a provider.
     let enabled = if config.broker.upstreams.is_empty() {
         None
@@ -752,6 +803,7 @@ pub fn assemble_external(inputs: ExternalInputs<'_>) -> Result<ExternalWorld, Ve
                 redactor,
                 attestation,
                 spec_skills,
+                mode,
             },
             &jobs,
         )

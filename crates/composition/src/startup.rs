@@ -64,6 +64,12 @@ pub enum StartupFailure {
     /// A kind of secret the policy requires has no value.
     #[error("the policy requires a registered secret of kind {0}, and none is configured")]
     SecretKindMissing(&'static str),
+    /// Subscription mode (ADR 0020), and the owner's Claude subscription token cannot be used: no
+    /// file is named, the file is missing or unsafe, or what it holds is not a token.
+    #[error(
+        "subscription mode needs the owner's Claude subscription token: {0}. Run `claude setup-token`, save the token it prints as one line in the file that broker.upstreams (provider anthropic) names as key_file, for example ~/claud-oauth-token.txt, make it mode 0600, and start again"
+    )]
+    SubscriptionTokenMissing(String),
     /// Anything else that stops the process, with a plain reason.
     #[error("{0}")]
     Other(String),

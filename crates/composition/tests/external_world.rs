@@ -28,6 +28,7 @@ use factory_composition::sandbox_specs::PolicySpecs;
 use factory_composition::startup::{LoadedRouting, load_policy, load_routing};
 use factory_composition::system::{RandomIds, SystemClock};
 use factory_domain::ids::TenantId;
+use factory_domain::policy::security::ProviderCredentialMode;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_egress::broker::{BrokerCore, BrokerParts, MemoryAudit, SystemEntropy};
 use factory_ports::agent::{AgentRuntime, ModelSelection};
@@ -104,7 +105,9 @@ impl Lab {
             key,
             date,
             routing,
-            security: policies.security,
+            // The lab configures both tools, which only the API-key mode runs (ADR 0020). The
+            // subscription tests switch it back with `in_mode`.
+            security: in_mode(&policies.security, ProviderCredentialMode::ApiKey),
             core,
             artifacts: Arc::new(InMemoryArtifactStore::new()),
         }
@@ -147,6 +150,16 @@ impl Lab {
             probes,
         }
     }
+}
+
+/// The repository policy with another credential mode.
+fn in_mode(
+    policy: &factory_domain::policy::SecurityPolicy,
+    mode: ProviderCredentialMode,
+) -> Arc<factory_domain::policy::SecurityPolicy> {
+    let mut changed = policy.clone();
+    changed.credentials.model_providers.mode = mode;
+    Arc::new(changed)
 }
 
 impl Drop for Lab {
@@ -193,6 +206,52 @@ fn a_complete_loopback_configuration_assembles_every_port_and_blocks_nothing() {
             .map(|id| id.as_str().to_owned())
             .collect::<Vec<_>>(),
         ["claude-code-cli", "codex-cli"]
+    );
+}
+
+/// ADR 0020: in the default subscription mode Codex is unavailable, and a configuration that lists
+/// openai is BLOCKED by name rather than run without it.
+#[test]
+fn in_subscription_mode_an_openai_entry_is_blocked_by_name() {
+    let mut lab = Lab::new("subscription-openai");
+    lab.security = in_mode(&lab.security, ProviderCredentialMode::Subscription);
+    let config = config(&lab.yaml("http://127.0.0.1:9", ""));
+    let blocked = match assemble_external(lab.inputs(&config, ProbeReport::Declared)) {
+        Ok(_) => panic!("nothing was blocked"),
+        Err(blocked) => lines(&blocked),
+    };
+    assert!(
+        blocked.iter().any(
+            |line| line.starts_with("agent runtime codex-cli: broker.upstreams:")
+                && line.contains("unavailable in subscription mode")
+                && line.contains("does not fall back")
+        ),
+        "{blocked:?}"
+    );
+}
+
+/// ADR 0020: in subscription mode with only the Anthropic entry, everything assembles and the one
+/// tool is Claude Code.
+#[test]
+fn in_subscription_mode_the_anthropic_entry_alone_assembles_with_claude_code_only() {
+    let mut lab = Lab::new("subscription-anthropic");
+    lab.security = in_mode(&lab.security, ProviderCredentialMode::Subscription);
+    let text = lab.yaml("http://127.0.0.1:9", "");
+    let without_openai: String = text
+        .lines()
+        .filter(|line| !line.contains("provider: openai"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let config = config(&without_openai);
+    let world = assemble_external(lab.inputs(&config, ProbeReport::Declared))
+        .unwrap_or_else(|blocked| panic!("{:?}", lines(&blocked)));
+    assert_eq!(world.ports.runtime.fidelity(), Fidelity::Real);
+    assert_eq!(
+        runtime_ids(&config)
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        ["claude-code-cli"]
     );
 }
 
@@ -705,6 +764,7 @@ async fn probe_with(provider: SandboxError) -> ProbeReport {
         redactor: Arc::new(redactor_from_policy(&policies.security).expect("redactor")),
         attestation: lab.core.clone(),
         spec_skills: None,
+        mode: ProviderCredentialMode::ApiKey,
     };
     let runtimes: Vec<Arc<dyn AgentRuntime>> =
         factory_composition::external::runtimes_for_tenant(&parts, tenant);

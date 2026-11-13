@@ -23,7 +23,7 @@ pub const REAL_NEEDS: [Need; 6] = [
     Need {
         what: "an API key for the model provider with a provider-side hard spend limit",
         variable: "FACTORY_E2E_MODEL_API_KEY",
-        why: "the agent tools run behind a broker that holds the real key; a subscription login cannot be brokered or metered",
+        why: "the agent tools run behind a broker that holds the real key; this harness runs both tools, and Codex is unavailable in the default subscription mode (ADR 0020)",
     },
     Need {
         what: "the provider-side hard spend limit of that key, stated in US dollars",

@@ -21,7 +21,7 @@ fn root() -> PathBuf {
         .expect("the repository root")
 }
 
-/// An empty registry over the repository policy, which lists all six kinds.
+/// An empty registry over the repository policy, which lists all seven kinds.
 fn empty() -> FactorySecrets {
     let policies = load_policy(&root(), &[]).expect("the repository policy loads");
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("a redactor"));
@@ -37,6 +37,7 @@ fn registered_except(except: &[SecretKind]) -> FactorySecrets {
         SecretKind::AppPrivateKey,
         SecretKind::DatabaseCredentials,
         SecretKind::BrokerKeys,
+        SecretKind::SubscriptionToken,
         SecretKind::ObjectStoreKeys,
     ] {
         if !except.contains(&kind) {
@@ -115,7 +116,42 @@ fn a_registry_with_nothing_registered_names_every_kind_the_binary_holds() {
             SecretKind::AppPrivateKey,
             SecretKind::DatabaseCredentials,
             SecretKind::BrokerKeys,
+            SecretKind::SubscriptionToken,
             SecretKind::ObjectStoreKeys
         ]
     );
+}
+
+/// ADR 0020: the policy's `anthropic_api_key` pattern (`sk-ant-...`) also finds a Claude
+/// subscription token (`sk-ant-oat01-...`) that the registry does not know, and the registry has a
+/// kind of its own for the one the broker holds.
+#[test]
+fn a_subscription_token_is_found_by_the_pattern_and_has_a_kind_of_its_own() {
+    let policies = load_policy(&root(), &[]).expect("the repository policy loads");
+    let redactor = redactor_from_policy(&policies.security).expect("a redactor");
+    // Made at run time, so that no secret-shaped literal sits in the source.
+    let token = [
+        factory_egress::http::SUBSCRIPTION_TOKEN_PREFIX,
+        &"Qw3_-".repeat(18),
+    ]
+    .concat();
+    let line = format!("token={token} end");
+    let cleaned = redactor.redact_str(&line).expect("redacts");
+    assert!(!cleaned.output.contains(&token), "{}", cleaned.output);
+    assert!(
+        cleaned.output.contains("anthropic_api_key"),
+        "{}",
+        cleaned.output
+    );
+    let mut secrets = empty();
+    assert!(
+        secrets
+            .unregistered_kinds()
+            .contains(&SecretKind::SubscriptionToken)
+    );
+    secrets
+        .register(SecretKind::SubscriptionToken, &token)
+        .expect("registers");
+    assert_eq!(secrets.count(SecretKind::SubscriptionToken), 1);
+    assert_eq!(SecretKind::SubscriptionToken.label(), "subscription_token");
 }
