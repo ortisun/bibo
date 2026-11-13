@@ -212,10 +212,10 @@ async fn the_ceiling_of_a_dearer_model_is_reached_sooner_because_the_price_is_th
         )
         .await
         .expect("a token");
-    // The same number of output tokens costs five times as much on the large model in the file.
+    // The same number of output tokens costs twice as much on the large model in the file.
     let sonnet = policy.price("claude-sonnet-5-5").expect("p").output;
     let opus = policy.price("claude-opus-5-5").expect("p").output;
-    assert_eq!(opus, sonnet * 5);
+    assert_eq!(opus, sonnet * 2);
     let permit = core
         .authorize(
             token.secret.expose(),

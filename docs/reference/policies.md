@@ -107,7 +107,7 @@ The worker loads it at start-up with the other policies and checks it against th
 
 Routing is a static lookup. The router does not measure anything, does not learn and does not escalate. Every stage found by a search of `crates/workflow/src` asks for the `standard` tier, so the routes of the `large` tier are not selected today.
 
-The file is not confirmed. Its status is `designed`, and every price carries `price_checked_on: unchecked`. The `production` profile refuses to start while either is true (`confirm_routing` in `crates/composition/src/startup.rs`). The other profiles start and log a warning.
+The file was confirmed by the owner on 2026-11-13: its status is `enforced`, and every price carries the date it was read and the price page it was read on. The `production` profile refuses to start when the status is `designed` or a price says `price_checked_on: unchecked` (`confirm_routing` in `crates/composition/src/startup.rs`). The other profiles start and log a warning.
 
 ## What `policies/issue-workflow.yaml` controls
 

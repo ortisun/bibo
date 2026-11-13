@@ -2,10 +2,11 @@
 # policies/model_routing.yaml  -  which models each agent role may use, what a
 # model costs, and how much a stage or a job may spend
 # =============================================================================
-# STATUS: DESIGNED.
-# EVERY NUMBER IN THIS FILE IS PENDING CONFIRMATION BY THE PROJECT OWNER: every price, every ceiling and every cap.
-# The ceilings and caps were chosen to be low, so that a mistake stops a job early and costs little. The prices
-# were chosen to be high, so that the broker counts more than a real bill would. The model names are the ones the
+# STATUS: ENFORCED (the owner's decision of 2026-11-13).
+# The prices were read from the providers' price pages on 2026-11-13; each model names its source. In subscription
+# mode (ADR 0020) they are the list-price equivalent the broker uses for the job and day ceilings, not a bill. The
+# ceilings and caps were chosen to be low, so that a mistake stops a job early and costs little; they were accepted
+# as they are with the prices. The model names are the ones the
 # agent manifests already list (`recommended_models` in agents/*/manifest.json); no other name was added, and none
 # was made up.
 #
@@ -59,7 +60,7 @@ schema_version: 1
 policy:
   id: model_routing
   version: 1
-  status: designed                    # enum: designed | enforced
+  status: enforced                    # enum: designed | enforced. Set by the owner's decision of 2026-11-13, after the prices were read.
   default_action: deny                # a model that a role does not list is refused
   conflict_resolution: deny_overrides
   project_overrides: tighten_only
@@ -78,25 +79,25 @@ models:
     runtime: claude-code-cli
     family: claude
     tier: standard
-    prices: { input: 6000000, cache_write: 7500000, cache_read: 600000, output: 30000000 }       # PENDING CONFIRMATION
-    price_checked_on: unchecked                                                                    # PENDING CONFIRMATION
-    price_source: "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+    prices: { input: 2000000, cache_write: 2500000, cache_read: 100000, output: 10000000 }
+    price_checked_on: "2026-11-13"
+    price_source: "Read on 2026-11-13 from the Anthropic price page, platform.claude.com/docs/en/about-claude/pricing (standard row; cache_write is the 5-minute write, because the broker refuses 1-hour cache writes)."
   - id: claude-opus-5-5
     provider: anthropic
     runtime: claude-code-cli
     family: claude
     tier: large
-    prices: { input: 30000000, cache_write: 37500000, cache_read: 3000000, output: 150000000 }   # PENDING CONFIRMATION
-    price_checked_on: unchecked                                                                    # PENDING CONFIRMATION
-    price_source: "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+    prices: { input: 4000000, cache_write: 5000000, cache_read: 200000, output: 20000000 }
+    price_checked_on: "2026-11-13"
+    price_source: "Read on 2026-11-13 from the Anthropic price page, platform.claude.com/docs/en/about-claude/pricing (standard row; cache_write is the 5-minute write, because the broker refuses 1-hour cache writes)."
   - id: gpt-6.1-sol
     provider: openai
     runtime: codex-cli
     family: gpt
     tier: standard
-    prices: { input: 10000000, cache_write: 10000000, cache_read: 1000000, output: 40000000 }    # PENDING CONFIRMATION
-    price_checked_on: unchecked                                                                    # PENDING CONFIRMATION
-    price_source: "Not read from a price page. Placeholder chosen to be high; the model has no separate cache write price here, so it is priced as input. The owner reads the current price on the provider's pricing page and sets the date. The manifests say its price tier is not confirmed."
+    prices: { input: 2000000, cache_write: 2000000, cache_read: 100000, output: 10000000 }
+    price_checked_on: "2026-11-13"
+    price_source: "Read on 2026-11-13 from the OpenAI price page, developers.openai.com/api/docs/pricing (Standard, short context up to 272K input tokens). OpenAI has no separate cache write price, so it is priced as input."
 
 # -----------------------------------------------------------------------------
 # 2. Roles

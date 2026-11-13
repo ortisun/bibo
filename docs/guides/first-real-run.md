@@ -45,9 +45,9 @@ You need these on your Mac:
 
 ### 1. Confirm the routing policy
 
-The run is in the production profile. That profile refuses `policies/model_routing.yaml` while it waits for your confirmation. Today the file says `status: designed`, and every model's prices say `price_checked_on: unchecked`.
+The run is in the production profile. That profile refuses `policies/model_routing.yaml` while it waits for your confirmation.
 
-Read each model's price on the provider's price page. Write the prices and the date in the file, and set `policy.status` to `enforced`. In subscription mode the prices do not set what you pay. They set how much of your plan one job may use, counted in dollars at list price.
+Done on 2026-11-13: the prices were read from the Anthropic and OpenAI price pages, each model names its page and the date, and `policy.status` is `enforced`. When a price changes, read it again, write the new price and date, and keep the status. In subscription mode the prices do not set what you pay. They set how much of your plan one job may use, counted in dollars at list price.
 
 The job budget is `job.max_micro_usd` in the same file: 10 dollars today. The run prints it when the job starts. To give one run less, set `FACTORY_E2E_JOB_BUDGET_USD`, for example `export FACTORY_E2E_JOB_BUDGET_USD=5`. A run can lower the budget and never raise it.
 

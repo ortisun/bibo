@@ -94,36 +94,30 @@ fn the_routing_policy_in_policies_loads_and_its_hash_is_stable() {
 }
 
 #[test]
-fn the_file_is_designed_and_says_everything_in_it_waits_for_the_owner() {
+fn the_file_is_enforced_and_every_price_was_read_on_a_named_page() {
+    // The owner confirmed the policy on 2026-11-13, after the prices were read from the providers'
+    // price pages. Nothing in it waits any more, and each price says when and where it was read.
     let policy = real();
-    assert_eq!(policy.policy.status, PolicyStatus::Designed);
+    assert_eq!(policy.policy.status, PolicyStatus::Enforced);
     let waiting = policy.unconfirmed();
-    assert!(
-        waiting.iter().any(|w| w.contains("policy.status")),
-        "{waiting:?}"
-    );
+    assert!(waiting.is_empty(), "{waiting:?}");
+    let text = real_text();
+    assert!(!text.contains("PENDING CONFIRMATION BY THE PROJECT OWNER"));
     for model in &policy.models {
         assert!(
-            waiting.iter().any(|w| w.contains(&model.id)),
-            "the prices of {} are unchecked and the policy must say so: {waiting:?}",
+            text.contains(&format!("id: {}", model.id)),
+            "{} is not in the file",
             model.id
         );
     }
-    // Every number is marked in the file itself.
-    let text = real_text();
-    assert!(text.contains("PENDING CONFIRMATION BY THE PROJECT OWNER"));
-    for line in text.lines().filter(|l| {
-        let l = l.trim_start();
-        (l.starts_with("prices:")
-            || l.starts_with("per_stage_run:")
-            || l.starts_with("per_request:"))
-            || l.starts_with("max_micro_usd:")
-            || l.starts_with("max_tokens:")
-    }) {
-        assert!(
-            line.contains("PENDING CONFIRMATION"),
-            "a number without the mark: {line}"
-        );
+    let sources = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("price_source:"))
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), policy.models.len());
+    for source in sources {
+        assert!(source.contains("price page"), "{source}");
+        assert!(source.contains("Read on 2026-11-13"), "{source}");
     }
 }
 
@@ -419,7 +413,7 @@ fn a_model_listed_twice_is_refused() {
 fn a_price_of_zero_is_refused() {
     let error = refused(
         &broken(
-            "prices: { input: 10000000, cache_write: 10000000, cache_read: 1000000, output: 40000000 }",
+            "prices: { input: 2000000, cache_write: 2000000, cache_read: 100000, output: 10000000 }",
             "prices: { input: 0, cache_write: 10000000, cache_read: 1000000, output: 40000000 }",
         ),
         PolicyErrorKind::Constraint,
@@ -430,7 +424,10 @@ fn a_price_of_zero_is_refused() {
 #[test]
 fn a_price_date_that_is_neither_a_date_nor_unchecked_is_refused() {
     refused(
-        &broken("price_checked_on: unchecked", "price_checked_on: yesterday"),
+        &broken(
+            "price_checked_on: \"2026-11-13\"",
+            "price_checked_on: yesterday",
+        ),
         PolicyErrorKind::Constraint,
     );
 }

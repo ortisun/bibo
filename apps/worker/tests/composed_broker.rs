@@ -485,7 +485,7 @@ async fn the_cost_ceiling_of_the_stage_stops_the_token_and_the_run() {
     // The fake provider reports usage that costs about ninety thousandths of a dollar a request at
     // the policy's price; the INTAKE ceiling is a tenth of a dollar.
     lab.provider
-        .set(|script: &mut Script| script.anthropic = (10_000, 0, 0, 1_000));
+        .set(|script: &mut Script| script.anthropic = (40_000, 0, 0, 1_000));
     let (token, secret, _, job) = lab.token_for(StageKind::Intake, SONNET).await;
     let ceiling = lab
         .registering

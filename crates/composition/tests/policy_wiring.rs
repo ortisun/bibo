@@ -113,8 +113,28 @@ fn a_missing_routing_policy_stops_the_start() {
 
 #[test]
 fn the_production_profile_refuses_a_routing_policy_that_still_waits_for_the_owner() {
-    let routing = loaded();
+    // The policy in the repository is confirmed, so the test puts back a status that waits.
+    let scratch = root()
+        .join("target/policy-wiring")
+        .join(format!("waiting-{}", std::process::id()));
+    let policies_dir = scratch.join("policies");
+    std::fs::create_dir_all(&policies_dir).expect("scratch");
+    for name in ["security.yaml", "approval.yaml"] {
+        std::fs::copy(root().join("policies").join(name), policies_dir.join(name)).expect("copy");
+    }
+    let text = std::fs::read_to_string(root().join("policies/model_routing.yaml")).expect("read");
+    let marker = "  status: enforced";
+    assert!(text.contains(marker), "the policy is not enforced");
+    std::fs::write(
+        policies_dir.join("model_routing.yaml"),
+        text.replacen(marker, "  status: designed", 1),
+    )
+    .expect("write");
+    let policies = load_policy(&scratch, &[]).expect("policies");
+    let routing = load_routing(&scratch, &[], &policies.security).expect("it loads");
+    let _ = std::fs::remove_dir_all(&scratch);
     assert!(!routing.policy.unconfirmed().is_empty());
+    assert!(loaded().policy.unconfirmed().is_empty());
     let refusal = confirm_routing(Profile::Production, &routing).unwrap_err();
     assert!(
         refusal.to_string().contains("waits for the project owner"),
