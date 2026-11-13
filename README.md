@@ -18,6 +18,8 @@ Read this before you trust anything else in this repository.
 
 **What "test mode" means.** The agents are a script, the sandbox and the GitHub host are labelled fakes, and no model is called. Every recording and report says so. The [walkthrough](docs/walkthroughs/test-mode-run.md) follows one such run.
 
+**Model credentials.** No provider API key is needed. By default the factory runs on the owner's Claude subscription: the owner makes a token with `claude setup-token`, saves it in a file of mode 0600, and the model broker holds it; the sandbox never sees it ([ADR 0020](docs/adr/0020-subscription-mode-by-default.md)). In that mode Codex is unavailable and spend is bounded by the factory's own ceilings and the plan's limits. API keys for both providers remain an alternative mode.
+
 **Not proven.** The factory has never run against a real model, a real GitHub App or a protected repository. The acceptance scenarios that need them, E1 and E2, are BLOCKED, and BLOCKED is never a pass. The worker program starts, runs its checks, prints one `BLOCKED:` line for each adapter or input that does not exist yet, and exits with code 3. It claims no job.
 
 The structured answer of an agent has never been produced by a real model. Neither command line tool gives an agent a tool for returning a report, so the adapter takes the last message of a run and the engine validates it against a schema. The prompt is the only place where the model learns the shape of that answer. Whether a model follows it often enough is unknown until the first live run. See "How a report is returned" in the [agents README](agents/README.md).
@@ -47,7 +49,7 @@ flowchart LR
   worker -- claims work, applies decisions --> db
   worker -- starts --> sandbox
   sandbox -- job token --> broker
-  broker -. needs a key, BLOCKED .-> models
+  broker -. needs the owner's subscription token, BLOCKED .-> models
   worker -- draft pull request --> github
 ```
 

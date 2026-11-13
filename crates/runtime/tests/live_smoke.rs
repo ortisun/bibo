@@ -11,9 +11,10 @@
 //! 4. the pinned agent image on the host, and a sandbox provider that can put the broker on the
 //!    job network (the sidecar image is still a skeleton).
 //!
-//! A subscription login (a claude.ai or ChatGPT login) does not count. This test never looks for one:
-//! it reads no file under a home directory and no key from the environment, and the adapters it
-//! drives deliver the token only through the file named above.
+//! This is the API-key mode's check. It never looks for a login: it reads no file under a home
+//! directory and no key from the environment, and the adapters it drives deliver the token only
+//! through the file named above. The default mode, the owner's Claude subscription held by the
+//! broker, is checked by `crates/egress/tests/live_subscription.rs` (ADR 0020).
 //!
 //! Without `FACTORY_LIVE=1` the test only says that no live run was requested. That is not evidence
 //! of anything, and the line it prints says so.

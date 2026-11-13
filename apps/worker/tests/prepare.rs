@@ -39,8 +39,9 @@ async fn prepare_connects_both_pools_hosts_the_broker_and_lists_what_is_blocked(
     assert!(
         prepared
             .secrets
-            .count(factory_composition::redaction::SecretKind::BrokerKeys)
-            >= 1
+            .count(factory_composition::redaction::SecretKind::SubscriptionToken)
+            == 1,
+        "the default mode is subscription (ADR 0020): the broker holds the subscription token"
     );
     booted.broker.shutdown();
     let blocked = blocked_adapters(Profile::Local);

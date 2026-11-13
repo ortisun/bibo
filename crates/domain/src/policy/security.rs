@@ -1036,7 +1036,7 @@ strict! {
 }
 
 strict! {
-    /// The real provider keys.
+    /// The real provider keys of mode `api_key`.
     pub struct RealKeys {
         /// Where they are stored.
         pub store: String,
@@ -1049,55 +1049,76 @@ strict! {
     }
 }
 
-strict! {
-    /// The exception that would allow a subscription login.
-    pub struct SubscriptionException {
-        /// Whether it is in force.
-        pub enabled: bool,
-        /// Who must decide.
-        pub decision_requires: Vec<String>,
-        /// What it covers.
-        pub scope: String,
-        /// The longest it may last.
-        pub max_days_until_expiry: u64,
-        /// The label on its evidence.
-        pub evidence_label: String,
-        /// Whether it counts as a real-provider smoke test.
-        pub counts_as_real_provider_smoke_test: String,
-        /// Flags the run must not use.
-        pub runs_without: Vec<String>,
+closed_set! {
+    /// Which credential the broker relays to the model providers (ADR 0020).
+    #[derive(Default)]
+    pub enum ProviderCredentialMode {
+        /// The default: the owner's Claude subscription token, held by the broker and sent upstream
+        /// as a bearer token. No provider API key and no provider-side spend limit is required.
+        /// Codex is unavailable.
+        #[default]
+        Subscription,
+        /// The alternative: provider API keys with a provider-side spend limit, held by the broker,
+        /// for both providers.
+        ApiKey,
+    }
+}
+
+impl ProviderCredentialMode {
+    /// The word the policy file uses.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::ApiKey => "api_key",
+        }
     }
 }
 
 strict! {
-    /// Subscription logins.
-    pub struct SubscriptionLogins {
-        /// Whether they are allowed. Must be false.
-        pub allowed: bool,
-        /// Why not.
-        pub reason: String,
-        /// Whether they may be in the sandbox.
+    /// The subscription token of mode `subscription`.
+    pub struct SubscriptionToken {
+        /// The providers whose subscription the broker relays. Anthropic only.
+        pub providers: Vec<String>,
+        /// How the token is made (`claude_setup_token`).
+        pub made_with: String,
+        /// Where it is stored.
+        pub store: String,
+        /// Who holds it. The model broker only.
+        pub held_by: Vec<String>,
+        /// How the broker sends it upstream (`authorization_bearer`).
+        pub sent_upstream_as: String,
+        /// The kind it is registered under with the redactor.
+        pub registered_for_redaction_as: String,
+        /// Whether a provider-side spend limit is required. False: a subscription has none.
+        pub provider_side_spend_limit_required: bool,
+        /// What bounds the spend instead.
+        pub spend_bounded_by: Vec<String>,
+        /// The runtimes that cannot run in this mode, named so the factory can say so.
+        pub unavailable_runtimes: Vec<String>,
+        /// Whether it is kept out of every sandbox. Must be true.
         pub never_in_sandbox: bool,
-        /// Whether they may touch customer data.
-        pub never_for_tenant_or_customer_data: bool,
-        /// The exception.
-        pub exception: SubscriptionException,
+        /// Days between rotations.
+        pub rotation_days: u64,
     }
 }
 
 strict! {
     /// Model provider credentials.
     pub struct ModelProviders {
+        /// Which credential the broker relays. A file without the key means `subscription`.
+        #[serde(default)]
+        pub mode: ProviderCredentialMode,
         /// How credentials reach the call.
         pub delivery: String,
         /// The job token.
         pub job_token: JobToken,
-        /// The real keys.
+        /// The subscription token, for mode `subscription`.
+        pub subscription_token: SubscriptionToken,
+        /// The real keys, for mode `api_key`.
         pub real_keys: RealKeys,
         /// What happens when a tool cannot use the broker.
         pub fallback_if_cli_cannot_use_broker: String,
-        /// Subscription logins.
-        pub subscription_logins: SubscriptionLogins,
     }
 }
 

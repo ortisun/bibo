@@ -14,7 +14,8 @@
 //! | Policy kind | Where this process gets it |
 //! |---|---|
 //! | `database_credentials` | the two connection URLs (the whole URL and its password) |
-//! | `broker_keys` | the provider key files of the broker |
+//! | `broker_keys` | the provider API key files of the broker (mode `api_key`) |
+//! | `subscription_token` | the owner's Claude subscription token file of the broker (mode `subscription`, ADR 0020) |
 //! | `app_private_key`, `webhook_secret` | the GitHub files, when configured |
 //! | `job_tokens` | each token as the broker issues it: [`RegisteringBroker`] registers on `issue` and forgets on revoke |
 //! | `object_store_keys` | none: Slice 1 stores artifacts on the local disk |
@@ -71,6 +72,8 @@ pub enum SecretKind {
     DatabaseCredentials,
     /// Provider keys held by the broker.
     BrokerKeys,
+    /// The owner's Claude subscription token, held by the broker (ADR 0020).
+    SubscriptionToken,
     /// Object store keys.
     ObjectStoreKeys,
 }
@@ -85,6 +88,7 @@ impl SecretKind {
             Self::AppPrivateKey => "app_private_key",
             Self::DatabaseCredentials => "database_credentials",
             Self::BrokerKeys => "broker_keys",
+            Self::SubscriptionToken => "subscription_token",
             Self::ObjectStoreKeys => "object_store_keys",
         }
     }
@@ -96,6 +100,7 @@ impl SecretKind {
             Self::AppPrivateKey,
             Self::DatabaseCredentials,
             Self::BrokerKeys,
+            Self::SubscriptionToken,
             Self::ObjectStoreKeys,
         ]
         .into_iter()

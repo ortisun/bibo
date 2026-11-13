@@ -155,3 +155,4 @@ On the machine used to write this guide the Docker daemon did not answer, so ste
 - Read the [walkthrough](../walkthroughs/test-mode-run.md) to see what the stages did.
 - Read the [command reference](../reference/commands.md) and the [configuration reference](../reference/configuration.md).
 - Read the [production guide](production.md) before you plan a live run.
+- A live run needs no provider API key. By default the factory runs on the owner's Claude subscription: make a token with `claude setup-token`, save it as one line in a file of mode 0600 such as `~/claud-oauth-token.txt`, name it in `broker.upstreams`, and run the live check. The steps are in [ADR 0020](../adr/0020-subscription-mode-by-default.md#how-the-owner-turns-it-on).

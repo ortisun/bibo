@@ -135,6 +135,7 @@ pub async fn boot(config: &ApiConfig) -> Result<Booted, StartupFailure> {
         SecretKind::ObjectStoreKeys,
         SecretKind::AppPrivateKey,
         SecretKind::BrokerKeys,
+        SecretKind::SubscriptionToken,
     ] {
         secrets.mark_not_applicable(kind);
     }

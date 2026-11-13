@@ -214,24 +214,46 @@ impl HttpRig {
         Self::build_with(Rig::with_caps(caps), expected_job)
     }
 
+    /// The broker in subscription mode (ADR 0020): one Anthropic upstream signed with a made-up
+    /// subscription token, which `anthropic_key` holds. There is no OpenAI upstream.
+    pub fn subscription() -> Self {
+        Self::build_mode(Rig::new(), None, true)
+    }
+
     fn build_with(rig: Rig, expected_job: Option<JobId>) -> Self {
+        Self::build_mode(rig, expected_job, false)
+    }
+
+    fn build_mode(rig: Rig, expected_job: Option<JobId>, subscription: bool) -> Self {
         let provider = FakeProvider::start();
-        let anthropic_key = made_up_key("anthropic-test-key-");
         let openai_key = made_up_key("openai-test-key-");
-        let upstreams = vec![
-            UpstreamConfig::new(
+        let (anthropic_key, upstreams) = if subscription {
+            let token = made_up_key(factory_egress::http::SUBSCRIPTION_TOKEN_PREFIX);
+            let upstream = UpstreamConfig::subscription(
                 Provider::Anthropic,
                 &provider.base_url(),
-                ProviderKey::new(anthropic_key.clone()).expect("a key"),
+                ProviderKey::subscription_token(&token).expect("a token"),
             )
-            .expect("an upstream"),
-            UpstreamConfig::new(
-                Provider::OpenAi,
-                &provider.base_url(),
-                ProviderKey::new(openai_key.clone()).expect("a key"),
-            )
-            .expect("an upstream"),
-        ];
+            .expect("an upstream");
+            (token, vec![upstream])
+        } else {
+            let key = made_up_key("anthropic-test-key-");
+            let upstreams = vec![
+                UpstreamConfig::new(
+                    Provider::Anthropic,
+                    &provider.base_url(),
+                    ProviderKey::new(key.clone()).expect("a key"),
+                )
+                .expect("an upstream"),
+                UpstreamConfig::new(
+                    Provider::OpenAi,
+                    &provider.base_url(),
+                    ProviderKey::new(openai_key.clone()).expect("a key"),
+                )
+                .expect("an upstream"),
+            ];
+            (key, upstreams)
+        };
         let server = BrokerServer::start(
             BrokerServerConfig {
                 listen: "127.0.0.1:0".parse().expect("an address"),

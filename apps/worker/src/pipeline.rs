@@ -139,6 +139,7 @@ async fn probe_runtimes(booted: &Booted, config: &Arc<FactoryConfig>) -> ProbeRe
         redactor: Arc::clone(&prepared.redactor),
         attestation: booted.broker.core.clone(),
         spec_skills: None,
+        mode: prepared.policies.security.credentials.model_providers.mode,
     };
     probe_at_startup(ProbeInputs {
         sandbox: Arc::clone(&booted.providers.sandbox),

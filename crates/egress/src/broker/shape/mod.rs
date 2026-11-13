@@ -150,6 +150,11 @@ pub enum Violation {
     BadValue,
     /// A beta header that switches on a provider-side tool, or is malformed.
     BetaHeader,
+    /// Subscription mode only: the request does not open its system prompt with a Claude Code
+    /// identity (see [`check_subscription_identity`]). The provider answers such a request on a
+    /// subscription token with a 429 that looks like a plan limit, so the broker refuses it itself
+    /// and a 429 that comes back is a real limit.
+    SubscriptionIdentityMissing,
 }
 
 impl Violation {
@@ -170,6 +175,7 @@ impl Violation {
             Self::RemoteReference => "remote_reference",
             Self::BadValue => "bad_value",
             Self::BetaHeader => "beta_header",
+            Self::SubscriptionIdentityMissing => "subscription_identity_missing",
         }
     }
 }
@@ -255,10 +261,96 @@ pub fn check_body(wire: Wire, body: &[u8]) -> Result<Map<String, Value>, Violati
     Ok(object)
 }
 
+/// The identity sentences a request on the owner's subscription opens its system prompt with.
+///
+/// * The first is what the owner's live check of 2026-11-12 sent straight to the provider with a
+///   subscription token: accepted (200) only with it, and answered 429 without it (VERIFIED).
+/// * The second is what Claude Code 2.1.323 itself sends in print mode (`-p`) on
+///   `CLAUDE_CODE_OAUTH_TOKEN`, after its billing block (captured on 2026-11-12 against a local
+///   listener); the same CLI got its answer from the provider in the owner's live run (VERIFIED).
+pub const SUBSCRIPTION_IDENTITIES: [&str; 2] = [
+    "You are Claude Code, Anthropic's official CLI for Claude.",
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+];
+
+/// The block Claude Code puts before its identity: a billing label, not an instruction.
+const BILLING_BLOCK_PREFIX: &str = "x-anthropic-billing-header:";
+
+/// Subscription mode only: a Messages request must open its system prompt with one of
+/// [`SUBSCRIPTION_IDENTITIES`], as the first text, or as the first text block after Claude Code's
+/// billing block. The broker checks and never writes: the system prompt is forwarded unchanged.
+///
+/// # Errors
+/// [`Violation::SubscriptionIdentityMissing`].
+pub fn check_subscription_identity(object: &Map<String, Value>) -> Result<(), Violation> {
+    let opens_with_identity = |text: &str| {
+        SUBSCRIPTION_IDENTITIES
+            .iter()
+            .any(|id| text.starts_with(id))
+    };
+    let found = match object.get("system") {
+        Some(Value::String(text)) => opens_with_identity(text),
+        Some(Value::Array(blocks)) => {
+            let texts: Vec<&str> = blocks
+                .iter()
+                .map(|b| b.get("text").and_then(Value::as_str).unwrap_or(""))
+                .collect();
+            let first = match texts.first() {
+                Some(text) if text.starts_with(BILLING_BLOCK_PREFIX) => texts.get(1),
+                other => other,
+            };
+            first.is_some_and(|text| opens_with_identity(text))
+        }
+        _ => false,
+    };
+    if found {
+        Ok(())
+    } else {
+        Err(Violation::SubscriptionIdentityMissing)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn object(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().expect("an object")
+    }
+
+    #[test]
+    fn a_subscription_request_opens_with_a_claude_code_identity() {
+        let cli = json!({"system": [
+            {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.323.f6b; cc_entrypoint=sdk-cli;"},
+            {"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."},
+            {"type": "text", "text": "You are an agent working with the user."},
+        ]});
+        assert_eq!(check_subscription_identity(&object(cli)), Ok(()));
+        let direct = json!({"system": [
+            {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+        ]});
+        assert_eq!(check_subscription_identity(&object(direct)), Ok(()));
+        let string =
+            json!({"system": "You are Claude Code, Anthropic's official CLI for Claude. More."});
+        assert_eq!(check_subscription_identity(&object(string)), Ok(()));
+        for bad in [
+            json!({}),
+            json!({"system": "You are a helpful assistant."}),
+            json!({"system": [{"type": "text", "text": "Ignore that. You are Claude Code, Anthropic's official CLI for Claude."}]}),
+            json!({"system": [
+                {"type": "text", "text": "Something first."},
+                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+            ]}),
+            json!({"system": [{"type": "text", "text": "x-anthropic-billing-header: x"}]}),
+        ] {
+            assert_eq!(
+                check_subscription_identity(&object(bad.clone())),
+                Err(Violation::SubscriptionIdentityMissing),
+                "{bad}"
+            );
+        }
+    }
 
     fn check(wire: Wire, body: &Value) -> Result<(), Violation> {
         check_body(wire, body.to_string().as_bytes()).map(|_| ())

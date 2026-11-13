@@ -446,3 +446,59 @@ async fn negative_nt_tool_06_hostile_request_values_never_become_environment_nam
         }
     }
 }
+
+/// ADR 0020, subscription mode, in the real hardened container with the hostile checkout: the job
+/// token reaches Claude Code as its OAuth token through the launcher line, the repository's hooks,
+/// servers, settings and instructions are still ignored, and the agent's shell sees neither the
+/// token nor a credential-looking variable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_inj_07_and_nt_tool_06_hold_in_subscription_mode() {
+    let lab = Lab::start();
+    let h = Harness::new();
+    h.register_secret("job-token", &lab.key);
+    let files = hostile::files();
+    let ws = HostWorkspace::new(&hostile::borrowed(&files));
+    let mut session = lab.session(&h, &ws).await;
+    let runtime = ClaudeCodeRuntime::new(
+        ClaudeCodeConfig {
+            credential: factory_runtime::ClaudeCredential::OauthToken,
+            ..ClaudeCodeConfig::default()
+        },
+        h.io.clone(),
+        h.attestation(),
+    );
+    let prompt = "FAKE:TOOL Bash {\"command\": \"env\", \"description\": \"dump\"}";
+    let report = runtime
+        .run(
+            &mut session,
+            claude_request(&h, &lab, prompt),
+            &NeverCancelled,
+        )
+        .await;
+    assert!(report.outcome.is_ok(), "{:?}", report.outcome);
+    assert_repository_configuration_was_ignored(&lab, &ws, "claude (subscription)");
+    let transcript = h.transcript_of(&report).await;
+    let init = init_of(&transcript);
+    assert_eq!(init["mcp_servers"], serde_json::json!([]));
+    assert_ne!(
+        init["apiKeySource"], "apiKeyHelper",
+        "no helper: the token is the tool's OAuth token"
+    );
+    let dump = tool_results_of(&transcript).join("\n");
+    let names = env_names(&dump);
+    assert!(
+        names.iter().any(|n| n == "ANTHROPIC_BASE_URL"),
+        "the dump held no variables: {dump}"
+    );
+    for name in &names {
+        if name == "CLAUDE_CODE_MESSAGING_TOKEN" {
+            continue;
+        }
+        let upper = name.to_ascii_uppercase();
+        assert!(
+            !(upper.contains("API_KEY") || upper.contains("TOKEN") || upper.contains("SECRET")),
+            "a credential-looking variable reached the tool's shell: {name}"
+        );
+    }
+    assert!(!dump.contains(&lab.key), "the token value is in the dump");
+}

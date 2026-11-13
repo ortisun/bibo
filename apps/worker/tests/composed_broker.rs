@@ -45,7 +45,7 @@ use factory_ports::sandbox::{
 use factory_runtime::probe::NeverCancelled;
 use factory_runtime::{ClaudeCodeConfig, ClaudeCodeRuntime};
 use factory_testkit::fx::http::send_request;
-use factory_worker::broker_host::{HostedBroker, start};
+use factory_worker::broker_host::{CredentialSetting, HostedBroker, start};
 use rsupport::scripted::{ScriptedSession, Step, Tool};
 use rsupport::{Harness, recorded, request};
 use serde_json::{Value, json};
@@ -114,6 +114,12 @@ impl Lab {
                     models: Vec::new(),
                 }],
                 prices: Vec::new(),
+            },
+            // The recorded requests this lab replays were made in API-key mode; subscription mode is
+            // covered by crates/egress/tests/subscription_mode.rs and apps/worker/tests/broker.rs.
+            CredentialSetting {
+                mode: factory_domain::policy::security::ProviderCredentialMode::ApiKey,
+                profile: factory_composition::profile::Profile::Local,
             },
             &routing.policy,
             Arc::clone(&redactor),

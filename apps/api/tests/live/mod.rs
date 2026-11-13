@@ -32,6 +32,7 @@
 pub mod github;
 pub mod provider;
 
+use factory_domain::policy::security::ProviderCredentialMode;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -603,6 +604,8 @@ pub async fn build_world(
         redactor: Arc::clone(&lab.redactor),
         attestation: lab.core.clone(),
         spec_skills: None,
+        // The lab runs both tools, which only the API-key mode allows (ADR 0020).
+        mode: ProviderCredentialMode::ApiKey,
     };
     let ids = RandomIds::new().expect("random");
     let probe = probe_at_startup(ProbeInputs {
@@ -617,9 +620,13 @@ pub async fn build_world(
     })
     .await;
 
+    // The lab runs both tools, Claude Code and Codex, so it runs the policy in API-key mode: in the
+    // default subscription mode Codex is unavailable (ADR 0020).
+    let mut api_key_mode = (*lab.policies.security).clone();
+    api_key_mode.credentials.model_providers.mode = ProviderCredentialMode::ApiKey;
     let external = assemble_external(ExternalInputs {
         config: &config,
-        security: &lab.policies.security,
+        security: &api_key_mode,
         routing: &lab.routing,
         redactor: Arc::clone(&lab.redactor),
         clock: Arc::new(SystemClock),

@@ -30,7 +30,31 @@ pub enum KeyError {
     Characters,
 }
 
-/// A provider API key.
+/// How every Claude subscription token made by `claude setup-token` starts.
+pub const SUBSCRIPTION_TOKEN_PREFIX: &str = "sk-ant-oat01-";
+
+/// Why a subscription token was not accepted. The messages hold no part of the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TokenError {
+    /// The file holds nothing but whitespace.
+    #[error("the token file is empty; run `claude setup-token` and save the token it prints")]
+    Empty,
+    /// There is whitespace inside the token.
+    #[error(
+        "the token file has a line break or space inside the token; it was probably wrapped when copied. Save the token again as one line"
+    )]
+    WrappedWhenCopied,
+    /// The value is not a subscription token.
+    #[error(
+        "the token file does not hold a Claude subscription token: it must start with sk-ant-oat01- (make one with `claude setup-token`; an API key belongs to mode api_key)"
+    )]
+    NotASubscriptionToken,
+    /// The token breaks a rule every credential follows.
+    #[error("the subscription token is unusable: {0}")]
+    Key(KeyError),
+}
+
+/// A provider credential: an API key, or the owner's subscription token.
 #[derive(Clone)]
 pub struct ProviderKey(String);
 
@@ -66,6 +90,30 @@ impl ProviderKey {
             .or_else(|| text.strip_suffix('\n'))
             .unwrap_or(&text);
         Self::new(trimmed.to_owned())
+    }
+
+    /// The owner's Claude subscription token, from the text of its file (ADR 0020).
+    ///
+    /// Whitespace around the token is removed. Whitespace inside it is refused by name: a token
+    /// pasted from a terminal that wrapped it holds a line break or a space, and the provider then
+    /// answers 401 "OAuth access token is invalid" (seen by the owner on 2026-11-12). A value that
+    /// does not start with [`SUBSCRIPTION_TOKEN_PREFIX`] is refused too: an API key in its place
+    /// would be sent the wrong way, and anything else is not a token at all.
+    ///
+    /// # Errors
+    /// [`TokenError`].
+    pub fn subscription_token(text: &str) -> Result<Self, TokenError> {
+        let token = text.trim();
+        if token.is_empty() {
+            return Err(TokenError::Empty);
+        }
+        if token.chars().any(char::is_whitespace) {
+            return Err(TokenError::WrappedWhenCopied);
+        }
+        if !token.starts_with(SUBSCRIPTION_TOKEN_PREFIX) {
+            return Err(TokenError::NotASubscriptionToken);
+        }
+        Self::new(token.to_owned()).map_err(TokenError::Key)
     }
 
     /// The key text. Used for the credential header and for the redactor, nowhere else.
@@ -109,6 +157,38 @@ mod tests {
         assert_eq!(
             ProviderKey::new(format!("{}\n{}", "x".repeat(20), "y".repeat(20))).unwrap_err(),
             KeyError::Characters
+        );
+    }
+
+    #[test]
+    fn a_subscription_token_is_trimmed_and_refused_when_wrapped_or_of_another_kind() {
+        let body = "Ab1-_".repeat(20);
+        let token = format!("{SUBSCRIPTION_TOKEN_PREFIX}{body}");
+        let read = ProviderKey::subscription_token(&format!("  {token}\n")).expect("a token");
+        assert_eq!(read.expose(), token);
+        let (head, tail) = token.split_at(40);
+        for wrapped in [
+            format!("{head}\n{tail}"),
+            format!("{head} {tail}"),
+            format!("{head}\n {tail}\n"),
+        ] {
+            assert_eq!(
+                ProviderKey::subscription_token(&wrapped).unwrap_err(),
+                TokenError::WrappedWhenCopied
+            );
+        }
+        assert_eq!(
+            ProviderKey::subscription_token(&format!("sk-ant-api03-{body}")).unwrap_err(),
+            TokenError::NotASubscriptionToken
+        );
+        assert_eq!(
+            ProviderKey::subscription_token(" \n").unwrap_err(),
+            TokenError::Empty
+        );
+        assert!(
+            TokenError::WrappedWhenCopied.to_string().contains(
+                "line break or space inside the token; it was probably wrapped when copied"
+            )
         );
     }
 

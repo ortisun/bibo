@@ -111,10 +111,10 @@ The worker starts the `docker` client with an empty environment: a `DOCKER_HOST`
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `broker.listen` | address | yes | no default | Where the listener binds, for example `127.0.0.1:8731`. |
-| `broker.upstreams` | list of tables | production | empty | The providers the broker forwards to. The production profile needs at least one. |
+| `broker.upstreams` | list of tables | production | empty | The providers the broker forwards to. The production profile needs at least one; in subscription mode, an `anthropic` one. |
 | `broker.upstreams[].provider` | text | yes | no default | `anthropic` or `openai`. |
 | `broker.upstreams[].base_url` | text | yes | no default | The base URL, `scheme://host[:port]`. |
-| `broker.upstreams[].key_file` | secret file | yes | no default | The file that holds the provider key. |
+| `broker.upstreams[].key_file` | secret file | yes | no default | The file that holds the provider's credential. What it holds follows `credentials.model_providers.mode` of `policies/security.yaml` (architecture decision record (ADR) 0020). **Subscription mode, the default:** the `anthropic` entry's file holds the owner's Claude subscription token, made with `claude setup-token`, as one line, for example `~/claud-oauth-token.txt` (a leading `~/` is the home directory of the worker's user). The worker refuses to start, with a line that starts "subscription mode needs the owner's Claude subscription token", when the file is missing, has a mode looser than `0600`, holds a token with a line break or a space inside (it was wrapped when copied), or holds something that does not start with `sk-ant-oat01-`. An `openai` entry is not started in this mode and is a BLOCKED line (`agent runtime codex-cli`). **API-key mode:** each entry's file holds that provider's API key, and a subscription token there stops the start. |
 | `broker.upstreams[].models` | list of text | no | empty | The models of the routing policy that this provider is enabled for. Empty means every model the policy lists for the provider. A name the policy does not list for it stops the start. |
 | `broker.prices` | list of tables | no | empty | A price that may only raise a price of `policies/model_routing.yaml`. The policy is the price list; a model it does not list stops the start. |
 | `broker.prices[].provider` | text | yes | no default | `anthropic` or `openai`. |

@@ -18,6 +18,13 @@ const ANTHROPIC_BETAS: &[&str] = &[
     "thinking-display-updates-2026-08-18",
 ];
 
+/// The beta that tells the provider the credential is an OAuth (subscription) token. Allowed, and
+/// always sent, only when the broker relays the owner's subscription (ADR 0020). Claude Code
+/// 2.1.323 sends it, with `claude-code-20250219`, when it runs on `CLAUDE_CODE_OAUTH_TOKEN`, and
+/// the provider accepts a subscription token only with it (both VERIFIED by the owner on
+/// 2026-11-12).
+pub const OAUTH_BETA: &str = "oauth-2025-04-20";
+
 /// Beta families that switch on a tool the provider runs for the caller, or a way to reach a
 /// remote server, or a file store. A request that asks for one is refused, not trimmed: a
 /// sandbox that asks for them is not a Claude Code run.
@@ -44,12 +51,43 @@ const ANTHROPIC_FORBIDDEN_BETAS: &[&str] = &[
 /// # Errors
 /// [`Violation::BetaHeader`] for a malformed list or a forbidden family.
 pub fn beta_header(provider: Provider, value: Option<&str>) -> Result<Option<String>, Violation> {
+    filter_betas(provider, value, false)
+}
+
+/// The `anthropic-beta` header the broker forwards when it relays the owner's subscription: the
+/// list of [`beta_header`], with [`OAUTH_BETA`] allowed and always present, because the provider
+/// takes a subscription token only with it.
+///
+/// # Errors
+/// [`Violation::BetaHeader`], as for [`beta_header`].
+pub fn subscription_beta_header(
+    provider: Provider,
+    value: Option<&str>,
+) -> Result<Option<String>, Violation> {
+    if provider != Provider::Anthropic {
+        return Ok(None);
+    }
+    let kept = filter_betas(provider, value, true)?;
+    Ok(Some(match kept {
+        Some(list) if list.split(',').any(|b| b == OAUTH_BETA) => list,
+        Some(list) => format!("{list},{OAUTH_BETA}"),
+        None => OAUTH_BETA.to_owned(),
+    }))
+}
+
+fn filter_betas(
+    provider: Provider,
+    value: Option<&str>,
+    subscription: bool,
+) -> Result<Option<String>, Violation> {
     let Some(value) = value else {
         return Ok(None);
     };
     if provider != Provider::Anthropic {
         return Ok(None);
     }
+    let allowed =
+        |token: &str| ANTHROPIC_BETAS.contains(&token) || (subscription && token == OAUTH_BETA);
     let mut kept: Vec<&str> = Vec::new();
     for token in value.split(',').map(str::trim) {
         let well_formed = !token.is_empty()
@@ -66,7 +104,7 @@ pub fn beta_header(provider: Provider, value: Option<&str>) -> Result<Option<Str
         {
             return Err(Violation::BetaHeader);
         }
-        if ANTHROPIC_BETAS.contains(&token) && !kept.contains(&token) {
+        if allowed(token) && !kept.contains(&token) {
             kept.push(token);
         }
     }
@@ -157,6 +195,37 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_oauth_beta_passes_and_is_added_only_when_the_subscription_is_relayed() {
+        let sent = "claude-code-20250219,oauth-2025-04-20,effort-2025-11-24";
+        assert_eq!(
+            beta_header(Provider::Anthropic, Some(sent)),
+            Ok(Some("claude-code-20250219,effort-2025-11-24".to_owned())),
+            "an API key run does not forward the OAuth beta"
+        );
+        assert_eq!(
+            subscription_beta_header(Provider::Anthropic, Some(sent)),
+            Ok(Some(sent.to_owned()))
+        );
+        assert_eq!(
+            subscription_beta_header(Provider::Anthropic, Some("claude-code-20250219")),
+            Ok(Some("claude-code-20250219,oauth-2025-04-20".to_owned()))
+        );
+        assert_eq!(
+            subscription_beta_header(Provider::Anthropic, None),
+            Ok(Some(OAUTH_BETA.to_owned()))
+        );
+        assert_eq!(
+            subscription_beta_header(Provider::Anthropic, Some("web-fetch-2025-09-10")),
+            Err(Violation::BetaHeader),
+            "a forbidden family still refuses the request"
+        );
+        assert_eq!(
+            subscription_beta_header(Provider::OpenAi, Some(sent)),
+            Ok(None)
+        );
     }
 
     #[test]

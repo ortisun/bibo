@@ -80,6 +80,20 @@ pub enum AuditKind {
         /// Why.
         reason: Refusal,
     },
+    /// The provider answered an admitted request with its own rate limit (HTTP 429). In
+    /// subscription mode this is the owner's plan limit. Nothing was charged and the token was not
+    /// revoked; the tool retries, and a stage run that keeps meeting it fails with
+    /// `PROVIDER_ERROR`, which its contract retries and then sends to a person (ADR 0010).
+    ProviderRateLimited {
+        /// The token.
+        token: JobTokenId,
+        /// Its job.
+        job: JobId,
+        /// The provider that answered 429.
+        provider: Provider,
+        /// The delay the provider asked for, in whole seconds, when it gave one.
+        retry_after_secs: Option<u32>,
+    },
     /// An admitted request ended and its usage was recorded.
     RequestSettled {
         /// The token.
@@ -146,6 +160,15 @@ impl AuditEvent {
                 }
                 line
             }
+            AuditKind::ProviderRateLimited {
+                token,
+                job,
+                provider,
+                retry_after_secs,
+            } => json!({
+                "event": "provider_rate_limited", "token": token.to_string(), "job": job.to_string(),
+                "provider": provider.as_str(), "retry_after_secs": retry_after_secs,
+            }),
             AuditKind::RequestSettled {
                 token,
                 job,

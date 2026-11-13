@@ -5,7 +5,9 @@
 //! gets, from the closed set [`EnvName`]. Nothing the agent, the repository, the prompt or the
 //! request wrote can add a name or reach the vector as anything but a value (negative test
 //! NT-TOOL-06). A credential is never one of the names: the job token is a file that the tool reads
-//! through a helper (spike section 4.5).
+//! through a helper (spike section 4.5), or, in subscription mode (ADR 0020), that a fixed shell
+//! line reads into the tool's own environment after `env -i` (see [`OAUTH_TOKEN_LAUNCHER`]), so the
+//! token is never in the argument vector or the container's configuration.
 //!
 //! The vector also wraps the tool in `timeout -s INT`. At the soft deadline the tool is asked to
 //! stop, so it can still report what it used (Claude Code answers an interrupt with a clean result
@@ -40,17 +42,35 @@ pub enum EnvName {
     /// Claude Code: `1` hides the tool's own bundled skills, so that the skills a stage sees are the
     /// pinned ones and nothing else.
     ClaudeDisableBundledSkills,
+    /// Claude Code: the prompt cache lifetime, `5m`. On a subscription the tool asks for one-hour
+    /// cache writes by default, which the broker refuses (RR-2: they cost twice what its price list
+    /// books); with `5m` it sends the five-minute writes the broker prices (captured 2026-11-12).
+    ClaudePromptCacheTtl,
 }
+
+/// The shell that starts Claude Code in subscription mode.
+pub const LAUNCHER_SHELL: &str = "/bin/sh";
+
+/// The fixed line that `/bin/sh -c` runs in subscription mode: it reads the job token file into
+/// `CLAUDE_CODE_OAUTH_TOKEN` and replaces itself with the tool (`$0`) and its arguments (`$@`).
+/// Nothing a request wrote is in it: the tool and its arguments are positional parameters, never
+/// text of the line. Claude Code 2.1.323 keeps the variable out of the environment of the commands
+/// its shell tool runs (observed 2026-11-12).
+pub const OAUTH_TOKEN_LAUNCHER: &str = concat!(
+    "CLAUDE_CODE_OAUTH_TOKEN=\"$(/usr/bin/cat /run/factory/job-token)\" || exit 126; ",
+    "export CLAUDE_CODE_OAUTH_TOKEN; exec \"$0\" \"$@\""
+);
 
 impl EnvName {
     /// Every name, in the order they are written.
-    pub const ALL: [EnvName; 6] = [
+    pub const ALL: [EnvName; 7] = [
         EnvName::Home,
         EnvName::Path,
         EnvName::AnthropicBaseUrl,
         EnvName::ClaudeDisableNonessentialTraffic,
         EnvName::ClaudeMaxRetries,
         EnvName::ClaudeDisableBundledSkills,
+        EnvName::ClaudePromptCacheTtl,
     ];
 
     /// The variable name.
@@ -63,6 +83,7 @@ impl EnvName {
             Self::ClaudeDisableNonessentialTraffic => "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
             Self::ClaudeMaxRetries => "CLAUDE_CODE_MAX_RETRIES",
             Self::ClaudeDisableBundledSkills => "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS",
+            Self::ClaudePromptCacheTtl => "CLAUDE_CODE_PROMPT_CACHE_TTL",
         }
     }
 }

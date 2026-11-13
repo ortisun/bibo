@@ -10,7 +10,8 @@
 # files of its two logins and the decision signing key, which is the SAME file the API signs with.
 #
 # What this stack cannot fill in, because it needs a real credential, which a deployment script must not invent:
-#   * broker.upstreams (a model provider and its key file); the models and prices come from policies/model_routing.yaml
+#   * broker.upstreams (a model provider and the file of its credential); the models and prices come from
+#     policies/model_routing.yaml. By default (ADR 0020) the credential is the owner's Claude subscription token
 #   * github.app_id and github.key_file (a registered GitHub App)
 #   * worker.tenants (the tenant ids the worker serves)
 # Until they are supplied the worker prints BLOCKED lines and exits with code 3, which is the right answer
@@ -67,7 +68,15 @@ decisions:
 #       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, principal: 00000000-0000-0000-0000-000000000000, recorded_at: '2026-01-01T00:00:00Z' }
 #     workflow_exposure_acknowledgements:           # only for a repository whose workflows are exposed to factory branches on purpose; names exactly those workflows
 #       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, principal: 00000000-0000-0000-0000-000000000000, recorded_at: '2026-01-01T00:00:00Z', workflows: ['.github/workflows/ci.yml'] }
-# A model provider: the key is a file, and the models, prices and ceilings come from policies/model_routing.yaml.
+# A model provider: the credential is a file, and the models, prices and ceilings come from policies/model_routing.yaml.
+# Subscription mode, the default (credentials.model_providers.mode in policies/security.yaml, ADR 0020): the
+# anthropic entry's key_file holds the owner's Claude subscription token. Make it with `claude setup-token`, save
+# it as one line, `chmod 600` the file. `~/` is the worker's home directory. No openai entry: Codex is unavailable
+# in this mode, and an openai entry is a BLOCKED line.
+#   broker:
+#     upstreams:
+#       - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: ~/claud-oauth-token.txt }
+# API-key mode (credentials.model_providers.mode: api_key), both tools, each key with a provider-side spend limit:
 #   broker:
 #     upstreams:
 #       - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/anthropic_key }

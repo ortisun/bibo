@@ -1,5 +1,7 @@
-//! The live smoke test: one minimal request to each real provider through the broker, with a real
-//! key held by the broker, recording that usage was read from the provider's own report.
+//! The live smoke test of the API-key mode: one minimal request to each real provider through the
+//! broker, with a real key held by the broker, recording that usage was read from the provider's
+//! own report. The default mode, the owner's Claude subscription, has its own check:
+//! `crates/egress/tests/live_subscription.rs` (ADR 0020).
 //!
 //! **UNVERIFIED and BLOCKED.** No real key exists in this project and no spend is approved, so the
 //! live path of this file has never run. It is written so that it can, and so that it refuses to
@@ -70,7 +72,7 @@ fn live_smoke_reports_blocked_and_never_passed_without_keys_and_an_approved_budg
     }
     if !missing.is_empty() {
         blocked(&format!(
-            "a live run was requested and cannot run. A person must provide, outside the repository: {}. A subscription login does not count.",
+            "a live run was requested and cannot run. A person must provide, outside the repository: {}. A subscription token belongs to the other check, tests/live_subscription.rs.",
             missing.join("; ")
         ));
     }

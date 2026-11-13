@@ -73,10 +73,29 @@ pub enum ConfigError {
     },
 }
 
-/// A path that names a file holding a secret.
-#[derive(Clone, PartialEq, Eq, Deserialize)]
-#[serde(transparent)]
+/// A path that names a file holding a secret. A path written `~/name` in the configuration is read
+/// from the home directory of the user the process runs as (`$HOME`), so the owner's subscription
+/// token can stay where `claude setup-token` was run (`~/claud-oauth-token.txt`).
+#[derive(Clone, PartialEq, Eq)]
 pub struct SecretFile(PathBuf);
+
+impl<'de> Deserialize<'de> for SecretFile {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let path = PathBuf::deserialize(deserializer)?;
+        Ok(Self(expand_home(path)))
+    }
+}
+
+/// `~/rest` becomes `$HOME/rest` when `HOME` is an absolute path; anything else is left as written.
+fn expand_home(path: PathBuf) -> PathBuf {
+    let Ok(rest) = path.strip_prefix("~") else {
+        return path;
+    };
+    match std::env::var_os("HOME").map(PathBuf::from) {
+        Some(home) if home.is_absolute() && path.as_os_str() != "~" => home.join(rest),
+        _ => path,
+    }
+}
 
 impl SecretFile {
     /// A reference to the file at `path`.

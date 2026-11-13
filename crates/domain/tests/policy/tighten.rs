@@ -1084,8 +1084,8 @@ fn negative_nt_pol_02_approval_tightenings_are_accepted() {
         (
             "narrows the approvers of an action",
             Box::new(|j| {
-                let at = row_index(j, "actions", "accept_subscription_login_exception");
-                j["actions"][at]["approver_roles"] = json!(["security_approver"]);
+                let at = row_index(j, "actions", "lower_autonomy_level");
+                j["actions"][at]["approver_roles"] = json!(["org_admin"]);
             }),
         ),
         (

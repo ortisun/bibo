@@ -103,7 +103,13 @@ pub async fn deployment_in(
     write_private(&dir.join("system.url"), &url(&engine));
     write_private(
         &dir.join("provider.key"),
-        &["provider", "-key-", &"ab".repeat(13)].concat(),
+        // The default mode is subscription (ADR 0020): the broker holds a subscription token.
+        &[
+            factory_egress::http::SUBSCRIPTION_TOKEN_PREFIX,
+            "provider-key-",
+            &"ab".repeat(13),
+        ]
+        .concat(),
     );
     let extra = extra(&dir);
     let root = repository_root();

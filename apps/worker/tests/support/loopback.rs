@@ -315,7 +315,12 @@ impl Lab {
         let broker_port = free_port();
         let credentials = Credentials {
             app_key: throwaway_private_key(),
-            provider_key: format!("loopback-provider-{}", random_hex(12)),
+            // The default mode is subscription (ADR 0020), so the broker holds a subscription token.
+            provider_key: format!(
+                "{}loopback-provider-{}",
+                factory_egress::http::SUBSCRIPTION_TOKEN_PREFIX,
+                random_hex(12)
+            ),
             decision_key: random_hex(32),
         };
         let github_base = github.base_url();

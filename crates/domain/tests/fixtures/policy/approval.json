@@ -269,20 +269,6 @@
     },
     {
       "approver_roles": [
-        "org_admin",
-        "security_approver"
-      ],
-      "id": "accept_subscription_login_exception",
-      "min_level": "L1",
-      "requires": "human",
-      "threats": [
-        "T-19",
-        "T-20"
-      ],
-      "when": "both sign; needs a written provider-terms determination, a named demo profile, a dedicated host, a fixture repository only and an expiry of at most 30 days (secrets-and-credentials.md section 4.5)"
-    },
-    {
-      "approver_roles": [
         "security_approver"
       ],
       "id": "waive_failed_gate",
@@ -459,7 +445,6 @@
     "send_code_to_new_model_provider",
     "install_spec_kit_or_tooling",
     "change_authority_allowlist",
-    "accept_subscription_login_exception",
     "acknowledge_documentation_warning",
     "unblock_blocked_stage_run",
     "register_repository",

@@ -355,7 +355,7 @@ Observed on the development machine on 2026-10-27. Work packages should not assu
 | PostgreSQL | `psql` 18.6 client only | No local server. Use a container. `postgres:17-alpine` is cached locally and `postgres:18` exists on Docker Hub |
 | NATS | `nats-server` 2.15.1 | Not used before Slice 2 |
 | Spec Kit | `specify` 1.1.2 | Skills are invoked as `/speckit-specify` with the Claude integration |
-| Claude Code | 2.1.311 | Logged in through claude.ai (subscription). The factory design cannot use a subscription login, so real runs need an API key (ADR 0005, ADR 0009). No API key variable was checked |
+| Claude Code | 2.1.311 | Logged in through claude.ai (subscription). Since ADR 0020 (2026-11-12) the factory runs on the owner's subscription by default, through a long-lived token from `claude setup-token` held by the broker, not through this interactive login. No API key variable was checked |
 | Codex | 0.163.0 | Logged in with a ChatGPT account. Same limit as above |
 | GitHub CLI | 2.102.0 | |
 | Node, Python, uv | 26.12.0, 3.15.0, 0.13.1 | `check-jsonschema` runs through `uvx` |

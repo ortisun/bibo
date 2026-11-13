@@ -17,7 +17,7 @@ use factory_composition::providers::{ProviderInputs, Providers, assemble, system
 use factory_composition::startup::StartupFailure;
 use factory_composition::system::{RandomIds, SystemClock};
 
-use crate::broker_host::{HostedBroker, start as start_broker};
+use crate::broker_host::{CredentialSetting, HostedBroker, start as start_broker};
 
 /// The identity the worker reports to telemetry.
 pub const IDENTITY: Identity = Identity {
@@ -45,8 +45,13 @@ pub struct Booted {
 pub async fn boot(config: &FactoryConfig) -> Result<Booted, StartupFailure> {
     let mut prepared = prepare(config, IDENTITY).await?;
     let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let setting = CredentialSetting {
+        mode: prepared.policies.security.credentials.model_providers.mode,
+        profile: config.profile,
+    };
     let broker = start_broker(
         &config.broker,
+        setting,
         &prepared.routing.policy,
         Arc::clone(&prepared.redactor),
         Arc::new(SystemClock),
