@@ -21,6 +21,10 @@
 #                    be read by anyone: put nothing private in it or in a test issue.
 #   --private        Make the repository private. Needs GitHub Pro, Team or Enterprise for the
 #                    ruleset; on GitHub Free step 5 is refused.
+#   --ruleset-only   Make only the ruleset, for a repository this script already made. GitHub
+#                    refuses the required checks of an App that is not installed on the repository
+#                    ("Invalid integration ids", seen on the real GitHub on 2026-11-13), so the
+#                    order is: make the repository, install the App on it, then --ruleset-only.
 #   --owner @LOGIN   A code owner. Repeat for more. Default: the login gh is signed in as. The
 #                    approval policy lets the owner approve their own low-risk request, so one real
 #                    owner is enough; the placeholder handles of the template are all replaced.
@@ -73,6 +77,7 @@ die() {
 }
 
 check=0
+ruleset_only=0
 app_id=""
 repo=""
 visibility=public
@@ -85,6 +90,7 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     --check) check=1 ;;
+    --ruleset-only) ruleset_only=1 ;;
     --public | --private)
       [ -z "$visibility_given" ] || [ "$visibility_given" = "$1" ] || die "give --public or --private, not both" 2
       visibility_given=$1
@@ -253,13 +259,17 @@ if [ "$visibility" = public ]; then
   say "  Public: anyone can read its code, its issues, its pull requests and the factory's comments."
   say "  Put nothing private in it, and nothing private in a test issue."
 fi
-gh_call repo create "$repo" "--$visibility" \
-  --description "The word-count fixture of the software factory's end-to-end run" \
-  --source "$copy" --remote origin --push
+if [ "$ruleset_only" -eq 1 ]; then
+  say "  --ruleset-only: the repository and its label already exist; only the ruleset is made"
+else
+  gh_call repo create "$repo" "--$visibility" \
+    --description "The word-count fixture of the software factory's end-to-end run" \
+    --source "$copy" --remote origin --push
 
-say "== 4. The label"
-gh_call label create factory --repo "$repo" --color 5319e7 \
-  --description "Asks the software factory to work on this issue"
+  say "== 4. The label"
+  gh_call label create factory --repo "$repo" --color 5319e7 \
+    --description "Asks the software factory to work on this issue"
+fi
 
 say "== 5. The ruleset"
 ruleset_file="$copy.ruleset.json"
@@ -275,7 +285,7 @@ else
     if [ "$visibility" = private ]; then
       die "GitHub refused the ruleset. Rulesets on a private repository need GitHub Pro, Team or Enterprise; on GitHub Free make the repository public instead (the default). The repository is made and pushed, and without the ruleset the factory runs it at L0 and opens no pull request."
     fi
-    die "GitHub refused the ruleset. The repository is made and pushed, and without the ruleset the factory runs it at L0 and opens no pull request. Check that your gh login may administer $repo."
+    die "GitHub refused the ruleset. The repository is made and pushed, and without the ruleset the factory runs it at L0 and opens no pull request. GitHub refuses the required checks of an App that is not installed on the repository yet (\"Invalid integration ids\", seen on the real GitHub on 2026-11-13): install the App on $repo only, then run this script again with --ruleset-only. Also check that your gh login may administer $repo."
   fi
   rm -f "$ruleset_file"
 fi
@@ -286,6 +296,6 @@ gh_call api "repos/$repo/rulesets"
 if [ "$check" -eq 1 ]; then
   say "Nothing was done (--check). Run it again without --check to make $repo."
 else
-  say "Done. Now install the App on $repo only (docs/guides/first-real-run.md, step 4), then"
+  say "Done. The App must be installed on $repo only (docs/guides/first-real-run.md, step 5); then"
   say "  export FACTORY_E2E_FIXTURE_REPO=$repo"
 fi

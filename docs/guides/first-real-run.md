@@ -120,6 +120,8 @@ The script keeps its copy in `target/e2e-fixture/OWNER/NAME`. The harness reads 
 
 Open your App's settings page (the script of step 3 printed it). Choose "Install App", and install it on the fixture repository only. The run finds the installation itself.
 
+Then make the ruleset: `scripts/setup-fixture-repository.sh --ruleset-only --app-id ID OWNER/NAME`. GitHub refuses a ruleset whose required checks name an App that is not installed on the repository yet ("Invalid integration ids", seen on the real GitHub on 2026-11-13), so the first run of the script in step 4 stops at the ruleset, with the repository made and pushed. That is expected.
+
 ### 6. Write your allowlist
 
 The allowlist names the people the factory knows, by numeric GitHub id. Write one entry for yourself. `gh api user --jq .id` prints your numeric id. The tenant is any UUID; make one with `uuidgen | tr A-Z a-z`. Keep the file outside the repository.
