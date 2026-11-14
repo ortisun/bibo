@@ -194,7 +194,9 @@ JSON
 )
 
 say "== 2. The copy of the fixture"
-if [ "$check" -eq 1 ]; then
+if [ "$check" -eq 1 ] || [ "$ruleset_only" -eq 1 ]; then
+  # A check changes nothing, and --ruleset-only keeps the copy the first run made (the harness
+  # reads its CODEOWNERS): both build a throwaway copy instead.
   copy=$(mktemp -d "${TMPDIR:-/tmp}/fixture-check.XXXXXX")
   trap 'rm -rf "$copy"' EXIT
 else
