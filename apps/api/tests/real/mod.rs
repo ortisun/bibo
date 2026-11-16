@@ -769,6 +769,9 @@ impl RealBench {
             owner: env.a.operator.principal.as_uuid(),
             now: SystemClock.now().to_string(),
             commit: &self.definition_commit,
+            docker_host: std::env::var("DOCKER_HOST")
+                .ok()
+                .filter(|host| !host.is_empty()),
         })
     }
 }
@@ -791,6 +794,11 @@ pub struct ConfigInputs<'a> {
     pub owner: uuid::Uuid,
     pub now: String,
     pub commit: &'a str,
+    /// The daemon the worker's `docker` client talks to, as `DOCKER_HOST` says. The worker runs
+    /// the client with an empty environment, so the run passes on its own `DOCKER_HOST` here. On
+    /// a Mac that is a Linux VM with AppArmor (Colima): Docker Desktop has none, and the
+    /// production profile refuses a sandbox without it.
+    pub docker_host: Option<String>,
 }
 
 /// The worker's configuration of a real run, in the production profile.
@@ -802,7 +810,7 @@ pub fn worker_config(inputs: &ConfigInputs<'_>) -> String {
              definitions_root: {root}\n\
              database:\n  tenant: {{ url_file: /run/secrets/a, login: factory_worker }}\n  system: {{ url_file: /run/secrets/b, login: factory_engine }}\n\
              artifacts: {{ root: {scratch}/artifacts }}\n\
-             sandbox:\n  images_catalog: {root}/infra/sandbox-images/images.json\n  token_root: {scratch}/tokens\n  workspace_root: {scratch}/workspaces\n  platform: linux/arm64\n  owner: factory-real-run\n  labels: {{ factory.test: 'true', factory.test.run: '{run}' }}\n  remote: {{ https_host: github.com }}\n  sidecar_command: [--mode, broker, --listen, '0.0.0.0:8443', --upstream, '{host}:{port}', --job, real-run]\n\
+             sandbox:\n  images_catalog: {root}/infra/sandbox-images/images.json\n  token_root: {scratch}/tokens\n  workspace_root: {scratch}/workspaces\n  platform: linux/arm64\n  owner: factory-real-run\n  labels: {{ factory.test: 'true', factory.test.run: '{run}' }}\n  remote: {{ https_host: github.com }}\n  sidecar_command: [--mode, broker, --listen, '0.0.0.0:8443', --upstream, '{host}:{port}', --job, real-run]\n{docker_host}\
              broker:\n  listen: '127.0.0.1:0'\n  upstreams:\n    - {{ provider: anthropic, base_url: 'https://api.anthropic.com', key_file: {token} }}\n\
              github:\n  app_id: {app_id}\n  key_file: {key}\n  api_base_url: 'https://api.github.com'\n  installations:\n    - {{ tenant: {tenant}, repository: {repo}, installation_id: {installation} }}\n  bypass_attestations:\n    - {{ tenant: {tenant}, repository: {repo}, principal: {owner}, recorded_at: '{now}' }}\n\
              registry: {{ base_url: 'https://crates.io', user_agent: 'software-factory end-to-end run' }}\n\
@@ -824,6 +832,11 @@ pub fn worker_config(inputs: &ConfigInputs<'_>) -> String {
             owner = inputs.owner,
             now = inputs.now,
             commit = inputs.commit,
+            docker_host = inputs
+                .docker_host
+                .as_deref()
+                .map(|host| format!("  docker_host: '{host}'\n"))
+                .unwrap_or_default(),
         )
     }
 }

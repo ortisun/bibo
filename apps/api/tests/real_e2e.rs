@@ -45,6 +45,7 @@ fn the_configuration_of_a_real_run_is_a_production_configuration() {
         owner,
         now: "2026-11-13T10:00:00Z".to_owned(),
         commit: "0123456789abcdef0123456789abcdef01234567",
+        docker_host: Some("unix:///Users/someone/.colima/software-factory/docker.sock".to_owned()),
     });
     let config = factory_composition::config::FactoryConfig::from_yaml(&text)
         .unwrap_or_else(|error| panic!("{error}\n{text}"));
@@ -59,6 +60,11 @@ fn the_configuration_of_a_real_run_is_a_production_configuration() {
     assert_eq!(github.bypass_attestations.len(), 1);
     assert_eq!(config.broker.upstreams.len(), 1, "anthropic only");
     assert_eq!(config.broker.upstreams[0].provider, "anthropic");
+    assert_eq!(
+        config.sandbox.docker_host.as_deref(),
+        Some("unix:///Users/someone/.colima/software-factory/docker.sock"),
+        "the worker's docker client talks to the run's own daemon"
+    );
 }
 
 /// The configuration the `protection` command reads the default branch's protection with parses.
