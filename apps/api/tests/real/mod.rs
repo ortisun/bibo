@@ -872,6 +872,29 @@ pub async fn protection() {
     answer(&facts);
 }
 
+/// The configuration the `protection` command builds its GitHub adapter from. Only the GitHub
+/// section is used. The configuration requires a sandbox and a broker, so both are written with
+/// paths that this command never opens: it starts no container and no broker.
+pub fn protection_config(
+    root: &Path,
+    app_id: u64,
+    key_file: &Path,
+    tenant: uuid::Uuid,
+    repo: &str,
+    installation: u64,
+) -> String {
+    format!(
+        "profile: local\nprotected_checkout: {root}\ndefinitions_root: {root}\n\
+         database:\n  tenant: {{ url_file: /run/secrets/a, login: factory_worker }}\n  system: {{ url_file: /run/secrets/b, login: factory_engine }}\n\
+         artifacts: {{ root: /tmp/unused }}\n\
+         sandbox:\n  images_catalog: {root}/infra/sandbox-images/images.json\n  token_root: /tmp/unused/tokens\n  workspace_root: /tmp/unused/workspaces\n  platform: linux/arm64\n  owner: factory-real-run\n\
+         broker:\n  listen: '127.0.0.1:0'\n  upstreams: []\n\
+         github:\n  app_id: {app_id}\n  key_file: {key}\n  api_base_url: 'https://api.github.com'\n  installations:\n    - {{ tenant: {tenant}, repository: {repo}, installation_id: {installation} }}\n",
+        root = root.display(),
+        key = key_file.display(),
+    )
+}
+
 /// The protection of the fixture's default branch through the factory's own GitHub adapter.
 async fn read_protection(
     settings: &Settings,
@@ -879,16 +902,13 @@ async fn read_protection(
     installation: u64,
 ) -> Result<Value, String> {
     let tenant = TenantId::from_uuid(uuid_of("00000000-0000-4000-8000-00000000e2e1"));
-    let text = format!(
-        "profile: local\nprotected_checkout: {root}\ndefinitions_root: {root}\n\
-         database:\n  tenant: {{ url_file: /run/secrets/a, login: factory_worker }}\n  system: {{ url_file: /run/secrets/b, login: factory_engine }}\n\
-         artifacts: {{ root: /tmp/unused }}\n\
-         github:\n  app_id: {app_id}\n  key_file: {key}\n  api_base_url: 'https://api.github.com'\n  installations:\n    - {{ tenant: {tenant}, repository: {repo}, installation_id: {installation} }}\n",
-        root = root().display(),
-        app_id = settings.app_id,
-        key = settings.key_file.display(),
-        tenant = tenant.as_uuid(),
-        repo = settings.repo,
+    let text = protection_config(
+        &root(),
+        settings.app_id,
+        &settings.key_file,
+        tenant.as_uuid(),
+        &settings.repo,
+        installation,
     );
     let config = FactoryConfig::from_yaml(&text)
         .map_err(|error| format!("the configuration does not parse: {error}"))?;

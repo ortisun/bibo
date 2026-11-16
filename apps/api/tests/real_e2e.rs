@@ -61,6 +61,31 @@ fn the_configuration_of_a_real_run_is_a_production_configuration() {
     assert_eq!(config.broker.upstreams[0].provider, "anthropic");
 }
 
+/// The configuration the `protection` command reads the default branch's protection with parses.
+/// It holds only GitHub for real: the sandbox and the broker are there because the configuration
+/// requires them, and that command starts neither. The first real run on 2026-11-15 stopped here
+/// with "missing field `sandbox`".
+#[test]
+fn the_configuration_that_reads_the_protection_parses() {
+    let root = real::root();
+    let text = real::protection_config(
+        &root,
+        123_456,
+        std::path::Path::new("/Users/someone/app.pem"),
+        "2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60"
+            .parse()
+            .expect("uuid"),
+        "someone/word-count-fixture",
+        777,
+    );
+    let config = factory_composition::config::FactoryConfig::from_yaml(&text)
+        .unwrap_or_else(|error| panic!("{error}\n{text}"));
+    let github = config.github.as_ref().expect("github");
+    assert_eq!(github.app_id, 123_456);
+    assert_eq!(github.installations.len(), 1);
+    assert_eq!(github.installations[0].installation_id, 777);
+}
+
 /// The record of the App's requests keeps the method and path of each, and the permissions and
 /// repositories of each installation token asked for, and never a header.
 #[tokio::test]
