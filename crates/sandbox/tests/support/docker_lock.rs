@@ -152,9 +152,20 @@ impl DockerLock {
     /// With a message that starts `BLOCKED:` when the lock is not free within [`WAIT_LIMIT`].
     #[must_use]
     pub fn take() -> Self {
+        Self::take_holding(HOLD_LIMIT)
+    }
+
+    /// Like [`take`](Self::take), with another hold limit. Only a run that waits for a person
+    /// between its containers needs one: the owner's real end-to-end run, which may wait hours
+    /// for an approval. Every automatic test keeps [`HOLD_LIMIT`].
+    ///
+    /// # Panics
+    /// As [`take`](Self::take).
+    #[must_use]
+    pub fn take_holding(limit: Duration) -> Self {
         let lock = Self::acquire_at(&default_lock_path(), WAIT_LIMIT)
             .unwrap_or_else(|refused| panic!("{refused}"));
-        lock.start_watchdog(HOLD_LIMIT, hard_stop);
+        lock.start_watchdog(limit, hard_stop);
         lock
     }
 

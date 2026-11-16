@@ -647,7 +647,11 @@ fn loaded() -> (LoadedPolicies, LoadedRouting) {
 
 impl RealBench {
     fn start(settings: &Settings, policies: LoadedPolicies, mut routing: LoadedRouting) -> Self {
-        let lock = DockerLock::take();
+        // The run waits for the owner between its containers, up to `human_wait` at each wait.
+        // The automatic tests' five minutes would end it during the first one (the twelfth run on
+        // 2026-11-16 was ended so, waiting on the specification). Two waits and an hour of work
+        // bound it instead.
+        let lock = DockerLock::take_holding(settings.human_wait * 2 + Duration::from_secs(3600));
         let run = format!("real-{}", std::process::id());
         let scratch = root().join("target/e2e-real").join(&run);
         let _ = std::fs::remove_dir_all(&scratch);
