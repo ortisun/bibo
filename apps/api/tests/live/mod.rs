@@ -905,12 +905,14 @@ impl LiveRig {
             .head_hash
     }
 
-    /// The commit of the specification draft the stage kept for a person to read.
+    /// The commit of the specification draft the stage kept for a person to read, or `None` when
+    /// the stage run waits for another reason (a reviewer that asks a person, for one): the
+    /// engine can stop a run for a person without the stage keeping a draft.
     pub async fn spec_draft_commit(
         &self,
         job: JobId,
         stage_run: factory_domain::ids::StageRunId,
-    ) -> String {
+    ) -> Option<String> {
         use factory_workflow::stages::specification::SpecDrafts as _;
         let identity = self
             .identity(job, stage_run, StageKind::Specification)
@@ -919,10 +921,41 @@ impl LiveRig {
             .load(&identity)
             .await
             .expect("the draft is readable")
-            .expect("the stage kept a draft")
-            .commit
-            .as_str()
-            .to_owned()
+            .map(|draft| draft.commit.as_str().to_owned())
+    }
+
+    /// Why a stage run waits for a person: the reason code of the newest transition the store
+    /// holds for it, such as `reviewer-needs-a-person`.
+    pub async fn wait_reason(
+        &self,
+        job: JobId,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> Option<String> {
+        let mut tx = self
+            .store
+            .begin(factory_domain::scope::TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let events = tx
+            .read_events(job, factory_ports::store::OutboxSeq::START, 5000)
+            .await
+            .expect("events");
+        let _ = tx.rollback().await;
+        let wanted = stage_run.to_string();
+        events
+            .iter()
+            .rev()
+            .map(|row| &row.event)
+            .find(|event| {
+                event.aggregate.kind.as_str() == "stage_run"
+                    && event.aggregate.id.to_string() == wanted
+            })
+            .map(|event| {
+                event
+                    .reason_code
+                    .as_ref()
+                    .map_or_else(|| event.event_type.as_str().to_owned(), ToString::to_string)
+            })
     }
 
     /// What a stopped job left, for the person reading a failure: the audit records, the status

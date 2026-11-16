@@ -1030,8 +1030,20 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
     let run_id = run.id.as_text();
     let text = match run.kind {
         StageKind::Specification => {
-            let head = rig.spec_draft_commit(job, run.id).await;
             let evidence = rig.ledger_head(job, StageKind::Specification, run.id).await;
+            let Some(head) = rig.spec_draft_commit(job, run.id).await else {
+                let reason = rig
+                    .wait_reason(job, run.id)
+                    .await
+                    .unwrap_or_else(|| "unknown".to_owned());
+                tell(&format!(
+                    "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).\n\
+                     See why:        {base} status {job_id} --gates\n\
+                     Send it back:   {base} rework {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
+                     Or reject:      {base} reject {job_id} {run_id} \"<why>\""
+                ));
+                return;
+            };
             format!(
                 "WAITING FOR YOU: the specification draft of job {job_id} waits for your decision.\n\
                  Read it:     {base} show-draft {job_id}\n\
