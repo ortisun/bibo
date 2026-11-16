@@ -820,11 +820,16 @@ impl LiveRig {
                 tuning: factory_composition::pipeline::Tuning {
                     decorate: None,
                     markers: None,
-                    engine: Some(Box::new(|config| {
-                        config.lease_ttl = Duration::from_secs(60);
-                        config.heartbeat_interval = Duration::from_secs(2);
-                        config.teardown_grace = Duration::from_secs(5);
-                    })),
+                    // Shorter leases make a lost worker show sooner in a test. The production
+                    // profile refuses any tuning, so a real run keeps the engine's own values.
+                    engine: (lab.profile() != factory_composition::profile::Profile::Production)
+                        .then(|| -> factory_composition::pipeline::EngineTuning {
+                            Box::new(|config| {
+                                config.lease_ttl = Duration::from_secs(60);
+                                config.heartbeat_interval = Duration::from_secs(2);
+                                config.teardown_grace = Duration::from_secs(5);
+                            })
+                        }),
                 },
             },
         )
