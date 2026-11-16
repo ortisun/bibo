@@ -213,6 +213,11 @@ const NEVER: &[&str] = &[
 /// reviewer checked on 2026-10-28. Keep the reasons short and true. A new use of an old name in a
 /// new file is a new line here, on purpose.
 const REVIEWED: &[(&str, &str, &str)] = &[
+    (
+        "crates/workflow/src/engine/attempt.rs",
+        "blocked_code",
+        "why a gate could not run, a BlockedCode: a closed set of static strings",
+    ),
     // The four fields of the day ceiling line were added with the line on 2026-11-11 by the
     // author of the line, and wait for a reviewer like the port notes of that change.
     (
