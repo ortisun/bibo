@@ -1025,11 +1025,9 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
     else {
         return;
     };
-    let base = format!(
-        "{} --api {api} --token-file {}",
-        cli(),
-        token_file.display()
-    );
+    // The command comes first: `factory-cli` reads its options after the command name.
+    let cli = cli();
+    let opts = format!("--api {api} --token-file {}", token_file.display());
     let job_id = job.as_text();
     let run_id = run.id.as_text();
     let text = match run.kind {
@@ -1042,17 +1040,17 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                     .unwrap_or_else(|| "unknown".to_owned());
                 tell(&format!(
                     "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).\n\
-                     See why:        {base} status {job_id} --gates\n\
-                     Send it back:   {base} rework {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
-                     Or reject:      {base} reject {job_id} {run_id} \"<why>\""
+                     See why:        {cli} status {opts} --gates {job_id}\n\
+                     Send it back:   {cli} rework {opts} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
+                     Or reject:      {cli} reject {opts} {job_id} {run_id} \"<why>\""
                 ));
                 return;
             };
             format!(
                 "WAITING FOR YOU: the specification draft of job {job_id} waits for your decision.\n\
-                 Read it:     {base} show-draft {job_id}\n\
-                 Approve it:  {base} approve {job_id} {run_id} head={head} evidence={} \"The specification says what the issue asked for.\"\n\
-                 Or reject:   {base} reject {job_id} {run_id} \"<why>\"",
+                 Read it:     {cli} show-draft {opts} {job_id}\n\
+                 Approve it:  {cli} approve {opts} {job_id} {run_id} head={head} evidence={} \"The specification says what the issue asked for.\"\n\
+                 Or reject:   {cli} reject {opts} {job_id} {run_id} \"<why>\"",
                 evidence.as_str()
             )
         }
@@ -1064,8 +1062,8 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                     format!(
                         "WAITING FOR YOU: draft pull request #{} waits for your approval.\n\
                          Read it on GitHub, then\n\
-                         Approve it:  {base} approve {job_id} {run_id} head={} evidence={} \"The change does what the issue asked.\"\n\
-                         Or reject:   {base} reject {job_id} {run_id} \"<why>\"\n\
+                         Approve it:  {cli} approve {opts} {job_id} {run_id} head={} evidence={} \"The change does what the issue asked.\"\n\
+                         Or reject:   {cli} reject {opts} {job_id} {run_id} \"<why>\"\n\
                          Approving does not merge anything: the pull request stays a draft.",
                         request.pull_request,
                         request.pr_head.as_str(),
@@ -1073,7 +1071,7 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                     )
                 }
                 Err(_) => format!(
-                    "WAITING FOR YOU: the approval stage of job {job_id} waits; see {base} status {job_id}"
+                    "WAITING FOR YOU: the approval stage of job {job_id} waits; see {cli} status {opts} {job_id}"
                 ),
             }
         }
@@ -1083,13 +1081,13 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
              (policies/model_routing.yaml, independence). In subscription mode Claude Opus reviews\n\
              Claude Sonnet's work; check that the broker serves both Claude models.\n\
              What you can do now:\n\
-             Send the work back:  {base} rework {job_id} {run_id} target=IMPLEMENTATION \"<what to change>\"\n\
-             Reject the job:      {base} reject {job_id} {run_id} \"No independent reviewer is available.\"\n\
+             Send the work back:  {cli} rework {opts} {job_id} {run_id} target=IMPLEMENTATION \"<what to change>\"\n\
+             Reject the job:      {cli} reject {opts} {job_id} {run_id} \"No independent reviewer is available.\"\n\
              The factory refuses an approval here: the review would pass with no review verdict.\n\
              See docs/guides/first-real-run.md, \"Who reviews the code\"."
         ),
         other => format!(
-            "WAITING FOR YOU: the stage {} of job {job_id} waits for a person. See: {base} status {job_id} --gates",
+            "WAITING FOR YOU: the stage {} of job {job_id} waits for a person. See: {cli} status {opts} --gates {job_id}",
             other.as_str()
         ),
     };
