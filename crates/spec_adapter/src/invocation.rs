@@ -14,8 +14,9 @@
 //! The text after the invocation is a [`FixedInstruction`]. It is made from a closed template and
 //! two validated paths. There is no parameter that takes free text, so the text of an issue
 //! cannot reach the skill as an argument, which Spec Kit would read as the user's own instruction.
-//! The request travels in a file the fixed instruction names, and the post-conditions check that
-//! nothing else leaked into the arguments.
+//! The request travels in a file the fixed instruction names. The provider reports the invocation
+//! it sent with each skill run, and the specification stage checks the run's transcript: the host
+//! must show this invocation, with these arguments, and no other Spec Kit invocation.
 
 use factory_ports::paths::RepoPath;
 use factory_ports::spec::{FeatureDir, SpecOperation};
@@ -303,7 +304,11 @@ impl FixedInstruction {
 
 /// A skill invocation ready to be the first line of a prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Invocation(String);
+pub struct Invocation {
+    text: String,
+    skill: String,
+    arguments: String,
+}
 
 impl Invocation {
     /// `<sigil>speckit<separator><skill> <instruction>`.
@@ -314,19 +319,31 @@ impl Invocation {
         op: SpecOperation,
         instruction: &FixedInstruction,
     ) -> Self {
-        Self(format!(
-            "{}speckit{}{} {}",
-            host.sigil(),
-            separator.as_char(),
-            skill_name(op),
-            instruction.as_str()
-        ))
+        let skill = format!("speckit{}{}", separator.as_char(), skill_name(op));
+        let arguments = instruction.as_str().to_owned();
+        Self {
+            text: format!("{}{skill} {arguments}", host.sigil()),
+            skill,
+            arguments,
+        }
     }
 
     /// The invocation as text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
+    }
+
+    /// The skill as the host names it, without the sigil: `speckit-specify`.
+    #[must_use]
+    pub fn skill(&self) -> &str {
+        &self.skill
+    }
+
+    /// The arguments: the fixed instruction.
+    #[must_use]
+    pub fn arguments(&self) -> &str {
+        &self.arguments
     }
 }
 

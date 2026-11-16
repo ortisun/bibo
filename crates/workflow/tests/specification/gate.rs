@@ -424,7 +424,7 @@ fn post_conditions_of_the_adapter_are_classed_and_an_unknown_one_blocks() {
     assert_eq!(family_of("a-check-added-later"), Family::Profile);
 }
 
-fn rules_from_policy() -> ProfileRules {
+pub fn rules_from_policy() -> ProfileRules {
     let policy: SecurityPolicy = serde_json::from_str(SECURITY).expect("the policy");
     ProfileRules::from_policy(&policy, "SPECIFICATION").expect("the specification profile")
 }

@@ -106,6 +106,22 @@ async fn the_prompt_is_the_fixed_invocation_and_hostile_text_never_reaches_it() 
         .prompt(&request(SpecOperation::Specify))
         .expect("a prompt");
     assert_eq!(sent.instructions, expected.instructions);
+    // The skill run says what was sent, so the stage can find it in the transcript: the skill as
+    // the host names it, and the fixed instruction as the arguments.
+    let invocation = report.skill_runs[0]
+        .invocation
+        .as_ref()
+        .expect("a real provider always names its invocation");
+    assert_eq!(invocation.skill, "speckit-specify");
+    assert_eq!(
+        invocation.arguments,
+        support::instruction().as_str(),
+        "the arguments are the fixed instruction"
+    );
+    assert_eq!(
+        sent.instructions,
+        format!("/{} {}", invocation.skill, invocation.arguments)
+    );
 }
 
 #[tokio::test]

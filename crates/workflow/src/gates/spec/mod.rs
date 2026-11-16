@@ -18,7 +18,7 @@
 //! | `specification-authorization` | A draft carries no approval: authorization is a structured field written by a person |
 //! | `specification-checklist` | Every checklist item is verified by an independent reviewer or waived by a person with a reason |
 //! | `specification-artifacts` | The committed files are the recorded set and their hashes match |
-//! | `stage_profile_check` | No skill outside the profile ran or was visible, and no file of one appeared. It cannot be waived |
+//! | `stage_profile_check` | No skill outside the profile ran or was visible, no file of one appeared, and each skill run's transcript shows the fixed invocation and no other. It cannot be waived |
 //!
 //! # What counts as evidence for a checklist item
 //!
@@ -35,10 +35,12 @@
 //! to settle, and a miss is the independent reviewer's to catch.
 
 pub mod checklist;
+pub mod invocation;
 pub mod profile;
 pub mod rules;
 
 pub use checklist::{ChecklistInput, Waiver, parse_waivers, resolve as resolve_checklist};
+pub use invocation::InvocationRecord;
 pub use profile::{ProfileEvidence, ProfileRules, SkillMention, scan_transcript};
 pub use rules::Limits;
 

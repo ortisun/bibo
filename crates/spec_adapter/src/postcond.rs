@@ -1,5 +1,4 @@
-//! The seven post-conditions of a skill run, and the check that nothing else leaked into the
-//! arguments.
+//! The seven post-conditions of a skill run.
 //!
 //! The same skill writes different content on different runs, so the adapter never trusts what the
 //! agent says it did. After a run it checks the files that the host read from the commit, and only
@@ -16,9 +15,10 @@
 //! | 6 | No file of a skill the factory never runs appeared | `no-forbidden-artifact` |
 //! | 7 | The checklist exists, and no custom item is ticked by its author | `checklist-present`, `custom-checklist-ticked` |
 //!
-//! The eighth check, `skill-arguments-fixed`, is the proof that nothing else leaked into the
-//! arguments: the `Input` line of the specification, which Spec Kit fills from the arguments, must
-//! be the fixed instruction and nothing more.
+//! What reached the arguments of the skill is not checked here. The `Input` line of the
+//! specification is text the model wrote: a real model restates the request on it, so it cannot
+//! prove what the skill was given. The specification stage checks the invocation itself, in the
+//! run's transcript (`skill-arguments-fixed`, reported as `skill_arguments_leak`).
 
 use std::sync::LazyLock;
 
@@ -28,8 +28,8 @@ use factory_ports::spec::{FeatureDir, PostCondition, SpecError, SpecOperation};
 use regex::Regex;
 
 use crate::integrity::{FileView, check_installation, installation_paths};
-use crate::invocation::{CUSTOM_CHECKLIST, FixedInstruction, Host};
-use crate::parse::{feature_pointer, parse_checklist, parse_spec};
+use crate::invocation::{CUSTOM_CHECKLIST, Host};
+use crate::parse::{feature_pointer, parse_checklist};
 
 /// The constitution, written by one of the four operations.
 pub const CONSTITUTION: &str = ".specify/memory/constitution.md";
@@ -47,8 +47,6 @@ pub struct RunFacts<'a> {
     pub host: Host,
     /// The files read from the commit.
     pub view: FileView<'a>,
-    /// The instruction the specify skill was given. The `Input` line must be this text.
-    pub specify_instruction: &'a FixedInstruction,
     /// Whether every skill run ended normally, by the runtime's outcome.
     pub run_succeeded: bool,
 }
@@ -147,7 +145,7 @@ pub fn check_changed_paths(
         .collect()
 }
 
-/// Checks post-conditions 1 and 3 to 8. The strongest failure comes first: a forbidden artifact
+/// Checks post-conditions 1 and 3 to 7. The strongest failure comes first: a forbidden artifact
 /// before anything else, because it means a skill the factory never runs ran.
 #[must_use]
 pub fn evaluate(facts: &RunFacts<'_>) -> Vec<PostCondition> {
@@ -237,20 +235,6 @@ pub fn evaluate(facts: &RunFacts<'_>) -> Vec<PostCondition> {
                     ));
                 }
             }
-        }
-    }
-
-    // Nothing else leaked into the arguments: the `Input` line is the fixed instruction.
-    if let Some(bytes) = facts.view.get(&spec_path)
-        && let Ok(text) = std::str::from_utf8(bytes)
-        && let Ok(parsed) = parse_spec(text)
-    {
-        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        if squash(&parsed.input) != squash(facts.specify_instruction.as_str()) {
-            failed.push(condition(
-                "skill-arguments-fixed",
-                "The Input line of the specification is not the fixed instruction, so something else reached the arguments of the skill.",
-            ));
         }
     }
     failed

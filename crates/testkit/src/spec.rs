@@ -123,6 +123,8 @@ impl SpecificationProvider for FakeSpecificationProvider {
                 transcript: None,
                 usage: factory_ports::agent::Usage::default(),
                 permission_denials: Vec::new(),
+                // The fake runs no skill, so it names no invocation for the stage to check.
+                invocation: None,
             }],
         })
     }

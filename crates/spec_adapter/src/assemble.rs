@@ -37,7 +37,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use crate::integrity::{FileView, INIT_OPTIONS};
-use crate::invocation::{FixedInstruction, Host, skill_name};
+use crate::invocation::{Host, skill_name};
 use crate::parse::{ParsedSpec, StoryPriority, parse_checklist, parse_spec};
 use crate::postcond::{CONSTITUTION, RunFacts, check_all};
 use crate::question::{Origin, Question};
@@ -364,13 +364,6 @@ pub fn assemble(
     let view = FileView::new(&files.files);
     let spec_path = format!("{dir}/spec.md");
 
-    let specify_instruction = FixedInstruction::build(
-        SpecOperation::Specify,
-        &req.feature_directory,
-        &req.request_file,
-        None,
-    )
-    .map_err(|_| parse_error(&spec_path, ParseReason::BadId))?;
     // The request file is handed over for its hash only. It is not part of the commit, so the
     // post-conditions do not see it.
     let handed: Vec<_> = files
@@ -384,7 +377,6 @@ pub fn assemble(
         feature: &req.feature_directory,
         host: config.host,
         view: FileView::new(&handed),
-        specify_instruction: &specify_instruction,
         run_succeeded: notes.run_succeeded,
     };
     check_all(&facts)?;

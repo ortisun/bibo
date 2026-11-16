@@ -144,6 +144,23 @@ impl ProfileRules {
         scan_transcript(self, bytes)
     }
 
+    /// The namespace of the skills, such as `speckit`.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Checks that each recorded skill run's transcript shows the invocation the provider sent
+    /// and no other (see [`super::invocation`]).
+    #[must_use]
+    pub fn check_invocations(
+        &self,
+        records: &[super::InvocationRecord],
+        transcripts: &[Vec<u8>],
+    ) -> Vec<Finding> {
+        super::invocation::check(&self.namespace, records, transcripts)
+    }
+
     /// Checks the evidence of a run.
     #[must_use]
     pub fn check(&self, evidence: &ProfileEvidence<'_>) -> Vec<Finding> {

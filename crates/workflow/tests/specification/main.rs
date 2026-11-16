@@ -15,6 +15,7 @@
 mod support;
 
 mod gate;
+mod invocation;
 mod negative;
 mod rig;
 mod stage;
