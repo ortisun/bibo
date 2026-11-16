@@ -37,7 +37,11 @@ pub(super) async fn evaluate(
 ) -> Result<GateDecision, StageError> {
     let ports = ctx.ports;
     let scope = TenantScope::new(ctx.identity.tenant);
-    let unavailable = || StageError::Blocked(BlockedCode::DependencyUnavailable);
+    // Each read that fails names its step in the log, so a block says what was missing.
+    let unavailable_at = |step: &str, error: &dyn std::fmt::Display| {
+        tracing::warn!("the specification gate could not read {step}: {error}");
+        StageError::Blocked(BlockedCode::DependencyUnavailable)
+    };
     let stored = |name: &str| {
         ctx.outputs
             .iter()
@@ -49,7 +53,7 @@ pub(super) async fn evaluate(
         .artifacts
         .get(&scope, &evidence_ref)
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|error| unavailable_at("the evidence", &error))?;
     let evidence = serde_json::from_slice(&evidence_bytes)
         .ok()
         .and_then(|value| Evidence::from_json(&value))
@@ -60,7 +64,7 @@ pub(super) async fn evaluate(
                 .artifacts
                 .get(&scope, &reference)
                 .await
-                .map_err(|_| unavailable())?;
+                .map_err(|error| unavailable_at("the specification contract", &error))?;
             Some(
                 SpecificationContract::from_json_str(&String::from_utf8_lossy(&bytes))
                     .map_err(|_| StageError::InvalidOutput)?,
@@ -76,7 +80,7 @@ pub(super) async fn evaluate(
             .artifacts
             .get(&scope, answer)
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|error| unavailable_at("a person's answer", &error))?;
         waivers.extend(parse_waivers(&String::from_utf8_lossy(&bytes)));
     }
 
@@ -93,7 +97,7 @@ pub(super) async fn evaluate(
                 .artifacts
                 .get(&scope, &reference)
                 .await
-                .map_err(|_| unavailable())?,
+                .map_err(|error| unavailable_at("a transcript", &error))?,
         );
     }
 
@@ -106,7 +110,7 @@ pub(super) async fn evaluate(
             .workspaces
             .repo(ctx.identity.job)
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|error| unavailable_at("the job's repository", &error))?;
         for artifact in found.provenance.artifacts.as_slice() {
             let Ok(path) = RepoPath::new(artifact.path.as_str()) else {
                 continue;
@@ -120,14 +124,14 @@ pub(super) async fn evaluate(
                 }
                 Err(WorkspaceError::PathNotFound(_)) => {}
                 Err(WorkspaceError::Cancelled) => return Err(StageError::Cancelled),
-                Err(_) => return Err(unavailable()),
+                Err(error) => return Err(unavailable_at("a committed file", &error)),
             }
         }
         if let Ok(glob) = RepoGlob::new(&format!("{}/**", evidence.feature_directory)) {
             listed = repo
                 .list_at(&head, &glob, LIST_LIMIT, ReadView::Trusted)
                 .await
-                .map_err(|_| unavailable())?
+                .map_err(|error| unavailable_at("the feature directory", &error))?
                 .into_iter()
                 .map(|p| p.as_str().to_owned())
                 .collect();
@@ -157,7 +161,7 @@ pub(super) async fn evaluate(
                 .approvals
                 .approval(&ctx.identity, &draft)
                 .await
-                .map_err(|_| unavailable())?;
+                .map_err(|error| unavailable_at("the recorded approval", &error))?;
             let carried = c.metadata.approved_by.as_ref();
             Some(match (recorded, carried) {
                 (Some(r), Some(c)) => {
