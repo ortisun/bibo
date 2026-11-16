@@ -11,7 +11,8 @@
 //!    sidecar (refused while the sidecar image is a skeleton). For an `agent`: the token file.
 //! 4. **Create, inspect, compare.** `docker create` with the allow-list arguments, then
 //!    `docker inspect`, then the pure [`PostureReport::differences`]. Any difference removes the
-//!    container and fails closed. The container has not started.
+//!    container and fails closed. The container has not started. Whether AppArmor confines it is
+//!    read with what `docker info` says about the daemon, asked once before anything is created.
 //! 5. **Start and self-check.** `docker start`, then `cat /proc/self/status` inside it; the
 //!    workload is not released unless `Seccomp: 2`, `NoNewPrivs: 1`, empty capability sets and the
 //!    right user hold.
@@ -57,6 +58,7 @@ use tokio::sync::OnceCell;
 
 use crate::container::docker::{DockerClient, DockerError, DockerSettings};
 use crate::container::images::ImageCatalog;
+use crate::container::posture::security_options_have_apparmor;
 use crate::container::token::TokenStore;
 use crate::race::BoxFuture;
 
@@ -112,6 +114,8 @@ pub(crate) struct Shared {
     pub ids: Arc<dyn IdGenerator>,
     pub tokens: TokenStore,
     catalog: OnceCell<ImageCatalog>,
+    /// Whether the daemon has AppArmor, learned once from `docker info`.
+    apparmor: OnceCell<bool>,
     /// Removals that a drop guard started in the background and that have not finished.
     pub background_cleanups: AtomicUsize,
 }
@@ -134,6 +138,27 @@ impl Shared {
                     .map_err(|_| SandboxError::ImageUnavailable)
             })
             .await
+    }
+
+    /// True when the daemon lists AppArmor among its security options. The first call asks the
+    /// daemon; a failed or unreadable answer is an error and is asked again next time, never a
+    /// guess. The inspect document of a created container cannot tell this by itself
+    /// (see `container::posture`).
+    pub async fn daemon_has_apparmor(
+        &self,
+        cancel: &dyn CancelSignal,
+    ) -> Result<bool, SandboxError> {
+        self.apparmor
+            .get_or_try_init(|| async {
+                let answer = self
+                    .docker
+                    .security_options(cancel)
+                    .await
+                    .map_err(daemon_error)?;
+                security_options_have_apparmor(&answer).ok_or(SandboxError::DaemonUnavailable)
+            })
+            .await
+            .copied()
     }
 }
 
@@ -183,6 +208,7 @@ impl DockerSandboxProvider {
                 ids,
                 tokens,
                 catalog: OnceCell::new(),
+                apparmor: OnceCell::new(),
                 background_cleanups: AtomicUsize::new(0),
             }),
         }

@@ -5,6 +5,11 @@
 //!
 //! This is how every unit test of the supervisor runs without a daemon. The tests that need the
 //! real daemon use the real runner and are in `tests/container`.
+//!
+//! The simulated daemon is a Linux host with AppArmor, as a production host is: `docker info`
+//! lists `name=apparmor`, and a created container reports an empty `AppArmorProfile` (Docker
+//! applies `docker-default` only at the start), unless `--security-opt apparmor=<profile>` named
+//! one. [`Sim::daemon_without_apparmor`] plays Docker Desktop instead.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +21,14 @@ use factory_ports::process::{ProcessRunner, SpawnError, SpawnOutput, SpawnReques
 use serde_json::{Value, json};
 
 type Mutation = Box<dyn Fn(&mut Value, &str) + Send + Sync>;
+
+/// What `docker info --format '{{json .SecurityOptions}}'` prints on Docker 29 on Ubuntu 24.04.
+pub const SECURITY_OPTIONS_WITH_APPARMOR: &str =
+    r#"["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"]"#;
+
+/// The same on Docker Desktop, which has no AppArmor.
+pub const SECURITY_OPTIONS_WITHOUT_APPARMOR: &str =
+    r#"["name=seccomp,profile=builtin","name=cgroupns"]"#;
 
 #[derive(Default)]
 struct State {
@@ -31,6 +44,10 @@ struct State {
     status_text: Option<String>,
     token_content: Option<Vec<u8>>,
     inspect_before_start: Vec<String>,
+    /// What `docker info` prints for the security options; `None` is a daemon with AppArmor.
+    security_options: Option<String>,
+    /// When set, `docker info` fails with this text.
+    info_fails: Option<String>,
 }
 
 pub struct Sim {
@@ -65,6 +82,26 @@ impl Sim {
     /// does when the container has no free process slot (finding SBX-3).
     pub fn du_cannot_start(&self) {
         self.state.lock().expect("lock").du_fails = true;
+    }
+
+    /// Plays a daemon without AppArmor (Docker Desktop).
+    pub fn daemon_without_apparmor(&self) {
+        self.daemon_security_options(SECURITY_OPTIONS_WITHOUT_APPARMOR);
+    }
+
+    /// Makes `docker info` print `answer` for the security options.
+    pub fn daemon_security_options(&self, answer: &str) {
+        self.state.lock().expect("lock").security_options = Some(answer.to_owned());
+    }
+
+    /// Makes `docker info` fail with `stderr`.
+    pub fn info_fails(&self, stderr: &str) {
+        self.state.lock().expect("lock").info_fails = Some(stderr.to_owned());
+    }
+
+    /// Makes `docker info` answer again after [`Sim::info_fails`].
+    pub fn info_recovers(&self) {
+        self.state.lock().expect("lock").info_fails = None;
     }
 
     pub fn daemon_down(&self) {
@@ -167,7 +204,7 @@ fn bytes_of(size: &str) -> u64 {
 fn derive(args: &[String], extra_networks: &[String]) -> Value {
     let mut doc = json!({
         "State": {"Status": "created", "OOMKilled": false},
-        "AppArmorProfile": "docker-default",
+        "AppArmorProfile": "",
         "Config": {"User": "", "Env": ["PATH=/opt/rust/bin:/usr/bin:/bin"], "Labels": {}, "Image": ""},
         "Image": "",
         "Mounts": [],
@@ -201,6 +238,9 @@ fn derive(args: &[String], extra_networks: &[String]) -> Value {
             }
             "--cap-drop" => doc["HostConfig"]["CapDrop"] = json!([value]),
             "--security-opt" => {
+                if let Some(profile) = value.strip_prefix("apparmor=") {
+                    doc["AppArmorProfile"] = profile.into();
+                }
                 doc["HostConfig"]["SecurityOpt"]
                     .as_array_mut()
                     .expect("array")
@@ -329,6 +369,16 @@ impl ProcessRunner for Sim {
         let word = |i: usize| args.get(i).map_or("", String::as_str);
         match word(0) {
             "version" => ok("linux/arm64\n"),
+            "info" => match &state.info_fails {
+                Some(stderr) => fail(stderr),
+                None => ok(&format!(
+                    "{}\n",
+                    state
+                        .security_options
+                        .as_deref()
+                        .unwrap_or(SECURITY_OPTIONS_WITH_APPARMOR)
+                )),
+            },
             "image" => {
                 if state.image_missing {
                     return fail("Error response from daemon: No such image: x");
