@@ -14,7 +14,9 @@
 //!   `<command-message>…</command-message>\n<command-name>/speckit-specify</command-name>\n<command-args>…</command-args>`.
 //!   Claude Code writes this event only when it runs with `--input-format=stream-json
 //!   --replay-user-messages`. With a prompt on plain standard input it writes no event for the
-//!   prompt at all, so the transcript holds no invocation and this check fails closed.
+//!   prompt at all, so the transcript holds no invocation and this check fails closed. The Claude
+//!   Code runtime therefore runs the specification profile with both flags and sends its prompt
+//!   as one stream-json user message (`factory_runtime::claude::argv::stdin_for`).
 //! * A call the model makes is an `assistant` event with a `tool_use` block named `Skill` whose
 //!   input is `{"skill": "speckit-plan", "args": "…"}`.
 //!

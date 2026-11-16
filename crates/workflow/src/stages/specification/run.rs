@@ -1215,6 +1215,22 @@ pub(super) async fn execute(
 
     // 4. The independent review, once the files are understood and clean.
     let transcripts = read_transcripts(ctx, &work.evidence).await?;
+    // Only the runs whose transcript the store already serves are judged here. The engine indexes
+    // a noted transcript for the tenant after this attempt, so one may not be readable yet; the
+    // gate reads every one of them again and fails closed on any it cannot read.
+    let readable: Vec<InvocationRecord> = work
+        .evidence
+        .invocations
+        .iter()
+        .filter(|record| {
+            record.transcript.as_ref().is_none_or(|hash| {
+                transcripts
+                    .iter()
+                    .any(|bytes| Sha256Digest::of(bytes).as_str() == hash)
+            })
+        })
+        .cloned()
+        .collect();
     let profile_clean = h
         .profile
         .check(&ProfileEvidence {
@@ -1225,7 +1241,7 @@ pub(super) async fn execute(
         })
         .is_empty()
         && h.profile
-            .check_invocations(&work.evidence.invocations, &transcripts)
+            .check_invocations(&readable, &transcripts)
             .is_empty();
     let clean_so_far = profile_clean
         && contract.is_some()
@@ -1253,9 +1269,14 @@ pub(super) async fn execute(
 
     // 5. The gate's own rules, and the freeze.
     let unlisted = unlisted_files(contract.as_ref(), &committed);
+    // The same holds for the rules run here: a transcript the store does not serve yet is left to
+    // the gate. An attempt that runs again after the engine indexed them (the freeze after a
+    // person's approval) reads all of them and judges every run.
+    let mut seen_here = work.evidence.clone();
+    seen_here.invocations = readable;
     let judged = judge(&JudgeInput {
         contract: contract.as_ref(),
-        evidence: &work.evidence,
+        evidence: &seen_here,
         waivers: &waivers,
         limits: &h.config.limits,
         profile: &h.profile,

@@ -10,10 +10,17 @@
 //!   message with `--replay-user-messages`. The replayed `user` event holds the command name and
 //!   its arguments.
 //! * `slash-command-no-replay.jsonl`: the same prompt on plain standard input, the way the runtime
-//!   sends it today. The skill expanded (the model saw its text) and the transcript holds no event
-//!   for the prompt at all.
+//!   sent it before the specification profile replayed its prompt. The skill expanded (the model
+//!   saw its text) and the transcript holds no event for the prompt at all.
 //! * `skill-tool-call.jsonl`: the model calls the `Skill` tool for `speckit-plan` itself. The
 //!   expanded skill text that follows is a `user` event that is not a replay.
+//! * `factory-spec-stdin.jsonl`: the runtime's specification argv (with the project skill root in
+//!   place of the user one, which a host login cannot reach) and the exact fixed instruction,
+//!   sent as the runtime's `stdin_for` encodes it. The replayed arguments are the fixed
+//!   instruction, byte for byte.
+//! * `unresolved-command.jsonl`: the runtime's exact specification argv
+//!   (`--setting-sources=user`) on a host whose user skill root has no Spec Kit skill. The command
+//!   did not resolve, and the replay is the plain prompt text: no invocation.
 
 use factory_domain::values::Sha256Digest;
 use factory_workflow::gates::spec::InvocationRecord;
@@ -26,6 +33,33 @@ const NO_REPLAY: &str =
     include_str!("../fixtures/transcripts/claude-code-2.1.325-slash-command-no-replay.jsonl");
 const TOOL_CALL: &str =
     include_str!("../fixtures/transcripts/claude-code-2.1.325-skill-tool-call.jsonl");
+
+const FACTORY: &str =
+    include_str!("../fixtures/transcripts/claude-code-2.1.325-factory-spec-stdin.jsonl");
+const UNRESOLVED: &str =
+    include_str!("../fixtures/transcripts/claude-code-2.1.325-unresolved-command.jsonl");
+
+#[test]
+fn skill_arguments_the_runtimes_own_stdin_shows_the_fixed_instruction_in_the_replay() {
+    let seen = invocations_in("speckit", FACTORY.as_bytes());
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].channel, Channel::Typed);
+    assert_eq!(seen[0].skill, "speckit-specify");
+    assert_eq!(seen[0].arguments, FIXED, "byte for byte");
+    let transcript = FACTORY.as_bytes().to_vec();
+    let codes = codes_of(&[record(FIXED, &transcript)], &[transcript]);
+    assert!(codes.is_empty(), "{codes:?}");
+}
+
+#[test]
+fn skill_arguments_a_command_that_did_not_resolve_is_not_an_invocation() {
+    let transcript = UNRESOLVED.as_bytes().to_vec();
+    assert!(invocations_in("speckit", &transcript).is_empty());
+    assert_eq!(
+        codes_of(&[record(CAPTURED, &transcript)], &[transcript]),
+        ["skill_arguments_leak"]
+    );
+}
 
 /// The arguments of the captured command.
 const CAPTURED: &str = "Write nothing. The request is in the file r.md. Stop now and answer OK.";
