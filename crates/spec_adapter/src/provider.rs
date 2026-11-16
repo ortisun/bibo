@@ -22,8 +22,8 @@ use factory_domain::vocabulary::{ExecutionMode, Fidelity};
 use factory_ports::agent::{AgentRunReport, AgentRunRequest, AssembledPrompt};
 use factory_ports::paths::RepoPath;
 use factory_ports::spec::{
-    PostCondition, SkillRun, SpecContext, SpecError, SpecFileSet, SpecOperation, SpecOutcome,
-    SpecRequest, SpecRunReport, SpecificationProvider,
+    PostCondition, SkillInvocation, SkillRun, SpecContext, SpecError, SpecFileSet, SpecOperation,
+    SpecOutcome, SpecRequest, SpecRunReport, SpecificationProvider,
 };
 use serde_json::Value;
 
@@ -77,6 +77,17 @@ impl SpecKitProvider {
     /// [`SpecError::ParseError`] only when a path holds a character outside the safe set, which a
     /// feature directory or a repository path made by the stage never does.
     pub fn prompt(&self, req: &SpecRequest) -> Result<AssembledPrompt, SpecError> {
+        Ok(AssembledPrompt {
+            instructions: self.invocation(req)?.as_str().to_owned(),
+            data: Vec::new(),
+        })
+    }
+
+    /// The invocation for a request: the skill and the fixed instruction.
+    ///
+    /// # Errors
+    /// As for [`Self::prompt`].
+    pub fn invocation(&self, req: &SpecRequest) -> Result<Invocation, SpecError> {
         let answers = if req.answers.is_empty() {
             None
         } else {
@@ -89,16 +100,12 @@ impl SpecKitProvider {
             answers.as_ref(),
         )
         .map_err(|_| SpecError::ToolMissing)?;
-        let invocation = Invocation::new(
+        Ok(Invocation::new(
             self.config.host,
             self.config.separator,
             req.op,
             &instruction,
-        );
-        Ok(AssembledPrompt {
-            instructions: invocation.as_str().to_owned(),
-            data: Vec::new(),
-        })
+        ))
     }
 
     /// The questions the detector heard in the final output of a run. The report is read as a
@@ -167,9 +174,12 @@ impl SpecKitProvider {
                 factory_ports::agent::AgentRunError::Cancelled,
             ));
         }
-        let prompt = self.prompt(req)?;
+        let invocation = self.invocation(req)?;
         let run_request = AgentRunRequest {
-            prompt,
+            prompt: AssembledPrompt {
+                instructions: invocation.as_str().to_owned(),
+                data: Vec::new(),
+            },
             ..ctx.run_template.clone()
         };
         let report = ctx
@@ -227,6 +237,10 @@ impl SpecKitProvider {
                 transcript: report.transcript,
                 usage: report.usage,
                 permission_denials: report.permission_denials,
+                invocation: Some(SkillInvocation {
+                    skill: invocation.skill().to_owned(),
+                    arguments: invocation.arguments().to_owned(),
+                }),
             }],
         })
     }

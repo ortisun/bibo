@@ -29,6 +29,10 @@
           "SPECIFICATION"
         ],
         "claude_code": {
+          "flags_add": [
+            "--input-format=stream-json",
+            "--replay-user-messages"
+          ],
           "flags_omit": [
             "--disable-slash-commands"
           ],

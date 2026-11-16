@@ -10,6 +10,13 @@
 //! * `--setting-sources=user` and `--strict-mcp-config` in every stage. `--bare` is **not** used: it
 //!   neither stops the `env` block of a repository `settings.json` nor loads any skill.
 //! * `--disable-slash-commands` in every stage except specification.
+//! * In the specification stage only, `--input-format=stream-json` and `--replay-user-messages`,
+//!   with the prompt sent as one stream-json user message ([`stdin_for`]). Claude Code writes a
+//!   typed command into its event stream only when it replays the prompt: the replayed `user` event
+//!   holds `<command-name>` and `<command-args>`, and it is the only place the invocation of the
+//!   skill and its arguments appear. The stage's check of what reached the arguments
+//!   (`skill-arguments-fixed`) reads that event and fails closed without it. The other stages run
+//!   no command, so their prompt stays plain text.
 //! * `--no-session-persistence`, so the tool writes no transcript of its own.
 //! * The credential (ADR 0020). In API-key mode, `apiKeyHelper` in a `--settings` document: the
 //!   credential is a file that a helper prints, never a variable. In subscription mode (the
@@ -135,13 +142,18 @@ pub enum Flag {
     Tools,
     /// `--disable-slash-commands`. Every stage except specification.
     DisableSlashCommands,
+    /// `--input-format=stream-json`. Specification only: standard input is one user message.
+    InputFormat,
+    /// `--replay-user-messages`. Specification only: the tool writes the prompt back into its
+    /// stream, with a typed command as `<command-name>` and `<command-args>`.
+    ReplayUserMessages,
     /// `--dangerously-skip-permissions`. Only inside a verified sandbox.
     DangerouslySkipPermissions,
 }
 
 impl Flag {
     /// Every flag.
-    pub const ALL: [Flag; 13] = [
+    pub const ALL: [Flag; 15] = [
         Flag::Print,
         Flag::OutputFormat,
         Flag::Verbose,
@@ -154,6 +166,8 @@ impl Flag {
         Flag::MaxBudgetUsd,
         Flag::Tools,
         Flag::DisableSlashCommands,
+        Flag::InputFormat,
+        Flag::ReplayUserMessages,
         Flag::DangerouslySkipPermissions,
     ];
 
@@ -173,6 +187,8 @@ impl Flag {
             Self::MaxBudgetUsd => "--max-budget-usd",
             Self::Tools => "--tools",
             Self::DisableSlashCommands => "--disable-slash-commands",
+            Self::InputFormat => "--input-format",
+            Self::ReplayUserMessages => "--replay-user-messages",
             Self::DangerouslySkipPermissions => "--dangerously-skip-permissions",
         }
     }
@@ -263,8 +279,42 @@ pub fn build(plan: &Plan<'_>, target: &VerifiedTarget) -> Result<Vec<String>, Ar
     if plan.flag_set == FlagSet::Standard {
         args.push(Flag::DisableSlashCommands.name().to_owned());
     }
+    if replays_prompt(plan.flag_set) {
+        args.push(format!("{}=stream-json", Flag::InputFormat.name()));
+        args.push(Flag::ReplayUserMessages.name().to_owned());
+    }
     args.push(Flag::DangerouslySkipPermissions.name().to_owned());
     Ok(args)
+}
+
+/// True for the flag set whose prompt is sent as a stream-json message and replayed: the
+/// specification stage, the only one that runs a typed command. [`build`] writes the two flags and
+/// [`stdin_for`] encodes the prompt from this one answer, so the flags and the encoding of standard
+/// input cannot differ.
+#[must_use]
+pub const fn replays_prompt(flag_set: FlagSet) -> bool {
+    matches!(flag_set, FlagSet::Specification)
+}
+
+/// The bytes the tool reads on standard input. For a flag set that replays the prompt: one
+/// stream-json user message and a newline, the shape Claude Code 2.1.325 accepts with
+/// `--input-format=stream-json`, `{"type":"user","message":{"role":"user","content":"<prompt>"}}`.
+/// The prompt is a JSON string, so no text in it can end the message or start another. Otherwise
+/// the prompt as it is. Standard input is closed after it either way, and the tool ends its run
+/// there.
+#[must_use]
+pub fn stdin_for(flag_set: FlagSet, prompt: &str) -> Vec<u8> {
+    if replays_prompt(flag_set) {
+        let message = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": prompt},
+        });
+        let mut bytes = message.to_string().into_bytes();
+        bytes.push(b'\n');
+        bytes
+    } else {
+        prompt.as_bytes().to_vec()
+    }
 }
 
 /// A model name is letters, digits and `. _ - : / @ [ ]`, starts with a letter or digit, and is
@@ -292,6 +342,27 @@ mod tests {
         for bad in ["", "x y", "--model", "a;b", "a\nb", "-x", "a=b"] {
             assert!(!is_plain_model_name(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_replayed_prompt_is_one_json_user_message_and_a_plain_one_is_the_text() {
+        let prompt = "/speckit-specify Write it. \"quoted\"\n}\n{\"type\":\"user\"}";
+        let bytes = stdin_for(FlagSet::Specification, prompt);
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        let text = std::str::from_utf8(&bytes).expect("utf-8");
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "one line, whatever the prompt holds"
+        );
+        let value: serde_json::Value = serde_json::from_str(text.trim_end()).expect("json");
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": prompt}})
+        );
+        assert_eq!(stdin_for(FlagSet::Standard, prompt), prompt.as_bytes());
+        assert!(replays_prompt(FlagSet::Specification));
+        assert!(!replays_prompt(FlagSet::Standard));
     }
 
     #[test]

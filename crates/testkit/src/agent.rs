@@ -379,6 +379,30 @@ fn exec_request(words: &[String]) -> Result<ExecRequest, SandboxError> {
     })
 }
 
+/// The event Claude Code writes for a typed command when it replays the prompt
+/// (`--input-format=stream-json --replay-user-messages`, read from version 2.1.325). The scripted
+/// runtime writes it for a specification run whose prompt starts with a command, so a stage that
+/// checks what reached the arguments of a skill finds the invocation as it would in a real
+/// transcript.
+fn replayed_command(instructions: &str) -> Option<serde_json::Value> {
+    let rest = instructions.strip_prefix(['/', '$'])?;
+    let (name, arguments) = rest.split_once(' ').unwrap_or((rest, ""));
+    if name.is_empty() {
+        return None;
+    }
+    let sigil = &instructions[..1];
+    Some(serde_json::json!({
+        "type": "user",
+        "isReplay": true,
+        "message": {
+            "role": "user",
+            "content": format!(
+                "<command-message>{name}</command-message>\n<command-name>{sigil}{name}</command-name>\n<command-args>{arguments}</command-args>"
+            ),
+        },
+    }))
+}
+
 #[async_trait]
 impl AgentRuntime for FakeAgentRuntime {
     fn id(&self) -> &RuntimeId {
@@ -449,6 +473,11 @@ impl AgentRuntime for FakeAgentRuntime {
         }
 
         let mut transcript = Vec::new();
+        if req.flag_set == FlagSet::Specification
+            && let Some(replay) = replayed_command(&req.prompt.instructions)
+        {
+            transcript.push(replay);
+        }
         let mut cancelled = false;
         for action in &script.actions {
             if honours_cancel && cancel.is_cancelled() {

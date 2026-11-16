@@ -155,6 +155,20 @@ pub struct SkillRun {
     pub usage: Usage,
     /// Tool calls the tool reported as denied.
     pub permission_denials: Vec<Denial>,
+    /// The skill invocation the provider put in the prompt. The stage checks that the transcript
+    /// shows exactly this invocation and no other. `None` only for a provider that invokes no
+    /// skill, such as a scripted fake; a real provider always says what it sent.
+    pub invocation: Option<SkillInvocation>,
+}
+
+/// A skill invocation as the provider wrote it: the skill as the host names it, without the
+/// sigil, and the text that followed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInvocation {
+    /// The skill, such as `speckit-specify`.
+    pub skill: String,
+    /// The arguments: the fixed instruction, never text a person or a model wrote.
+    pub arguments: String,
 }
 
 /// What `run` did. The files are in the sandbox's checkout; the stage handler stops the

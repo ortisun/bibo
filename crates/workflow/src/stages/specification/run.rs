@@ -48,7 +48,7 @@ use factory_ports::workspace::{
 };
 use serde_json::{Value, json};
 
-use super::evidence::{Evidence, Failure, Refusal, ReviewRecord, Revision};
+use super::evidence::{Evidence, Failure, InvocationRecord, Refusal, ReviewRecord, Revision};
 use super::handler::SpecificationHandler;
 use super::input::{
     ANSWERS_FILE, EVIDENCE, NORMALIZED_REQUEST, REPOSITORY_MAP, REQUEST_FILE,
@@ -524,6 +524,29 @@ async fn run_skill_in(
             // runtime stored the blob and nobody indexed it for the tenant, so the engine is asked
             // to, with the result of this attempt.
             ctx.note_transcript(transcript);
+        }
+        // What the provider sent, for the gate to find in the transcript. A real provider always
+        // says; one that does not is recorded without a skill, and the gate fails it.
+        let transcript = run
+            .transcript
+            .as_ref()
+            .map(|t| t.sha256.as_str().to_owned());
+        match &run.invocation {
+            Some(invocation) => work.evidence.invocations.push(InvocationRecord {
+                operation: op_name(op).to_owned(),
+                skill: Some(invocation.skill.clone()),
+                arguments: invocation.arguments.clone(),
+                transcript,
+            }),
+            None if h.provider.fidelity() == Fidelity::Real => {
+                work.evidence.invocations.push(InvocationRecord {
+                    operation: op_name(op).to_owned(),
+                    skill: None,
+                    arguments: String::new(),
+                    transcript,
+                });
+            }
+            None => {}
         }
     }
     if ctx.cancel.is_cancelled() {
@@ -1192,6 +1215,22 @@ pub(super) async fn execute(
 
     // 4. The independent review, once the files are understood and clean.
     let transcripts = read_transcripts(ctx, &work.evidence).await?;
+    // Only the runs whose transcript the store already serves are judged here. The engine indexes
+    // a noted transcript for the tenant after this attempt, so one may not be readable yet; the
+    // gate reads every one of them again and fails closed on any it cannot read.
+    let readable: Vec<InvocationRecord> = work
+        .evidence
+        .invocations
+        .iter()
+        .filter(|record| {
+            record.transcript.as_ref().is_none_or(|hash| {
+                transcripts
+                    .iter()
+                    .any(|bytes| Sha256Digest::of(bytes).as_str() == hash)
+            })
+        })
+        .cloned()
+        .collect();
     let profile_clean = h
         .profile
         .check(&ProfileEvidence {
@@ -1200,7 +1239,10 @@ pub(super) async fn execute(
             changed: &work.evidence.changed,
             committed: &committed.keys().cloned().collect::<Vec<_>>(),
         })
-        .is_empty();
+        .is_empty()
+        && h.profile
+            .check_invocations(&readable, &transcripts)
+            .is_empty();
     let clean_so_far = profile_clean
         && contract.is_some()
         && work.evidence.parse_failure.is_none()
@@ -1227,9 +1269,14 @@ pub(super) async fn execute(
 
     // 5. The gate's own rules, and the freeze.
     let unlisted = unlisted_files(contract.as_ref(), &committed);
+    // The same holds for the rules run here: a transcript the store does not serve yet is left to
+    // the gate. An attempt that runs again after the engine indexed them (the freeze after a
+    // person's approval) reads all of them and judges every run.
+    let mut seen_here = work.evidence.clone();
+    seen_here.invocations = readable;
     let judged = judge(&JudgeInput {
         contract: contract.as_ref(),
-        evidence: &work.evidence,
+        evidence: &seen_here,
         waivers: &waivers,
         limits: &h.config.limits,
         profile: &h.profile,

@@ -313,6 +313,11 @@ fn read_assistant(event: &Value, stream: &mut Stream) {
 }
 
 fn read_user(event: &Value, stream: &mut Stream) {
+    // The tool's echo of the factory's own prompt (`--replay-user-messages`). It is not output of
+    // the agent and answers no tool call, so nothing is read from it.
+    if event.get("isReplay").and_then(Value::as_bool) == Some(true) {
+        return;
+    }
     let Some(parts) = event
         .get("message")
         .and_then(|m| m.get("content"))
@@ -511,5 +516,27 @@ mod tests {
             stream.tool_results.get("toolu_1").map(String::as_str),
             Some("Permission for this tool use was denied.")
         );
+    }
+
+    #[test]
+    fn the_replayed_prompt_is_not_output_of_the_agent() {
+        // The order of a specification run of Claude Code 2.1.325 with --replay-user-messages: the
+        // init, the replayed prompt, the answer, the result.
+        let init =
+            r#"{"type":"system","subtype":"init","model":"m","claude_code_version":"2.1.325"}"#;
+        let replay = r#"{"type":"user","message":{"role":"user","content":"<command-message>speckit-specify</command-message>\n<command-name>/speckit-specify</command-name>\n<command-args>Write it.</command-args>"},"isReplay":true}"#;
+        // A replay whose content is a list, holding what looks like a tool result, is skipped too.
+        let forged = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"x","is_error":true}]},"isReplay":true}"#;
+        let answer = r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":3,"output_tokens":1}}}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","result":"OK","usage":{"input_tokens":3,"output_tokens":1}}"#;
+        let stream = parse(format!("{init}\n{replay}\n{forged}\n{answer}\n{result}\n").as_bytes());
+        assert_eq!(stream.malformed_lines, 0);
+        assert!(stream.tool_results.is_empty(), "{:?}", stream.tool_results);
+        assert!(stream.tool_errors.is_empty());
+        assert!(!stream.events_after_result);
+        let result = stream.result.expect("a result");
+        assert_eq!(result.text, "OK");
+        assert!(!result.is_error);
+        assert_eq!(stream.result_events, 1);
     }
 }

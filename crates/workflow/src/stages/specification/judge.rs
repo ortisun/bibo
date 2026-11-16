@@ -169,6 +169,12 @@ pub fn judge(input: &JudgeInput<'_>) -> Vec<Judged> {
         changed: &evidence.changed,
         committed: &evidence.committed.keys().cloned().collect::<Vec<_>>(),
     }));
+    // What reached the arguments of each skill, read from the run's own transcript.
+    profile.extend(
+        input
+            .profile
+            .check_invocations(&evidence.invocations, input.transcripts),
+    );
     if let Some(refusal) = &evidence.refusal {
         profile.push(Finding::new(
             "ingestion-refused",
@@ -250,7 +256,7 @@ pub fn judge(input: &JudgeInput<'_>) -> Vec<Judged> {
         Judged::new(
             spec::STAGE_PROFILE,
             "Only the four skills ran, and they wrote only their files",
-            "stage_profile_check 1.0.0: no skill outside the profile ran or was visible, no file of one exists, and no path outside the writes of the four skills changed. It cannot be waived.",
+            "stage_profile_check 1.1.0: no skill outside the profile ran or was visible, no file of one exists, no path outside the writes of the four skills changed, and the transcript of each skill run shows the invocation the factory sent, with the fixed instruction as its arguments, exactly once and with no other Spec Kit invocation. It cannot be waived.",
             profile,
         ),
     ]

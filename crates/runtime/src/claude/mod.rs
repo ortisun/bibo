@@ -20,7 +20,12 @@
 //!   a new directory for every run, so a hook, an `env` block or a server in the repository, or
 //!   left behind by an earlier run, never runs.
 //! * **Skills.** Standard stages run with `--disable-slash-commands`. The specification stage runs
-//!   without it and gets exactly the pinned skills, written into the run's home.
+//!   without it and gets exactly the pinned skills, written into the run's home. It also runs with
+//!   `--input-format=stream-json --replay-user-messages` and sends its prompt as one stream-json
+//!   user message (`argv::stdin_for`): the replayed `user` event (`"isReplay": true`) is the only
+//!   place the stream shows the skill invocation and its arguments, and the stage's argument check
+//!   fails closed without it. The reader of the stream skips that event: it is the factory's own
+//!   prompt, not output of the agent.
 //! * **Failures.** `is_error` and `terminal_reason` decide, never `subtype` and never the exit code.
 
 pub mod argv;
@@ -354,7 +359,7 @@ impl ClaudeCodeRuntime {
             session,
             &self.io,
             command.into_argv(),
-            prompt::render(&req.prompt).into_bytes(),
+            argv::stdin_for(req.flag_set, &prompt::render(&req.prompt)),
             hard,
             cap,
             cancel,
@@ -477,8 +482,11 @@ fn observations(
         ),
         observation(
             Capability::SkillInvocation,
-            help_has("--setting-sources") && help_has("--disable-slash-commands"),
-            "claude --help: --setting-sources and --disable-slash-commands; skills reach the user skill root",
+            help_has("--setting-sources")
+                && help_has("--disable-slash-commands")
+                && help_has("--input-format")
+                && help_has("--replay-user-messages"),
+            "claude --help: --setting-sources and --disable-slash-commands; skills reach the user skill root; --input-format and --replay-user-messages, so the replayed prompt shows the invocation of the skill",
         ),
         observation(
             Capability::BaseUrlOverride,

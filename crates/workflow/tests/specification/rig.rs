@@ -39,8 +39,8 @@ use factory_ports::paths::{
 use factory_ports::registry::ValidatedOutput;
 use factory_ports::sandbox::{SandboxProfile, SandboxSession, SandboxSpec};
 use factory_ports::spec::{
-    ParseReason, SkillRun, SpecContext, SpecError, SpecFileSet, SpecOperation, SpecOutcome,
-    SpecRequest, SpecRunReport, SpecificationDraft, SpecificationProvider,
+    ParseReason, SkillInvocation, SkillRun, SpecContext, SpecError, SpecFileSet, SpecOperation,
+    SpecOutcome, SpecRequest, SpecRunReport, SpecificationDraft, SpecificationProvider,
 };
 use factory_ports::workspace::{FetchCredential, FetchTarget, WorkspaceMounts, WorkspaceProvider};
 use factory_testkit::agent::{AdversarialScript, FakeAgentRuntime, RecordedPrompt};
@@ -426,6 +426,9 @@ pub struct ScriptedProvider {
     pub requests: Mutex<Vec<SpecRequest>>,
     /// Transcripts to attach to the next skill runs, oldest first.
     pub transcripts: Mutex<VecDeque<Vec<u8>>>,
+    /// Invocations to report with the next skill runs, oldest first. With none queued the run
+    /// reports no invocation, as a fake that runs no skill does.
+    pub invocations: Mutex<VecDeque<SkillInvocation>>,
     /// Errors the next calls of `assemble` return, oldest first.
     pub assembly_errors: Mutex<VecDeque<SpecError>>,
     /// Makes `assemble` return a contract that already claims to be approved.
@@ -541,6 +544,7 @@ impl SpecificationProvider for ScriptedProvider {
                 transcript,
                 usage: report.usage,
                 permission_denials: report.permission_denials,
+                invocation: lock(&self.invocations).pop_front(),
             }],
         })
     }
@@ -1023,6 +1027,7 @@ impl Rig {
             artifacts: artifacts.clone(),
             requests: Mutex::new(Vec::new()),
             transcripts: Mutex::new(VecDeque::new()),
+            invocations: Mutex::new(VecDeque::new()),
             assembly_errors: Mutex::new(VecDeque::new()),
             approved_by_the_writer: Mutex::new(false),
         });
@@ -1180,6 +1185,24 @@ impl Rig {
             short_name(&self.title),
             &tail[tail.len() - 8..]
         )
+    }
+
+    /// The next skill run reports that it invoked `skill` with `arguments`, and its transcript
+    /// shows the invocation the host replayed with `shown` as the arguments (Claude Code 2.1.325
+    /// with `--replay-user-messages`).
+    pub fn skill_invoked(&self, skill: &str, arguments: &str, shown: &str) {
+        let replay = json!({
+            "type": "user",
+            "isReplay": true,
+            "message": {"role": "user", "content": format!(
+                "<command-message>{skill}</command-message>\n<command-name>/{skill}</command-name>\n<command-args>{shown}</command-args>"
+            )},
+        });
+        lock(&self.provider.invocations).push_back(SkillInvocation {
+            skill: skill.to_owned(),
+            arguments: arguments.to_owned(),
+        });
+        lock(&self.provider.transcripts).push_back(format!("{replay}\n").into_bytes());
     }
 
     /// A writer that writes a sound specification, a checklist, and a reviewer that passes.

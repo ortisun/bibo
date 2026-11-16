@@ -103,7 +103,6 @@ fn argument_safety_claude_writes_only_flags_from_the_allow_list() {
             "--allowedTools",
             "--permission-mode",
             "--json-schema",
-            "--input-format",
             "--plugin-dir",
             "--safe-mode",
         ] {
@@ -111,6 +110,45 @@ fn argument_safety_claude_writes_only_flags_from_the_allow_list() {
                 !args.iter().any(|a| flag_name(a) == never),
                 "{never} must not appear"
             );
+        }
+        // The prompt is replayed only where a skill is invoked; elsewhere standard input is text.
+        let replay = ["--input-format=stream-json", "--replay-user-messages"];
+        for flag in replay {
+            assert_eq!(
+                args.iter().any(|a| a == flag),
+                flag_set == FlagSet::Specification,
+                "{flag} in {flag_set:?}: {args:?}"
+            );
+        }
+        assert!(
+            !args
+                .iter()
+                .any(|a| flag_name(a) == "--input-format" && a != "--input-format=stream-json"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn argument_safety_the_stdin_encoding_follows_the_replay_flags() {
+    // The two flags and the encoding of standard input come from one decision, so a replayed run
+    // always gets a stream-json message and a plain run always gets the text.
+    let prompt =
+        "/speckit-specify Write the specification. The request is in the file inputs/request.md.";
+    for flag_set in [FlagSet::Standard, FlagSet::Specification] {
+        let args = claude_args(flag_set, &[tool("read")]);
+        let replays = args.iter().any(|a| a == "--replay-user-messages");
+        assert_eq!(replays, claude_argv::replays_prompt(flag_set));
+        let stdin = claude_argv::stdin_for(flag_set, prompt);
+        if replays {
+            let line = std::str::from_utf8(&stdin).expect("utf-8");
+            assert!(line.ends_with('\n') && line.lines().count() == 1, "{line}");
+            let value: serde_json::Value = serde_json::from_str(line).expect("a JSON message");
+            assert_eq!(value["type"], "user");
+            assert_eq!(value["message"]["role"], "user");
+            assert_eq!(value["message"]["content"], prompt);
+        } else {
+            assert_eq!(stdin, prompt.as_bytes());
         }
     }
 }
@@ -127,10 +165,16 @@ fn argument_safety_the_flag_set_differs_per_stage() {
             .any(|a| a == "--disable-slash-commands"),
         "the specification stage must keep slash commands, or its skills cannot resolve"
     );
-    // That one flag, and the Skill tool, are the whole difference.
+    // That one flag, the two flags that replay the prompt, and the Skill tool are the whole
+    // difference.
     let strip = |args: &[String]| -> Vec<String> {
         args.iter()
-            .filter(|a| *a != "--disable-slash-commands" && !a.starts_with("--tools="))
+            .filter(|a| {
+                *a != "--disable-slash-commands"
+                    && *a != "--input-format=stream-json"
+                    && *a != "--replay-user-messages"
+                    && !a.starts_with("--tools=")
+            })
             .cloned()
             .collect()
     };

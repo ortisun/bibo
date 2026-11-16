@@ -1462,6 +1462,12 @@ agent_stage_profiles:
       skills_and_slash_commands: allowlist_only
       claude_code:
         flags_omit: [--disable-slash-commands]
+        # The prompt goes in as one stream-json user message and the tool replays it. The
+        # replayed `user` event (`isReplay: true`) holds `<command-name>` and `<command-args>`,
+        # and it is the only place the stream shows what reached the arguments of the skill
+        # (Claude Code 2.1.325; with the prompt as plain text the stream holds no event for it).
+        # The stage's `skill-arguments-fixed` check reads it and fails closed without it.
+        flags_add: [--input-format=stream-json, --replay-user-messages]
         # `--setting-sources user` (every stage) hides the project skill root, and `--bare` also
         # resolves no skill, so the supervisor mounts the four pinned, hash-checked skill
         # directories read-only in the USER skill root, `~/.claude/skills/speckit-<name>` (the

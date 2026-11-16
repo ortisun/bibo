@@ -78,30 +78,11 @@ fn the_recorded_checklists_are_read_and_their_ticks_are_only_read() {
     assert_eq!(custom[0].id.as_deref(), Some("CHK001"));
 }
 
-fn with_fixed_input(files: &mut Files) {
-    let fixed = support::instruction();
-    files.edit_spec(|text| {
-        text.lines()
-            .map(|line| {
-                if line.starts_with("**Input**:") {
-                    format!("**Input**: User description: \"{}\"", fixed.as_str())
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-}
-
 #[test]
 fn the_recording_as_written_has_no_link_between_requirements_and_scenarios() {
     // Spec Kit gives no link. Left as it is, the recording cannot become a contract, and the
-    // adapter says so instead of inventing the links. The Input line is the pasted description of
-    // the recording, which the file-based instruction would not have produced, so it is replaced
-    // to reach the linking step.
-    let mut files = Files::recorded();
-    with_fixed_input(&mut files);
+    // adapter says so instead of inventing the links.
+    let files = Files::recorded();
     let Err(SpecError::PostConditionFailed(found)) =
         assemble(&provider(), SpecOperation::Checklist, &files)
     else {
@@ -117,18 +98,19 @@ fn the_recording_as_written_has_no_link_between_requirements_and_scenarios() {
 }
 
 #[test]
-fn the_recording_with_its_input_line_as_recorded_fails_the_arguments_check() {
-    // The recorded Input line is a pasted description, not the fixed instruction. The check that
-    // nothing else reached the arguments refuses it.
+fn the_recording_with_its_input_line_as_recorded_is_not_judged_by_that_line() {
+    // The recorded Input line is a pasted description, not the fixed instruction. The line is text
+    // the model wrote, so the adapter no longer reads it as evidence of the arguments; the stage
+    // checks the invocation in the transcript instead. The recording still fails, for its links.
     let Err(SpecError::PostConditionFailed(found)) =
         assemble(&provider(), SpecOperation::Checklist, &Files::recorded())
     else {
-        panic!("the recorded Input line is not the fixed instruction");
+        panic!("the unlinked recording must not assemble");
     };
     assert!(
         found
             .iter()
-            .any(|c| c.name.as_str() == "skill-arguments-fixed"),
+            .all(|c| c.name.as_str() != "skill-arguments-fixed"),
         "{found:?}"
     );
 }

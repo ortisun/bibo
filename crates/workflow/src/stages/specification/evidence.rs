@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use factory_ports::spec::ParseReason;
 use serde_json::{Value, json};
 
+pub use crate::gates::spec::InvocationRecord;
+
 /// How the independent review stands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReviewRecord {
@@ -74,6 +76,9 @@ pub struct Evidence {
     pub denials: Vec<(String, String)>,
     /// The hashes of the stored transcripts.
     pub transcripts: Vec<String>,
+    /// For each skill run: the invocation the provider sent and the hash of the run's transcript.
+    /// The gate checks the transcript against it.
+    pub invocations: Vec<InvocationRecord>,
     /// A refusal of the audited ingestion.
     pub refusal: Option<Refusal>,
     /// A file the parser did not understand: path and reason.
@@ -128,6 +133,7 @@ impl Evidence {
             committed: BTreeMap::new(),
             denials: Vec::new(),
             transcripts: Vec::new(),
+            invocations: Vec::new(),
             refusal: None,
             parse_failure: None,
             post_conditions: Vec::new(),
@@ -154,6 +160,12 @@ impl Evidence {
             "committed": self.committed,
             "denials": self.denials.iter().map(|(t, r)| json!([t, r])).collect::<Vec<_>>(),
             "transcripts": self.transcripts,
+            "invocations": self.invocations.iter().map(|i| json!({
+                "operation": i.operation,
+                "skill": i.skill,
+                "arguments": i.arguments,
+                "transcript": i.transcript,
+            })).collect::<Vec<_>>(),
             "refusal": self.refusal.as_ref().map(|r| json!({
                 "code": r.code,
                 "paths": r.paths.iter().map(|(p, m)| json!([p, m])).collect::<Vec<_>>(),
@@ -250,6 +262,29 @@ impl Evidence {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+        // A document written before the invocations were recorded has none, and so records no
+        // skill run to check. The stage writes the key on every run since.
+        let invocations = match value.get("invocations") {
+            None => Vec::new(),
+            Some(list) => list
+                .as_array()?
+                .iter()
+                .map(|v| {
+                    Some(InvocationRecord {
+                        operation: v.get("operation")?.as_str()?.to_owned(),
+                        skill: match v.get("skill")? {
+                            Value::Null => None,
+                            other => Some(other.as_str()?.to_owned()),
+                        },
+                        arguments: v.get("arguments")?.as_str()?.to_owned(),
+                        transcript: match v.get("transcript")? {
+                            Value::Null => None,
+                            other => Some(other.as_str()?.to_owned()),
+                        },
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        };
         let review_value = value.get("review")?;
         let review = match review_value.get("outcome")?.as_str()? {
             "not_run" => ReviewRecord::NotRun(review_value.get("reason")?.as_str()?.to_owned()),
@@ -277,6 +312,7 @@ impl Evidence {
             committed,
             denials: pairs("denials")?,
             transcripts: list("transcripts")?,
+            invocations,
             refusal,
             parse_failure,
             post_conditions,
@@ -317,6 +353,20 @@ mod tests {
             reason: "why".to_owned(),
         });
         evidence.questions = vec![("Q-001".to_owned(), "Which?".to_owned())];
+        evidence.invocations = vec![
+            InvocationRecord {
+                operation: "specify".to_owned(),
+                skill: Some("speckit-specify".to_owned()),
+                arguments: "Write the feature specification.".to_owned(),
+                transcript: Some("sha256:t".to_owned()),
+            },
+            InvocationRecord {
+                operation: "checklist".to_owned(),
+                skill: None,
+                arguments: String::new(),
+                transcript: None,
+            },
+        ];
         evidence.review = ReviewRecord::Answered {
             agent: "r".to_owned(),
             version: "1.0.0".to_owned(),
