@@ -2333,6 +2333,25 @@ async fn a_gate_that_could_not_run_blocks_on_a_report_of_the_engines_own() {
 }
 
 #[tokio::test]
+async fn a_gate_that_could_not_run_names_its_blocked_code_in_the_engines_report() {
+    // The handler said why it could not run. The first real run of E1 (2026-11-15) blocked the
+    // specification with no way to tell which of a dozen reasons it was, because the engine
+    // dropped the code. The decision document now carries it.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::CannotRun]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::Blocked);
+    let report = gate_report_of(&world, intake(&view).id).await;
+    assert_eq!(report["kind"], "gate-decision");
+    assert_eq!(report["details"]["gate_could_not_run"], true);
+    assert_eq!(report["details"]["blocked_code"], "tool_unavailable");
+}
+
+#[tokio::test]
 async fn a_skipped_stage_does_not_stop_the_job_from_completing() {
     let world = World::new().await;
     world

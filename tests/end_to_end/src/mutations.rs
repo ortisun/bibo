@@ -740,6 +740,32 @@ pub fn all() -> Vec<Mutation> {
                     json!("rust:latest")
             },
         },
+        Mutation {
+            name: "a-decision-document-that-names-no-cause",
+            assertion: "A7",
+            what: "The engine's document for a gate that could not run says no cause.",
+            expect: "names no cause",
+            base: Production,
+            apply: |ev| {
+                let stage_run_id = ev.contracts.gate_reports[0].stage_run_id.clone();
+                ev.contracts
+                    .gate_reports
+                    .push(crate::evidence::GateReportRecord {
+                        report: json!({
+                            "schema_version": 1,
+                            "kind": "gate-decision",
+                            "outcome": "BLOCKED",
+                            "job_id": "00000000-0000-4000-8000-000000000001",
+                            "stage_run_id": stage_run_id,
+                            "stage": "SPECIFICATION",
+                            "cause": "",
+                            "recorded_at": "2026-11-15T00:00:00Z",
+                            "details": {"gate_could_not_run": true}
+                        }),
+                        stage_run_id,
+                    });
+            },
+        },
         // ---- A8 ------------------------------------------------------------------------------
         Mutation {
             name: "specification-left-in-portuguese",

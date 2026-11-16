@@ -496,6 +496,44 @@ pub fn a6(ev: &RunEvidence, _env: &Env) -> Verdict {
     )
 }
 
+/// What is wrong with an engine decision document, or `None` when `report` is a valid one or is
+/// not a decision document at all (it has no `kind`). The shape is `crates/workflow/src/engine/
+/// decision.rs`: version 1, a known kind, an outcome, the stage run it is about, a non-empty cause
+/// code and an object of details.
+fn decision_document_problem(report: &Value, stage_run_id: &str) -> Option<String> {
+    let kind = report.get("kind")?;
+    let kind = kind.as_str().unwrap_or("");
+    if !["gate-decision", "environment-block", "human-approval"].contains(&kind) {
+        return Some(format!(
+            "the decision document has an unknown kind `{kind}`"
+        ));
+    }
+    let wrong = |what: &str| {
+        Some(format!(
+            "the {kind} decision document does not validate: {what}"
+        ))
+    };
+    if report.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        return wrong("its schema_version is not 1");
+    }
+    if !matches!(
+        text_at(report, "/outcome"),
+        Some("PASSED" | "FAILED" | "BLOCKED" | "NOT_APPLICABLE")
+    ) {
+        return wrong("its outcome is not a gate outcome");
+    }
+    if text_at(report, "/stage_run_id") != Some(stage_run_id) {
+        return wrong("it names another stage run");
+    }
+    if text_at(report, "/cause").is_none_or(str::is_empty) {
+        return wrong("it names no cause");
+    }
+    if !report.get("details").is_some_and(Value::is_object) {
+        return wrong("its details are not an object");
+    }
+    None
+}
+
 /// A7: every gate report validates, every `PASSED` report has exit code 0 for all commands,
 /// images are pinned by digest, and fidelity is real.
 #[must_use]
@@ -506,6 +544,15 @@ pub fn a7(ev: &RunEvidence, _env: &Env) -> Verdict {
     }
     for record in &ev.contracts.gate_reports {
         let report = &record.report;
+        // The engine's own decision document stands where no gate produced a report (ADR 0014,
+        // amendment 1): a gate that could not run, refused evidence, a person's approval. It has
+        // its own shape, checked here, and none of the commands a gate report runs.
+        if let Some(problem) = decision_document_problem(report, &record.stage_run_id) {
+            return Verdict::fail(ID, problem);
+        }
+        if report.get("kind").is_some() {
+            continue;
+        }
         let name = text_at(report, "/metadata/gate_id").unwrap_or("(unnamed gate)");
         if let Err(error) = GateReport::from_json_value(report.clone()) {
             return Verdict::fail(

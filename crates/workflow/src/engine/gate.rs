@@ -68,6 +68,9 @@ pub(crate) struct Judged {
     pub(crate) problem: Option<EvidenceProblem>,
     /// The gate said it could not run (a tool or capability is missing).
     pub(crate) could_not_run: bool,
+    /// Why it could not run, as the handler said. The decision document carries it, so a block
+    /// can be traced to its cause without the worker's logs.
+    pub(crate) blocked_code: Option<factory_domain::contracts::gate_report::BlockedCode>,
     /// The attempt whose output was judged. An assurance claim must rest on a report that names it.
     pub(crate) attempt: AttemptId,
 }
@@ -726,6 +729,9 @@ async fn gate_record(
         None => {
             let mut details = serde_json::Map::new();
             details.insert("gate_could_not_run".to_owned(), json!(judged.could_not_run));
+            if let Some(code) = judged.blocked_code {
+                details.insert("blocked_code".to_owned(), json!(code.as_str()));
+            }
             details.insert(
                 "evidence_refused".to_owned(),
                 json!(judged.problem.is_some()),

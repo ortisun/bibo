@@ -1007,13 +1007,17 @@ impl Engine {
             .evaluate(&gate)
             .instrument(span.clone())
             .await;
-        let (decision, could_not_run) = match evaluated {
-            Ok(decision) => (decision, false),
+        let (decision, blocked_code) = match evaluated {
+            Ok(decision) => (decision, None),
             // The gate could not run. That blocks the stage run, and it is not a failure of the
-            // attempt: the output itself was valid.
-            Err(StageError::Blocked(_)) => (GateDecision::default(), true),
+            // attempt: the output itself was valid. The code says why, and is kept.
+            Err(StageError::Blocked(code)) => {
+                tracing::warn!(blocked_code = code.as_str(), "the gate could not run");
+                (GateDecision::default(), Some(code))
+            }
             Err(other) => return Err(other.into()),
         };
+        let could_not_run = blocked_code.is_some();
         let expectation = Expectation {
             job: claimed.job,
             stage_run: claimed.stage_run,
@@ -1046,6 +1050,7 @@ impl Engine {
                 review,
                 problem,
                 could_not_run,
+                blocked_code,
                 attempt: claimed.attempt,
             }),
             output,
