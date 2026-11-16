@@ -369,8 +369,8 @@ async fn negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start()
             "apparmor",
         ),
         (
-            "no apparmor on a production policy",
-            |d| d["AppArmorProfile"] = "".into(),
+            "another apparmor profile",
+            |d| d["AppArmorProfile"] = "my-profile".into(),
             "apparmor",
         ),
         (
@@ -795,14 +795,130 @@ async fn posture_is_compared_in_every_part_and_apparmor_only_by_policy() {
         Err(SandboxError::PostureMismatch(diff)) => assert!(diff.fields.contains(&"network")),
         other => panic!("{:?}", other.map(|_| ())),
     }
-    // Missing AppArmor: refused on a production policy, accepted where the policy allows it.
-    for (allowed, accepted) in [(false, false), (true, true)] {
-        let rig = rig_with(&images_json_with_stand_in_sidecar(), allowed);
-        rig.sim.mutate(|doc, _| doc["AppArmorProfile"] = "".into());
-        let (spec, _host) = make_spec(SandboxProfile::Verify);
-        let outcome = create(&rig, spec).await;
-        assert_eq!(outcome.is_ok(), accepted, "policy allows {allowed}");
+    // A daemon without AppArmor: refused on a production policy, accepted where the policy
+    // allows it, for a sandbox alone and for one with a sidecar.
+    for profile in [SandboxProfile::Verify, SandboxProfile::Agent] {
+        for (allowed, accepted) in [(false, false), (true, true)] {
+            let rig = rig_with(&images_json_with_stand_in_sidecar(), allowed);
+            rig.sim.daemon_without_apparmor();
+            let (spec, _host) = make_spec(profile);
+            match create(&rig, spec).await {
+                Ok(_) => assert!(accepted, "{profile:?}: policy allows {allowed}"),
+                Err(SandboxError::PostureMismatch(diff)) => {
+                    assert!(!accepted, "{profile:?}: policy allows {allowed}");
+                    assert_eq!(diff.fields, vec!["apparmor"], "{profile:?}");
+                }
+                Err(other) => panic!("{profile:?}: {other:?}"),
+            }
+        }
     }
+}
+
+// ---- AppArmor: the daemon says whether a profile is enforced ----------------------------------------
+
+#[tokio::test]
+async fn an_empty_profile_after_the_create_on_a_daemon_with_apparmor_is_accepted_on_production() {
+    // Docker 29 on Ubuntu 24.04 reports no profile until the start and applies `docker-default`
+    // then. A production policy must accept that, for the sandbox and for the sidecar.
+    for profile in [SandboxProfile::Verify, SandboxProfile::Agent] {
+        let rig = rig_with(&images_json_with_stand_in_sidecar(), false);
+        rig.sim.mutate(|doc, _| doc["AppArmorProfile"] = "".into());
+        let (spec, _host) = make_spec(profile);
+        let session = create(&rig, spec).await.expect("a sandbox");
+        assert_eq!(
+            session.posture().observed.apparmor,
+            Confinement::RuntimeDefault,
+            "{profile:?}"
+        );
+        session
+            .stop_and_remove(TeardownReason::Completed)
+            .await
+            .expect("teardown");
+    }
+}
+
+#[tokio::test]
+async fn docker_default_reported_by_a_daemon_without_apparmor_is_not_confinement() {
+    // Docker Desktop echoes the profile a create named although nothing enforces it.
+    let rig = rig_with(&images_json_with_stand_in_sidecar(), false);
+    rig.sim.daemon_without_apparmor();
+    rig.sim
+        .mutate(|doc, _| doc["AppArmorProfile"] = "docker-default".into());
+    let (spec, _host) = make_spec(SandboxProfile::Agent);
+    match create(&rig, spec).await {
+        Err(SandboxError::PostureMismatch(diff)) => assert_eq!(diff.fields, vec!["apparmor"]),
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+    assert!(rig.sim.started().is_empty(), "{:?}", rig.sim.started());
+}
+
+#[tokio::test]
+async fn the_daemon_is_asked_about_apparmor_once_and_before_anything_is_created() {
+    let rig = new_rig();
+    for _ in 0..2 {
+        let (spec, _host) = make_spec(SandboxProfile::Verify);
+        create(&rig, spec)
+            .await
+            .expect("a sandbox")
+            .stop_and_remove(TeardownReason::Completed)
+            .await
+            .expect("teardown");
+    }
+    let verbs = rig.sim.verbs();
+    let infos: Vec<usize> = (0..verbs.len()).filter(|i| verbs[*i] == "info").collect();
+    assert_eq!(infos.len(), 1, "{verbs:?}");
+    let first_create = verbs.iter().position(|v| v == "create").expect("a create");
+    assert!(infos[0] < first_create, "{verbs:?}");
+    let info = &rig.sim.calls()[infos[0]];
+    assert_eq!(info.args, ["info", "--format", "{{json .SecurityOptions}}"]);
+}
+
+#[tokio::test]
+async fn an_unreadable_or_failed_answer_about_apparmor_fails_closed_before_anything_is_created() {
+    for answer in [
+        "",
+        "name=apparmor",
+        "{\"name\": \"apparmor\"}",
+        "[name=apparmor]",
+    ] {
+        // The development policy too: an unknown daemon is not a daemon without AppArmor.
+        for allowed in [false, true] {
+            let rig = rig_with(&images_json_with_stand_in_sidecar(), allowed);
+            rig.sim.daemon_security_options(answer);
+            let (spec, _host) = make_spec(SandboxProfile::Agent);
+            assert_eq!(
+                create(&rig, spec).await.err(),
+                Some(SandboxError::DaemonUnavailable),
+                "{answer:?}"
+            );
+            assert!(
+                !rig.sim
+                    .verbs()
+                    .iter()
+                    .any(|v| v == "create" || v == "network create"),
+                "{answer:?}: {:?}",
+                rig.sim.verbs()
+            );
+        }
+    }
+    let rig = new_rig();
+    rig.sim
+        .info_fails("Error response from daemon: an internal error");
+    let (spec, _host) = make_spec(SandboxProfile::Verify);
+    assert_eq!(
+        create(&rig, spec).await.err(),
+        Some(SandboxError::DaemonUnavailable)
+    );
+    assert!(!rig.sim.verbs().contains(&"create".to_owned()));
+    // The failure is not remembered: a later answer is read again.
+    rig.sim.info_recovers();
+    let (spec, _host) = make_spec(SandboxProfile::Verify);
+    create(&rig, spec)
+        .await
+        .expect("a sandbox once the daemon answers")
+        .stop_and_remove(TeardownReason::Completed)
+        .await
+        .expect("teardown");
 }
 
 // ---- cancellation, teardown and the token file ------------------------------------------------------

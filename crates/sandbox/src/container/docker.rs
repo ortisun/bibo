@@ -311,6 +311,26 @@ impl DockerClient {
         }
     }
 
+    /// `docker info`: the daemon's security options as JSON, such as
+    /// `["name=apparmor","name=seccomp,profile=builtin"]`. The answer is read by
+    /// [`security_options_have_apparmor`](crate::container::posture::security_options_have_apparmor).
+    ///
+    /// # Errors
+    /// [`DockerError`]; `Unavailable` when the daemon does not answer.
+    pub async fn security_options(&self, cancel: &dyn CancelSignal) -> Result<String, DockerError> {
+        let output = self
+            .run(
+                vec![
+                    "info".to_owned(),
+                    "--format".to_owned(),
+                    "{{json .SecurityOptions}}".to_owned(),
+                ],
+                cancel,
+            )
+            .await?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     /// `docker image inspect`: the image id, when the image is on this host.
     ///
     /// # Errors

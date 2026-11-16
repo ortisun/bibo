@@ -71,6 +71,7 @@ pub(crate) async fn create_verified(
         return Err(SandboxError::Cancelled);
     }
     let catalog = shared.catalog(cancel).await?;
+    let daemon_has_apparmor = shared.daemon_has_apparmor(cancel).await?;
     let image = catalog
         .check_spec_image(spec.profile, &spec.image)
         .map_err(|_| SandboxError::ImageUnavailable)?
@@ -106,6 +107,7 @@ pub(crate) async fn create_verified(
         &spec,
         &image,
         sidecar_image.as_ref(),
+        daemon_has_apparmor,
         &mut guard,
         cancel,
     )
@@ -133,6 +135,7 @@ async fn prepare_network(
     shared: &Shared,
     spec: &SandboxSpec,
     sidecar_image: &CatalogImage,
+    daemon_has_apparmor: bool,
     guard: &mut Guard,
     cancel: &dyn CancelSignal,
 ) -> Result<String, SandboxError> {
@@ -210,6 +213,7 @@ async fn prepare_network(
         (sidecar_image.uid, sidecar_image.gid),
         &names.network,
         sidecar_image.reference.reference(),
+        daemon_has_apparmor,
         shared.config.policy.apparmor_may_be_unavailable,
     );
     if !deviations.is_empty() {
@@ -255,6 +259,7 @@ async fn build(
     spec: &SandboxSpec,
     image: &CatalogImage,
     sidecar_image: Option<&CatalogImage>,
+    daemon_has_apparmor: bool,
     guard: &mut Guard,
     cancel: &dyn CancelSignal,
 ) -> Result<DockerSession, SandboxError> {
@@ -263,7 +268,9 @@ async fn build(
     let owner = &shared.config.owner_labels;
 
     let observed_sidecar = match sidecar_image {
-        Some(sidecar) => Some(prepare_network(shared, spec, sidecar, guard, cancel).await?),
+        Some(sidecar) => {
+            Some(prepare_network(shared, spec, sidecar, daemon_has_apparmor, guard, cancel).await?)
+        }
         None => None,
     };
     check_cancel(cancel)?;
@@ -342,6 +349,7 @@ async fn build(
         expected_image_id: &image.digest,
         job_network: sidecar_image.map(|_| names.network.as_str()),
         observed_sidecar: observed_sidecar.as_deref(),
+        daemon_has_apparmor,
         verified_at: shared.clock.now(),
     })
     .map_err(SandboxError::PostureMismatch)?;

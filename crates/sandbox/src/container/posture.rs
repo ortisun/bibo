@@ -6,7 +6,10 @@
 //! * [`observe`] turns the inspect document of a container that has been created and not started
 //!   into a [`PostureReport`] plus the deviations the report has no field for. The ports crate
 //!   compares the report with the spec ([`PostureReport::differences`]); this module only reads.
-//!   A part that cannot be read is a deviation, never a default.
+//!   A part that cannot be read is a deviation, never a default. AppArmor is read from the
+//!   document and from what the daemon says about itself ([`security_options_have_apparmor`]),
+//!   because the document of a created container cannot tell a confined container from one that
+//!   nothing confines.
 //! * [`evaluate_self_check`] decides the runtime self-check from the text of `/proc/self/status`
 //!   of a process inside the started container (NT-SBX-02).
 //! * [`denied_flag_in`] is the deny list. The argument builder never writes a denied flag, and
@@ -100,6 +103,10 @@ pub struct ObserveInput<'a> {
     pub job_network: Option<&'a str>,
     /// The sidecar alias observed on that network (read from the sidecar's own inspect).
     pub observed_sidecar: Option<&'a str>,
+    /// True when the daemon lists AppArmor among its security options
+    /// ([`security_options_have_apparmor`]). Without it, no profile is enforced, whatever the
+    /// document says.
+    pub daemon_has_apparmor: bool,
     /// When the posture is being verified.
     pub verified_at: Timestamp,
 }
@@ -169,7 +176,44 @@ fn user_ids(user: &str) -> (u32, u32) {
     }
 }
 
-fn hardening(document: &Value) -> Hardening {
+/// Whether the answer of `docker info --format '{{json .SecurityOptions}}'` lists AppArmor: an
+/// entry whose `name=` key is exactly `apparmor` (entries look like `name=apparmor` or
+/// `name=seccomp,profile=builtin`). `null` is a daemon with no security options.
+///
+/// `None` when the answer is not a JSON list of strings. The caller treats that as a failure and
+/// never as a daemon with AppArmor.
+#[must_use]
+pub fn security_options_have_apparmor(answer: &str) -> Option<bool> {
+    let entries: Option<Vec<String>> = serde_json::from_str(answer.trim()).ok()?;
+    Some(entries.unwrap_or_default().iter().any(|entry| {
+        entry
+            .split(',')
+            .any(|pair| pair.strip_prefix("name=") == Some("apparmor"))
+    }))
+}
+
+/// How AppArmor confines a created container.
+///
+/// The document alone cannot say. A daemon with AppArmor applies `docker-default` at the start
+/// when no profile was named, so a created container reports an empty profile (Docker 29 on
+/// Ubuntu 24.04). A daemon without AppArmor (Docker Desktop) echoes `docker-default` when that
+/// option was named, although nothing enforces it. So an empty profile or `docker-default` is the
+/// runtime default only on a daemon that has AppArmor, and `NotAvailable` on any other.
+fn apparmor(document: &Value, options: &[String], daemon_has_apparmor: bool) -> Confinement {
+    if options
+        .iter()
+        .any(|o| o.starts_with("apparmor=") && o != "apparmor=docker-default")
+    {
+        return Confinement::Unconfined;
+    }
+    match text(document, &["AppArmorProfile"]) {
+        None | Some("" | "docker-default") if daemon_has_apparmor => Confinement::RuntimeDefault,
+        None | Some("" | "docker-default") => Confinement::NotAvailable,
+        Some(_) => Confinement::Unconfined,
+    }
+}
+
+fn hardening(document: &Value, daemon_has_apparmor: bool) -> Hardening {
     let host = document.get("HostConfig").unwrap_or(&Value::Null);
     let options = strings(host, &["SecurityOpt"]);
     let has = |wanted: &str| options.iter().any(|o| o == wanted);
@@ -180,17 +224,7 @@ fn hardening(document: &Value) -> Hardening {
     } else {
         Confinement::RuntimeDefault
     };
-    let apparmor = match text(document, &["AppArmorProfile"]) {
-        _ if options
-            .iter()
-            .any(|o| o.starts_with("apparmor=") && o != "apparmor=docker-default") =>
-        {
-            Confinement::Unconfined
-        }
-        None | Some("") => Confinement::NotAvailable,
-        Some("docker-default") => Confinement::RuntimeDefault,
-        Some(_) => Confinement::Unconfined,
-    };
+    let apparmor = apparmor(document, &options, daemon_has_apparmor);
     Hardening {
         privileged: flag(host, &["Privileged"]),
         uid,
@@ -431,7 +465,7 @@ pub fn observe(input: &ObserveInput<'_>) -> Result<Inspected, PostureDiff> {
     let (image, limits) = (image.clone(), limits.clone());
     Ok(Inspected {
         report: PostureReport {
-            observed: hardening(document),
+            observed: hardening(document, input.daemon_has_apparmor),
             image,
             limits,
             network: network(document, input),
@@ -483,16 +517,19 @@ pub fn sidecar_alias(document: &Value, network: &str, expected: &str) -> Option<
 
 /// What differs between a created egress sidecar and its plan: the strict hardening, exactly the
 /// job network and the default bridge, no mounts and no published ports, and the planned image.
+/// AppArmor is read as in [`observe`], with `daemon_has_apparmor`, and `NotAvailable` is accepted
+/// only when `apparmor_may_be_unavailable` is set.
 #[must_use]
 pub fn sidecar_deviations(
     document: &Value,
     ids: (u32, u32),
     job_network: &str,
     image_reference: &str,
+    daemon_has_apparmor: bool,
     apparmor_may_be_unavailable: bool,
 ) -> Vec<&'static str> {
     let expected = Hardening::strict(ids.0, ids.1);
-    let mut observed = hardening(document);
+    let mut observed = hardening(document, daemon_has_apparmor);
     if apparmor_may_be_unavailable && observed.apparmor == Confinement::NotAvailable {
         observed.apparmor = expected.apparmor;
     }
@@ -707,6 +744,129 @@ mod tests {
         assert_eq!(mounts[0].source, "/Users/x/out");
         assert_eq!(mounts[1].source, "/host_mnt/Users/y/ws");
         assert_eq!(mounts[2].source, "/host_mnt/Users/x/out");
+    }
+
+    fn created(profile: Option<&str>, security_opt: &[&str]) -> Value {
+        let mut doc = serde_json::json!({
+            "HostConfig": { "SecurityOpt": security_opt },
+            "Config": { "User": "10001:10001" },
+        });
+        if let Some(profile) = profile {
+            doc["AppArmorProfile"] = profile.into();
+        }
+        doc
+    }
+
+    #[test]
+    fn an_empty_profile_on_a_daemon_with_apparmor_is_the_runtime_default() {
+        // Docker 29 on Ubuntu reports no profile until the start, then applies `docker-default`.
+        for profile in [Some(""), None] {
+            assert_eq!(
+                hardening(&created(profile, &[]), true).apparmor,
+                Confinement::RuntimeDefault,
+                "{profile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_profile_on_a_daemon_without_apparmor_is_not_available() {
+        for profile in [Some(""), None] {
+            assert_eq!(
+                hardening(&created(profile, &[]), false).apparmor,
+                Confinement::NotAvailable,
+                "{profile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn docker_default_on_a_daemon_without_apparmor_is_not_available() {
+        // Docker Desktop echoes `apparmor=docker-default` in the profile although nothing applies it.
+        let named = created(Some("docker-default"), &["apparmor=docker-default"]);
+        assert_eq!(hardening(&named, false).apparmor, Confinement::NotAvailable);
+        assert_eq!(
+            hardening(&named, true).apparmor,
+            Confinement::RuntimeDefault
+        );
+        let reported = created(Some("docker-default"), &[]);
+        assert_eq!(
+            hardening(&reported, false).apparmor,
+            Confinement::NotAvailable
+        );
+        assert_eq!(
+            hardening(&reported, true).apparmor,
+            Confinement::RuntimeDefault
+        );
+    }
+
+    #[test]
+    fn an_unconfined_option_or_another_profile_is_unconfined_on_every_daemon() {
+        for daemon_has_apparmor in [true, false] {
+            for doc in [
+                created(Some(""), &["apparmor=unconfined"]),
+                created(Some("docker-default"), &["apparmor=unconfined"]),
+                created(Some("unconfined"), &[]),
+                created(Some("my-profile"), &[]),
+                created(Some(""), &["apparmor=my-profile"]),
+            ] {
+                assert_eq!(
+                    hardening(&doc, daemon_has_apparmor).apparmor,
+                    Confinement::Unconfined,
+                    "{doc} on a daemon with AppArmor: {daemon_has_apparmor}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_sidecar_reading_follows_the_daemon_too() {
+        let doc = serde_json::json!({
+            "AppArmorProfile": "",
+            "Config": { "User": "10001:10001", "Image": "img" },
+            "HostConfig": {
+                "SecurityOpt": ["no-new-privileges"], "ReadonlyRootfs": true, "CapDrop": ["ALL"],
+                "Init": true, "LogConfig": { "Type": "none" }, "IpcMode": "private",
+            },
+            "NetworkSettings": { "Networks": { "net": {}, "bridge": {} } },
+            "Mounts": [],
+        });
+        let deviations = |daemon: bool, allowed: bool| {
+            sidecar_deviations(&doc, (10001, 10001), "net", "img", daemon, allowed)
+        };
+        assert!(!deviations(true, false).contains(&"apparmor"));
+        assert!(deviations(false, false).contains(&"apparmor"));
+        assert!(!deviations(false, true).contains(&"apparmor"));
+    }
+
+    #[test]
+    fn the_security_options_name_apparmor_only_by_an_exact_name() {
+        let read = security_options_have_apparmor;
+        assert_eq!(
+            read(r#"["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"]"#),
+            Some(true)
+        );
+        assert_eq!(read("[\"name=apparmor\"]\n"), Some(true));
+        assert_eq!(
+            read(r#"["name=seccomp,profile=builtin","name=cgroupns"]"#),
+            Some(false)
+        );
+        for near in [
+            r#"["name=apparmorx"]"#,
+            r#"["name=xapparmor"]"#,
+            r#"["apparmor"]"#,
+            r#"["name=seccomp,profile=apparmor"]"#,
+            r#"["profile=builtin,apparmor"]"#,
+            "[]",
+            "null",
+        ] {
+            assert_eq!(read(near), Some(false), "{near}");
+        }
+        // The key may come after another one in the same entry.
+        assert_eq!(read(r#"["profile=x,name=apparmor"]"#), Some(true));
+        for broken in ["", "name=apparmor", "[name=apparmor]", "{}", "[1]", "\"x\""] {
+            assert_eq!(read(broken), None, "{broken:?}");
+        }
     }
 
     #[test]
