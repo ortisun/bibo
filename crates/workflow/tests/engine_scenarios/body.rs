@@ -2352,6 +2352,22 @@ async fn a_gate_that_could_not_run_names_its_blocked_code_in_the_engines_report(
 }
 
 #[tokio::test]
+async fn a_gate_reads_the_transcript_its_handler_noted() {
+    // The runtime stores a transcript and nobody indexes it for the tenant; the handler notes it.
+    // A gate that reads it back (the specification gate does) must find it, so the engine indexes
+    // noted transcripts before the gate, with the outputs. The real run of E1 on 2026-11-15
+    // blocked its specification here with `NotFound`.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let script = world.script(StageKind::Intake);
+    script.gate_reads_a_transcript();
+    world.run_next("worker-1").await;
+    assert_eq!(script.transcript_read(), Some(true));
+    let view = world.view(job).await;
+    assert_ne!(intake(&view).status, StageRunStatus::Blocked);
+}
+
+#[tokio::test]
 async fn a_skipped_stage_does_not_stop_the_job_from_completing() {
     let world = World::new().await;
     world

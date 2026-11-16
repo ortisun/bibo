@@ -164,6 +164,11 @@ impl Notes {
         self.lock().cost_micro_usd
     }
 
+    /// The transcripts the handler noted so far, left in place.
+    pub(crate) fn transcripts(&self) -> Vec<ArtifactRef> {
+        self.lock().transcripts.clone()
+    }
+
     /// Takes the transcripts the handler noted, leaving none behind.
     pub(crate) fn take_transcripts(&self) -> Vec<ArtifactRef> {
         std::mem::take(&mut self.lock().transcripts)

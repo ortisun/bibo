@@ -971,11 +971,15 @@ impl Engine {
         // The gate reads these documents through the artifact store, which answers only for a hash
         // the tenant has indexed. The result transaction indexes them too, but it comes after the
         // gate, so they are indexed here first (idempotent by hash). Without this a gate gets
-        // `NotFound` for a document the engine itself stored.
+        // `NotFound` for a document the engine itself stored. The transcripts the handler noted
+        // are read by some gates too (the specification gate looks in them for a skill outside
+        // the profile), so they are indexed with the outputs: the first real run of E1 on
+        // 2026-11-15 blocked its specification on exactly that `NotFound`.
         let produced: Vec<ArtifactRef> = outputs
             .iter()
             .map(|named| named.artifact.clone())
             .chain(std::iter::once(manifest.clone()))
+            .chain(ctx.notes.transcripts())
             .collect();
         self.index_declared(claimed, &produced).await?;
 

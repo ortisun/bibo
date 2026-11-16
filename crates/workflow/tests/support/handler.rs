@@ -157,6 +157,11 @@ pub struct Script {
     /// Whether `execute` starts an agent run through `ctx.ports.runtime`, as the stages that run
     /// an agent do. What the run reports is what the test queued in the fake runtime.
     pub run_agent: bool,
+    /// Whether a successful `execute` stores a transcript and notes it, and `evaluate` then reads
+    /// it back for the tenant, as the specification gate does. The read's outcome is kept here.
+    pub gate_reads_transcript: bool,
+    /// What the gate's read of the noted transcript gave: `Some(true)` when it read it back.
+    pub transcript_read: Option<bool>,
 }
 
 impl Default for Script {
@@ -183,6 +188,8 @@ impl Default for Script {
             failed_run: None,
             transcripts: Vec::new(),
             run_agent: false,
+            gate_reads_transcript: false,
+            transcript_read: None,
         }
     }
 }
@@ -240,6 +247,16 @@ impl ScriptHandle {
     /// run does what the script queued in `World::runtime` says.
     pub fn runs_an_agent(&self) {
         self.with(|script| script.run_agent = true);
+    }
+
+    /// Makes `execute` store and note a transcript, and the gate read it back for the tenant.
+    pub fn gate_reads_a_transcript(&self) {
+        self.with(|script| script.gate_reads_transcript = true);
+    }
+
+    /// Whether the gate read the noted transcript back: `None` before any gate ran.
+    pub fn transcript_read(&self) -> Option<bool> {
+        self.with(|script| script.transcript_read)
     }
 
     /// The tokens the stage was given, one for each attempt.
@@ -431,6 +448,22 @@ impl StageHandler for ScriptedHandler {
         if self.script.with(|script| script.run_agent) {
             run_an_agent(ctx).await;
         }
+        if self.script.with(|script| script.gate_reads_transcript) {
+            // As the runtime does: the blob is stored, nobody indexes it for the tenant, and the
+            // handler notes it for the engine.
+            let transcript = ctx
+                .ports
+                .artifacts
+                .put(
+                    b"{\"type\":\"result\"}\n".to_vec(),
+                    MediaType::parse("text/plain").expect("a media type"),
+                )
+                .await
+                .expect("the transcript is stored");
+            ctx.note_transcript(&transcript);
+            self.script
+                .with(|script| script.transcripts.push(transcript.clone()));
+        }
         let step = self.script.with(|script| {
             script.executed.push(Executed {
                 attempt_number: ctx.attempt_number,
@@ -557,6 +590,23 @@ impl StageHandler for ScriptedHandler {
     }
 
     async fn evaluate(&self, ctx: &GateContext<'_>) -> Result<GateDecision, StageError> {
+        let transcript = self.script.with(|script| {
+            script
+                .gate_reads_transcript
+                .then(|| script.transcripts.last().cloned())
+                .flatten()
+        });
+        if let Some(transcript) = transcript {
+            let scope = factory_domain::scope::TenantScope::new(ctx.identity.tenant);
+            let read = ctx.ports.artifacts.get(&scope, &transcript).await.is_ok();
+            self.script
+                .with(|script| script.transcript_read = Some(read));
+            if !read {
+                return Err(StageError::Blocked(
+                    factory_domain::contracts::gate_report::BlockedCode::DependencyUnavailable,
+                ));
+            }
+        }
         let eval = self.script.with(|script| {
             script.evaluated += 1;
             script.evals.pop_front().unwrap_or(script.eval_otherwise)
