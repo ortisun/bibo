@@ -299,6 +299,37 @@ pub async fn collect_from<S: Sources>(
         {
             found.push((report, bytes));
         }
+        // Every other report of the run's gates, as the evidence ledger cites them by hash. A
+        // blocked stage run's record names one report; the one that explains the block can be
+        // another (the eighth real run of E1 on 2026-11-15 hid the stage profile's findings).
+        let mut seen: Vec<Sha256Digest> = found
+            .iter()
+            .map(|(_, bytes)| Sha256Digest::of(bytes))
+            .collect();
+        let mut cited: Vec<Sha256Digest> = Vec::new();
+        for entry in &ledger {
+            let entry = entry.to_json_value().expect("a ledger entry is JSON");
+            if entry["metadata"]["stage_run_id"].as_str() != Some(id.as_str()) {
+                continue;
+            }
+            for evidence in entry["evidence"].as_array().into_iter().flatten() {
+                if let Some(digest) = evidence["gate_report_sha256"]
+                    .as_str()
+                    .and_then(|hash| Sha256Digest::parse(hash).ok())
+                    && !seen.contains(&digest)
+                {
+                    seen.push(digest.clone());
+                    cited.push(digest);
+                }
+            }
+        }
+        for digest in cited {
+            if let Ok(bytes) = rig.artifacts().get(&scope, &artifact_ref(digest)).await
+                && let Ok(report) = serde_json::from_slice::<Value>(&bytes)
+            {
+                found.push((report, bytes));
+            }
+        }
         if run.value.kind == StageKind::Validation {
             for (_, run_id, link) in &links {
                 if *run_id != run.value.id
