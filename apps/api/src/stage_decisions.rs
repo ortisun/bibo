@@ -30,16 +30,21 @@ use serde_json::json;
 
 use crate::answers::{Answer, ApiError, Reply};
 use crate::auth::{Caller, require_repository};
-use crate::decisions::{DecisionBody, derived_id, kept, recorded_request, refuse, roles_of_action};
+use crate::decisions::{
+    DecisionBody, confirm_word, derived_id, kept, recorded_request, refuse, roles_of_action,
+};
 use crate::jobs::{audit_action, clean_line, clean_text, commit, parse_id};
 use crate::state::ApiState;
+use factory_domain::policy::solo::SoloTarget;
 
 /// The fields of the body that mean something to `verb`.
 const fn takes(verb: StageVerb) -> &'static [&'static str] {
     match verb {
         StageVerb::Unblock => &["stage_run_id", "reason"],
-        StageVerb::ApproveProjectBuildCode => &["stage_run_id", "reason", "path", "digest"],
-        StageVerb::AckTranslationWarning => &["stage_run_id", "reason", "warning"],
+        StageVerb::ApproveProjectBuildCode => {
+            &["stage_run_id", "reason", "path", "digest", "confirm"]
+        }
+        StageVerb::AckTranslationWarning => &["stage_run_id", "reason", "warning", "confirm"],
     }
 }
 
@@ -58,6 +63,7 @@ fn given(body: &DecisionBody) -> Vec<&'static str> {
         ("digest", body.digest.is_some()),
         ("warning", body.warning.is_some()),
         ("answer", body.answer.is_some()),
+        ("confirm", body.confirm.is_some()),
     ]
     .into_iter()
     .filter_map(|(name, set)| set.then_some(name))
@@ -150,6 +156,7 @@ pub(crate) async fn decide(
             .as_deref()
             .map(|text| text.strip_prefix("sha256:").unwrap_or(text).to_owned()),
         index: parsed.warning,
+        confirm: confirm_word(parsed.confirm.as_deref())?,
     };
     if !fields.is_well_formed() {
         return Err(ApiError::BadRequest(bad_word(&fields)));
@@ -177,9 +184,40 @@ pub(crate) async fn decide(
             Err(ApiError::Forbidden) => allowed = false,
             Err(other) => return Err(other),
         }
-        found_job = Some(job);
+        found_job = Some((job, repository));
     }
-    let (job_ref, correlation_id) = if let (true, Some(job)) = (allowed, found_job) {
+    // The solo mode (ADR 0021): the requester's own decision on build code or on a translation
+    // warning is refused at once, with the reason, when the mode does not apply or the phrase is
+    // missing. `unblock` is not an approval and keeps its rule.
+    let mut explained = None;
+    if let (true, Some((job, repository))) = (allowed, found_job.as_ref()) {
+        let target = match verb {
+            StageVerb::Unblock => None,
+            StageVerb::ApproveProjectBuildCode => fields
+                .path
+                .as_deref()
+                .map(|path| SoloTarget::ProjectBuildCode { path }),
+            StageVerb::AckTranslationWarning => {
+                fields.index.map(|number| SoloTarget::TranslationWarning {
+                    number,
+                    job: job_id,
+                })
+            }
+        };
+        if let Some(target) = target {
+            let ask = crate::solo::SoloAsk::untiered(verb.action(), None, target);
+            explained = crate::solo::refusal(
+                state,
+                caller,
+                &mut *tx,
+                (&job.value, &repository.value),
+                &ask,
+                parsed.confirm.as_deref(),
+            )
+            .await?;
+        }
+    }
+    let (job_ref, correlation_id) = if let (true, Some((job, _))) = (allowed, found_job) {
         if let Some(run) = stage_run {
             let found = tx.get_stage_run(run).await?;
             if found.value.job_id != job.value.id {
@@ -197,6 +235,17 @@ pub(crate) async fn decide(
     };
     if !allowed {
         return refuse(state, caller, tx, fields.subject(), correlation_id).await;
+    }
+    if let Some(explained) = explained {
+        return crate::solo::refuse_explained(
+            state,
+            caller,
+            tx,
+            fields.subject(),
+            correlation_id,
+            explained,
+        )
+        .await;
     }
     let stored_reason = format!("requested: {}", kept(reason));
     let accepted = || {

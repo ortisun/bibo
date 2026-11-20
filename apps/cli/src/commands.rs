@@ -28,16 +28,16 @@ usage: factory-cli <command> [options]
   show-draft  --api URL --token-file FILE [--stage-run ID] JOB
   artifact --api URL --token-file FILE JOB SHA256
   timeline --api URL --token-file FILE JOB
-  approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
+  approve  --api URL --token-file FILE [--key K] [--confirm PHRASE] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
   answer   --api URL --token-file FILE [--key K] JOB STAGE_RUN text...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
   unblock  --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
-  ack-translation-warning  --api URL --token-file FILE [--key K] JOB STAGE_RUN WARNING reason...
-  approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
-  approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
-  approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
+  ack-translation-warning  --api URL --token-file FILE [--key K] [--confirm PHRASE] JOB STAGE_RUN WARNING reason...
+  approve-project-build-code  --api URL --token-file FILE [--key K] [--confirm PHRASE] [--stage-run ID] JOB PATH SHA256 reason...
+  approve-dependency  --api URL --token-file FILE [--key K] [--confirm PHRASE] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
+  approve-build-code  --api URL --token-file FILE [--key K] [--confirm PHRASE] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   repository register     --api URL --token-file FILE [--key K] [--wait-seconds N] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH] [--single-maintainer]
   repository confirm-map  --api URL --token-file FILE [--key K] [--wait-seconds N] REPOSITORY COMMIT reason...
   repository enable       --api URL --token-file FILE [--key K] [--wait-seconds N] REPOSITORY COMMIT [reason...]
@@ -48,6 +48,10 @@ usage: factory-cli <command> [options]
 
 An answer may hold one line per question: a word Q-001: starts a new line, so
 `answer ... JOB STAGE_RUN Q-001: yes Q-002: no` answers two questions; show-draft lists them.
+--confirm carries the confirmation phrase of the solo mode, quoted as one word: the person who asked
+for a job and is its only approver sends it for a high or critical pull request and for every
+decision on a dependency, on build code or on a translation warning; the API says the phrase when
+it is missing.
 Put -- before words that start with -- (everything after -- is text, not an option).
 The address may also be set in FACTORY_API_URL. The token is read from a file, never from an argument
 or the environment. Exit codes: 0 done, 1 not understood, 2 refused, 3 blocked, 4 unreachable.
@@ -431,7 +435,13 @@ fn decide(
     env: &dyn Fn(&str) -> Option<String>,
     ctx: &mut Context<'_>,
 ) -> Exit {
-    let parsed = match split(args, &["api", "token-file", "key"]) {
+    // Only an approval takes the confirmation phrase of the solo mode.
+    let allowed: &[&str] = if verb == "approve" {
+        &["api", "token-file", "key", "confirm"]
+    } else {
+        &["api", "token-file", "key"]
+    };
+    let parsed = match split(args, allowed) {
         Ok(parsed) => parsed,
         Err(why) => {
             ctx.complain(&why);
@@ -488,6 +498,7 @@ fn decide(
     if let Some(target) = decision.target {
         body["target"] = json!(target.as_str());
     }
+    with_confirm(&mut body, &parsed.options);
     let client = match client(&parsed.options, env, true, ctx) {
         Ok(client) => client,
         Err(exit) => return exit,
@@ -498,6 +509,14 @@ fn decide(
     finish(client.post(&path, &key, &body), ctx, move |body| {
         render::decided(body, &shown)
     })
+}
+
+/// Puts the confirmation phrase of the solo mode (`--confirm`) in the body's `confirm` field, as
+/// the person typed it. The API compares it and keeps only its hash.
+fn with_confirm(body: &mut Value, options: &BTreeMap<String, String>) {
+    if let Some(phrase) = options.get("confirm") {
+        body["confirm"] = json!(phrase);
+    }
 }
 
 /// The shortest reason a decision about a stage run carries, in characters (the API's own bound).
@@ -547,7 +566,7 @@ fn ack_translation_warning(
     env: &dyn Fn(&str) -> Option<String>,
     ctx: &mut Context<'_>,
 ) -> Exit {
-    let parsed = match split(args, &["api", "token-file", "key"]) {
+    let parsed = match split(args, &["api", "token-file", "key", "confirm"]) {
         Ok(parsed) => parsed,
         Err(why) => {
             ctx.complain(&why);
@@ -573,12 +592,13 @@ fn ack_translation_warning(
         ctx.complain("a decision about a warning needs a reason of at least 10 characters");
         return Exit::Failed;
     }
-    let body = json!({
+    let mut body = json!({
         "verb": StageVerb::AckTranslationWarning.as_str(),
         "stage_run_id": words[1],
         "warning": number,
         "reason": reason,
     });
+    with_confirm(&mut body, &parsed.options);
     let client = match client(&parsed.options, env, true, ctx) {
         Ok(client) => client,
         Err(exit) => return exit,
@@ -601,7 +621,7 @@ fn approve_project_build_code(
     env: &dyn Fn(&str) -> Option<String>,
     ctx: &mut Context<'_>,
 ) -> Exit {
-    let parsed = match split(args, &["api", "token-file", "key", "stage-run"]) {
+    let parsed = match split(args, &["api", "token-file", "key", "stage-run", "confirm"]) {
         Ok(parsed) => parsed,
         Err(why) => {
             ctx.complain(&why);
@@ -637,6 +657,11 @@ fn approve_project_build_code(
         path: Some(path.clone()),
         digest: Some(digest.clone()),
         index: None,
+        confirm: parsed.options.get("confirm").map(|phrase| {
+            factory_domain::policy::solo::ConfirmationWord::of(phrase)
+                .as_str()
+                .to_owned()
+        }),
     };
     if !probe.is_well_formed() {
         ctx.complain("the path is a path inside the repository, and the hash is 12 to 64 lower case hexadecimal digits");
@@ -656,6 +681,7 @@ fn approve_project_build_code(
     if let Some(stage_run) = stage_run {
         body["stage_run_id"] = json!(stage_run);
     }
+    with_confirm(&mut body, &parsed.options);
     let client = match client(&parsed.options, env, true, ctx) {
         Ok(client) => client,
         Err(exit) => return exit,
@@ -677,7 +703,7 @@ fn decide_dependency(
     env: &dyn Fn(&str) -> Option<String>,
     ctx: &mut Context<'_>,
 ) -> Exit {
-    let parsed = match split(args, &["api", "token-file", "key", "stage-run"]) {
+    let parsed = match split(args, &["api", "token-file", "key", "stage-run", "confirm"]) {
         Ok(parsed) => parsed,
         Err(why) => {
             ctx.complain(&why);
@@ -726,6 +752,7 @@ fn decide_dependency(
     if let Some(stage_run) = parsed.options.get("stage-run") {
         body["stage_run_id"] = json!(stage_run);
     }
+    with_confirm(&mut body, &parsed.options);
     let client = match client(&parsed.options, env, true, ctx) {
         Ok(client) => client,
         Err(exit) => return exit,

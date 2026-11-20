@@ -1881,3 +1881,199 @@ async fn a_retried_decision_on_a_dependency_is_one_record_and_a_changed_one_is_a
     assert_ne!(first.json()["decision_id"], theirs.json()["decision_id"]);
     env.stop().await;
 }
+
+// ---- the solo mode (ADR 0021): the immediate refusal -----------------------------------------
+
+/// A stage run of `kind` for the job, written as the worker would.
+async fn stage_run_of(env: &Env, tenant: &Tenant, job: &str, kind: StageKind) -> StageRunId {
+    let id = StageRunId::from_uuid(uuid::Uuid::from_u128(rand_u128()));
+    let mut tx = env
+        .worker
+        .begin(TenantScope::new(tenant.id))
+        .await
+        .expect("begin");
+    tx.insert_stage_run(NewStageRun {
+        id,
+        job_id: JobId::parse(job).expect("job id"),
+        kind,
+        run_number: 1,
+        max_attempts: 3,
+        rework_of: None,
+    })
+    .await
+    .expect("insert the stage run");
+    tx.commit().await.expect("commit");
+    id
+}
+
+/// Rewrites the allowlist of tenant A: each person with these designations.
+fn write_allowlist(env: &Env, entries: &[(&Person, &str)]) {
+    let mut text = String::from("version: 1\nentries:\n");
+    for (person, designations) in entries {
+        text.push_str(&format!(
+            "  - tenant: {}\n    github_user_id: {}\n    login: {}\n    designations: [{designations}]\n",
+            env.a.id.as_uuid(),
+            person.github_id,
+            person.login,
+        ));
+    }
+    std::fs::write(env.checkout.join("allowlist/allowlist.yaml"), text).expect("the allowlist");
+}
+
+/// The protection preflight of tenant A's repository passed, so it runs at its ceiling, L1: the
+/// approval actions start at L1 in the action table.
+async fn pass_preflight(env: &Env) {
+    env.db
+        .run(&format!(
+            "UPDATE repositories SET protection_preflight_passed = true, version = version + 1 WHERE id = '{}'",
+            env.a.repository.as_uuid()
+        ))
+        .await;
+}
+
+fn approve_spec(run: StageRunId) -> Value {
+    json!({"verb": "approve", "stage_run_id": run.as_text(),
+        "head": "a".repeat(40), "evidence": format!("sha256:{}", "b".repeat(64))})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_solo_04_self_approval_is_refused_at_once_with_the_reason_in_order() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let run = stage_run_of(&env, &env.a, &job, StageKind::Specification).await;
+    pass_preflight(&env).await;
+    let body = approve_spec(run);
+    // The requester holds approver too; another approver is listed.
+    write_allowlist(
+        &env,
+        &[
+            (&env.a.requester, "requester, approver"),
+            (&env.a.approver, "approver"),
+            (&env.a.operator, "operator"),
+        ],
+    );
+    let before = env
+        .db
+        .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+        .await;
+    // The seeded repository is marked single_maintainer (one person attested and enabled it), and
+    // the mark is written at registration only, so `not_single_maintainer` is reached in the
+    // engine's and the domain's tests. Here two people approve.
+    let first = env
+        .send(decision(&env.a, &env.a.requester, &job, "s1", &body))
+        .await;
+    assert_eq!(first.status, 409, "{}", first.text());
+    assert_eq!(first.json()["error"], "ineligible_approver");
+    assert_eq!(first.json()["reason"], "more_than_one_approver");
+    let approvers = first.json()["approvers"].clone();
+    assert_eq!(approvers.as_array().map(Vec::len), Some(2), "{approvers}");
+    assert!(
+        approvers
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|person| person["login"] == env.a.approver.login.as_str()),
+        "{approvers}"
+    );
+    // The answer of a retry is the same refusal.
+    let second = env
+        .send(decision(&env.a, &env.a.requester, &job, "s2", &body))
+        .await;
+    assert_eq!(second.status, 409, "{}", second.text());
+    assert_eq!(second.json()["reason"], "more_than_one_approver");
+    // Nothing was recorded for the worker, and the refusals are audited.
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+            .await,
+        before
+    );
+    assert!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.denied'")
+            .await
+            >= 2
+    );
+    // 3. The requester is the one person who approves: the approval of the specification is
+    // recorded, with no wait and no phrase.
+    write_allowlist(
+        &env,
+        &[
+            (&env.a.requester, "requester, approver, operator"),
+            (&env.a.operator, "operator"),
+        ],
+    );
+    let third = env
+        .send(decision(&env.a, &env.a.requester, &job, "s3", &body))
+        .await;
+    assert_eq!(third.status, 202, "{}", third.text());
+    // A confirm on a verb that is not an approval is refused.
+    let reject = json!({"verb": "reject", "stage_run_id": run.as_text(),
+        "reason": "Not what I meant.", "confirm": "I confirm"});
+    assert_eq!(
+        env.send(decision(&env.a, &env.a.requester, &job, "s4", &reject))
+            .await
+            .status,
+        400
+    );
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_solo_04_an_unlisted_person_learns_nothing() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let run = stage_run_of(&env, &env.a, &job, StageKind::Specification).await;
+    write_allowlist(&env, &[(&env.a.requester, "requester, approver, operator")]);
+    let reply = env
+        .send(decision(
+            &env.a,
+            &env.a.outsider,
+            &job,
+            "o1",
+            &approve_spec(run),
+        ))
+        .await;
+    assert_eq!(reply.status, 403);
+    assert_eq!(reply.json(), json!({"error": "forbidden"}));
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_solo_decision_on_a_dependency_needs_the_phrase_and_the_answer_says_it() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    pass_preflight(&env).await;
+    write_allowlist(&env, &[(&env.a.requester, "requester, approver, operator")]);
+    let without = env
+        .send(decision(
+            &env.a,
+            &env.a.requester,
+            &job,
+            "p1",
+            &dependency_body("approve-dependency"),
+        ))
+        .await;
+    assert_eq!(without.status, 409, "{}", without.text());
+    assert_eq!(
+        without.json(),
+        json!({"error": "confirmation_missing",
+            "expected_confirmation": "I confirm the solo approval of dependency tally-counter 0.3.1"})
+    );
+    let mut with = dependency_body("approve-dependency");
+    with["confirm"] = json!("  i confirm the SOLO approval of dependency tally-counter 0.3.1 ");
+    let reply = env
+        .send(decision(&env.a, &env.a.requester, &job, "p2", &with))
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    // The record keeps the word of the phrase, never the phrase.
+    let subject = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'decision.dependency_requested'")
+        .await
+        .expect("a request is recorded");
+    assert!(subject.contains(" confirm="), "{subject}");
+    assert!(!subject.contains("solo approval"), "{subject}");
+    // Another approver needs no phrase.
+    env.stop().await;
+}
