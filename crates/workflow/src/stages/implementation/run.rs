@@ -72,6 +72,10 @@ struct Shared {
     feedback: Option<String>,
     /// The answers people gave to a question of this stage run, as text for the task block.
     answers: String,
+    /// The commit the job started from (the repository map's). Every workspace of the run names
+    /// it as its protected base, so a later task or rework round may change the files the job
+    /// added while what existed before the job stays protected (ADR 0024).
+    job_base: CommitSha,
 }
 
 /// The most bytes of one human answer that go into a prompt.
@@ -309,6 +313,7 @@ pub(super) async fn execute(
         architecture_sha: arch_ref.sha256.clone(),
         feedback: rework.as_ref().map(super::feedback::render),
         answers: human_answers(ctx).await?,
+        job_base: base.clone(),
     };
 
     let repo = ports
@@ -392,7 +397,7 @@ pub(super) async fn execute(
     }
 
     if nothing_left && !tally.sandbox_reported {
-        ready_check(handler, ctx, &head, &mut tally).await?;
+        ready_check(handler, ctx, &head, &shared.job_base, &mut tally).await?;
     }
 
     if let Some((reason, detail)) = asked {
@@ -632,6 +637,7 @@ async fn ready_check(
     handler: &ImplementationHandler,
     ctx: &mut StageContext<'_>,
     head: &CommitSha,
+    job_base: &CommitSha,
     tally: &mut Tally,
 ) -> Result<(), StageError> {
     let workspace = ctx
@@ -642,6 +648,7 @@ async fn ready_check(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: head.clone(),
+                protected_base: Some(job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -685,6 +692,7 @@ async fn run_one(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: on.clone(),
+                protected_base: Some(shared.job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },

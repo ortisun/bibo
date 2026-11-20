@@ -428,6 +428,10 @@ async fn run_skill(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: work.head.clone(),
+                // The writer changes only its own feature directory, which no `append_only` or
+                // `additions_only` rule covers, and a revision may start from a frozen
+                // specification's commit; the round's base stays the protected one (ADR 0024).
+                protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -925,6 +929,7 @@ async fn run_reviewer(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: work.head.clone(),
+                protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -1759,6 +1764,7 @@ async fn ready_check(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: base.clone(),
+                protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },

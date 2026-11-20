@@ -56,6 +56,20 @@ Three rules hold for every policy file.
 | `tenancy` | The tenant isolation rules. |
 | `audit` | What the audit log records. |
 
+### How the modes of `protected_paths` are applied
+
+Each group of `protected_paths` has one mode. The factory checks every change an agent makes against them before it commits anything.
+
+| Mode | What an agent may do |
+|---|---|
+| `hidden` | Nothing. The files are not in the agent's checkout, and a file the agent creates there stops the job. |
+| `deny_write` | Nothing. Any change is refused, a new file included. |
+| `append_only` | Add new files. A file that existed before the job may not be changed or deleted. |
+| `additions_only` | Add new files, and add lines to a file that existed before the job. Removing or changing one of its lines, changing its mode or deleting it is refused. |
+| `sensitive` | Anything. The change is listed for the semantic checks. |
+
+"Before the job" means the commit the job started from, not the start of the current round. A file the job added in an earlier task or rework round is the job's own: a later round may rewrite it or delete it. A file that was in the repository before the job is compared with its content then, so a later round cannot remove one of its original lines even if an earlier round left the file alone. See [ADR 0024](../adr/0024-protected-paths-judged-against-the-job-base.md) and section 6.5 of the [sandbox policy](../security/sandbox-policy.md).
+
 ## What `policies/approval.yaml` controls
 
 | Section | What it controls |

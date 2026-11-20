@@ -89,6 +89,7 @@ async fn prove_sandbox(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: head.clone(),
+                protected_base: None,
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -278,6 +279,7 @@ pub(super) async fn execute(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: candidate.head.clone(),
+                protected_base: None,
                 rules: handler.config.path_rules.clone(),
                 // The agent profile takes a writable checkout only. This one is a copy for the
                 // reviewer to read: it is never ingested, and it is disposed of unread.

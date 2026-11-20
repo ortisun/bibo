@@ -487,6 +487,7 @@ pub(super) async fn execute(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: docs_head.clone(),
+                protected_base: None,
                 rules: handler.config.path_rules.clone(),
                 // The agent profile takes a writable checkout only. This one is a copy for the
                 // reviewer to read: it is never ingested, and it is disposed of unread.

@@ -279,6 +279,7 @@ pub(super) async fn execute(
             repo.as_ref(),
             &manifest,
             &on,
+            &candidate.base,
             &plan_artifact.artifact,
             &plan_bytes,
             &specification,
@@ -291,7 +292,7 @@ pub(super) async fn execute(
     } else {
         // Nothing to write: the sandbox is still proved, because the contract declares one and the
         // engine fails a stage that declares a sandbox and never reports it ready.
-        prove_sandbox(handler, ctx, &candidate.head).await?;
+        prove_sandbox(handler, ctx, &candidate.head, &candidate.base).await?;
         Outcome {
             head: candidate.head.clone(),
             writer_ran: false,
@@ -385,6 +386,7 @@ async fn prove_sandbox(
     handler: &DocumentingHandler,
     ctx: &mut StageContext<'_>,
     head: &CommitSha,
+    job_base: &CommitSha,
 ) -> Result<(), StageError> {
     let workspace = ctx
         .ports
@@ -394,6 +396,7 @@ async fn prove_sandbox(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: head.clone(),
+                protected_base: Some(job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -425,6 +428,7 @@ async fn write_in_sandbox(
     repo: &dyn JobRepo,
     manifest: &AgentManifest,
     on: &CommitSha,
+    job_base: &CommitSha,
     plan_ref: &ArtifactRef,
     plan_bytes: &[u8],
     specification: &[u8],
@@ -433,6 +437,8 @@ async fn write_in_sandbox(
     changed_paths: &[&str],
     feedback_text: Option<String>,
 ) -> Result<Outcome, StageError> {
+    // The writer's rounds start from the code head or an earlier round, and are judged against
+    // the commit the job started from, as the builder's are (ADR 0024).
     let workspace = ctx
         .ports
         .workspaces
@@ -441,6 +447,7 @@ async fn write_in_sandbox(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: on.clone(),
+                protected_base: Some(job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },

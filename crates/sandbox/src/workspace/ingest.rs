@@ -12,6 +12,9 @@
 //! 4. **Difference** between the two trees, computed by git from the store with rename detection
 //!    off. A rename is a deletion and an addition; a mode or type change is a modification.
 //! 5. **Rules** (`rules`): the path modes of the request, and the compiled policy when given.
+//!    When the workspace starts later in the job than its protected base, a second difference,
+//!    from the protected base to the same head tree, is what `append_only` and `additions_only`
+//!    judge a changed path by (ADR 0024).
 //! 6. **Secret scan** of the blobs as the store holds them, which are the bytes a commit will hold.
 //!
 //! Only after all six does `ingest` build an `IngestedChange`, and this is the only place in the
@@ -119,10 +122,16 @@ async fn run(
     let tree_sha = String::from_utf8_lossy(&tree_out).trim().to_owned();
 
     // 4. The difference from the base commit, computed by git from the store.
-    let facts = difference(ws, &tree_sha, &manifest, cancel).await?;
+    let facts = difference(ws, &ws.base, &tree_sha, &manifest, cancel).await?;
     if facts.len() > shared.settings.limits.max_changed_files {
         return Err(WorkspaceError::TooLarge);
     }
+    // And from the job's protected base, when the workspace starts later in the job (ADR 0024).
+    // A store that cannot give it fails the ingestion: nothing is judged without it.
+    let protected = match &ws.protected {
+        Some(commit) => Some(difference(ws, commit, &tree_sha, &manifest, cancel).await?),
+        None => None,
+    };
 
     // A path the sandbox never saw cannot be part of its change. A directory made where a hidden
     // file is would replace that file in the tree without a file ever being written there, so
@@ -143,7 +152,12 @@ async fn run(
     }
 
     // 5. The rules.
-    let evaluation = evaluate(&ws.rules, shared.layer.as_ref(), &facts);
+    let evaluation = evaluate(
+        &ws.rules,
+        shared.layer.as_ref(),
+        &facts,
+        protected.as_deref(),
+    );
     if let Some(path) = evaluation.gitlink {
         return Err(WorkspaceError::Gitlink(path));
     }
@@ -391,8 +405,10 @@ fn index_edits(base: &BaseTree, head: &BTreeMap<String, Hashed>, id_len: usize) 
     edits
 }
 
+/// The changed paths from the commit `from` to the head tree `tree`.
 async fn difference(
     ws: &GitWorkspace,
+    from: &CommitSha,
     tree: &str,
     manifest: &Manifest,
     cancel: &dyn CancelSignal,
@@ -414,7 +430,7 @@ async fn difference(
                     "--raw",
                     "--no-renames",
                     "--no-abbrev",
-                    ws.base.as_str(),
+                    from.as_str(),
                     tree,
                 ],
             )
@@ -436,7 +452,7 @@ async fn difference(
                     "-z",
                     "--numstat",
                     "--no-renames",
-                    ws.base.as_str(),
+                    from.as_str(),
                     tree,
                 ],
             )

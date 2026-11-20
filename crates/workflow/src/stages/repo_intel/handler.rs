@@ -929,6 +929,7 @@ impl RepoIntelHandler {
                     job: ctx.identity.job,
                     attempt: ctx.attempt,
                     base: commit,
+                    protected_base: None,
                     rules: self.config.path_rules.clone(),
                     purpose: WorkspacePurpose::Verify {
                         holdouts: Vec::new(),

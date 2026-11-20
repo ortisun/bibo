@@ -159,6 +159,7 @@ impl World {
                     job: support::job(job),
                     attempt: support::attempt(attempt),
                     base: base.clone(),
+                    protected_base: None,
                     rules: self.rules.clone(),
                     purpose,
                 },

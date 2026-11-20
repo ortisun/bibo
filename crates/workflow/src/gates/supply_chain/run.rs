@@ -354,6 +354,7 @@ pub async fn fetch(io: &Io<'_>, plan: &Plan, commit: &CommitSha) -> Result<Fetch
                 job: io.job,
                 attempt: io.attempt,
                 base: commit.clone(),
+                protected_base: None,
                 rules: io.cfg.path_rules.clone(),
                 // A `fetch_deps` workspace is writable and there is no purpose of its own: the
                 // checkout of an agent workspace is what the profile needs.
@@ -505,6 +506,7 @@ pub async fn scan(io: &Io<'_>, plan: &Plan, commit: &CommitSha) -> Result<Scanne
                 job: io.job,
                 attempt: io.attempt,
                 base: commit.clone(),
+                protected_base: None,
                 rules: io.cfg.path_rules.clone(),
                 purpose: WorkspacePurpose::Verify {
                     holdouts: io.cfg.holdouts.clone(),

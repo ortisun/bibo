@@ -302,6 +302,7 @@ pub(crate) async fn run_agent(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: call.base.clone(),
+                protected_base: None,
                 rules: settings.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },

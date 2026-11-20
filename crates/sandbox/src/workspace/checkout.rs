@@ -11,7 +11,7 @@
 //! covers, and every file a protected overlay covers (the files themselves, which are in the
 //! base commit and are written here).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use factory_ports::clock::CancelSignal;
-use factory_ports::paths::{PathMode, RepoPath};
+use factory_ports::paths::{CommitSha, PathMode, PathRules, RepoPath};
 use factory_ports::workspace::{
     GitOperation, IoOperation, WorkspaceError, WorkspaceMounts, WorkspacePurpose, WorkspaceRequest,
 };
@@ -27,9 +27,9 @@ use factory_ports::workspace::{
 use super::attempt::GitWorkspace;
 use super::basetree::{BaseTree, BaseTreeError, TreeLine, parse_ls_tree};
 use super::git::Invocation;
-use super::layout::{AttemptDirs, remove_tree};
+use super::layout::{AttemptDirs, JobDirs, remove_tree};
 use super::provider::Shared;
-use super::repo::commit_exists;
+use super::repo::{commit_exists, is_ancestor};
 
 /// How many bytes of blobs one `cat-file` call reads.
 const CHUNK_BYTES: u64 = 16 * 1024 * 1024;
@@ -124,23 +124,30 @@ pub(super) async fn create(
     if !commit_exists(shared, &job_dirs, &req.base, cancel).await? {
         return Err(WorkspaceError::UnknownCommit);
     }
-    let listing = shared
-        .git
-        .run_ok(
-            GitOperation::Checkout,
-            Invocation::new(
-                &job_dirs.store,
-                &job_dirs.dir,
-                &["ls-tree", "-r", "-z", "--long", req.base.as_str()],
-            )
-            .with_max_output(shared.settings.max_listing_bytes),
-            cancel,
-        )
-        .await?;
-    let lines = parse_ls_tree(&listing).ok_or(WorkspaceError::Git {
-        operation: GitOperation::Checkout,
-        exit: None,
-    })?;
+    // The protected base must be readable and on the base's own history, or nothing is judged
+    // against it: fail closed (ADR 0024).
+    let protected = match &req.protected_base {
+        Some(commit) if commit != &req.base => {
+            if !commit_exists(shared, &job_dirs, commit, cancel).await?
+                || !is_ancestor(shared, &job_dirs, commit, &req.base, cancel).await?
+            {
+                return Err(WorkspaceError::UnknownCommit);
+            }
+            Some(commit.clone())
+        }
+        _ => None,
+    };
+    let lines = list_tree(shared, &job_dirs, &req.base, cancel).await?;
+    let protected_paths: Option<BTreeSet<Vec<u8>>> = match &protected {
+        Some(commit) => Some(
+            list_tree(shared, &job_dirs, commit, cancel)
+                .await?
+                .into_iter()
+                .map(|line| line.path)
+                .collect(),
+        ),
+        None => None,
+    };
     let links = read_links(shared, &job_dirs.store, &job_dirs.dir, &lines, cancel).await?;
     let tree = BaseTree::build(
         &lines,
@@ -177,7 +184,7 @@ pub(super) async fn create(
     }
 
     let overlays = if matches!(req.purpose, WorkspacePurpose::Agent) {
-        overlay_paths(&req, &tree)
+        overlay_paths(&req.rules, &tree, protected_paths.as_ref())
     } else {
         Vec::new()
     };
@@ -191,11 +198,38 @@ pub(super) async fn create(
     Ok(GitWorkspace::new(
         Arc::clone(shared),
         req,
+        protected,
         job_dirs,
         dirs,
         tree,
         mounts,
     ))
+}
+
+/// Every entry of a commit's tree, from `git ls-tree -r -z --long`.
+async fn list_tree(
+    shared: &Shared,
+    job_dirs: &JobDirs,
+    commit: &CommitSha,
+    cancel: &dyn CancelSignal,
+) -> Result<Vec<TreeLine>, WorkspaceError> {
+    let listing = shared
+        .git
+        .run_ok(
+            GitOperation::Checkout,
+            Invocation::new(
+                &job_dirs.store,
+                &job_dirs.dir,
+                &["ls-tree", "-r", "-z", "--long", commit.as_str()],
+            )
+            .with_max_output(shared.settings.max_listing_bytes),
+            cancel,
+        )
+        .await?;
+    parse_ls_tree(&listing).ok_or(WorkspaceError::Git {
+        operation: GitOperation::Checkout,
+        exit: None,
+    })
 }
 
 /// The target text of every link of the base.
@@ -397,19 +431,27 @@ fn write_links_and_mask(
 }
 
 /// The files the sandbox mounts read-only over the writable checkout: the existing files of the
-/// `deny_write` and `append_only` paths.
-fn overlay_paths(req: &WorkspaceRequest, tree: &BaseTree) -> Vec<RepoPath> {
+/// `deny_write` paths, and those of the `append_only` paths that existed at the protected base
+/// (`protected`, the paths of that commit; `None` when the base is the protected commit). An
+/// `append_only` file the job itself added stays writable, as the ingestion allows its change.
+fn overlay_paths(
+    rules: &PathRules,
+    tree: &BaseTree,
+    protected: Option<&BTreeSet<Vec<u8>>>,
+) -> Vec<RepoPath> {
     let mut overlays: Vec<RepoPath> = tree
         .visible
         .iter()
         .filter(|(_, entry)| entry.mode != "120000")
-        .filter_map(|(rel, _)| RepoPath::new(rel).ok())
-        .filter(|path| {
-            matches!(
-                req.rules.classify(path),
-                Some(PathMode::DenyWrite | PathMode::AppendOnly)
-            )
+        .filter_map(|(rel, _)| RepoPath::new(rel).ok().map(|path| (rel, path)))
+        .filter(|(rel, path)| match rules.classify(path) {
+            Some(PathMode::DenyWrite) => true,
+            Some(PathMode::AppendOnly) => {
+                protected.is_none_or(|paths| paths.contains(rel.as_bytes()))
+            }
+            _ => false,
         })
+        .map(|(_, path)| path)
         .collect();
     overlays.sort();
     overlays
