@@ -122,6 +122,7 @@ The factory writes the smallest set of documents that covers what the change tou
 5. Add the domain content from 8.4 only when the change touches that behavior.
 6. Record the result in the documentation plan: audience, pages affected, owner, sources and acceptance criteria. The plan is the master prompt's `documentation_plan.json`. Its schema is defined by the documentation stage package. Until it exists, the information is kept in a structured record and never in titles.
 7. If nothing needs documenting, the answer is NOT_APPLICABLE with the rule that led there, not a blank PASSED. The PR text is still written and still checked.
+8. The documents may already be written when the documentation stage runs: the builder often updates the README and the changelog together with the code. The documentation writer then checks each page of the plan against the change, marks it covered, lists no file as written and changes nothing. The stage accepts that report and records that no documentation commit was needed; the documentation review still reads the pages. The writer's word is contradicted, and the attempt fails, only when it names a file as written that the tree does not show changed, or changes a file it does not name.
 
 For a significant new product, the full onboarding set applies (last row of 8.3).
 
