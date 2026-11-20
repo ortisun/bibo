@@ -124,7 +124,7 @@ Then make the ruleset: `scripts/setup-fixture-repository.sh --ruleset-only --app
 
 ### 6. Write your allowlist
 
-The allowlist names the people the factory knows, by numeric GitHub id. Write one entry for yourself. `gh api user --jq .id` prints your numeric id. The tenant is any UUID; make one with `uuidgen | tr A-Z a-z`. Keep the file outside the repository.
+The allowlist names the people the factory knows, by numeric GitHub id. Write one entry for yourself and one for the person who approves. `gh api users/LOGIN --jq .id` prints the numeric id of a login. The tenant is any UUID; make one with `uuidgen | tr A-Z a-z`, and use the same one in both entries. Keep the file outside the repository.
 
 ```yaml
 version: 1
@@ -132,8 +132,14 @@ entries:
   - tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60
     github_user_id: 1234567
     login: YOURNAME
-    designations: [requester, approver, operator]
+    designations: [requester, operator]
+  - tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60
+    github_user_id: 7654321
+    login: APPROVERNAME
+    designations: [approver]
 ```
+
+The run files the issue as you, so you are the requester of the job. The engine lets nobody approve their own request, so the approver must be another GitHub account. The run writes that person's API token to `approver-api-token` in the evidence folder, and the approve, reject and send-back commands it prints use that file. Without a second approver the run stops at its first approval: the engine refuses the approval of the specification draft.
 
 ### 7. Run E1
 

@@ -167,6 +167,10 @@ pub struct Settings {
     pub allowlist_file: PathBuf,
     pub allowlist_text: String,
     pub owner: Owner,
+    /// A person other than the owner who approves: an allowlist entry of the owner's tenant with
+    /// the designation `approver` and another GitHub id. The engine lets nobody approve their own
+    /// request, so without this person no approval of the run can pass.
+    pub approver: Option<Owner>,
     pub token_file: PathBuf,
     pub budget_micro_usd: u64,
     pub human_wait: Duration,
@@ -182,15 +186,50 @@ fn mode_of(path: &Path) -> Option<u32> {
 /// The owner of the run: the allowlist entry that holds both `requester` and `approver` (they
 /// work alone; `policies/approval.yaml` lets them approve their own low-risk request), or the
 /// first requester.
-fn owner_in(text: &str) -> Option<Owner> {
-    #[derive(Default)]
-    struct Entry {
-        tenant: Option<String>,
-        id: Option<u64>,
-        login: String,
-        designations: Vec<String>,
+pub fn owner_in(text: &str) -> Option<Owner> {
+    let entries = entries_in(text);
+    let chosen = entries
+        .iter()
+        .find(|entry| entry.holds("requester") && entry.holds("approver"))
+        .or_else(|| entries.iter().find(|entry| entry.holds("requester")))?;
+    chosen.as_owner()
+}
+
+/// The person who approves when it is not the owner: the first entry of the owner's tenant that
+/// holds `approver` and has a GitHub id other than the owner's.
+pub fn approver_in(text: &str, owner: &Owner) -> Option<Owner> {
+    entries_in(text)
+        .iter()
+        .filter(|entry| entry.holds("approver"))
+        .filter_map(AllowlistEntry::as_owner)
+        .find(|person| person.tenant == owner.tenant && person.github_id != owner.github_id)
+}
+
+/// One entry of an allowlist file, as far as the run reads it.
+#[derive(Default)]
+struct AllowlistEntry {
+    tenant: Option<String>,
+    id: Option<u64>,
+    login: String,
+    designations: Vec<String>,
+}
+
+impl AllowlistEntry {
+    fn holds(&self, word: &str) -> bool {
+        self.designations.iter().any(|d| d == word)
     }
-    let mut entries: Vec<Entry> = Vec::new();
+
+    fn as_owner(&self) -> Option<Owner> {
+        Some(Owner {
+            tenant: TenantId::from_uuid(self.tenant.as_deref()?.parse().ok()?),
+            github_id: self.id.filter(|id| *id > 0)?,
+            login: self.login.clone(),
+        })
+    }
+}
+
+fn entries_in(text: &str) -> Vec<AllowlistEntry> {
+    let mut entries: Vec<AllowlistEntry> = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
         let value = |prefix: &str| {
@@ -199,9 +238,9 @@ fn owner_in(text: &str) -> Option<Owner> {
                 .map(|rest| rest.split('#').next().unwrap_or("").trim().to_owned())
         };
         if let Some(tenant) = value("- tenant:") {
-            entries.push(Entry {
+            entries.push(AllowlistEntry {
                 tenant: Some(tenant),
-                ..Entry::default()
+                ..AllowlistEntry::default()
             });
         } else if let Some(entry) = entries.last_mut() {
             if let Some(id) = value("github_user_id:") {
@@ -218,16 +257,7 @@ fn owner_in(text: &str) -> Option<Owner> {
             }
         }
     }
-    let holds = |entry: &Entry, word: &str| entry.designations.iter().any(|d| d == word);
-    let chosen = entries
-        .iter()
-        .find(|entry| holds(entry, "requester") && holds(entry, "approver"))
-        .or_else(|| entries.iter().find(|entry| holds(entry, "requester")))?;
-    Some(Owner {
-        tenant: TenantId::from_uuid(chosen.tenant.as_deref()?.parse().ok()?),
-        github_id: chosen.id.filter(|id| *id > 0)?,
-        login: chosen.login.clone(),
-    })
+    entries
 }
 
 impl Settings {
@@ -269,6 +299,9 @@ impl Settings {
         let allowlist_file = var(ALLOWLIST).map(PathBuf::from).unwrap_or_default();
         let allowlist_text = std::fs::read_to_string(&allowlist_file).unwrap_or_default();
         let owner = owner_in(&allowlist_text);
+        let approver = owner
+            .as_ref()
+            .and_then(|owner| approver_in(&allowlist_text, owner));
         if for_run && owner.is_none() {
             reasons.push(format!(
                 "the named requester allowlist (set {ALLOWLIST} to a file in the factory's allowlist format whose entry for the owner has a tenant, a numeric github_user_id and the designations requester and approver)"
@@ -335,6 +368,7 @@ impl Settings {
                 github_id: 1,
                 login: String::new(),
             }),
+            approver,
             token_file,
             budget_micro_usd,
             human_wait,
@@ -1044,7 +1078,14 @@ pub fn answer_lines(
 }
 
 /// What a person is asked to do while a stage run waits, with the exact command.
-async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, view: &JobView) {
+async fn ask_the_owner(
+    rig: &LiveRig,
+    api: &str,
+    token_file: &Path,
+    decider_file: &Path,
+    job: JobId,
+    view: &JobView,
+) {
     let Some(run) = view
         .stage_runs
         .iter()
@@ -1055,6 +1096,8 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
     // The command comes first: `factory-cli` reads its options after the command name.
     let cli = cli();
     let opts = format!("--api {api} --token-file {}", token_file.display());
+    // Approve, reject and send back are an approver's; the owner reads and answers.
+    let decide = format!("--api {api} --token-file {}", decider_file.display());
     let job_id = job.as_text();
     let run_id = run.id.as_text();
     let text = match run.kind {
@@ -1070,16 +1113,16 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                 tell(&format!(
                     "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).\n\
                      See why:        {cli} status {opts} --gates {job_id}\n\
-                     Send it back:   {cli} rework {opts} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
-                     Or reject:      {cli} reject {opts} {job_id} {run_id} \"<why>\"{answer}"
+                     Send it back:   {cli} rework {decide} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
+                     Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"{answer}"
                 ));
                 return;
             };
             format!(
                 "WAITING FOR YOU: the specification draft of job {job_id} waits for your decision.\n\
                  Read it:     {cli} show-draft {opts} {job_id}\n\
-                 Approve it:  {cli} approve {opts} {job_id} {run_id} head={head} evidence={} \"The specification says what the issue asked for.\"\n\
-                 Or reject:   {cli} reject {opts} {job_id} {run_id} \"<why>\"{answer}",
+                 Approve it:  {cli} approve {decide} {job_id} {run_id} head={head} evidence={} \"The specification says what the issue asked for.\"\n\
+                 Or reject:   {cli} reject {decide} {job_id} {run_id} \"<why>\"{answer}",
                 evidence.as_str()
             )
         }
@@ -1091,8 +1134,8 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                     format!(
                         "WAITING FOR YOU: draft pull request #{} waits for your approval.\n\
                          Read it on GitHub, then\n\
-                         Approve it:  {cli} approve {opts} {job_id} {run_id} head={} evidence={} \"The change does what the issue asked.\"\n\
-                         Or reject:   {cli} reject {opts} {job_id} {run_id} \"<why>\"\n\
+                         Approve it:  {cli} approve {decide} {job_id} {run_id} head={} evidence={} \"The change does what the issue asked.\"\n\
+                         Or reject:   {cli} reject {decide} {job_id} {run_id} \"<why>\"\n\
                          Approving does not merge anything: the pull request stays a draft.",
                         request.pull_request,
                         request.pr_head.as_str(),
@@ -1110,8 +1153,8 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
              (policies/model_routing.yaml, independence). In subscription mode Claude Opus reviews\n\
              Claude Sonnet's work; check that the broker serves both Claude models.\n\
              What you can do now:\n\
-             Send the work back:  {cli} rework {opts} {job_id} {run_id} target=IMPLEMENTATION \"<what to change>\"\n\
-             Reject the job:      {cli} reject {opts} {job_id} {run_id} \"No independent reviewer is available.\"\n\
+             Send the work back:  {cli} rework {decide} {job_id} {run_id} target=IMPLEMENTATION \"<what to change>\"\n\
+             Reject the job:      {cli} reject {decide} {job_id} {run_id} \"No independent reviewer is available.\"\n\
              The factory refuses an approval here: the review would pass with no review verdict.\n\
              See docs/guides/first-real-run.md, \"Who reviews the code\"."
         ),
@@ -1149,6 +1192,7 @@ async fn drive_to_the_end(
     settings: &Settings,
     api: &str,
     token_file: &Path,
+    decider_file: &Path,
     job: JobId,
 ) -> Option<JobView> {
     // The stage run the owner was last asked about. The loop of the worker keeps running while a
@@ -1181,7 +1225,7 @@ async fn drive_to_the_end(
             Some(wait) if asked != Some(wait) => {
                 asked = Some(wait);
                 waiting_since = Instant::now();
-                ask_the_owner(rig, api, token_file, job, &view).await;
+                ask_the_owner(rig, api, token_file, decider_file, job, &view).await;
             }
             Some(_) if waiting_since.elapsed() > settings.human_wait => {
                 tell(&format!(
@@ -1370,6 +1414,10 @@ pub async fn scenario() {
             map_commit: base_before.clone(),
             owner_github_id: settings.owner.github_id,
             owner_login: settings.owner.login.clone(),
+            approver: settings
+                .approver
+                .as_ref()
+                .map(|person| (person.github_id, person.login.clone())),
             allowlist_text: settings.allowlist_text.clone(),
         }),
         ..Options::default()
@@ -1466,6 +1514,27 @@ pub async fn scenario() {
     std::fs::create_dir_all(&out).expect("the output directory");
     let token_file = out.join("owner-api-token");
     live::write_private(&token_file, &owner_token);
+    // The person who approves. The engine lets nobody approve their own request, so a run with
+    // no second approver can be driven to its first approval and no further.
+    let decider_file = match &settings.approver {
+        Some(person) => {
+            let file = out.join("approver-api-token");
+            live::write_private(&file, &rig.env().a.approver.token);
+            tell(&format!(
+                "Approvals of this run are {}'s: their token is in {}.",
+                person.login,
+                file.display()
+            ));
+            file
+        }
+        None => {
+            tell(
+                "No allowlist entry of this tenant holds `approver` for a person other than the owner. \
+                 The engine lets nobody approve their own request, so no approval of this run can pass.",
+            );
+            token_file.clone()
+        }
+    };
     let api = format!("http://127.0.0.1:{}", rig.env().addr.port());
     let submitted = rig
         .env()
@@ -1506,7 +1575,7 @@ pub async fn scenario() {
         }
     ));
 
-    let view = drive_to_the_end(&rig, &settings, &api, &token_file, job).await;
+    let view = drive_to_the_end(&rig, &settings, &api, &token_file, &decider_file, job).await;
     rig.revoke_ended_jobs().await;
     let mut facts = BTreeMap::new();
     // The text as it was filed with the API: the title of the issue, a blank line, its body. The

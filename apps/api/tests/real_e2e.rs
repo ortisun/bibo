@@ -67,6 +67,48 @@ fn the_configuration_of_a_real_run_is_a_production_configuration() {
     );
 }
 
+/// The engine lets nobody approve their own request, so the run takes its approver from a second
+/// allowlist entry of the owner's tenant. The twenty-fourth real run reached a draft its owner
+/// approved, and the engine refused the approval because the owner had also filed the issue.
+#[test]
+fn the_approver_is_a_second_person_of_the_owners_tenant() {
+    const T: &str = "e96a1356-5b1a-40ee-ad68-a43cdb315d57";
+    const OTHER: &str = "11111111-2222-3333-4444-555555555555";
+    let entry = |tenant: &str, id: u64, login: &str, designations: &str| {
+        format!(
+            "  - tenant: {tenant}\n    github_user_id: {id}\n    login: {login}\n    designations: [{designations}]\n"
+        )
+    };
+    let alone = format!(
+        "version: 1\nentries:\n{}",
+        entry(T, 7, "owner", "requester, approver, operator")
+    );
+    let owner = real::owner_in(&alone).expect("the owner");
+    assert_eq!((owner.github_id, owner.login.as_str()), (7, "owner"));
+    assert!(
+        real::approver_in(&alone, &owner).is_none(),
+        "the owner alone"
+    );
+
+    let two = format!(
+        "{alone}{}{}{}",
+        entry(OTHER, 9, "elsewhere", "approver"),
+        entry(T, 7, "owner-again", "approver"),
+        entry(T, 8, "second", "approver"),
+    );
+    let owner = real::owner_in(&two).expect("the owner");
+    assert_eq!(owner.github_id, 7);
+    let approver = real::approver_in(&two, &owner).expect("a second approver");
+    assert_eq!((approver.github_id, approver.login.as_str()), (8, "second"));
+
+    // An entry with no approver designation, or with no numeric id, approves nothing.
+    let none = format!(
+        "{alone}{}  - tenant: {T}\n    login: no-id\n    designations: [approver]\n",
+        entry(T, 8, "reader", "operator"),
+    );
+    assert!(real::approver_in(&none, &owner).is_none());
+}
+
 /// While the specification waits with questions, the owner is told the exact command that answers
 /// them, command first and then the options, with one `Q-00N: <answer>` per question, and the
 /// questions themselves. With no question there is no such line.

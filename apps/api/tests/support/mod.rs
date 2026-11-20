@@ -153,6 +153,9 @@ pub struct RealSeed {
     pub owner_github_id: u64,
     /// The owner's login, for display.
     pub owner_login: String,
+    /// A person other than the owner who approves, as their allowlist entry names them: the
+    /// numeric GitHub id and the login. `None` when the owner is the only person.
+    pub approver: Option<(u64, String)>,
     /// The text of the owner's allowlist file.
     pub allowlist_text: String,
 }
@@ -505,9 +508,11 @@ async fn seed_tenant(db: &TestDb, position: usize, base: u64) -> Tenant {
     }
 }
 
-/// Tenant A of a real run. The owner is the requester, the approver, the operator and the
-/// security approver (they work alone), and attested and enabled the repository: a
-/// single-maintainer repository (finding REG-6). The outsider is a made-up person nobody lists.
+/// Tenant A of a real run. The owner is the requester, the operator and the security approver, and
+/// attested and enabled the repository: a single-maintainer repository (finding REG-6). The
+/// approver is a second person when the allowlist names one, because the engine lets nobody
+/// approve their own request; otherwise the owner, who then cannot approve. The outsider is a
+/// made-up person nobody lists.
 async fn seed_real_tenant(db: &TestDb, seed: &RealSeed) -> Tenant {
     let id = seed.tenant;
     let repository = RepositoryId::from_uuid(random_uuid());
@@ -542,7 +547,10 @@ async fn seed_real_tenant(db: &TestDb, seed: &RealSeed) -> Tenant {
         github_repository: seed.github_repository,
         full_name: seed.full_name.clone(),
         requester: owner.clone(),
-        approver: owner.clone(),
+        approver: match &seed.approver {
+            Some((github_id, login)) => seed_person(db, id, *github_id, login).await,
+            None => owner.clone(),
+        },
         operator: owner.clone(),
         security: owner,
         outsider: seed_person(db, id, 4_000_000_777, "not-on-the-allowlist").await,
