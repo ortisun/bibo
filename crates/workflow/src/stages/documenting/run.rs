@@ -669,9 +669,27 @@ async fn write_in(
             };
         }
     };
-    // The writer says it is done and the tree is as it was: its word is contradicted.
-    if change.is_empty() || change.base() != on {
+    if change.base() != on {
         return Err(StageError::InvalidOutput);
+    }
+    // The writer found the pages already written (the builder often updates the README and the
+    // changelog with the code), wrote nothing and said so: there is no documentation commit, and
+    // the review still reads the pages (documentation policy 8.2, item 8). A writer that names a
+    // file and leaves the tree as it was is contradicted. In the thirty-fourth real run the first
+    // case was taken for the second and the stage failed twice.
+    if change.is_empty() {
+        if !parsed.files_written.is_empty() {
+            return Err(StageError::InvalidOutput);
+        }
+        let tree = read_tree(repo, on).await.map_err(workspace_error)?;
+        outcome.unresolved = parsed
+            .claims
+            .iter()
+            .filter(|(_, path)| !tree.files.contains(strip_place(path)))
+            .map(|(_, path)| path.clone())
+            .collect();
+        outcome.report = Some(parsed);
+        return Ok(outcome);
     }
     if ctx.cancel.is_cancelled() {
         return Err(StageError::Cancelled);

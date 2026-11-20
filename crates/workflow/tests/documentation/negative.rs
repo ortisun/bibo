@@ -401,6 +401,38 @@ async fn a_writer_that_edits_source_code_is_stopped_and_nothing_is_committed() {
     assert_eq!(scope["outcome"], "FAILED");
 }
 
+/// The builder already wrote the README and the changelog. The writer checks them, marks the plan
+/// covered, writes nothing and says so: the stage accepts it with no documentation commit, and
+/// the review still reads the pages (documentation policy 8.2, item 8). In the thirty-fourth real
+/// run this report was called contradicted and the stage failed twice.
+#[tokio::test]
+async fn a_writer_that_finds_the_pages_already_written_changes_nothing_and_passes() {
+    let rig = up_to_documenting().await;
+    let commits = rig.events_of("workspace.commit:").len();
+    writer_will(&rig, Vec::new(), writer_done(&[], "src/main.rs"));
+    run(&rig, StageKind::Documenting).await;
+    let result = rig
+        .deliverable(StageKind::Documenting, "documentation-result")
+        .await
+        .expect("the result is stored");
+    assert_eq!(result["head_commit"], result["code_head"]);
+    assert_eq!(rig.events_of("workspace.commit:").len(), commits);
+    assert!(passed(&rig, StageKind::Documenting).await, "{result}");
+}
+
+/// A writer that names a file it wrote and leaves the tree as it was is contradicted.
+#[tokio::test]
+async fn a_writer_that_names_a_file_it_did_not_write_fails_the_attempt() {
+    let rig = up_to_documenting().await;
+    writer_will(&rig, Vec::new(), writer_done(&["README.md"], "src/main.rs"));
+    let (claimed, outcome) = rig.run_next().await;
+    assert_eq!(claimed.kind, StageKind::Documenting);
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+}
+
 /// A Markdown file outside `docs` is not the writer's either.
 #[tokio::test]
 async fn a_writer_that_writes_a_markdown_file_outside_docs_is_stopped() {
