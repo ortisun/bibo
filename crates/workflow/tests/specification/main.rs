@@ -18,4 +18,5 @@ mod gate;
 mod invocation;
 mod negative;
 mod rig;
+mod self_check;
 mod stage;

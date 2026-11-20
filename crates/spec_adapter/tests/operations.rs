@@ -181,6 +181,7 @@ fn the_clarify_skill_is_told_what_it_has_to_read() {
     let repairs = clarify(&Sources {
         answers: None,
         feedback: Some(&feedback),
+        self_check: None,
     });
     assert!(repairs.starts_with("Repair the specification"), "{repairs}");
     assert!(repairs.contains("inputs/review-feedback.md"), "{repairs}");
@@ -203,6 +204,7 @@ fn the_clarify_skill_is_told_what_it_has_to_read() {
     let both = clarify(&Sources {
         answers: Some(&answers),
         feedback: Some(&feedback),
+        self_check: None,
     });
     assert!(both.starts_with("Repair the specification"), "{both}");
     assert!(both.contains("inputs/review-feedback.md"), "{both}");
@@ -223,6 +225,7 @@ fn a_repair_never_tells_the_skill_that_no_answers_exist() {
         let text = clarify(&Sources {
             answers: answers.as_ref(),
             feedback: Some(&feedback),
+            self_check: None,
         });
         assert!(!text.contains("Ask your questions and stop"), "{text}");
         assert!(text.contains("Ask no new question of your own"), "{text}");
@@ -244,6 +247,7 @@ fn a_hostile_feedback_or_answers_path_is_refused() {
             &Sources {
                 answers: Some(&hostile),
                 feedback: Some(&hostile),
+                self_check: None,
             },
         )
         .is_ok()
@@ -261,10 +265,17 @@ fn a_hostile_feedback_or_answers_path_is_refused() {
             Sources {
                 answers: Some(&bad_path),
                 feedback: None,
+                self_check: None,
             },
             Sources {
                 answers: None,
                 feedback: Some(&bad_path),
+                self_check: None,
+            },
+            Sources {
+                answers: None,
+                feedback: None,
+                self_check: Some(&bad_path),
             },
         ] {
             assert!(

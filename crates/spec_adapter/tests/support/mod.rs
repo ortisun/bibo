@@ -50,6 +50,7 @@ pub fn request(op: SpecOperation) -> SpecRequest {
         revision: None,
         rework: None,
         resume: None,
+        self_check: None,
     }
 }
 

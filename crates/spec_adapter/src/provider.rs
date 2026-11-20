@@ -95,6 +95,7 @@ impl SpecKitProvider {
         let sources = Sources {
             answers: answers.as_ref(),
             feedback: req.rework.as_ref().map(|rework| &rework.feedback_file),
+            self_check: req.self_check.as_ref().map(|check| &check.findings_file),
         };
         let instruction =
             FixedInstruction::build(req.op, &req.feature_directory, &req.request_file, &sources)
@@ -199,9 +200,14 @@ impl SpecKitProvider {
             // or ran is not a fact about this one.
             // A revision, a rework and a run that goes on from answered questions start with the
             // clarify skill, on a specification that an earlier run wrote.
-            let starts = req.op == SpecOperation::Specify
-                || (req.op == SpecOperation::Clarify
-                    && (req.revision.is_some() || req.rework.is_some() || req.resume.is_some()));
+            // A self-check fixes the draft the earlier skills of this attempt wrote, so it never
+            // starts the notes again.
+            let starts = req.self_check.is_none()
+                && (req.op == SpecOperation::Specify
+                    || (req.op == SpecOperation::Clarify
+                        && (req.revision.is_some()
+                            || req.rework.is_some()
+                            || req.resume.is_some())));
             let key = Self::key(req);
             if starts {
                 notes.remove(&key);

@@ -95,6 +95,10 @@ pub struct Evidence {
     pub draft_sha256: Option<String>,
     /// The questions put to people: the identifier and the text, unchanged.
     pub questions: Vec<(String, String)>,
+    /// The faults the factory's own deterministic checks found in the draft of this attempt
+    /// before any review, as code and message, when a self-check pass ran to fix them. Empty when
+    /// no pass ran. What the gates judge is the draft after the pass.
+    pub self_check: Vec<(String, String)>,
     /// True when a fake component produced any of it.
     pub fake: bool,
 }
@@ -142,6 +146,7 @@ impl Evidence {
             revision: None,
             draft_sha256: None,
             questions: Vec::new(),
+            self_check: Vec::new(),
             fake: false,
         }
     }
@@ -190,6 +195,7 @@ impl Evidence {
             })),
             "draft_sha256": self.draft_sha256,
             "questions": self.questions.iter().map(|(i, t)| json!([i, t])).collect::<Vec<_>>(),
+            "self_check": self.self_check.iter().map(|(c, m)| json!([c, m])).collect::<Vec<_>>(),
             "fake": self.fake,
         })
     }
@@ -321,6 +327,11 @@ impl Evidence {
             revision,
             draft_sha256: value.get("draft_sha256")?.as_str().map(str::to_owned),
             questions: pairs("questions")?,
+            // A document written before the self-check existed records no pass.
+            self_check: match value.get("self_check") {
+                None => Vec::new(),
+                Some(_) => pairs("self_check")?,
+            },
             fake: value.get("fake")?.as_bool()?,
         })
     }
@@ -353,6 +364,10 @@ mod tests {
             reason: "why".to_owned(),
         });
         evidence.questions = vec![("Q-001".to_owned(), "Which?".to_owned())];
+        evidence.self_check = vec![(
+            "requirement-without-scenario".to_owned(),
+            "FR-010 has no acceptance scenario that cites it.".to_owned(),
+        )];
         evidence.invocations = vec![
             InvocationRecord {
                 operation: "specify".to_owned(),
@@ -375,5 +390,19 @@ mod tests {
         let back = Evidence::from_json(&evidence.to_json()).expect("reads back");
         assert_eq!(back, evidence);
         assert_eq!(Evidence::from_json(&json!({})), None);
+    }
+
+    #[test]
+    fn a_document_from_before_the_self_check_reads_back_with_no_pass() {
+        let evidence = Evidence::new("specs/a".to_owned(), "a".repeat(40));
+        let mut value = evidence.to_json();
+        value
+            .as_object_mut()
+            .expect("an object")
+            .remove("self_check");
+        let back = Evidence::from_json(&value).expect("reads back");
+        assert!(back.self_check.is_empty());
+        value["self_check"] = json!("not a list");
+        assert_eq!(Evidence::from_json(&value), None);
     }
 }

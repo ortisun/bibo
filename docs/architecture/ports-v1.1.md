@@ -3513,6 +3513,20 @@ pub trait OutputValidator: Send + Sync {
 // again carries other questions under the same identifiers, and the answers would meet questions
 // they were never given to. A rework (`ReworkRequest`) is another thing: it starts from the draft
 // that was sent back.
+//
+// Added on 2026-11-20, additive: `SpecRequest::self_check: Option<SelfCheckRequest>`, where
+// `SelfCheckRequest { findings_file: RepoPath }`. It is present when the clarify skill fixes, in
+// the same attempt and before the independent review, the faults the factory's own deterministic
+// checks found in the draft that attempt wrote: the links between requirements and scenarios, a
+// requirement keyword, a duplicate identifier, a missing section. The stage runs it at most once
+// in an attempt; faults that remain go to the gates as before. In the twenty-sixth real run three
+// rework rounds went to such faults and to one reviewer finding, and the job died at the rework
+// limit. A rework round (`ReworkRequest`, round from 1) was weighed and not reused: it would carry
+// a round of 0 that the type says cannot exist, the provider starts its notes again on a rework,
+// and the skill would be told that the draft was sent back when nobody had read it. A fifth
+// `SpecOperation` was weighed and not added: an operation names exactly one skill, and this is
+// the clarify skill. The provider tells the skill to read the file as data, to fix every fault it
+// lists and nothing else, and to ask no new question.
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;

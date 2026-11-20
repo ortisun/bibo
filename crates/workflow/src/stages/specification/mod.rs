@@ -15,6 +15,7 @@
 //! | `input` | The names of the deliverables and of the files the skills read |
 //! | `evidence` | The host's measurements, as the document `evaluate` reads |
 //! | `judge` | Every rule of the gate, run over the contract and the evidence |
+//! | `self_check` | The one repair pass of an attempt for the faults the factory's own checks name, before the review |
 //! | `contract` | The stage contract |
 //! | `run` | `execute` |
 //! | `gates` | `evaluate` |
@@ -59,6 +60,7 @@ pub mod input;
 pub mod judge;
 pub(crate) mod run;
 pub mod seams;
+pub mod self_check;
 
 pub use contract::{GRANTED_TOOLS, gates as gate_ids};
 pub use evidence::{Evidence, Failure, Refusal, ReviewRecord, Revision};
