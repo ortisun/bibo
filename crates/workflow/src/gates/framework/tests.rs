@@ -211,6 +211,26 @@ fn a_human_gate_asks_a_person_after_the_evidence_is_in() {
     assert_eq!(resolve(&contract(), &d), Resolution::HumanGate);
 }
 
+/// A failed report whose failures are the given `(check, message, line)` triples.
+fn failed_with(gate: &str, failures: &[(&str, &str, Option<u32>)]) -> GateReport {
+    let mut doc: Value = serde_json::from_str(PASSED).expect("JSON");
+    doc["metadata"]["gate_id"] = json!(gate);
+    doc["outcome"] = json!("FAILED");
+    doc["reason"] = json!("One check of the gate failed on the job commit.");
+    doc["commands"][0]["exit_code"] = json!(1);
+    doc["failures"] = failures
+        .iter()
+        .map(|(check, message, line)| {
+            let mut failure = json!({ "check_id": check, "message": message });
+            if let Some(line) = line {
+                failure["location"] = json!({ "path": "specs/feature/spec.md", "line": line });
+            }
+            failure
+        })
+        .collect();
+    GateReport::from_json_value(doc).expect("a valid report")
+}
+
 #[test]
 fn the_same_failures_give_the_same_digest_in_any_order() {
     let a = decision(vec![failed_report("gate-one", "check-b")], None);
@@ -218,6 +238,150 @@ fn the_same_failures_give_the_same_digest_in_any_order() {
     assert_eq!(failing_set(&a), failing_set(&b));
     let c = decision(vec![failed_report("gate-one", "check-c")], None);
     assert_ne!(failing_set(&a), failing_set(&c));
+
+    let first = "The JSON layout is only an assumption.";
+    let second = "Standard error is not covered.";
+    let one_way = decision(
+        vec![failed_with(
+            "gate-one",
+            &[
+                ("review-finding", first, None),
+                ("review-finding", second, None),
+            ],
+        )],
+        None,
+    );
+    let other_way = decision(
+        vec![failed_with(
+            "gate-one",
+            &[
+                ("review-finding", second, None),
+                ("review-finding", first, None),
+            ],
+        )],
+        None,
+    );
+    assert_eq!(failing_set(&one_way), failing_set(&other_way));
+}
+
+#[test]
+fn one_rule_that_fails_on_another_thing_is_another_failure() {
+    // Every finding of the specification reviewer has the rule `review-finding`. A round that
+    // resolved one finding and met a new one made progress, so its failing set must differ.
+    let round_one = decision(
+        vec![failed_with(
+            "specification-review",
+            &[(
+                "review-finding",
+                "The JSON layout is only an assumption.",
+                None,
+            )],
+        )],
+        None,
+    );
+    let round_two = decision(
+        vec![failed_with(
+            "specification-review",
+            &[("review-finding", "Standard error is not covered.", None)],
+        )],
+        None,
+    );
+    assert_ne!(failing_set(&round_one), failing_set(&round_two));
+
+    // Fewer failures of the same rule is progress too.
+    let two = decision(
+        vec![failed_with(
+            "specification-checklist",
+            &[
+                (
+                    "checklist-item-unresolved",
+                    "The question Q-001 is open.",
+                    None,
+                ),
+                (
+                    "checklist-item-unresolved",
+                    "The question Q-002 is open.",
+                    None,
+                ),
+            ],
+        )],
+        None,
+    );
+    let one = decision(
+        vec![failed_with(
+            "specification-checklist",
+            &[(
+                "checklist-item-unresolved",
+                "The question Q-001 is open.",
+                None,
+            )],
+        )],
+        None,
+    );
+    assert_ne!(failing_set(&two), failing_set(&one));
+}
+
+#[test]
+fn the_place_of_a_failure_is_part_of_what_failed() {
+    let message = "The line is longer than the limit.";
+    let at_three = decision(
+        vec![failed_with(
+            "gate-one",
+            &[("line-too-long", message, Some(3))],
+        )],
+        None,
+    );
+    let at_nine = decision(
+        vec![failed_with(
+            "gate-one",
+            &[("line-too-long", message, Some(9))],
+        )],
+        None,
+    );
+    let nowhere = decision(
+        vec![failed_with("gate-one", &[("line-too-long", message, None)])],
+        None,
+    );
+    assert_ne!(failing_set(&at_three), failing_set(&at_nine));
+    assert_ne!(failing_set(&at_three), failing_set(&nowhere));
+    assert_eq!(
+        failing_set(&at_three),
+        failing_set(&decision(
+            vec![failed_with(
+                "gate-one",
+                &[("line-too-long", message, Some(3))]
+            )],
+            None,
+        ))
+    );
+}
+
+#[test]
+fn a_line_break_in_a_message_cannot_merge_or_split_failures() {
+    // The items of the set are joined by line breaks. A message is hashed before it is joined, so
+    // one failure whose message holds a line break is never read as two failures.
+    let joined = decision(
+        vec![failed_with(
+            "gate-one",
+            &[(
+                "check-a",
+                "The first check failed.\ngate-one:check-a:The second check failed.",
+                None,
+            )],
+        )],
+        None,
+    );
+    let apart = decision(
+        vec![failed_with(
+            "gate-one",
+            &[
+                ("check-a", "The first check failed.", None),
+                ("check-a", "The second check failed.", None),
+            ],
+        )],
+        None,
+    );
+    assert_ne!(failing_set(&joined), failing_set(&apart));
 }
 
 #[test]

@@ -14,6 +14,7 @@
 //! or blocking review, a failed gate, a verdict asking for changes, a request for a person, and
 //! only then a pass.
 
+use factory_domain::contracts::gate_report::Failure;
 use factory_domain::contracts::review_verdict::DefectClass;
 use factory_domain::contracts::stage_contract::{EvaluatorKind, VerificationKind};
 use factory_domain::contracts::{GateReport, StageContract};
@@ -169,6 +170,20 @@ pub fn resolve(contract: &StageContract, decision: &GateDecision) -> Resolution 
 
 /// A digest of what failed: the failed checks of each failed report and the findings that justify
 /// a verdict, sorted so the same failures give the same digest in any order.
+///
+/// The rework guard compares this digest with the one of the previous round: when they are equal,
+/// the round changed nothing and a person is asked (the stagnation detector).
+///
+/// A failed check is told apart by **what** it failed on, and not only by its rule. Its identity
+/// is the gate, the check, the place and the words of the message ([`failure_identity`]). One rule
+/// often judges many things: every unresolved checklist item is `checklist-item-unresolved`, and
+/// every finding of the specification reviewer is `review-finding`. With the rule alone, a round
+/// that fixed five findings and met one new one would look like a round that fixed nothing.
+///
+/// The two ways to be wrong do not cost the same. Calling a round that made progress "the same"
+/// stops a job that was converging. Calling a repeated failure "different", because its message
+/// was worded anew, costs at most the rounds the rework cap still allows. So the identity errs
+/// towards "different".
 #[must_use]
 pub fn failing_set(decision: &GateDecision) -> Sha256Digest {
     let mut items: Vec<String> = Vec::new();
@@ -178,11 +193,7 @@ pub fn failing_set(decision: &GateDecision) -> Sha256Digest {
         .filter(|r| r.outcome == GateOutcome::Failed)
     {
         for failure in report.failures.iter().flatten() {
-            items.push(format!(
-                "{}:{}",
-                report.metadata.gate_id,
-                failure.check_id.as_str()
-            ));
+            items.push(failure_identity(report.metadata.gate_id.as_str(), failure));
         }
     }
     if let Some(verdict) = &decision.review {
@@ -199,6 +210,21 @@ pub fn failing_set(decision: &GateDecision) -> Sha256Digest {
     items.sort();
     items.dedup();
     Sha256Digest::of(items.join("\n").as_bytes())
+}
+
+/// What one failed check is, for the comparison between rounds: the gate, the check, the place and
+/// a digest of the message. The message is hashed so that a line break in it cannot forge the
+/// boundary between two items.
+fn failure_identity(gate: &str, failure: &Failure) -> String {
+    let place = failure
+        .location
+        .as_ref()
+        .map_or_else(String::new, |found| match found.line {
+            Some(line) => format!("{}:{}", found.path, line.get()),
+            None => found.path.clone(),
+        });
+    let subject = Sha256Digest::of(format!("{place}\n{}", failure.message.as_str()).as_bytes());
+    format!("{gate}:{}:{}", failure.check_id.as_str(), subject.as_str())
 }
 
 /// The reports as the pass guard reads them.
