@@ -245,3 +245,88 @@ pub fn source_unavailable(observations: &[ProbeObservation]) -> Vec<Finding> {
     }
     found
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use factory_domain::troubleshooting::FindingFingerprint;
+
+    fn finding(probes: &[&str], tool: &str) -> Finding {
+        serde_json::from_value(serde_json::json!({
+            "category": "retries",
+            "severity": "medium",
+            "component": "worker",
+            "title": "Retries pile up",
+            "probe_ids": probes,
+            "observations": [{"call_id": "call-3", "tool": tool, "observed": "It rose by twelve."}],
+            "hypothesis": "The sandbox fails its self-check.",
+            "confidence": 0.5,
+            "next_checks": ["Read the failure classes of the last hour."]
+        }))
+        .expect("a finding")
+    }
+
+    fn redactor() -> Redactor {
+        Redactor::builder().build().expect("a redactor")
+    }
+
+    #[test]
+    fn the_fingerprint_comes_from_the_tripped_probes_the_finding_names() {
+        let tripped = vec!["retries".to_owned()];
+        let ready = prepared(
+            &finding(&["retries", "not_tripped"], "vm_query"),
+            &tripped,
+            &redactor(),
+        )
+        .expect("prepared");
+        let probes: Vec<&str> = ready.probe_ids.iter().map(Slug::as_str).collect();
+        assert_eq!(
+            probes,
+            ["retries"],
+            "a probe that did not trip in this run is dropped"
+        );
+        assert_eq!(
+            FindingFingerprint::of(&ready),
+            FindingFingerprint::compute(
+                FindingCategory::Retries,
+                FindingComponent::Worker,
+                &["retries"],
+                &[]
+            )
+        );
+    }
+
+    #[test]
+    fn without_a_tripped_probe_the_cited_tools_do_not_change_the_fingerprint() {
+        let none: Vec<String> = Vec::new();
+        let one = prepared(&finding(&[], "vm_query"), &none, &redactor()).expect("prepared");
+        let other =
+            prepared(&finding(&["made_up"], "pg_query"), &none, &redactor()).expect("prepared");
+        assert_eq!(FindingFingerprint::of(&one), FindingFingerprint::of(&other));
+        assert_eq!(
+            FindingFingerprint::of(&one),
+            FindingFingerprint::compute(
+                FindingCategory::Retries,
+                FindingComponent::Worker,
+                &[SWEEP_SOURCE],
+                &[]
+            )
+        );
+    }
+
+    #[test]
+    fn agent_text_is_redacted_before_rendering() {
+        let redactor = redactor();
+        redactor
+            .register("planted", "planted-value-for-a-redaction-test")
+            .expect("registered");
+        let mut leaky = finding(&[], "vm_query");
+        leaky.hypothesis = "It printed planted-value-for-a-redaction-test in a log.".to_owned();
+        let ready = prepared(&leaky, &[], &redactor).expect("prepared");
+        assert!(
+            !ready
+                .hypothesis
+                .contains("planted-value-for-a-redaction-test")
+        );
+    }
+}
