@@ -1001,3 +1001,76 @@ fn st_06_the_check_would_notice_an_unknown_threat_a_duplicate_key_or_an_anchor()
         assert_eq!(error.kind, kind, "{suffix}");
     }
 }
+
+/// The text without the last occurrence of `line`: the original entry, once a copy was put earlier.
+fn without_last(text: &str, line: &str) -> String {
+    let at = text.rfind(line).expect("the line is in the text");
+    let mut out = text.to_owned();
+    out.replace_range(at..at + line.len(), "");
+    out
+}
+
+/// ADR 0021, Decision 5: the MCP gateway is reachable from the troubleshooter profile alone. The
+/// egress widening was approved by the owner for that profile only, so the check refuses the
+/// entry, the network and the egress profile anywhere else.
+#[test]
+fn the_mcp_gateway_is_reachable_from_the_troubleshooter_profile_only() {
+    let text = real(SECURITY_FILE);
+    let gateway = text
+        .lines()
+        .find(|l| l.contains("id: mcp_gateway,"))
+        .expect("the real policy lists the MCP gateway")
+        .to_owned();
+    let broker = "        - { id: model_broker, host: model-broker.sandbox.internal,";
+    assert!(text.contains(broker), "the agent profile lists the broker");
+    // The gateway entry moved into the agent profile.
+    let in_agent = replace_once(&text, broker, &format!("{gateway}\n{broker}"));
+    let in_agent = without_last(&in_agent, &format!("{gateway}\n"));
+    let error = refused(load_security_text(&in_agent), "mcp_gateway in agent");
+    assert_eq!(error.kind, PolicyErrorKind::Constraint, "{error}");
+    assert!(
+        error
+            .key
+            .as_deref()
+            .is_some_and(|k| k.starts_with("egress.profiles.agent.allow")),
+        "{error}"
+    );
+    // The fetch profile is refused the same way.
+    let fetch = "        - { id: crates_index,";
+    let in_fetch = replace_once(&text, fetch, &format!("{gateway}\n{fetch}"));
+    let in_fetch = without_last(&in_fetch, &format!("{gateway}\n"));
+    let error = refused(load_security_text(&in_fetch), "mcp_gateway in fetch_deps");
+    assert_eq!(error.kind, PolicyErrorKind::Constraint, "{error}");
+    // The agent sandbox profile cannot borrow the troubleshooter's egress profile or network.
+    let agent_egress = "      network: model_broker_only\n      egress_profile: agent\n";
+    let borrowed = replace_once(
+        &text,
+        agent_egress,
+        "      network: model_broker_only\n      egress_profile: troubleshooter\n",
+    );
+    let error = refused(
+        load_security_text(&borrowed),
+        "agent with troubleshooter egress",
+    );
+    assert_eq!(
+        error.key.as_deref(),
+        Some("sandbox.profiles.agent.egress_profile"),
+        "{error}"
+    );
+    let widened = replace_once(
+        &text,
+        agent_egress,
+        "      network: model_broker_and_mcp_gateway\n      egress_profile: agent\n",
+    );
+    let error = refused(
+        load_security_text(&widened),
+        "agent with the gateway network",
+    );
+    assert_eq!(
+        error.key.as_deref(),
+        Some("sandbox.profiles.agent.network"),
+        "{error}"
+    );
+    // The control: the real file loads with the gateway in the troubleshooter profile.
+    load_security_text(&text).expect("the real policy loads");
+}

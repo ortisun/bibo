@@ -779,6 +779,37 @@
       },
       "none": {
         "allow": []
+      },
+      "troubleshooter": {
+        "allow": [
+          {
+            "host": "model-broker.sandbox.internal",
+            "id": "troubleshooter_model_broker",
+            "justification": "credential-injecting model API relay, as for the agent profile",
+            "methods": [
+              "POST"
+            ],
+            "ports": [
+              8443
+            ],
+            "review_by": "2027-01-31",
+            "terminates_tls": true
+          },
+          {
+            "host": "mcp-gateway.sandbox.internal",
+            "id": "mcp_gateway",
+            "justification": "the troubleshooter's MCP gateway (Streamable HTTP) through the sidecar's second fixed relay; the gateway holds every upstream credential and allows a fixed list of read tools (ADR 0021)",
+            "methods": [
+              "POST",
+              "GET",
+              "DELETE"
+            ],
+            "ports": [
+              8444
+            ],
+            "review_by": "2027-01-31"
+          }
+        ]
       }
     },
     "proxy_rules": {
@@ -1732,6 +1763,28 @@
         "workspace": {
           "mode": "rw",
           "scope": "dependency_directories_only"
+        }
+      },
+      "troubleshooter": {
+        "egress_profile": "troubleshooter",
+        "limits": {
+          "cpus": 1.0,
+          "max_file_mb": 64,
+          "memory_mb": 2048,
+          "memory_swap_mb": 2048,
+          "nofile": 1024,
+          "pids": 128,
+          "tmpfs_mb": 256,
+          "wall_clock_s": 1800,
+          "workspace_disk_mb": 64
+        },
+        "network": "model_broker_and_mcp_gateway",
+        "purpose": "The troubleshooter's agent run. No repository and no built-in tool. Reaches only the model broker and the MCP gateway.",
+        "secrets": "broker_job_token_and_mcp_run_token",
+        "tmpfs_exec": false,
+        "workspace": {
+          "mode": "ro",
+          "scope": "empty"
         }
       },
       "verify": {

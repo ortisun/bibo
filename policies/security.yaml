@@ -856,6 +856,18 @@ sandbox:
       tmpfs_exec: false
       gate_definitions_from: base_commit_or_central
       holdouts_mounted: true           # only here, only read-only, never in agent
+    troubleshooter:
+      # ADR 0021 (Decisions 5 and 6). The agent profile's hardening, with no repository: the
+      # workspace is an empty directory mounted read-only, and the agent has no built-in tool.
+      # Two secrets, each a file mounted read-only: the broker job token and the run token of
+      # the MCP gateway. Its sidecar adds one second fixed relay, to the gateway only.
+      purpose: "The troubleshooter's agent run. No repository and no built-in tool. Reaches only the model broker and the MCP gateway."
+      network: model_broker_and_mcp_gateway
+      egress_profile: troubleshooter
+      secrets: broker_job_token_and_mcp_run_token
+      workspace: { mode: ro, scope: empty }
+      limits: { cpus: 1.0, memory_mb: 2048, memory_swap_mb: 2048, pids: 128, wall_clock_s: 1800, workspace_disk_mb: 64, tmpfs_mb: 256, nofile: 1024, max_file_mb: 64 }
+      tmpfs_exec: false
   watchdog:
     wall_clock_kill: supervisor        # Docker has no run-time limit flag (verified); supervisor sends kill at the deadline
     disk_poll_interval_s: 5
@@ -920,6 +932,16 @@ egress:
       allow:
         # `host` is a placeholder internal name for the per-job sidecar's address; the real name is set by the sandbox crate.
         - { id: model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay", review_by: "2027-01-31", terminates_tls: true }
+    troubleshooter:
+      # ADR 0021, Decision 5: the troubleshooter reaches its MCP gateway through a second,
+      # fixed relay of its sidecar (no host list, no CONNECT, no DNS). This egress widening was
+      # approved by the owner on 2026-11-20 for this profile only. The security review that
+      # `widening_requires` asks for is STILL OWED. `mcp_gateway` may appear in this profile and
+      # in no other: the policy check refuses it anywhere else.
+      allow:
+        # `host` is a placeholder internal name, like the agent profile's; the real address is the sidecar's alias and second relay port.
+        - { id: troubleshooter_model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay, as for the agent profile", review_by: "2027-01-31", terminates_tls: true }
+        - { id: mcp_gateway, host: mcp-gateway.sandbox.internal, ports: [8444], methods: [POST, GET, DELETE], justification: "the troubleshooter's MCP gateway (Streamable HTTP) through the sidecar's second fixed relay; the gateway holds every upstream credential and allows a fixed list of read tools (ADR 0021)", review_by: "2027-01-31" }
   broker_upstreams:                    # hosts the BROKER (not the sandbox) may call
     - { id: anthropic_api, host: api.anthropic.com, paths: ["/v1/messages", "/v1/messages/count_tokens"], justification: "Claude models", review_by: "2027-01-31" }
     - { id: openai_api,    host: api.openai.com,    paths: ["/v1/responses", "/v1/chat/completions"],    justification: "Codex and OpenAI models", review_by: "2027-01-31" }

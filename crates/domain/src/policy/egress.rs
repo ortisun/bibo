@@ -1,6 +1,7 @@
 //! Network egress (`egress` of `policies/security.yaml`).
 //!
-//! A sandbox profile has an egress profile (`none`, `fetch_deps` or `agent`), and the egress
+//! A sandbox profile has an egress profile (`none`, `fetch_deps`, `agent` or `troubleshooter`),
+//! and the egress
 //! profile lists the hosts, ports and methods that may be reached. Everything else is refused
 //! (`default_action: deny`). [`EgressPolicy::check`] decides one request on the text the proxy
 //! sees; [`EgressPolicy::check_address`] decides the address the proxy resolved the host to, which
@@ -35,7 +36,14 @@ pub enum EgressProfileId {
     FetchDeps,
     /// The model broker only.
     Agent,
+    /// The model broker and the MCP gateway (ADR 0021). Only the `troubleshooter` sandbox profile
+    /// may use it.
+    Troubleshooter,
 }
+
+/// The id of the one egress entry that reaches the troubleshooter's MCP gateway. It may appear in
+/// the `troubleshooter` egress profile and in no other (ADR 0021, Decision 5).
+pub const MCP_GATEWAY_ENTRY: &str = "mcp_gateway";
 
 impl EgressProfileId {
     fn parse(text: &str) -> Option<Self> {
@@ -43,6 +51,7 @@ impl EgressProfileId {
             "none" => Some(Self::None),
             "fetch_deps" => Some(Self::FetchDeps),
             "agent" => Some(Self::Agent),
+            "troubleshooter" => Some(Self::Troubleshooter),
             _ => None,
         }
     }
@@ -52,6 +61,7 @@ impl EgressProfileId {
             Self::None => "none",
             Self::FetchDeps => "fetch_deps",
             Self::Agent => "agent",
+            Self::Troubleshooter => "troubleshooter",
         }
     }
 }
@@ -276,10 +286,20 @@ impl EgressPolicy {
             (EgressProfileId::None, &egress.profiles.none),
             (EgressProfileId::FetchDeps, &egress.profiles.fetch_deps),
             (EgressProfileId::Agent, &egress.profiles.agent),
+            (
+                EgressProfileId::Troubleshooter,
+                &egress.profiles.troubleshooter,
+            ),
         ];
         for (id, profile) in listed {
             let mut allows = Vec::new();
             for a in &profile.allow {
+                if a.id == MCP_GATEWAY_ENTRY && id != EgressProfileId::Troubleshooter {
+                    return Err(BuildError::Contradiction(format!(
+                        "egress profile {} lists {MCP_GATEWAY_ENTRY}, which only the troubleshooter profile may reach",
+                        id.as_str()
+                    )));
+                }
                 let host = normalize_host(&a.host).map_err(|e| BuildError::UnknownValue {
                     key: "egress.profiles.allow.host",
                     found: format!("{} ({e})", a.host),
@@ -325,6 +345,7 @@ impl EgressPolicy {
             (SandboxProfileKind::Agent, &sandbox.agent),
             (SandboxProfileKind::Verify, &sandbox.verify),
             (SandboxProfileKind::FetchDeps, &sandbox.fetch_deps),
+            (SandboxProfileKind::Troubleshooter, &sandbox.troubleshooter),
         ] {
             let id = EgressProfileId::parse(&profile.egress_profile).ok_or_else(|| {
                 BuildError::UnknownValue {
@@ -332,6 +353,15 @@ impl EgressPolicy {
                     found: profile.egress_profile.clone(),
                 }
             })?;
+            if (id == EgressProfileId::Troubleshooter)
+                != (kind == SandboxProfileKind::Troubleshooter)
+            {
+                return Err(BuildError::Contradiction(format!(
+                    "sandbox profile {} uses egress profile {}; the troubleshooter egress profile belongs to the troubleshooter sandbox profile alone",
+                    kind.as_str(),
+                    id.as_str()
+                )));
+            }
             sandbox_to_egress.insert(kind, id);
         }
         Ok(Self {
