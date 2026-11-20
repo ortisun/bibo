@@ -147,19 +147,18 @@ async fn another_session_cannot_be_terminated() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settings_and_advisory_locks_do_not_outlive_a_call() {
+async fn settings_do_not_outlive_a_call_and_advisory_locks_are_refused() {
     let db = TestDb::fresh().await;
     let login = db.observer().await;
     let inspector = db.inspector(&login, quick_limits());
     inspector
         .query(
             "SELECT set_config('statement_timeout', '0', false) AS a, \
-                    set_config('factory.tenant_id', '00000000-0000-7000-8000-000000000001', false) AS b, \
-                    pg_advisory_lock(4242) AS c",
+                    set_config('factory.tenant_id', '00000000-0000-7000-8000-000000000001', false) AS b",
             None,
         )
         .await
-        .expect("set_config and an advisory lock are allowed in a read-only transaction");
+        .expect("set_config is allowed in a read-only transaction");
     let text = inspector
         .query(
             "SELECT current_setting('statement_timeout') AS timeout, \
@@ -171,10 +170,66 @@ async fn settings_and_advisory_locks_do_not_outlive_a_call() {
     let row = &json(&text)["rows"][0];
     assert_eq!(row["timeout"], Value::from("1s"), "{text}");
     assert_eq!(row["tenant"], Value::from(""), "{text}");
+    // Migration 003100 (TR-4): the observer may not take an advisory lock at all, so it cannot
+    // hold the audit chain lock of a tenant either.
+    for sql in [
+        "SELECT pg_advisory_lock(4242) AS c",
+        "SELECT pg_advisory_xact_lock(hashtextextended('factory.audit_events:' || id::text, 0)) AS c FROM tenants",
+    ] {
+        let failure = inspector.query(sql, None).await.expect_err(sql);
+        assert_eq!(database_code(&failure), "42501", "{sql}: {failure}");
+    }
     let held = db
-        .number("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 4242")
+        .number(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        )
         .await;
-    assert_eq!(held, 0, "DISCARD ALL released the session's advisory lock");
+    assert_eq!(held, 0, "no advisory lock is held");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn free_sql_cannot_read_another_roles_query_text() {
+    let db = TestDb::fresh().await;
+    let worker = db.login("app", &["factory_app"], false).await;
+    let busy = db.connect_as(&worker).await;
+    let running = tokio::spawn(async move {
+        let _ = busy
+            .batch_execute("SELECT 'customer-literal-31337' AS v, pg_sleep(3) /* note-31337 */")
+            .await;
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let login = db.observer().await;
+    let inspector = db.inspector(&login, quick_limits());
+    // The review's own query (TR-3): an alias, a transformation, and a cut in pieces.
+    let text = inspector
+        .query(
+            &format!(
+                "SELECT pid, query AS text_of_session, reverse(query) AS backwards, \
+                        encode(convert_to(query, 'UTF8'), 'base64') AS encoded, state \
+                   FROM pg_stat_activity WHERE usename = '{}'",
+                worker.name
+            ),
+            None,
+        )
+        .await
+        .expect("pg_stat_activity is readable");
+    assert!(!text.contains("31337"), "{text}");
+    assert!(text.contains("<insufficient privilege>"), "{text}");
+    // The same session through the observer function: listed, its text normalized.
+    let text = inspector
+        .query(
+            &format!(
+                "SELECT query AS t FROM observer_activity() WHERE login = '{}'",
+                worker.name
+            ),
+            None,
+        )
+        .await
+        .expect("observer_activity is readable");
+    assert!(text.contains("pg_sleep(?)"), "{text}");
+    assert!(!text.contains("31337"), "{text}");
+    let _ = running.await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

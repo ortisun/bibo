@@ -127,10 +127,26 @@ async fn the_group_has_no_power_beyond_reading() {
             "attribute {index} of factory_observer is set"
         );
     }
+    // Migration 003100 took pg_read_all_stats away (TR-3) and made the group NOINHERIT, so that a
+    // grant made again by migration 002900 in another database of the cluster passes nothing on.
+    // The check is on privileges, not on the membership row, for that reason.
+    let stats: bool = admin
+        .query_one(
+            "SELECT pg_has_role('factory_observer', 'pg_read_all_stats', 'USAGE') \
+                 OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_observer' AND rolinherit)",
+            &[],
+        )
+        .await
+        .expect("the group's statistics privilege")
+        .get(0);
+    assert!(
+        !stats,
+        "factory_observer must not hold the privileges of pg_read_all_stats"
+    );
     let memberships: Vec<String> = admin
         .query(
             "SELECT g.rolname::text FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid \
-              WHERE m.member = 'factory_observer'::regrole ORDER BY 1",
+              WHERE m.member = 'factory_observer'::regrole AND g.rolname <> 'pg_read_all_stats' ORDER BY 1",
             &[],
         )
         .await
@@ -138,7 +154,7 @@ async fn the_group_has_no_power_beyond_reading() {
         .iter()
         .map(|row| row.get(0))
         .collect();
-    assert_eq!(memberships, ["pg_read_all_stats"]);
+    assert!(memberships.is_empty(), "{memberships:?}");
     let writes: i64 = admin
         .query_one(
             "SELECT count(*) FROM information_schema.column_privileges \
@@ -149,15 +165,114 @@ async fn the_group_has_no_power_beyond_reading() {
         .expect("count write grants")
         .get(0);
     assert_eq!(writes, 0);
-    let routines: i64 = admin
-        .query_one(
-            "SELECT count(*) FROM information_schema.role_routine_grants WHERE grantee = 'factory_observer'",
+    let routines: Vec<String> = admin
+        .query(
+            "SELECT DISTINCT routine_name::text FROM information_schema.role_routine_grants \
+              WHERE grantee = 'factory_observer' ORDER BY 1",
             &[],
         )
         .await
-        .expect("count routine grants")
-        .get(0);
-    assert_eq!(routines, 0, "no EXECUTE is granted to factory_observer");
+        .expect("list routine grants")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        routines,
+        [
+            "observer_activity",
+            "observer_lock_waits",
+            "observer_normalize_query",
+            "observer_statements"
+        ],
+        "EXECUTE is granted to factory_observer on the observer functions of migration 003100 only"
+    );
+    // The functions run as factory_observer_stats, a role that has no member, can not log in, and
+    // is a member of pg_read_all_stats and of nothing else.
+    let definer = admin
+        .query_one(
+            "SELECT r.rolcanlogin, r.rolsuper, r.rolbypassrls, \
+                    (SELECT count(*) FROM pg_auth_members m WHERE m.roleid = r.oid), \
+                    (SELECT array_agg(g.rolname::text) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid \
+                      WHERE m.member = r.oid), \
+                    (SELECT bool_and(p.prosecdef AND p.proowner = r.oid \
+                                     AND p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp']) \
+                       FROM pg_proc p WHERE p.proname IN ('observer_activity', 'observer_lock_waits', 'observer_statements')) \
+               FROM pg_roles r WHERE r.rolname = 'factory_observer_stats'",
+            &[],
+        )
+        .await
+        .expect("the definer role");
+    assert!(!definer.get::<_, bool>(0) && !definer.get::<_, bool>(1) && !definer.get::<_, bool>(2));
+    assert_eq!(
+        definer.get::<_, i64>(3),
+        0,
+        "factory_observer_stats has no member"
+    );
+    assert_eq!(
+        definer.get::<_, Vec<String>>(4),
+        ["pg_read_all_stats"],
+        "factory_observer_stats is a member of pg_read_all_stats only"
+    );
+    assert!(
+        definer.get::<_, bool>(5),
+        "the three functions are SECURITY DEFINER, owned by factory_observer_stats, with a pinned search_path"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_observer_cannot_take_an_advisory_lock_and_the_writers_still_can() {
+    let db = TestDb::fresh().await;
+    let observer = db.observer().await;
+    let client = db.connect_as(&observer).await;
+    // The audit chain lock of every tenant (TR-4), and the other forms.
+    for statement in [
+        "SELECT pg_advisory_xact_lock(hashtextextended('factory.audit_events:' || id::text, 0)) FROM tenants",
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('factory.audit_events:' || id::text, 0)) FROM tenants",
+        "SELECT pg_advisory_lock(4242)",
+        "SELECT pg_try_advisory_lock(4242)",
+        "SELECT pg_advisory_lock_shared(4242)",
+        "SELECT pg_advisory_xact_lock(1, 2)",
+    ] {
+        let error = client
+            .batch_execute(&format!("BEGIN READ ONLY; {statement}; ROLLBACK"))
+            .await
+            .expect_err(statement);
+        let _ = client.batch_execute("ROLLBACK").await;
+        assert_eq!(
+            error
+                .code()
+                .map(|c| c.code().to_owned())
+                .unwrap_or_default(),
+            "42501",
+            "{statement}: {error}"
+        );
+    }
+    // The two groups that insert audit events still take the lock the audit trigger takes, and only
+    // that one function is granted back.
+    for group in ["factory_app", "factory_api_app"] {
+        let writer = db.login(&format!("writer_{group}"), &[group], false).await;
+        let writer = db.connect_as(&writer).await;
+        let waited: i32 = writer
+            .query_one(
+                "SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended('factory.audit_events:y', 0))) q",
+                &[],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{group}: {error:?}"))
+            .get(0);
+        assert_eq!(waited, 1, "{group} takes the audit chain lock");
+        let other = writer
+            .query_one("SELECT pg_try_advisory_lock(4242)", &[])
+            .await
+            .expect_err("only pg_advisory_xact_lock(bigint) is granted back");
+        assert_eq!(
+            other
+                .code()
+                .map(|c| c.code().to_owned())
+                .unwrap_or_default(),
+            "42501"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -201,6 +316,8 @@ async fn the_observer_cannot_read_a_sensitive_column() {
         "SELECT canonical_json FROM ledger_entries",
         "SELECT login FROM principals",
         "SELECT full_name FROM repositories",
+        "SELECT github_repository_id FROM repositories",
+        "SELECT github_installation_id FROM webhook_deliveries",
         "SELECT * FROM jobs",
         "SELECT reason FROM approvals",
     ] {

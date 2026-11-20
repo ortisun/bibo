@@ -1,4 +1,5 @@
-# Every column of every table that the group factory_observer can read (migration 2026-11-20-002900_observer_role).
+# Every column of every table that the group factory_observer can read (migrations 2026-11-20-002900_observer_role and
+# 2026-11-20-003100_observer_hardening).
 #
 # Format: <table> <column> <class> [# why, for a sensitive column]. Class is "operational" (granted) or
 # "sensitive" (never granted: a request text, a specification, an issue body, a token or token digest, a key, a
@@ -164,8 +165,8 @@ principals created_at operational
 principals disabled_at operational
 repositories tenant_id operational
 repositories id operational
-repositories github_installation_id operational
-repositories github_repository_id operational
+repositories github_installation_id sensitive # resolves to the customer's repository or account through GitHub's API (TR-11, migration 003100)
+repositories github_repository_id sensitive # resolves to the customer's repository or account through GitHub's API (TR-11, migration 003100)
 repositories full_name sensitive # a customer repository name
 repositories default_branch operational
 repositories enabled operational
@@ -240,8 +241,8 @@ webhook_deliveries id operational
 webhook_deliveries delivery_id operational
 webhook_deliveries event_name operational
 webhook_deliveries action operational
-webhook_deliveries github_installation_id operational
-webhook_deliveries github_repository_id operational
+webhook_deliveries github_installation_id sensitive # resolves to the customer's repository or account through GitHub's API (TR-11, migration 003100)
+webhook_deliveries github_repository_id sensitive # resolves to the customer's repository or account through GitHub's API (TR-11, migration 003100)
 webhook_deliveries sender_github_user_id sensitive # a person
 webhook_deliveries body_sha256 sensitive # digest of a delivery body
 webhook_deliveries semantic_key sensitive # derived from a delivery body

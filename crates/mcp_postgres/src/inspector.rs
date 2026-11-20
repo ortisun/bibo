@@ -12,9 +12,9 @@ use tokio_postgres::{Client, NoTls};
 use crate::sql::{self, render_rows, render_sections, scrub_literals, wrap_fixed};
 use crate::{ConnectSettings, Limits, Redact, ToolFailure, redact_json};
 
-/// The keys whose string values are query texts of other sessions. Their literals are scrubbed
-/// before redaction. In free SQL this is a heuristic: a column renamed away from these names is
-/// only redacted.
+/// The keys whose string values are query texts of other sessions. The database already returns
+/// them normalized (`observer_normalize_query`); their literals are scrubbed here again before
+/// redaction, as a second layer. Free SQL cannot read a raw query text of another role at all.
 const QUERY_TEXT_KEYS: [&str; 3] = ["query", "blocked_query", "blocking_query"];
 
 /// The groups a login of this server must not belong to: each would add a write privilege or a
@@ -255,12 +255,15 @@ impl Inspector {
     /// A [`ToolFailure`].
     pub async fn activity(&self) -> Result<String, ToolFailure> {
         let cap = self.limits.max_rows;
+        // The sessions come from observer_activity() (migration 2026-11-20-003100): factory_observer has no
+        // pg_read_all_stats, so the function, owned by a role that has it, returns the query texts with their
+        // literals and comments already replaced and only this database's sessions.
         let fixed = format!(
-            "SELECT pid, usename AS login, application_name, backend_type, state, wait_event_type, wait_event, \
+            "SELECT pid, login, application_name, backend_type, state, wait_event_type, wait_event, \
                     backend_start, xact_start, query_start, state_change, \
                     (now() - xact_start)::text AS transaction_age, (now() - query_start)::text AS query_age, \
-                    backend_xmin::text AS backend_xmin, left(query, 2000) AS query \
-               FROM pg_catalog.pg_stat_activity WHERE pid <> pg_catalog.pg_backend_pid() \
+                    backend_xmin, query \
+               FROM public.observer_activity() \
               ORDER BY xact_start NULLS LAST, backend_start LIMIT {}",
             cap + 1
         );
@@ -275,16 +278,11 @@ impl Inspector {
     pub async fn locks(&self) -> Result<String, ToolFailure> {
         let cap = self.limits.max_rows;
         let blocked = format!(
-            "SELECT blocked.pid AS blocked_pid, blocked.usename AS blocked_login, blocked.wait_event_type, \
-                    blocked.wait_event, (now() - blocked.query_start)::text AS blocked_for, \
-                    left(blocked.query, 1000) AS blocked_query, blocking.pid AS blocking_pid, \
-                    blocking.usename AS blocking_login, blocking.state AS blocking_state, \
-                    (now() - blocking.xact_start)::text AS blocking_transaction_age, \
-                    left(blocking.query, 1000) AS blocking_query \
-               FROM pg_catalog.pg_stat_activity blocked \
-               CROSS JOIN LATERAL unnest(pg_catalog.pg_blocking_pids(blocked.pid)) AS b(pid) \
-               JOIN pg_catalog.pg_stat_activity blocking ON blocking.pid = b.pid \
-              ORDER BY blocked.query_start NULLS LAST LIMIT {}",
+            "SELECT blocked_pid, blocked_login, wait_event_type, wait_event, \
+                    (now() - blocked_since)::text AS blocked_for, blocked_query, blocking_pid, blocking_login, \
+                    blocking_state, (now() - blocking_xact_start)::text AS blocking_transaction_age, blocking_query \
+               FROM public.observer_lock_waits() \
+              ORDER BY blocked_since NULLS LAST LIMIT {}",
             cap + 1
         );
         let summary = format!(
