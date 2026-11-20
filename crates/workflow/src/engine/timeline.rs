@@ -18,7 +18,7 @@ use factory_domain::machines::invalidation::rework_stages;
 use factory_domain::machines::limits::{ReworkLedger, ReworkTrack};
 use factory_domain::machines::retry::{AttemptWindow, WindowEvent};
 use factory_domain::state::{AttemptStatus, StageRunStatus};
-use factory_domain::values::Sha256Digest;
+use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::store::{
     ArtifactDirection, Attempt, OutboxRow, OutboxSeq, StageRun, StageRunArtifact, Tx, Versioned,
@@ -119,6 +119,14 @@ pub(crate) struct RunRecord {
     /// engine wrote, such as `independent-reviewer-unavailable`. `None` for a run that never
     /// waited, or whose latest wait names no reason.
     pub(crate) wait_reason: Option<String>,
+    /// When the run last moved to `BLOCKED` (transitions S11 and S21): the `occurred_at` of the
+    /// newest `stage_run.blocked` event. The milestone of the solo mode's wait for a decision on a
+    /// dependency or on build code (ADR 0021). `None` when no such event is readable.
+    pub(crate) blocked_at: Option<Timestamp>,
+    /// When the run last moved to `WAITING_FOR_HUMAN` (transitions S07, S10 and S22): the
+    /// `occurred_at` of the newest `stage_run.waiting_for_human` event. The milestone of the solo
+    /// mode's wait for an approval or a translation warning. `None` when none is readable.
+    pub(crate) waiting_for_human_at: Option<Timestamp>,
 }
 
 impl RunRecord {
@@ -181,6 +189,8 @@ impl RunRecord {
             dependency_decisions,
             blocks: Vec::new(),
             wait_reason: None,
+            blocked_at: None,
+            waiting_for_human_at: None,
         })
     }
 
@@ -489,17 +499,27 @@ impl Timeline {
             // one. The newest wait of a run replaces an older one: events are read in order.
             ("stage_run.waiting_for_human", _) => {
                 let id = aggregate_run(event);
-                self.run_mut(id)?.wait_reason = event
+                let run = self.run_mut(id)?;
+                run.wait_reason = event
                     .reason_code
                     .as_ref()
                     .map(|code| code.as_str().to_owned());
+                run.waiting_for_human_at = Some(event.occurred_at);
                 Ok(())
             }
             // The block event names the gate and the code of each block. The newest block of a
             // run replaces an older one: events are read in order.
             ("stage_run.blocked", "S11") => {
                 let id = aggregate_run(event);
-                self.run_mut(id)?.blocks = blocks_of(&event.payload);
+                let run = self.run_mut(id)?;
+                run.blocks = blocks_of(&event.payload);
+                run.blocked_at = Some(event.occurred_at);
+                Ok(())
+            }
+            // Every other move to `BLOCKED` (S21) starts a new wait of the solo mode too.
+            ("stage_run.blocked", _) => {
+                let id = aggregate_run(event);
+                self.run_mut(id)?.blocked_at = Some(event.occurred_at);
                 Ok(())
             }
             (
@@ -801,6 +821,8 @@ mod tests {
                 dependency_decisions: Vec::new(),
                 blocks: Vec::new(),
                 wait_reason: None,
+                blocked_at: None,
+                waiting_for_human_at: None,
             }],
             ..Timeline::default()
         }

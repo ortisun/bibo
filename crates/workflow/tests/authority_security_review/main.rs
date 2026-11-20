@@ -45,6 +45,7 @@ async fn aut_3_a_person_with_only_the_security_approver_role_can_complete_an_app
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await;
@@ -75,6 +76,7 @@ async fn held_aut_3_the_approver_role_is_what_the_engine_asks_for() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await
@@ -106,6 +108,7 @@ async fn held_the_engine_refuses_the_requester_as_approver() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await;

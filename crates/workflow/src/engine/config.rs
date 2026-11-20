@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use factory_domain::machines::limits::{RepairCap, ReworkLimits};
+use factory_domain::policy::solo::SoloRules;
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::{ExecutionMode, StageKind};
 
@@ -115,6 +116,10 @@ pub struct EngineConfig {
     /// default holds the block of an unresolved dependency review; a composition root adds the
     /// entries of the policy and never takes this one away.
     pub non_overridable_blocks: BTreeSet<(String, String)>,
+    /// The rules of the solo mode (ADR 0021), which the engine checks again when it commits a
+    /// decision the requester took alone. Off by default; a composition root sets the policy's
+    /// with [`EngineConfig::with_solo`].
+    pub solo: SoloRules,
 }
 
 impl EngineConfig {
@@ -137,10 +142,18 @@ impl EngineConfig {
                 UNRESOLVED_DEPENDENCY_REVIEW.0.to_owned(),
                 UNRESOLVED_DEPENDENCY_REVIEW.1.to_owned(),
             )]),
+            solo: SoloRules::disabled(),
         }
     }
 
     /// Adds blocks that no override may pass. The floor stays: this adds and never removes.
+    /// The same config with the rules of the solo mode of the policy.
+    #[must_use]
+    pub fn with_solo(mut self, solo: SoloRules) -> Self {
+        self.solo = solo;
+        self
+    }
+
     #[must_use]
     pub fn with_non_overridable_blocks(
         mut self,

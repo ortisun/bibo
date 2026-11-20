@@ -99,6 +99,42 @@ impl Engine {
         Ok(loaded?.has_applied(command))
     }
 
+    /// When the stage run moved into `status` the last time, if it is in that state now: the
+    /// `occurred_at` of the newest `stage_run.waiting_for_human` or `stage_run.blocked` event of
+    /// the run. `Ok(None)` when the run is in another state, when `status` is neither of the two,
+    /// or when the event is not readable (old events archived): a caller that measures a wait from
+    /// here then refuses (ADR 0021).
+    ///
+    /// # Errors
+    /// [`EngineError::NotFound`] when the job does not exist for the tenant, and the store errors.
+    pub async fn state_entered_at(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        stage_run: StageRunId,
+        status: StageRunStatus,
+    ) -> Result<Option<Timestamp>, EngineError> {
+        let mut tx = self.tenant_tx(tenant).await?;
+        let loaded = async {
+            tx.get_job(job).await?;
+            Timeline::load(&mut *tx, job).await
+        }
+        .await;
+        tx.rollback().await?;
+        let timeline = loaded?;
+        let Some(record) = timeline.run(stage_run) else {
+            return Ok(None);
+        };
+        if record.row.value.status != status {
+            return Ok(None);
+        }
+        Ok(match status {
+            StageRunStatus::WaitingForHuman => record.waiting_for_human_at,
+            StageRunStatus::Blocked => record.blocked_at,
+            _ => None,
+        })
+    }
+
     /// Reads a job with its stage runs and attempts.
     ///
     /// # Errors

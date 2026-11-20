@@ -430,6 +430,7 @@ impl Rig {
                 seen: Some(seen),
                 warnings_decided: true,
                 rework_target: None,
+                solo: None,
                 comment: None,
             })
             .await

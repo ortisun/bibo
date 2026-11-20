@@ -368,6 +368,7 @@ impl Rig {
             seen: Some(seen),
             warnings_decided: true,
             rework_target: Some(StageKind::Implementation),
+            solo: None,
             comment: None,
         }
     }

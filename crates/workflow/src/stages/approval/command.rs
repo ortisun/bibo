@@ -173,6 +173,9 @@ pub struct ApprovalCommand {
     pub warnings_decided: bool,
     /// Where the work goes back to. Required for `rework`.
     pub rework_target: Option<StageKind>,
+    /// When the person asked and the confirmation word they sent (ADR 0021). The approval of a
+    /// high or critical pull request by the requester alone needs both; `None` elsewhere.
+    pub solo: Option<crate::commands::SoloRequest>,
     /// The comment, for the channel `GithubComment`.
     pub comment: Option<CommentEvidence>,
 }

@@ -144,6 +144,7 @@ pub fn decide(actor: &Actor<'_>, needed: Designation, requester: Option<u64>) ->
             risk_tier: RiskTier::Low,
             protected_path_change: false,
             sensitive_file_change: false,
+            solo: factory_domain::policy::solo::SoloFact::NONE,
         },
         needed,
     )
@@ -172,6 +173,7 @@ pub fn decide_build_code(actor: &Actor<'_>, requester: Option<u64>) -> ActionVer
         risk_tier: RiskTier::Low,
         protected_path_change: false,
         sensitive_file_change: false,
+        solo: factory_domain::policy::solo::SoloFact::NONE,
     })
 }
 

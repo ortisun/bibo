@@ -16,4 +16,5 @@ pub use authority::StaticAuthority;
 pub use backend::{Backend, InMemoryBackend};
 pub use handler::{Eval, ScriptHandle, ScriptedHandler, Step, Tweaks};
 pub use ticker::ManualTicker;
-pub use world::{ScriptedValidator, World};
+#[allow(unused_imports)]
+pub use world::{REQUESTER_GITHUB_ID, ScriptedValidator, World, solo_policy, solo_proof};

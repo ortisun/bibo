@@ -7,6 +7,7 @@ use factory_domain::policy::authority::{
     ActionDenialReason, ActorKind, Allowlist, AllowlistEntry, AuthorityDenial, AutonomyLevel,
 };
 use factory_domain::policy::decision::{Designation, GithubUserId};
+use factory_domain::policy::solo::{ConfirmationWord, SoloFact};
 use factory_domain::policy::{ApprovalPolicy, PolicyEngine, SecurityPolicy};
 use factory_domain::values::{GitSha, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{RiskTier, StageKind};
@@ -15,6 +16,7 @@ use factory_ports::githost::{
 };
 use factory_ports::paths::RepoRef;
 use factory_ports::store::ApprovalChannel;
+use factory_workflow::commands::SoloRequest;
 use factory_workflow::stages::approval::request::VALID_HOURS;
 use factory_workflow::stages::approval::{
     ApprovalCommand, ApprovalRequest, CommentEvidence, Context, Live, NotACommand, Refusal, Seen,
@@ -117,6 +119,7 @@ pub fn command(verb: Verb, sender: u64, request: &ApprovalRequest) -> ApprovalCo
         seen: Some(request.seen_with(ledger_head())),
         warnings_decided: true,
         rework_target: Some(StageKind::Implementation),
+        solo: None,
         comment: None,
     }
 }
@@ -138,6 +141,8 @@ pub struct Setup {
     pub drift: Vec<&'static str>,
     pub level: AutonomyLevel,
     pub comment: Option<Comment>,
+    pub solo: SoloFact,
+    pub solo_milestone: Option<Timestamp>,
 }
 
 impl Setup {
@@ -160,6 +165,8 @@ impl Setup {
             drift: Vec::new(),
             level: AutonomyLevel::L1,
             comment: None,
+            solo: SoloFact::NONE,
+            solo_milestone: None,
         }
     }
 
@@ -184,6 +191,8 @@ impl Setup {
                 level: self.level,
                 tenant: &self.tenant,
                 comment: self.comment.as_ref(),
+                solo: self.solo,
+                solo_milestone: self.solo_milestone,
             },
         )
         .map(|_| ())
@@ -268,12 +277,193 @@ fn negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_co
 }
 
 #[test]
-fn a_low_risk_change_may_be_approved_by_the_requester_where_the_policy_allows_it() {
-    // `approver_may_equal_requester_when_low_risk: true`. The engine refuses it anyway
-    // (see the notes of the package): this test pins what the policy says.
-    let setup = Setup::new();
+fn the_requester_approves_a_low_risk_change_only_in_the_solo_mode() {
+    // `approver_may_equal_requester_when_low_risk: false` (ADR 0021): outside the solo mode the
+    // requester is refused, and with the solo fact they approve, with no wait and no phrase.
+    let mut setup = Setup::new();
+    let cmd = command(Verb::Approve, REQUESTER, &setup.request);
+    assert_eq!(
+        setup.judge(&cmd),
+        Err(Refusal::Unauthorized(ActionDenialReason::SelfApproval))
+    );
+    setup.solo = setup.policy.authority.solo_fact(true, 1);
+    assert_eq!(setup.judge(&cmd), Ok(()));
+    setup.request.tier = RiskTier::Medium;
     let cmd = command(Verb::Approve, REQUESTER, &setup.request);
     assert_eq!(setup.judge(&cmd), Ok(()));
+}
+
+#[test]
+fn ineligible_approver_is_the_code_of_a_refused_self_approval() {
+    let setup = Setup::new();
+    let cmd = command(Verb::Approve, REQUESTER, &setup.request);
+    let refusal = setup.judge(&cmd).expect_err("refused");
+    assert_eq!(refusal.code(), "ineligible_approver");
+    assert_eq!(Refusal::SoloDelay.code(), "solo_delay");
+    assert_eq!(Refusal::ConfirmationMissing.code(), "confirmation_missing");
+    assert!(Refusal::SoloDelay.may_reply());
+    assert!(Refusal::ConfirmationMissing.may_reply());
+}
+
+/// A setup in the solo mode for a pull request at `tier`, whose stage run started to wait at
+/// ten in the morning.
+fn solo_setup(tier: RiskTier) -> Setup {
+    let mut setup = Setup::new();
+    setup.request.tier = tier;
+    setup.solo = setup.policy.authority.solo_fact(true, 1);
+    setup.solo_milestone = Some(Timestamp::parse("2026-10-27T10:00:00Z").expect("a time"));
+    if tier == RiskTier::Critical {
+        setup.allowlist = Allowlist::new(
+            "allowlist-solo",
+            vec![AllowlistEntry {
+                tenant: setup.tenant,
+                github_user_id: GithubUserId::new(REQUESTER).expect("an id"),
+                login: "solo".to_owned(),
+                designations: [
+                    Designation::Requester,
+                    Designation::Approver,
+                    Designation::SecurityApprover,
+                ]
+                .into_iter()
+                .collect(),
+                repositories: None,
+                expires_at: None,
+            }],
+        )
+        .expect("an allowlist");
+    }
+    setup
+}
+
+fn solo_command(setup: &Setup, phrase: Option<&str>, asked: &str) -> ApprovalCommand {
+    let mut cmd = command(Verb::Approve, REQUESTER, &setup.request);
+    cmd.solo = Some(SoloRequest {
+        requested_at: Timestamp::parse(asked).expect("a time"),
+        confirmation: phrase.map(ConfirmationWord::of),
+    });
+    cmd
+}
+
+#[test]
+fn negative_nt_solo_03_the_wait_and_the_phrase_are_enforced_for_high_and_critical() {
+    for (tier, minutes, phrase) in [
+        (
+            RiskTier::High,
+            10,
+            "I confirm the solo approval of PR 7 at level high",
+        ),
+        (
+            RiskTier::Critical,
+            30,
+            "I confirm the solo approval of PR 7 at level critical",
+        ),
+    ] {
+        let mut setup = solo_setup(tier);
+        let at = |m: u32| format!("2026-10-27T10:{m:02}:00Z");
+        // No phrase at all, and a request with no solo part.
+        assert_eq!(
+            setup.judge(&solo_command(&setup, None, &at(minutes))),
+            Err(Refusal::ConfirmationMissing),
+            "{tier:?}"
+        );
+        let mut bare = command(Verb::Approve, REQUESTER, &setup.request);
+        bare.solo = None;
+        assert_eq!(setup.judge(&bare), Err(Refusal::ConfirmationMissing));
+        // The phrase of another pull request or another tier.
+        assert_eq!(
+            setup.judge(&solo_command(
+                &setup,
+                Some("I confirm the solo approval of PR 8 at level high"),
+                &at(minutes)
+            )),
+            Err(Refusal::ConfirmationMissing)
+        );
+        // Before the wait: one minute short.
+        assert_eq!(
+            setup.judge(&solo_command(&setup, Some(phrase), &at(minutes - 1))),
+            Err(Refusal::SoloDelay),
+            "{tier:?}"
+        );
+        // Exactly at the minute: passes, and the phrase is compared without regard to spaces
+        // and capitals.
+        assert_eq!(
+            setup.judge(&solo_command(
+                &setup,
+                Some(&format!("  {}  ", phrase.to_uppercase())),
+                &at(minutes)
+            )),
+            Ok(()),
+            "{tier:?}"
+        );
+        // With no milestone the wait cannot be shown: refused.
+        setup.solo_milestone = None;
+        assert_eq!(
+            setup.judge(&solo_command(&setup, Some(phrase), &at(59))),
+            Err(Refusal::SoloDelay),
+            "{tier:?}"
+        );
+    }
+}
+
+#[test]
+fn negative_nt_solo_02_a_single_approver_without_security_approver_cannot_approve_critical() {
+    let mut setup = solo_setup(RiskTier::Critical);
+    setup.allowlist = allowlist(setup.tenant);
+    let cmd = solo_command(
+        &setup,
+        Some("I confirm the solo approval of PR 7 at level critical"),
+        "2026-10-27T10:59:00Z",
+    );
+    assert!(matches!(
+        setup.judge(&cmd),
+        Err(Refusal::Unauthorized(
+            ActionDenialReason::MissingDesignation { .. }
+        ))
+    ));
+}
+
+#[test]
+fn negative_nt_solo_05_the_requester_still_rejects_reworks_pauses_and_cancels_at_low_risk() {
+    let setup = Setup::new();
+    // The requester also operates the job here, to pause and cancel it.
+    let allowlist = Allowlist::new(
+        "allowlist-two",
+        vec![AllowlistEntry {
+            tenant: setup.tenant,
+            github_user_id: GithubUserId::new(REQUESTER).expect("an id"),
+            login: "solo".to_owned(),
+            designations: [
+                Designation::Requester,
+                Designation::Approver,
+                Designation::Operator,
+            ]
+            .into_iter()
+            .collect(),
+            repositories: None,
+            expires_at: None,
+        }],
+    )
+    .expect("an allowlist");
+    let mut setup = Setup { allowlist, ..setup };
+    for verb in [
+        Verb::Reject,
+        Verb::Rework,
+        Verb::Pause,
+        Verb::Resume,
+        Verb::Cancel,
+    ] {
+        let cmd = command(verb, REQUESTER, &setup.request);
+        assert_eq!(setup.judge(&cmd), Ok(()), "{verb:?} low");
+    }
+    setup.request.tier = RiskTier::High;
+    for verb in [Verb::Reject, Verb::Rework, Verb::Pause, Verb::Cancel] {
+        let cmd = command(verb, REQUESTER, &setup.request);
+        assert_eq!(
+            setup.judge(&cmd),
+            Err(Refusal::Unauthorized(ActionDenialReason::SelfApproval)),
+            "{verb:?} high"
+        );
+    }
 }
 
 #[test]

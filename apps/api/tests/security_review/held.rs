@@ -766,6 +766,10 @@ impl Authority for PanickingAuthority {
         panic!("a simulated fault in a handler")
     }
 
+    async fn approver_count(&self, _: TenantId, _: RepositoryId) -> Result<u32, AuthorityError> {
+        Ok(0)
+    }
+
     async fn concurrency_allows(&self, _: TenantId, _: JobId) -> Result<bool, AuthorityError> {
         Ok(true)
     }

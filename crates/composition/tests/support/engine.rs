@@ -343,6 +343,7 @@ impl PgWorld {
                 Decision::Approve {
                     evidence_seen: seen,
                     warnings_decided: true,
+                    proof: None,
                 },
             )
             .await

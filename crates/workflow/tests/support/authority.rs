@@ -14,6 +14,7 @@ struct State {
     roles: HashMap<PrincipalId, Vec<HumanRole>>,
     concurrency: bool,
     unavailable: bool,
+    approver_count: u32,
 }
 
 /// An authority a test sets by hand. It reports fidelity `fake`.
@@ -38,6 +39,7 @@ impl StaticAuthority {
                 roles: HashMap::new(),
                 concurrency: true,
                 unavailable: false,
+                approver_count: 0,
             }),
         }
     }
@@ -64,6 +66,11 @@ impl StaticAuthority {
     /// Lets the concurrency quota allow or refuse another attempt.
     pub fn set_concurrency(&self, allows: bool) {
         self.state().concurrency = allows;
+    }
+
+    /// Sets how many active people may approve on any repository (the solo mode needs one).
+    pub fn set_approver_count(&self, count: u32) {
+        self.state().approver_count = count;
     }
 
     /// Makes the protected configuration unreadable.
@@ -101,6 +108,18 @@ impl Authority for StaticAuthority {
             return Err(AuthorityError::Unavailable);
         }
         Ok(state.roles.get(&principal).cloned().unwrap_or_default())
+    }
+
+    async fn approver_count(
+        &self,
+        _tenant: TenantId,
+        _repository: RepositoryId,
+    ) -> Result<u32, AuthorityError> {
+        let state = self.state();
+        if state.unavailable {
+            return Err(AuthorityError::Unavailable);
+        }
+        Ok(state.approver_count)
     }
 
     async fn concurrency_allows(

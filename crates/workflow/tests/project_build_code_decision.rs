@@ -14,14 +14,15 @@ use factory_domain::policy::authority::{
     ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry, AutonomyLevel,
 };
 use factory_domain::policy::decision::{AuthorizedApproval, Designation, GithubUserId};
+use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::policy::{ApprovalPolicy, PolicyEngine, SecurityPolicy};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus};
 use factory_domain::values::{HumanText, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{HumanRole, RiskTier, StageKind};
 use factory_ports::store::{ArtifactDirection, PrincipalKind};
-use factory_workflow::commands::{Decision, RecordProjectBuildCodeDecision, Subject};
-use factory_workflow::engine::EngineError;
+use factory_workflow::commands::{Decision, RecordProjectBuildCodeDecision, SoloRequest, Subject};
+use factory_workflow::engine::{EngineError, SoloRefusal};
 use factory_workflow::gates::scope::own_build_code::{BuildScript, EVIDENCE_KEY};
 use factory_workflow::gates::supply_chain::approval::{RecordedApprovals, Request};
 use factory_workflow::gates::supply_chain::approval::{authorize, authorize_build_code};
@@ -79,7 +80,14 @@ struct Rig {
 
 impl Rig {
     async fn new() -> Self {
-        let world = World::new().await;
+        Self::on(World::new().await).await
+    }
+
+    async fn solo() -> Self {
+        Self::on(World::solo().await).await
+    }
+
+    async fn on(world: World) -> Self {
         let job = world.admitted_job().await;
         world.script(StageKind::Validation).with(|script| {
             script.document = Some(evidence());
@@ -202,6 +210,7 @@ impl Rig {
             risk_tier: RiskTier::Low,
             protected_path_change: false,
             sensitive_file_change: false,
+            solo: factory_domain::policy::solo::SoloFact::NONE,
         })
     }
 
@@ -225,6 +234,7 @@ impl Rig {
             proof,
             script,
             reason: reason(),
+            solo: None,
         }
     }
 
@@ -459,4 +469,57 @@ async fn a_repeat_of_the_command_is_applied_once() {
             .expect("an entry")
             .entry_hash
     );
+}
+
+// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+
+#[tokio::test]
+async fn the_solo_security_approver_decides_on_the_build_code_after_thirty_minutes() {
+    let rig = Rig::solo().await;
+    rig.world.make_solo(&[
+        HumanRole::Requester,
+        HumanRole::Approver,
+        HumanRole::SecurityApprover,
+    ]);
+    let blocked = rig
+        .world
+        .engine
+        .state_entered_at(rig.world.tenant, rig.job, rig.run, StageRunStatus::Blocked)
+        .await
+        .expect("a read")
+        .expect("the run blocked");
+    let ask = |seconds: u64, phrase: Option<&str>| {
+        let mut request = rig.request(
+            support::solo_proof(&rig.world, authorize_build_code),
+            script("build.rs", SCRIPT),
+        );
+        request.solo = Some(SoloRequest {
+            requested_at: blocked
+                .checked_add(std::time::Duration::from_secs(seconds))
+                .expect("a time"),
+            confirmation: phrase.map(ConfirmationWord::of),
+        });
+        request
+    };
+    let phrase = "I confirm the solo approval of build code build.rs";
+    let early = rig
+        .world
+        .engine
+        .record_project_build_code_decision(
+            &rig.world.actor(rig.world.requester),
+            ask(30 * 60 - 1, Some(phrase)),
+        )
+        .await;
+    assert_eq!(
+        early.err(),
+        Some(EngineError::SoloRefused(SoloRefusal::SoloDelay))
+    );
+    rig.world
+        .engine
+        .record_project_build_code_decision(
+            &rig.world.actor(rig.world.requester),
+            ask(30 * 60, Some(phrase)),
+        )
+        .await
+        .expect("thirty minutes after the block, with the phrase");
 }

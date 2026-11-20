@@ -274,6 +274,14 @@ impl SoloRules {
         self.enabled
     }
 
+    /// The solo fact: the switch is on, the repository is marked `single_maintainer` and exactly
+    /// one active person may approve on it. [`AuthorityPolicy::solo_fact`] and the engine's check
+    /// at commit both answer from here, so the rule is written once.
+    #[must_use]
+    pub fn fact(&self, single_maintainer: bool, approver_count: u32) -> SoloFact {
+        SoloFact(self.enabled && single_maintainer && approver_count == 1)
+    }
+
     /// The minimum wait of a decision.
     #[must_use]
     pub fn wait(&self, which: SoloWait) -> Duration {
@@ -397,7 +405,7 @@ impl AuthorityPolicy {
     /// ask here.
     #[must_use]
     pub fn solo_fact(&self, single_maintainer: bool, approver_count: u32) -> SoloFact {
-        SoloFact(self.solo.enabled && single_maintainer && approver_count == 1)
+        self.solo.fact(single_maintainer, approver_count)
     }
 
     /// The rules of the solo mode, for the deciders that check the wait and the phrase.

@@ -44,6 +44,7 @@ use super::error::EngineError;
 use super::ledger::ClaimSpec;
 use super::links;
 use super::record::{Cx, index_entry};
+use super::solo::SoloCheck;
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, ProjectBuildCodeRecorded, RecordProjectBuildCodeDecision};
@@ -51,6 +52,7 @@ use crate::gates::scope::own_build_code::{
     ARTIFACT_NOTE, BuildScript, EVIDENCE_KEY, ProjectBuildCodeApproval,
 };
 use crate::gates::supply_chain::approval::{ApprovalError, DecisionScope};
+use factory_domain::policy::solo::{SoloTarget, SoloWait};
 
 /// The entries of `awaiting` in a stored evidence document.
 fn awaiting_in(document: &serde_json::Value) -> Vec<BuildScript> {
@@ -93,7 +95,7 @@ impl Engine {
                 &mut *tx,
                 &cx,
                 (actor, &roles),
-                (&run, job.value.requester),
+                (&run, &job.value),
                 &timeline,
                 &request,
             )
@@ -109,7 +111,11 @@ impl Engine {
                 cx.commit(tx).await?;
                 Ok(recorded)
             }
-            Err(error @ (EngineError::NotAuthorized(_) | EngineError::Refused(_))) => {
+            Err(
+                error @ (EngineError::NotAuthorized(_)
+                | EngineError::Refused(_)
+                | EngineError::SoloRefused(_)),
+            ) => {
                 drop(tx);
                 self.record_denial(
                     actor,
@@ -128,9 +134,9 @@ impl Engine {
         tx: &mut dyn Tx,
         cx: &Cx<'_>,
         (actor, roles): (&Actor, &[HumanRole]),
-        (run, requester): (
+        (run, job): (
             &factory_ports::store::Versioned<factory_ports::store::StageRun>,
-            factory_domain::ids::PrincipalId,
+            &factory_ports::store::Job,
         ),
         timeline: &Timeline,
         request: &RecordProjectBuildCodeDecision,
@@ -141,12 +147,23 @@ impl Engine {
                 tx,
                 actor,
                 roles,
-                requester,
+                job,
                 &request.proof,
                 (
                     &[Designation::SecurityApprover],
                     "the person who asked for the job may not decide on its build code",
                 ),
+                &SoloCheck {
+                    request: request.solo.as_ref(),
+                    milestone: timeline.run(run.value.id).and_then(|r| r.blocked_at),
+                    wait: SoloWait::BuildCode,
+                    expected: self
+                        .config
+                        .solo
+                        .expected_word(&SoloTarget::ProjectBuildCode {
+                            path: request.script.path.as_str(),
+                        }),
+                },
             )
             .await?;
 

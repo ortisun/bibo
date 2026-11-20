@@ -65,6 +65,7 @@ async fn an_approval_records_the_judgment_and_sends_the_stage_back_to_ready() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await
@@ -123,6 +124,7 @@ async fn an_approval_of_what_the_person_did_not_see_is_refused_and_moves_nothing
             Decision::Approve {
                 evidence_seen: stale,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await;
@@ -161,6 +163,7 @@ async fn nobody_approves_their_own_request() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await;
@@ -184,6 +187,7 @@ async fn the_same_approval_twice_is_applied_once() {
     let decision = Decision::Approve {
         evidence_seen: seen,
         warnings_decided: true,
+        proof: None,
     };
     world
         .engine
@@ -192,4 +196,151 @@ async fn the_same_approval_twice_is_applied_once() {
         .expect("the first applies");
     let again = world.engine.decide(&actor, subject, decision).await;
     assert!(matches!(again, Err(EngineError::Duplicate)), "{again:?}");
+}
+
+// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+
+/// The policy engine's proof for the requester's freezing of the specification, with the solo
+/// fact, as the worker asks for it: no tier, so the low one, and no wait or phrase.
+fn freeze_proof(world: &World) -> factory_domain::policy::decision::AuthorizedApproval {
+    support::solo_proof(world, |request| {
+        request
+            .policy
+            .authorize_action(&factory_domain::policy::authority::ActionContext {
+                action: "freeze_specification",
+                level: request.level,
+                tenant: request.tenant,
+                repository: request.repository,
+                actor: request.actor,
+                allowlist: request.allowlist,
+                now: request.now,
+                requester: request.requester,
+                change: factory_domain::policy::authority::ChangeFacts {
+                    risk_tier: factory_domain::vocabulary::RiskTier::Low,
+                    protected_path_change: false,
+                    sensitive_file_change: false,
+                    new_dependency: false,
+                },
+                require_designation: None,
+                step_up_done: false,
+                solo: request.solo,
+            })
+    })
+}
+
+async fn approve_own(
+    world: &World,
+    job: factory_domain::ids::JobId,
+    run: factory_domain::ids::StageRunId,
+    proof: Option<factory_domain::policy::decision::AuthorizedApproval>,
+) -> Result<(), EngineError> {
+    let seen = head(world, job).await;
+    world
+        .engine
+        .decide(
+            &world.actor(world.requester),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Approve {
+                evidence_seen: seen,
+                warnings_decided: true,
+                proof,
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn the_solo_requester_approves_the_specification_with_no_wait_and_no_phrase() {
+    let world = World::solo().await;
+    let (job, run) = asking(&world).await;
+    world.make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    approve_own(&world, job, run, Some(freeze_proof(&world)))
+        .await
+        .expect("the solo approval applies");
+    assert_eq!(
+        world
+            .view(job)
+            .await
+            .newest(StageKind::Specification)
+            .expect("a run")
+            .status,
+        StageRunStatus::Ready
+    );
+}
+
+#[tokio::test]
+async fn negative_nt_solo_01_two_approvers_end_the_solo_mode_for_the_specification() {
+    let world = World::solo().await;
+    let (job, run) = asking(&world).await;
+    world.make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    world.authority.set_approver_count(2);
+    let refused = approve_own(&world, job, run, Some(freeze_proof(&world))).await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn negative_nt_solo_01_without_the_single_maintainer_mark_the_requester_is_refused() {
+    let world = World::solo().await;
+    let (job, run) = asking(&world).await;
+    world.make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    world
+        .memory_store()
+        .set_single_maintainer(world.repository, false);
+    let refused = approve_own(&world, job, run, Some(freeze_proof(&world))).await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_requester_without_a_stamped_proof_or_the_mode_is_refused() {
+    // In the solo mode, an approval with no proof is the old rule.
+    let world = World::solo().await;
+    let (job, run) = asking(&world).await;
+    world.make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    let refused = approve_own(&world, job, run, None).await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+    // An engine with the mode off refuses even a stamped proof.
+    let world = World::new().await;
+    let (job, run) = asking(&world).await;
+    world.make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    let refused = approve_own(&world, job, run, Some(freeze_proof(&world))).await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_by_the_solo_requester_keeps_the_old_rule() {
+    // The requester with the approver role rejects their own specification at any time, as
+    // before: the solo mode does not touch a rejection.
+    let world = World::solo().await;
+    let (job, run) = asking(&world).await;
+    world.make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    world
+        .engine
+        .decide(
+            &world.actor(world.requester),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Reject {
+                reason: factory_domain::values::HumanText::parse("Not what I meant.")
+                    .expect("a text"),
+            },
+        )
+        .await
+        .expect("the requester rejects");
 }

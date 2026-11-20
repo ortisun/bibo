@@ -371,6 +371,9 @@ pub struct Request<'a> {
     pub protected_path_change: bool,
     /// A sensitive file changes.
     pub sensitive_file_change: bool,
+    /// The solo fact of the job's repository (ADR 0021): with it the requester may decide alone.
+    /// [`SoloFact::NONE`](factory_domain::policy::solo::SoloFact::NONE) outside the solo mode.
+    pub solo: factory_domain::policy::solo::SoloFact,
 }
 
 /// Asks the policy engine whether `request.actor` may approve the build code of a package that is
@@ -447,6 +450,6 @@ fn ask_for(
         },
         require_designation,
         step_up_done: false,
-        solo: factory_domain::policy::solo::SoloFact::NONE,
+        solo: request.solo,
     })
 }

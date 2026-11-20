@@ -2206,6 +2206,7 @@ async fn an_approval_completes_the_job_and_the_ledger_verifies() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await
@@ -2268,6 +2269,7 @@ async fn an_approval_rests_on_a_stored_report_that_names_the_person_and_the_evid
             Decision::Approve {
                 evidence_seen: seen.clone(),
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await
@@ -2397,6 +2399,7 @@ async fn a_skipped_stage_does_not_stop_the_job_from_completing() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await
@@ -2421,6 +2424,7 @@ async fn negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused() {
             Decision::Approve {
                 evidence_seen: stale,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await;
@@ -2463,6 +2467,7 @@ async fn nobody_approves_their_own_request() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await;

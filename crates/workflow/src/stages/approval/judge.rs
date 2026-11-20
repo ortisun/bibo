@@ -26,6 +26,7 @@ use factory_domain::policy::authority::{
     ActionContext, ActionDenialReason, ActionVerdict, Actor, Allowlist, AutonomyLevel, ChangeFacts,
 };
 use factory_domain::policy::decision::{AuthorizedApproval, GithubUserId};
+use factory_domain::policy::solo::{SoloFact, SoloTarget, SoloWait};
 use factory_domain::values::{GitSha, Sha256Digest, Timestamp};
 use factory_ports::githost::Comment;
 use factory_ports::store::{ApprovalBinding, ApprovalChannel};
@@ -75,6 +76,12 @@ pub struct Context<'a> {
     pub tenant: &'a TenantId,
     /// The comment as it is now, for the channel `GithubComment`.
     pub comment: Option<&'a Comment>,
+    /// The solo fact of the job's repository, now (ADR 0021).
+    pub solo: SoloFact,
+    /// When the approval stage run last moved to `WAITING_FOR_HUMAN`: the start of the solo
+    /// mode's wait for a high or critical pull request. `None` when it is not known, which
+    /// refuses a solo approval that needs a wait.
+    pub solo_milestone: Option<Timestamp>,
 }
 
 /// Why the text of a comment is not a command.
@@ -134,6 +141,12 @@ pub enum Refusal {
     MissingReason,
     /// This person already recorded this decision for this head.
     AlreadyDecided,
+    /// The requester approves alone in the solo mode and the minimum wait since the stage run
+    /// asked has not passed, or its start is not known.
+    SoloDelay,
+    /// The requester approves alone in the solo mode and the confirmation phrase is missing or
+    /// names something else.
+    ConfirmationMissing,
 }
 
 impl Refusal {
@@ -163,6 +176,8 @@ impl Refusal {
             Self::MissingTarget => "missing_target",
             Self::MissingReason => "missing_reason",
             Self::AlreadyDecided => "already_decided",
+            Self::SoloDelay => "solo_delay",
+            Self::ConfirmationMissing => "confirmation_missing",
         }
     }
 
@@ -247,7 +262,7 @@ pub fn judge(cmd: &ApprovalCommand, cx: &Context<'_>) -> Result<Accepted, Refusa
         },
         require_designation: None,
         step_up_done: false,
-        solo: factory_domain::policy::solo::SoloFact::NONE,
+        solo: cx.solo,
     });
     let authorization = match verdict {
         ActionVerdict::Authorized(proof) => proof,
@@ -348,6 +363,7 @@ fn approve(
     if request.open_translation_warnings > 0 && !cmd.warnings_decided {
         return Err(Refusal::TranslationWarningsUndecided);
     }
+    solo_wait_and_phrase(cmd, cx, &authorization)?;
     Ok(Accepted {
         authorization,
         binding: Some(ApprovalBinding {
@@ -358,4 +374,36 @@ fn approve(
             spec_version: seen.spec_version,
         }),
     })
+}
+
+/// The wait and the phrase of a high or critical pull request that the requester approves alone
+/// (ADR 0021). The low and medium tiers, and an approval by someone else, need neither. The phrase
+/// is checked before the wait.
+fn solo_wait_and_phrase(
+    cmd: &ApprovalCommand,
+    cx: &Context<'_>,
+    authorization: &AuthorizedApproval,
+) -> Result<(), Refusal> {
+    let request = cx.request;
+    let Some(wait) = SoloWait::for_pull_request(request.tier) else {
+        return Ok(());
+    };
+    if !authorization.solo_stamp() {
+        return Ok(());
+    }
+    let rules = cx.policy.authority.solo_rules();
+    let expected = rules.expected_word(&SoloTarget::PullRequest {
+        number: request.pull_request,
+        tier: request.tier,
+    });
+    let Some(solo) = &cmd.solo else {
+        return Err(Refusal::ConfirmationMissing);
+    };
+    if solo.confirmation.as_ref() != Some(&expected) {
+        return Err(Refusal::ConfirmationMissing);
+    }
+    if !rules.wait_passed(wait, cx.solo_milestone.as_ref(), &solo.requested_at) {
+        return Err(Refusal::SoloDelay);
+    }
+    Ok(())
 }

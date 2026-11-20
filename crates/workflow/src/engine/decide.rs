@@ -217,19 +217,27 @@ impl Engine {
             Decision::Approve {
                 evidence_seen,
                 warnings_decided,
+                proof,
             } => {
                 let head = tx.ledger_head(cx.job).await?;
+                // Nobody approves their own request, unless the solo mode lets the one approver
+                // do it (ADR 0021): the proof carries the solo stamp, is this person's and for
+                // this approval, and the engine finds the solo fact again now.
+                let distinct_or_solo = !is_requester
+                    || self
+                        .solo_approval_holds(tx, actor, job, run.value.kind, proof.as_ref())
+                        .await?;
                 let facts = ApprovalFacts {
                     decision_is_approve: true,
-                    // Nobody approves their own request: a distinct approver is required. For the
-                    // approval of a pull request the policy has already said which designation
-                    // counts at this tier (a critical change names `security_approver` alone), so
-                    // a person who holds either approving role satisfies the engine (AUT-3). The
-                    // freezing of a specification stays with the `approver` role.
+                    // A distinct approver is required. For the approval of a pull request the
+                    // policy has already said which designation counts at this tier (a critical
+                    // change names `security_approver` alone), so a person who holds either
+                    // approving role satisfies the engine (AUT-3). The freezing of a
+                    // specification stays with the `approver` role.
                     principal_holds_required_role: (holds(HumanRole::Approver)
                         || (run.value.kind == StageKind::Approval
                             && holds(HumanRole::SecurityApprover)))
-                        && !is_requester,
+                        && distinct_or_solo,
                     evidence_digest_seen_equals_current: head
                         .as_ref()
                         .is_some_and(|head| &head.hash == evidence_seen),

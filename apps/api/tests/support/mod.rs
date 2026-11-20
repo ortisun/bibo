@@ -154,7 +154,8 @@ pub struct RealSeed {
     /// The owner's login, for display.
     pub owner_login: String,
     /// A person other than the owner who approves, as their allowlist entry names them: the
-    /// numeric GitHub id and the login. `None` when the owner is the only person.
+    /// numeric GitHub id and the login. `None` when the owner is the only person, who then
+    /// approves alone in the solo mode (ADR 0021).
     pub approver: Option<(u64, String)>,
     /// The text of the owner's allowlist file.
     pub allowlist_text: String,
@@ -510,9 +511,12 @@ async fn seed_tenant(db: &TestDb, position: usize, base: u64) -> Tenant {
 
 /// Tenant A of a real run. The owner is the requester, the operator and the security approver, and
 /// attested and enabled the repository: a single-maintainer repository (finding REG-6). The
-/// approver is a second person when the allowlist names one, because the engine lets nobody
-/// approve their own request; otherwise the owner, who then cannot approve. The outsider is a
-/// made-up person nobody lists.
+/// approver is the owner, who approves their own request in the solo mode (ADR 0021): the
+/// repository is marked `single_maintainer` and, with the owner's one allowlist entry
+/// `[requester, approver, operator]`, the owner is its only approving person. When the allowlist
+/// names a second person who holds `approver`, that person is the approver, there are two
+/// approving people and the solo mode does not apply. The outsider is a made-up person nobody
+/// lists.
 async fn seed_real_tenant(db: &TestDb, seed: &RealSeed) -> Tenant {
     let id = seed.tenant;
     let repository = RepositoryId::from_uuid(random_uuid());
@@ -911,6 +915,10 @@ impl Authority for FixedAuthority {
         Ok(self.roles.clone())
     }
 
+    async fn approver_count(&self, _: TenantId, _: RepositoryId) -> Result<u32, AuthorityError> {
+        Ok(0)
+    }
+
     async fn concurrency_allows(&self, _: TenantId, _: JobId) -> Result<bool, AuthorityError> {
         Ok(true)
     }
@@ -979,6 +987,10 @@ impl Authority for LoginAuthority {
         } else {
             Vec::new()
         })
+    }
+
+    async fn approver_count(&self, _: TenantId, _: RepositoryId) -> Result<u32, AuthorityError> {
+        Ok(0)
     }
 
     async fn concurrency_allows(&self, _: TenantId, _: JobId) -> Result<bool, AuthorityError> {

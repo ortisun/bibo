@@ -62,6 +62,32 @@ pub enum EngineError {
     /// The store failed in a way the engine cannot repair.
     #[error("the store failed: {0}")]
     Store(StoreError),
+    /// The requester decided alone in the solo mode (ADR 0021) and the wait or the phrase that
+    /// mode asks for is not there. Audited like a refusal of authority.
+    #[error("the solo mode refused the decision: {0}")]
+    SoloRefused(SoloRefusal),
+}
+
+/// Why the solo mode refused a decision the requester took alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SoloRefusal {
+    /// The minimum wait has not passed since the stage run asked, or when it asked is not known.
+    #[error("the minimum wait has not passed")]
+    SoloDelay,
+    /// The confirmation phrase is missing or names something else.
+    #[error("the confirmation phrase is missing or wrong")]
+    ConfirmationMissing,
+}
+
+impl SoloRefusal {
+    /// The stable code: `solo_delay` or `confirmation_missing`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::SoloDelay => "solo_delay",
+            Self::ConfirmationMissing => "confirmation_missing",
+        }
+    }
 }
 
 impl From<StoreError> for EngineError {

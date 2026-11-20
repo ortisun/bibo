@@ -49,6 +49,7 @@ use crate::stages::delivery::binding::{self, Now};
 use crate::stages::delivery::text::fragment;
 use crate::stages::delivery::{DeliverySources, SeamError};
 use factory_domain::machines::invalidation::ArtifactChange;
+use factory_domain::policy::solo::SoloFact;
 use factory_ports::store::ApprovalChannel;
 
 /// What the service is built from.
@@ -282,6 +283,26 @@ impl ApprovalService {
             _ => None,
         };
 
+        // The solo mode (ADR 0021): the facts of the repository now, and when the stage run
+        // started to wait, the start of the wait of a high or critical pull request.
+        let solo_inputs = d.approvals.solo_inputs(cmd.tenant, cmd.job, now).await?;
+        let solo = d
+            .policy
+            .authority
+            .solo_fact(solo_inputs.single_maintainer, solo_inputs.approver_count);
+        let solo_milestone = if solo.holds() {
+            d.engine
+                .state_entered_at(
+                    cmd.tenant,
+                    cmd.job,
+                    cmd.stage_run,
+                    factory_domain::state::StageRunStatus::WaitingForHuman,
+                )
+                .await
+                .map_err(|_| ServiceError::Unavailable)?
+        } else {
+            None
+        };
         let head_git = git_sha(&head_now)?;
         let base_git = git_sha(&base_tip)?;
         let outcome = judge(
@@ -304,6 +325,8 @@ impl ApprovalService {
                 level,
                 tenant: &cmd.tenant,
                 comment: comment.as_ref(),
+                solo,
+                solo_milestone,
             },
         );
         let accepted = match outcome {
@@ -360,7 +383,7 @@ impl ApprovalService {
                 }
                 Err(other) => return Err(other),
             }
-            let still_needed = self.approvals_missing(&cmd, &request).await?;
+            let still_needed = self.approvals_missing(&cmd, &request, solo).await?;
             if still_needed > 0 {
                 return Ok(Outcome::Recorded {
                     approval: approval_id,
@@ -381,6 +404,7 @@ impl ApprovalService {
                         Decision::Approve {
                             evidence_seen: seen.ledger_head.clone(),
                             warnings_decided: cmd.warnings_decided,
+                            proof: Some(accepted.authorization.clone()),
                         },
                     )
                     .await
@@ -530,12 +554,19 @@ impl ApprovalService {
             "approval.recorded",
             PortAuditDecision::Allow,
             &format!(
-                "{} by {} as {}; allowlist {}; channel {:?}",
+                "{} by {} as {}; allowlist {}; channel {:?}{}",
                 cmd.verb.as_str(),
                 auth.approver(),
                 auth.designation(),
                 auth.allowlist_version(),
-                cmd.channel
+                cmd.channel,
+                // Said from the proof's stamp, never from the equality of ids: a refused approval
+                // of the requester never carries it (ADR 0021).
+                if auth.solo_stamp() {
+                    "; basis=solo (approved by the requester, solo mode)"
+                } else {
+                    ""
+                }
             ),
         )
         .await?;
@@ -548,15 +579,13 @@ impl ApprovalService {
         &self,
         cmd: &ApprovalCommand,
         request: &ApprovalRequest,
+        solo: SoloFact,
     ) -> Result<u32, ServiceError> {
         let d = &self.deps;
         let mut tx = d.store.begin(TenantScope::new(cmd.tenant)).await?;
         let valid = tx.valid_approvals(cmd.job, &request.pr_head).await?;
         tx.commit().await?;
-        let required = d
-            .policy
-            .authority
-            .required_approvals(request.tier, factory_domain::policy::solo::SoloFact::NONE);
+        let required = d.policy.authority.required_approvals(request.tier, solo);
         let counted = count_distinct(&valid, request.tier);
         Ok(required.saturating_sub(counted))
     }

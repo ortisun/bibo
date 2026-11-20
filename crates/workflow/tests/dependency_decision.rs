@@ -14,6 +14,7 @@ use factory_domain::policy::authority::{
     ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry, AutonomyLevel,
 };
 use factory_domain::policy::decision::{AuthorizedApproval, Designation, GithubUserId};
+use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::policy::{ApprovalPolicy, PolicyEngine, SecurityPolicy};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus};
@@ -21,8 +22,8 @@ use factory_domain::values::{HumanText, Timestamp};
 use factory_domain::vocabulary::{HumanRole, RiskTier, StageKind};
 use factory_ports::clock::IdGenerator;
 use factory_ports::store::{ArtifactDirection, PrincipalKind};
-use factory_workflow::commands::{Decision, RecordDependencyDecision, Subject};
-use factory_workflow::engine::EngineError;
+use factory_workflow::commands::{Decision, RecordDependencyDecision, SoloRequest, Subject};
+use factory_workflow::engine::{EngineError, SoloRefusal};
 use factory_workflow::gates::supply_chain::approval::{
     ApprovalKind, RecordedApprovals, Request, Subject as Package, authorize, authorize_build_code,
 };
@@ -114,7 +115,15 @@ struct Rig {
 
 impl Rig {
     async fn new() -> Self {
-        let world = World::new().await;
+        Self::on(World::new().await).await
+    }
+
+    /// The same rig on an engine that runs the solo mode of the shipped policy.
+    async fn solo() -> Self {
+        Self::on(World::solo().await).await
+    }
+
+    async fn on(world: World) -> Self {
         let job = world.admitted_job().await;
         world.script(StageKind::Validation).with(|script| {
             script.document = Some(evidence());
@@ -235,6 +244,7 @@ impl Rig {
             risk_tier: RiskTier::Low,
             protected_path_change: false,
             sensitive_file_change: false,
+            solo: factory_domain::policy::solo::SoloFact::NONE,
         })
     }
 
@@ -290,6 +300,7 @@ impl Rig {
                 risk_tier: RiskTier::Low,
                 protected_path_change: false,
                 sensitive_file_change: false,
+                solo: factory_domain::policy::solo::SoloFact::NONE,
             },
             needed,
         );
@@ -297,6 +308,103 @@ impl Rig {
             ActionVerdict::Authorized(proof) => proof,
             other => panic!("expected a proof, got {other:?}"),
         }
+    }
+
+    /// A proof for the requester of the job as the one person who approves, with the solo fact
+    /// the API and the worker compute (ADR 0021).
+    async fn solo_proof(&self, kind: ApprovalKind) -> AuthorizedApproval {
+        let tenant = self.world.tenant;
+        let id = self.github(self.world.requester).await;
+        let allowlist = Allowlist::new(
+            "sha256:allowlist-solo",
+            vec![AllowlistEntry {
+                tenant,
+                github_user_id: GithubUserId::new(id).expect("an id"),
+                login: "requester".to_owned(),
+                designations: [
+                    Designation::Requester,
+                    Designation::Approver,
+                    Designation::SecurityApprover,
+                ]
+                .into_iter()
+                .collect(),
+                repositories: None,
+                expires_at: None,
+            }],
+        )
+        .expect("no duplicates");
+        let actor = Actor {
+            github_user_id: GithubUserId::new(id).expect("an id"),
+            login: "requester",
+            kind: ActorKind::User,
+            github_permission: None,
+            author_association: None,
+        };
+        let now = now();
+        let request = Request {
+            policy: &self.policy.authority,
+            level: AutonomyLevel::L1,
+            tenant: &tenant,
+            repository: REPOSITORY,
+            actor: &actor,
+            allowlist: &allowlist,
+            now: &now,
+            requester: GithubUserId::new(id),
+            risk_tier: RiskTier::Low,
+            protected_path_change: false,
+            sensitive_file_change: false,
+            solo: self.policy.authority.solo_fact(true, 1),
+        };
+        let verdict = match kind {
+            ApprovalKind::NewDependency => authorize(&request, Designation::Approver),
+            ApprovalKind::BuildCode => authorize_build_code(&request),
+        };
+        match verdict {
+            ActionVerdict::Authorized(proof) => {
+                assert!(proof.solo_stamp(), "the proof carries the solo stamp");
+                proof
+            }
+            other => panic!("expected a proof, got {other:?}"),
+        }
+    }
+
+    /// When the validation run blocked, as the engine read it from its event.
+    async fn blocked_at(&self) -> Timestamp {
+        self.world
+            .engine
+            .state_entered_at(
+                self.world.tenant,
+                self.job,
+                self.run,
+                StageRunStatus::Blocked,
+            )
+            .await
+            .expect("a read")
+            .expect("the run blocked")
+    }
+
+    /// The requester's own decision, asked `minutes` after the block, with `phrase`.
+    async fn record_solo(
+        &self,
+        kind: ApprovalKind,
+        package: Package,
+        phrase: Option<&str>,
+        seconds_after_block: u64,
+    ) -> Result<factory_workflow::commands::DependencyDecisionRecorded, EngineError> {
+        let proof = self.solo_proof(kind).await;
+        let mut request = self.request(proof, package);
+        request.solo = Some(SoloRequest {
+            requested_at: self
+                .blocked_at()
+                .await
+                .checked_add(std::time::Duration::from_secs(seconds_after_block))
+                .expect("a time"),
+            confirmation: phrase.map(ConfirmationWord::of),
+        });
+        self.world
+            .engine
+            .record_dependency_decision(&self.world.actor(self.world.requester), request)
+            .await
     }
 
     async fn build_code_proof(&self, who: PrincipalId) -> AuthorizedApproval {
@@ -315,6 +423,7 @@ impl Rig {
             proof,
             package,
             reason: reason(),
+            solo: None,
         }
     }
 
@@ -683,6 +792,7 @@ async fn only_a_blocked_validation_run_takes_a_decision() {
                 proof,
                 package: some_crate(),
                 reason: reason(),
+                solo: None,
             },
         )
         .await;
@@ -746,7 +856,7 @@ async fn the_reason_is_part_of_the_record_and_a_short_one_is_refused() {
 /// policy engine made for them: the engine knows the requester of the job and compares it with the
 /// acting principal itself, and does not rely on the risk the caller told the policy engine.
 #[tokio::test]
-async fn the_requester_of_the_job_cannot_decide_on_its_dependencies() {
+async fn negative_nt_solo_01_the_requester_of_the_job_cannot_decide_on_its_dependencies() {
     let rig = Rig::new().await;
     // The requester also holds the approver role and designation, so nothing but the comparison with
     // the job's requester stands in the way.
@@ -775,4 +885,154 @@ async fn the_requester_of_the_job_cannot_decide_on_its_dependencies() {
     rig.record(rig.approver, proof, some_crate())
         .await
         .expect("another approver records the decision");
+}
+
+// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+
+const SOME_CRATE_PHRASE: &str = "I confirm the solo approval of dependency some-crate 0.1.0";
+const TEN_MINUTES: u64 = 600;
+
+#[tokio::test]
+async fn the_solo_requester_decides_on_a_dependency_after_the_wait_with_the_phrase() {
+    let rig = Rig::solo().await;
+    rig.world.make_solo(&[
+        HumanRole::Requester,
+        HumanRole::Approver,
+        HumanRole::SecurityApprover,
+    ]);
+    // Exactly ten minutes after the block, the minute boundary: accepted.
+    rig.record_solo(
+        ApprovalKind::NewDependency,
+        some_crate(),
+        Some(SOME_CRATE_PHRASE),
+        TEN_MINUTES,
+    )
+    .await
+    .expect("the solo decision is recorded");
+    // Build code waits thirty minutes and names the package.
+    rig.record_solo(
+        ApprovalKind::BuildCode,
+        helper(),
+        Some("I confirm the solo approval of build code helper 0.1.0"),
+        30 * 60,
+    )
+    .await
+    .expect("the solo decision on build code is recorded");
+}
+
+#[tokio::test]
+async fn negative_nt_solo_03_solo_is_refused_before_the_wait() {
+    let rig = Rig::solo().await;
+    rig.world
+        .make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    let refused = rig
+        .record_solo(
+            ApprovalKind::NewDependency,
+            some_crate(),
+            Some(SOME_CRATE_PHRASE),
+            TEN_MINUTES - 1,
+        )
+        .await;
+    assert_eq!(
+        refused.err(),
+        Some(EngineError::SoloRefused(SoloRefusal::SoloDelay))
+    );
+    assert!(rig.unblock().await.is_err(), "nothing was recorded");
+    // The refusal is audited as a denied approval.
+    let denied = rig
+        .world
+        .audit(rig.job)
+        .await
+        .into_iter()
+        .filter(|record| {
+            record
+                .event
+                .action
+                .as_str()
+                .contains("approval_granted_or_rejected")
+        })
+        .count();
+    assert!(denied >= 1, "the refusal is audited");
+}
+
+#[tokio::test]
+async fn negative_nt_solo_03_solo_without_the_phrase_is_refused() {
+    let rig = Rig::solo().await;
+    rig.world
+        .make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    for phrase in [
+        None,
+        Some("I confirm the solo approval of dependency odd-crate 2.0.0"),
+    ] {
+        let refused = rig
+            .record_solo(ApprovalKind::NewDependency, some_crate(), phrase, 3600)
+            .await;
+        assert_eq!(
+            refused.err(),
+            Some(EngineError::SoloRefused(SoloRefusal::ConfirmationMissing)),
+            "{phrase:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn negative_nt_solo_01_two_approvers_end_the_solo_mode() {
+    let rig = Rig::solo().await;
+    rig.world
+        .make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    rig.world.authority.set_approver_count(2);
+    let refused = rig
+        .record_solo(
+            ApprovalKind::NewDependency,
+            some_crate(),
+            Some(SOME_CRATE_PHRASE),
+            3600,
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn negative_nt_solo_01_the_single_maintainer_mark_is_checked_again_at_commit() {
+    let rig = Rig::solo().await;
+    rig.world
+        .make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    rig.world
+        .memory_store()
+        .set_single_maintainer(rig.world.repository, false);
+    let refused = rig
+        .record_solo(
+            ApprovalKind::NewDependency,
+            some_crate(),
+            Some(SOME_CRATE_PHRASE),
+            3600,
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_engine_without_the_solo_mode_refuses_a_stamped_proof() {
+    // The policy engine stamped the proof, and this engine runs with the mode off.
+    let rig = Rig::new().await;
+    rig.world
+        .make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    let refused = rig
+        .record_solo(
+            ApprovalKind::NewDependency,
+            some_crate(),
+            Some(SOME_CRATE_PHRASE),
+            3600,
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
 }
