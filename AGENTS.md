@@ -36,6 +36,10 @@ reference. The code follows the documents, never the other way round.
   language, short sentences, the purpose first, then the details. Explain why, not only what.
   Prefer a diagram where it shows a flow or a structure better than prose, and keep its source
   in `docs/` beside the text.
+- **Full words, not abbreviations.** In documentation and in code comments, write the whole word
+  instead of a short form: "Rule", not "R"; "Test", not "T"; "Requirement", not "Req". Write
+  each term the same way everywhere. A short identifier that the code itself defines (such as
+  `FR-001` or `ADR 0021`) may be cited, but say once, in plain words, what it stands for.
 
 ## Code quality
 
