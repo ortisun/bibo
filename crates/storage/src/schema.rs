@@ -345,6 +345,64 @@ diesel::table! {
 }
 
 diesel::table! {
+    troubleshooting_daily_counters (tenant_id, day) {
+        tenant_id -> Uuid,
+        day -> Date,
+        agent_runs -> Int4,
+        new_issues -> Int4,
+        comments -> Int4,
+        spend_micro_usd -> Int8,
+    }
+}
+
+diesel::table! {
+    troubleshooting_issues (tenant_id, fingerprint) {
+        tenant_id -> Uuid,
+        fingerprint -> Text,
+        repository -> Text,
+        issue_number -> Int8,
+        opened_at -> Timestamptz,
+        last_comment_day -> Nullable<Date>,
+        comments_on_last_day -> Int4,
+    }
+}
+
+diesel::table! {
+    troubleshooting_probe_state (tenant_id, probe_id) {
+        tenant_id -> Uuid,
+        probe_id -> Text,
+        last_outcome -> Text,
+        last_value -> Nullable<Text>,
+        last_call_id -> Nullable<Text>,
+        last_run_id -> Nullable<Text>,
+        last_checked_at -> Timestamptz,
+        last_tripped_at -> Nullable<Timestamptz>,
+        cooldown_until -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    troubleshooting_runs (tenant_id, id) {
+        tenant_id -> Uuid,
+        id -> Text,
+        trigger -> Text,
+        state -> Text,
+        started_at -> Timestamptz,
+        ended_at -> Nullable<Timestamptz>,
+        spend_micro_usd -> Int8,
+        report_sha256 -> Nullable<Text>,
+        gateway_record_sha256 -> Nullable<Text>,
+        outcome -> Nullable<Text>,
+        agent_ran -> Bool,
+        dry_run -> Bool,
+        datadog_enabled -> Bool,
+        issues_opened -> Int4,
+        comments_posted -> Int4,
+        deferred_fingerprints -> Array<Nullable<Text>>,
+    }
+}
+
+diesel::table! {
     webhook_deliveries (tenant_id, id) {
         tenant_id -> Uuid,
         id -> Uuid,
@@ -376,6 +434,10 @@ diesel::joinable!(stage_run_artifacts -> tenants (tenant_id));
 diesel::joinable!(stage_runs -> tenants (tenant_id));
 diesel::joinable!(task_node_dependencies -> tenants (tenant_id));
 diesel::joinable!(task_nodes -> tenants (tenant_id));
+diesel::joinable!(troubleshooting_daily_counters -> tenants (tenant_id));
+diesel::joinable!(troubleshooting_issues -> tenants (tenant_id));
+diesel::joinable!(troubleshooting_probe_state -> tenants (tenant_id));
+diesel::joinable!(troubleshooting_runs -> tenants (tenant_id));
 diesel::joinable!(webhook_deliveries -> tenants (tenant_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
@@ -399,5 +461,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     task_node_dependencies,
     task_nodes,
     tenants,
+    troubleshooting_daily_counters,
+    troubleshooting_issues,
+    troubleshooting_probe_state,
+    troubleshooting_runs,
     webhook_deliveries,
 );
