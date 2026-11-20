@@ -668,14 +668,22 @@ async fn run_skill_in(
                 return Ok(Step::Stopped);
             }
             if !change.is_empty() {
+                let conventions = crate::conventions::load(ctx, &work.head).await?;
+                let subject = format!("write the specification: {} step", op_name(op));
+                let body = "Committed by the factory after the change was audited.";
+                let message = crate::conventions::message_or(
+                    conventions.as_ref(),
+                    "docs",
+                    Some("spec"),
+                    &subject,
+                    body,
+                    format!("Write the specification: {} step\n\n{body}\n", op_name(op)),
+                );
                 let commit = workspace
                     .commit(
                         &change,
                         CommitRequest {
-                            message: format!(
-                                "Write the specification: {} step\n\nCommitted by the factory after the change was audited.\n",
-                                op_name(op)
-                            ),
+                            message,
                             author_name: h.config.identity.name.clone(),
                             author_email: h.config.identity.email.clone(),
                         },

@@ -323,7 +323,9 @@ impl StageHandler for DeliveryHandler {
         let manifest_hash = manifest::hash_of(&manifest).map_err(|_| StageError::Internal)?;
 
         // 4. The text, from the manifest and the dossier. A text that is refused stops the stage
-        //    before the host is touched.
+        //    before the host is touched. The title follows the project's git conventions, read at
+        //    the base the job worked from.
+        let conventions = crate::conventions::load(ctx, &dossier.candidate.base).await?;
         let text = pr::compose(
             &PrFacts {
                 dossier: &dossier,
@@ -332,6 +334,7 @@ impl StageHandler for DeliveryHandler {
                 target: &target,
                 risk: &risk,
                 change: &change,
+                conventions: conventions.as_ref(),
             },
             &self.config.redactor,
         );

@@ -104,8 +104,32 @@ BREAKS = [
     ),
     (
         "PL-21 installer: a run that is not --check goes on although the variable is missing",
-        [(INSTALL, "    HALT=1\n", "    HALT=0\n")],
+        [(INSTALL, "    HALT=1\n    needs_you \"Nothing was installed or changed. Set the repository variable",
+          "    HALT=0\n    needs_you \"Nothing was installed or changed. Set the repository variable")],
         TESTS + ["BotLogin"],
+    ),
+    # ---- the git policy: settings, hooks, gitflow ----
+    (
+        "git policy: a flag that disagrees with .factory/repository.json does not stop the run",
+        [(INSTALL, "    SETTINGS_STATE=conflict\n    HALT=1\n", "    SETTINGS_STATE=conflict\n    HALT=0\n")],
+        TESTS + ["GitPolicy"],
+    ),
+    (
+        "git policy: a core.hooksPath of another tool is replaced",
+        [(INSTALL, "      report NEEDS git-hooks \"core.hooksPath is already '$current'; it was left alone\"",
+          "      checkout_git config core.hooksPath \"$HOOKS_REL\"; report NEEDS git-hooks \"core.hooksPath is already '$current'; it was left alone\"")],
+        TESTS + ["GitPolicy"],
+    ),
+    (
+        "git policy: --check writes the settings file",
+        [(INSTALL, "  if [ \"$check_only\" -eq 1 ]; then args+=(--check); fi\n  local out rc=0 state detail",
+          "  local out rc=0 state detail")],
+        TESTS + ["GitPolicy"],
+    ),
+    (
+        "git policy: hooks already active in .git/hooks are turned off",
+        [(INSTALL, "      if [ -n \"$active\" ]; then\n        report NEEDS git-hooks", "      if false; then\n        report NEEDS git-hooks")],
+        TESTS + ["GitPolicy"],
     ),
     (
         "PL-21 installer: --allow-missing-bot-login is ignored",
@@ -124,7 +148,7 @@ BREAKS = [
     ),
     (
         "PL-21 installer: the steps that change things run after the stop",
-        [(INSTALL, "if [ \"$HALT\" -eq 0 ]; then", "if true; then")],
+        [(INSTALL, "if [ \"$HALT\" -eq 0 ]; then\n  step_host_tools", "if true; then\n  step_host_tools")],
         TESTS + ["BotLogin"],
     ),
     # ---- PL-12: the gate comment and the review rule ----

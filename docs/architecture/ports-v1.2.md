@@ -167,3 +167,21 @@ Audit actions: `issue_status.written` (a success; the subject is `job <id> versi
 - The worker process. The wiring compiles and the step is tested with an in-memory store, a decorated fake writer and a fake clock. No worker was started against a database and a GitHub App.
 - The Action that reverts a `factory:` label written by anyone but the App.
 - An independent security review.
+
+## 9. Additive change: `WorkspaceProvider::list_branches` (2026-11-20)
+
+A project that keeps `.factory/repository.json` closes its feature branches with gitflow, and in the `release` mode the factory works from the one open `release/` branch. To find it, `WorkspaceProvider` gains one method:
+
+```rust
+async fn list_branches(
+    &self,
+    job: JobId,
+    target: &FetchTarget,
+    prefix: &str,
+    cancel: &dyn CancelSignal,
+) -> Result<Vec<BranchName>, WorkspaceError>;
+```
+
+It returns the branches the remote has whose names start with `prefix`, without `refs/heads/`, sorted. The git adapter runs `git ls-remote --heads -- URL refs/heads/PREFIX*` with the fetch credential, the same remote and egress as `fetch`, and fetches nothing. It refuses a prefix that is not a branch-name prefix ending in `/`, or that starts with a character other than a letter or a digit, before git runs. A name that is not a `BranchName` is left out. The in-memory fake lists the branches of its fake remote. Every wrapper (`IndexingWorkspaces` and the test spies) passes the call to the provider it wraps: the method has no default, so a wrapper cannot answer for the provider by accident.
+
+Nothing else of the port changes. No GitHub route, token class or permission is added. The test `list_branches_names_the_remote_branches_under_a_prefix` (`crates/sandbox/tests/workspace/behavior.rs`) runs it against a real bare repository. Like the other changes of this file, it needs an independent review and the architect's confirmation.

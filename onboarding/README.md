@@ -8,6 +8,10 @@ These files are not part of this repository's own build. `scripts/install.sh` co
 | `github/workflows/issue-workflow.yml` | The Action that keeps the labels of an issue consistent. It runs `.github/scripts/issue_workflow.py`, a copy of [`scripts/lib/issue_workflow.py`](../scripts/lib/issue_workflow.py), and then `.github/scripts/project_board.py`, a copy of [`scripts/lib/project_board.py`](../scripts/lib/project_board.py), which moves the issue on a GitHub Projects board if the project has one. |
 | `github/project-board-policy.json` | The nine board stages, the names they match on an existing board, and the rules that choose a stage, rendered from [`policies/project-board.yaml`](../policies/project-board.yaml). Do not edit it by hand. |
 | `github/ISSUE_TEMPLATE/` | The two issue forms: propose a new solution, and request a small, clear change. |
+| `github/workflows/git-policy.yml` | The pull request check of the git policy: Conventional Commits and gitflow. It runs `.github/scripts/git_policy.py`, a copy of [`scripts/lib/git_policy.py`](../scripts/lib/git_policy.py), read from the base branch. |
+| `github/githooks/` | The `commit-msg`, `pre-commit` and `pre-push` hooks, copied to `.github/githooks/` and turned on with `git config core.hooksPath .github/githooks`. They run the same `git_policy.py`. |
+
+The installer also writes `.factory/repository.json`, the project's settings: its repository, its board, its gitflow closing mode and its commit types. It is not a copy of a file here: it comes from flags, from inference and from the person's answers.
 
 The installer does not register the repository with the factory. A person does, with `factory-cli repository register`, `confirm-map` and `enable`, and the person who enables a repository is not the person who confirmed its map. A project owner who works alone registers the repository with `--single-maintainer`, once, and the audit log records it: see "A single-maintainer repository" in the onboarding guide.
 

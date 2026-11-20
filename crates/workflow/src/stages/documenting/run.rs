@@ -703,11 +703,21 @@ async fn write_in(
     }
 
     // The commit is made on the host, from the tree that was audited.
+    let conventions = crate::conventions::load(ctx, on).await?;
+    let body = "Written by the documentation writer, committed by the factory after the change was audited.";
+    let message = crate::conventions::message_or(
+        conventions.as_ref(),
+        "docs",
+        None,
+        "document the change",
+        body,
+        format!("Document the change\n\n{body}\n"),
+    );
     let commit = workspace
         .commit(
             &change,
             CommitRequest {
-                message: "Document the change\n\nWritten by the documentation writer, committed by the factory after the change was audited.\n".to_owned(),
+                message,
                 author_name: handler.config.identity.name.clone(),
                 author_email: handler.config.identity.email.clone(),
             },

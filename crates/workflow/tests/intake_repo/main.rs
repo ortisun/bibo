@@ -17,6 +17,7 @@ mod support;
 mod approval_words;
 mod design;
 mod durable_record;
+mod git_conventions;
 mod harness;
 mod intake;
 mod pair;

@@ -39,6 +39,7 @@
 
 pub mod audit;
 pub mod commands;
+pub mod conventions;
 pub mod engine;
 pub mod gates;
 pub mod handlers;

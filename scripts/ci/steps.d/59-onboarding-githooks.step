@@ -1,0 +1,4 @@
+id       = onboarding-githooks
+title    = The git hooks that the installer ships pass shellcheck as POSIX sh (onboarding/github/githooks)
+requires = shellcheck
+run      = shellcheck --severity=warning --shell=sh onboarding/github/githooks/commit-msg onboarding/github/githooks/pre-commit onboarding/github/githooks/pre-push
