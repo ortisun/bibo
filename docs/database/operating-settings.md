@@ -49,6 +49,8 @@ Recommendations (SRE, with the architect):
 
 To enable: start the server with `-c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all -c track_io_timing=on` (a `command:` in `infra/compose/local.yml`, SRE's file) and run `CREATE EXTENSION pg_stat_statements` once as the superuser. A restart is needed. It stores normalized query text, not parameters, so it holds no tenant data; reading it needs `pg_read_all_stats` or the superuser. The tenant setting is sent as a bound parameter and never appears in a statement text.
 
+Normalization replaces constants in ordinary statements, but `track_utility` (on by default) also keeps utility statements such as `CREATE ROLE ... PASSWORD '...'` with their text. Never put a cleartext password in SQL: `docs/database/observer-login.sql` sets a SCRAM verifier computed on the client by `scripts/scram-verifier.py` (TR-10 of `docs/reviews/troubleshooter-security-review.md`). The observer group (`factory_observer`) has no `pg_read_all_stats` since migration `2026-11-20-003100_observer_hardening`: it reads statement texts only through `observer_statements()`, which returns this database's top 50 statements with their literals and comments replaced and each text cut to 1000 characters.
+
 What it would have shown in the harness run: with 16 clients appending audit events to one tenant, `pg_advisory_xact_lock(...)` took a mean of 1.28 ms of a 1.45 ms insert, which is the per-tenant serialization of [ledger-and-audit.md](ledger-and-audit.md) made visible.
 
 ## 4. Autovacuum and bloat
