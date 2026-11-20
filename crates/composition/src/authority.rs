@@ -398,6 +398,25 @@ impl Authority for StoreAuthority {
             .collect())
     }
 
+    async fn approver_count(
+        &self,
+        tenant: TenantId,
+        repository: RepositoryId,
+    ) -> Result<u32, AuthorityError> {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(tenant))
+            .await
+            .map_err(|_| AuthorityError::Unavailable)?;
+        let now = self.clock.now();
+        let inputs =
+            crate::solo::solo_inputs(&mut *tx, &self.allowlist, tenant, repository, now).await;
+        let _ = tx.rollback().await;
+        inputs
+            .map(|inputs| inputs.approver_count)
+            .map_err(|_| AuthorityError::Unavailable)
+    }
+
     async fn concurrency_allows(
         &self,
         tenant: TenantId,

@@ -41,7 +41,7 @@ use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::store::{PrincipalKind, Store, StoreError};
 use factory_ports::workspace::WorkspaceProvider;
 use factory_workflow::handlers::RunIdentity;
-use factory_workflow::stages::approval::{ApprovalRequest, ApprovalSources};
+use factory_workflow::stages::approval::{ApprovalRequest, ApprovalSources, SoloInputs};
 use factory_workflow::stages::architecture::design::Design;
 use factory_workflow::stages::architecture::risk::{either, measure};
 use factory_workflow::stages::architecture::seams::RiskSource;
@@ -139,6 +139,29 @@ impl ApprovalSources for StoreApprovalSources {
             VocabularyLevel::L2 => AutonomyLevel::L2,
             VocabularyLevel::L3 => AutonomyLevel::L3,
         })
+    }
+
+    async fn solo_inputs(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        now: factory_domain::values::Timestamp,
+    ) -> Result<SoloInputs, SeamError> {
+        let mut tx = self.reader.begin(tenant).await?;
+        let outcome = async {
+            let repository = tx
+                .get_job(job)
+                .await
+                .map_err(|e| seam(&e))?
+                .value
+                .repository;
+            crate::solo::solo_inputs(&mut *tx, &self.allowlist, tenant, repository, now)
+                .await
+                .map_err(|_| SeamError::Unavailable)
+        }
+        .await;
+        let _ = tx.rollback().await;
+        outcome
     }
 
     async fn request(

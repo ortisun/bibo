@@ -1255,6 +1255,7 @@ mod tests {
             evidence: Some(format!("sha256:{}", "b".repeat(64))),
             target: None,
             answer: None,
+            confirm: None,
         }
     }
 
@@ -1867,5 +1868,35 @@ mod tests {
         make_if_missing(&path).expect("kept");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), first);
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn the_confirmation_word_is_covered_by_the_word_of_the_api() {
+        let keys = keys(7);
+        let plain = parts();
+        let mut confirmed = parts();
+        confirmed.fields.confirm = Some(
+            factory_domain::policy::solo::ConfirmationWord::of(
+                "I confirm the solo approval of PR 1 at level high",
+            )
+            .as_str()
+            .to_owned(),
+        );
+        // A request without the word reads as it always did, and one with it reads back with it.
+        let subject = keys.signed_subject(&confirmed.signing());
+        assert!(subject.len() <= 500, "{}", subject.len());
+        match read_subject(&subject) {
+            Some(SubjectKind::Signed { fields, word, .. }) => {
+                assert_eq!(fields, confirmed.fields);
+                assert!(keys.verify(&confirmed.signing(), &word));
+                // The word made with the phrase does not verify the request without it, and the
+                // other way round: removing the phrase breaks the word.
+                assert!(!keys.verify(&plain.signing(), &word));
+            }
+            other => panic!("expected a signed subject, got {other:?}"),
+        }
+        let word = keys.sign(&plain.signing());
+        assert!(!keys.verify(&confirmed.signing(), &word));
+        assert_ne!(keys.sign(&plain.signing()), keys.sign(&confirmed.signing()));
     }
 }

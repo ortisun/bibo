@@ -867,7 +867,9 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     // added to the floor the engine keeps. The engine reads the gate and the code of a block from
     // the event it stored and holds these back, whatever facts a caller hands an override.
     let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone())
-        .with_non_overridable_blocks(non_overridable_blocks(&policies));
+        .with_non_overridable_blocks(non_overridable_blocks(&policies))
+        // The solo mode (ADR 0021): the engine checks the policy's rules again at commit.
+        .with_solo(policies.engine.authority.solo_rules());
     config.claim_batch = 1;
     // The ceiling of a job is the policy's, not the constant the engine starts with.
     config.job_budget_micro_usd = job_budget_micro_usd(&policies.engine.budget);
@@ -990,6 +992,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             keys: decision_keys,
         })
         .with_specification(spec_drafts.clone())
+        .with_policy(Arc::clone(&policies.engine))
         .with_dependencies(dependency_decisions)
         .with_stage_decisions(stage_decisions)
         .with_recorded_decisions(Arc::clone(&dependency_approvals))

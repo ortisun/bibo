@@ -351,6 +351,20 @@ pub async fn single_maintainer_is_possible(
     tx: &mut dyn Tx,
     holders: &BTreeSet<u64>,
 ) -> Result<bool, StoreError> {
+    count_active_people(tx, holders).await.map(|n| n == 1)
+}
+
+/// How many active human principals of the tenant are among `holders` (numeric GitHub ids). A
+/// holder who has no principal, or whose principal is switched off or is not a person, is not
+/// counted. The one counter of people that both the registration of a `single_maintainer`
+/// repository (finding RH-6) and the solo mode (ADR 0021) use, so the two cannot count apart.
+///
+/// # Errors
+/// The store's error, when a principal cannot be read. The caller refuses or waits; it never allows.
+pub async fn count_active_people(
+    tx: &mut dyn Tx,
+    holders: &BTreeSet<u64>,
+) -> Result<usize, StoreError> {
     let mut active = BTreeSet::new();
     for github_user in holders {
         if let Some(principal) = tx.find_principal_by_github_user(*github_user).await?
@@ -360,7 +374,7 @@ pub async fn single_maintainer_is_possible(
             active.insert(principal.id);
         }
     }
-    Ok(active.len() == 1)
+    Ok(active.len())
 }
 
 /// A request that has no result yet.
