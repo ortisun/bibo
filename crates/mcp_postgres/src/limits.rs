@@ -13,8 +13,8 @@ pub struct Limits {
     pub statement_timeout: Duration,
     /// `SET LOCAL lock_timeout` of every call.
     pub lock_timeout: Duration,
-    /// Calls this server answers in its life. One server serves one troubleshooting run in the
-    /// gateway, or one engineer's session as a binary.
+    /// Calls one budget allows: per run when the gateway serves the server ([`crate::BudgetScope::PerCallerScope`]),
+    /// per window when `apps/mcp-postgres` does ([`crate::BudgetScope::Window`]).
     pub max_calls: u64,
     /// Bytes of SQL text a caller may send.
     pub max_sql_bytes: usize,

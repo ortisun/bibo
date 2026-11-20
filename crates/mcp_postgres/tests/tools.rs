@@ -4,7 +4,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use factory_mcp_postgres::{Limits, PostgresMcp, TOOL_NAMES, ToolFailure};
+use factory_mcp_postgres::{
+    BUDGET_SCOPE_META_KEY, BudgetScope, Limits, PostgresMcp, TOOL_NAMES, ToolFailure,
+};
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use serde_json::Value;
@@ -496,22 +498,70 @@ async fn curated_tools_answer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_call_budget_is_enforced() {
+async fn the_call_budget_is_per_run_behind_the_gateway_and_per_window_alone() {
+    // TR-6: one server serves run after run. Each run (the scope the gateway names in _meta)
+    // has a budget of its own; a call that names no run is refused.
     let db = TestDb::fresh().await;
     let login = db.observer().await;
-    let inspector = db.inspector(
-        &login,
-        Limits {
-            max_calls: 2,
-            ..quick_limits()
-        },
+    let limits = Limits {
+        max_calls: 2,
+        ..quick_limits()
+    };
+    let server =
+        PostgresMcp::with_budget(db.inspector(&login, limits), BudgetScope::PerCallerScope);
+    let (server_end, client_end) = tokio::io::duplex(64 * 1024);
+    let serving = tokio::spawn(async move {
+        let running = server.serve(server_end).await.expect("serve");
+        let _ = running.waiting().await;
+    });
+    let client = ().serve(client_end).await.expect("client");
+    let call = |run: Option<&str>| {
+        let mut params = CallToolRequestParams::new("pg_activity");
+        if let Some(run) = run {
+            let mut meta = rmcp::model::RequestMetaObject::default();
+            meta.insert(BUDGET_SCOPE_META_KEY.to_owned(), Value::from(run));
+            params.meta = Some(meta);
+        }
+        params
+    };
+    for run in ["run-1", "run-2"] {
+        for _ in 0..2 {
+            let answer = client.call_tool(call(Some(run))).await.expect("call");
+            assert_ne!(answer.is_error, Some(true), "{run}: {answer:?}");
+        }
+        let spent = client.call_tool(call(Some(run))).await.expect("call");
+        assert_eq!(spent.is_error, Some(true));
+        let text = spent.content[0].as_text().expect("text").text.clone();
+        assert!(text.contains("call budget (2 calls)"), "{text}");
+    }
+    let unnamed = client.call_tool(call(None)).await.expect("call");
+    assert_eq!(unnamed.is_error, Some(true));
+    let _ = client.cancel().await;
+    let _ = serving.await;
+
+    // Alone (apps/mcp-postgres), one budget for the window, whatever a client puts in _meta.
+    let server = PostgresMcp::with_budget(
+        db.inspector(&login, limits),
+        BudgetScope::Window(Duration::from_secs(3600)),
     );
-    inspector.query("SELECT 1 AS a", None).await.expect("first");
-    inspector.activity().await.expect("second");
+    let (server_end, client_end) = tokio::io::duplex(64 * 1024);
+    let serving = tokio::spawn(async move {
+        let running = server.serve(server_end).await.expect("serve");
+        let _ = running.waiting().await;
+    });
+    let client = ().serve(client_end).await.expect("client");
+    for run in ["a", "b"] {
+        let answer = client.call_tool(call(Some(run))).await.expect("call");
+        assert_ne!(answer.is_error, Some(true));
+    }
+    let spent = client.call_tool(call(Some("c"))).await.expect("call");
     assert_eq!(
-        inspector.query("SELECT 1 AS a", None).await,
-        Err(ToolFailure::CallBudgetSpent { limit: 2 })
+        spent.is_error,
+        Some(true),
+        "a new scope does not renew the window"
     );
+    let _ = client.cancel().await;
+    let _ = serving.await;
 }
 
 /// The reason `check_login` gives for a login, or `None` when it accepts it.

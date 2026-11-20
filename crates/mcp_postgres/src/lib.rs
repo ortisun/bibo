@@ -20,15 +20,19 @@
 //!    CTE fails. After the rollback the session runs `DISCARD ALL`, so a session-level advisory
 //!    lock or setting taken by one call does not survive into the next.
 //! 3. **Free SQL is wrapped as a subquery** and sent with the extended protocol, which accepts one
-//!    statement only: `SELECT to_jsonb(q)::text FROM (\n<sql>\n) AS q LIMIT <max_rows + 1>`. A
+//!    statement only: `SELECT left(to_jsonb(q)::text, <max_result_bytes + 1>) FROM (\n<sql>\n) AS q
+//!    LIMIT <max_rows + 1>`, so no row larger than the byte cap is ever sent. A
 //!    subquery can only be a query: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COPY`, DDL and a
 //!    data-modifying `WITH` do not parse there, and a second statement after a `;` is refused by
 //!    the protocol. The newlines keep a trailing `--` comment from swallowing the closing
 //!    parenthesis. `pg_explain` wraps the same way: `EXPLAIN (FORMAT JSON) SELECT * FROM (...)`,
 //!    never `ANALYZE`, so nothing is executed.
 //! 4. **Caps**: rows ([`Limits::max_rows`], 200), result bytes ([`Limits::max_result_bytes`],
-//!    64 KiB, with a truncation marker that says how many rows and bytes were cut), statement time
-//!    and calls per server ([`Limits::max_calls`]), enforced here whether or not a gateway in front
+//!    64 KiB, with a truncation marker that says how many rows and bytes were cut; rows are fetched
+//!    through a portal 16 at a time and reading stops at the cap, so a result of gigabytes is never
+//!    read), statement time
+//!    and calls per budget ([`Limits::max_calls`], per run behind the gateway or per window, see
+//!    [`BudgetScope`]), enforced here whether or not a gateway in front
 //!    enforces them too.
 //! 5. **Redaction** of every string in a result through the [`Redact`] seam that the caller
 //!    injects (the factory's [`factory_domain::redaction::Redactor`] implements it), and literal
@@ -50,6 +54,7 @@
 //! // Serve `server` with any rmcp transport: stdio, Streamable HTTP or an in-memory pipe.
 //! ```
 
+mod budget;
 mod failure;
 mod inspector;
 mod limits;
@@ -58,6 +63,7 @@ mod settings;
 pub mod sql;
 mod tools;
 
+pub use budget::{BUDGET_SCOPE_META_KEY, BudgetScope, DEFAULT_BUDGET_WINDOW, MAX_SCOPES};
 pub use failure::ToolFailure;
 pub use inspector::Inspector;
 pub use limits::Limits;

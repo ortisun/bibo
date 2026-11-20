@@ -7,9 +7,11 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::schemars::JsonSchema;
-use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+use crate::budget::{BUDGET_SCOPE_META_KEY, BudgetScope, CallBudgets, DEFAULT_BUDGET_WINDOW};
 use crate::{Inspector, ToolFailure};
 
 /// The names of the tools, in the order they are listed. The gateway's allowlist names these.
@@ -105,11 +107,12 @@ pub struct FactoryHealthParams {
     pub window_hours: Option<u32>,
 }
 
-/// The MCP server. Cheap to clone: every clone shares one [`Inspector`], so the call budget and
-/// the connection are per server, not per session.
+/// The MCP server. Cheap to clone: every clone shares one [`Inspector`] (the connection) and one
+/// set of call budgets, whose scope is chosen at construction ([`BudgetScope`]).
 #[derive(Clone)]
 pub struct PostgresMcp {
     inspector: Arc<Inspector>,
+    budgets: Arc<CallBudgets>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -117,6 +120,7 @@ impl std::fmt::Debug for PostgresMcp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostgresMcp")
             .field("inspector", &self.inspector)
+            .field("budget_scope", &self.budgets.scope())
             .finish_non_exhaustive()
     }
 }
@@ -129,12 +133,34 @@ fn outcome(result: Result<String, ToolFailure>) -> CallToolResult {
 }
 
 impl PostgresMcp {
-    /// A server over an inspector.
+    /// A server over an inspector whose call budget ([`crate::Limits::max_calls`]) is one for
+    /// the server, renewed every [`DEFAULT_BUDGET_WINDOW`] (an hour).
     pub fn new(inspector: Arc<Inspector>) -> Self {
+        Self::with_budget(inspector, BudgetScope::Window(DEFAULT_BUDGET_WINDOW))
+    }
+
+    /// A server over an inspector with the given budget scope. The gateway's in-process upstream
+    /// uses [`BudgetScope::PerCallerScope`], so that each troubleshooting run has a budget of its
+    /// own; never serve that scope to a remote client, which could name a new scope per call.
+    pub fn with_budget(inspector: Arc<Inspector>, scope: BudgetScope) -> Self {
+        let max_calls = inspector.limits().max_calls;
         Self {
             inspector,
+            budgets: Arc::new(CallBudgets::new(scope, max_calls)),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Charges one call to the budget of its window or of the scope its request names, or says
+    /// why not as a tool error.
+    fn charge(&self, context: &RequestContext<RoleServer>) -> Result<(), CallToolResult> {
+        let scope = context
+            .meta
+            .get(BUDGET_SCOPE_META_KEY)
+            .and_then(serde_json::Value::as_str);
+        self.budgets
+            .charge(scope)
+            .map_err(|failure| outcome(Err(failure)))
     }
 
     /// The inspector this server uses.
@@ -152,8 +178,12 @@ impl PostgresMcp {
     )]
     async fn pg_list_relations(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<ListRelationsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(
             self.inspector
                 .list_relations(&params.schema, params.name_like.as_deref())
@@ -168,8 +198,12 @@ impl PostgresMcp {
     )]
     async fn pg_describe_relation(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<DescribeRelationParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(
             self.inspector
                 .describe_relation(&params.schema, &params.relation)
@@ -184,8 +218,12 @@ impl PostgresMcp {
     )]
     async fn pg_query(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         let max_rows = params
             .max_rows
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
@@ -199,8 +237,12 @@ impl PostgresMcp {
     )]
     async fn pg_explain(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<ExplainParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(self.inspector.explain(&params.sql).await))
     }
 
@@ -209,7 +251,13 @@ impl PostgresMcp {
         description = "List the other database sessions, oldest open transaction first: login, application, state, what each waits on, transaction and query age, and the query text with its literal values replaced by '?'. Use it to find long transactions, idle-in-transaction sessions and sessions stuck on a wait.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn pg_activity(&self) -> Result<CallToolResult, ErrorData> {
+    async fn pg_activity(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(self.inspector.activity().await))
     }
 
@@ -218,7 +266,13 @@ impl PostgresMcp {
         description = "Show lock waits: each blocked session with the session blocking it (pid, login, state, transaction age, query texts with literals replaced by '?'), and a count of locks by type, mode and whether granted.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn pg_locks(&self) -> Result<CallToolResult, ErrorData> {
+    async fn pg_locks(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(self.inspector.locks().await))
     }
 
@@ -229,8 +283,12 @@ impl PostgresMcp {
     )]
     async fn pg_table_health(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<TableHealthParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(self.inspector.table_health(&params.schema).await))
     }
 
@@ -241,8 +299,12 @@ impl PostgresMcp {
     )]
     async fn pg_factory_health(
         &self,
+        context: RequestContext<RoleServer>,
         Parameters(params): Parameters<FactoryHealthParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(refused) = self.charge(&context) {
+            return Ok(refused);
+        }
         Ok(outcome(
             self.inspector
                 .factory_health(params.window_hours.unwrap_or(24))

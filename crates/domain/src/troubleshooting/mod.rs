@@ -30,6 +30,13 @@ use crate::values::{Sha256Digest, Slug};
 
 pub use neutralise::{code_span, one_line};
 
+/// The `_meta` key under which the MCP gateway names the run of a call it forwards to an
+/// in-process upstream, and under which the read-only PostgreSQL server looks for the scope of
+/// its call budget, so that each run has a budget of its own (TR-6 of the security review). Only
+/// an in-process caller the factory wrote sets it: the agent's own requests never reach an
+/// upstream with their `_meta`.
+pub const BUDGET_SCOPE_META_KEY: &str = "factory.troubleshooting/run_id";
+
 /// The pattern of a run id, as `troubleshooter-input.v1.schema.json` declares it.
 const RUN_ID: &str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
 /// The pattern of a gateway call id, as `health-findings.v1.schema.json` declares it.

@@ -20,7 +20,7 @@ pub enum ToolFailure {
     Timeout,
     /// The database could not be reached, or the connection was lost.
     Unavailable,
-    /// This server has answered as many calls as its budget allows.
+    /// The run, or the period of the server, has made as many calls as its budget allows.
     CallBudgetSpent {
         /// The budget.
         limit: u64,
@@ -39,7 +39,7 @@ impl fmt::Display for ToolFailure {
             ),
             Self::Unavailable => f.write_str("the database is not reachable"),
             Self::CallBudgetSpent { limit } => {
-                write!(f, "the call budget of this server ({limit} calls) is spent")
+                write!(f, "the call budget ({limit} calls) of this run or of this period is spent")
             }
             Self::RedactionFailed => {
                 f.write_str("the result could not be checked for secrets, so it was withheld")

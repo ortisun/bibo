@@ -111,7 +111,7 @@ impl Inspector {
         &self.limits
     }
 
-    /// Calls answered or refused so far.
+    /// Calls made so far (every call, whatever budget it was charged to).
     pub fn calls_made(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
     }
@@ -524,14 +524,10 @@ impl Inspector {
         Ok(sets.pop().unwrap_or_default())
     }
 
-    /// Runs the statements in one read-only transaction, counting one call.
+    /// Runs the statements in one read-only transaction, counting one call. The call budget is
+    /// not here: [`crate::PostgresMcp`] charges it per run or per window before it calls.
     async fn read(&self, statements: &[Statement]) -> Result<Vec<ReadSet>, ToolFailure> {
-        let made = self.calls.fetch_add(1, Ordering::Relaxed);
-        if made >= self.limits.max_calls {
-            return Err(ToolFailure::CallBudgetSpent {
-                limit: self.limits.max_calls,
-            });
-        }
+        self.calls.fetch_add(1, Ordering::Relaxed);
         self.read_uncharged(statements).await
     }
 
