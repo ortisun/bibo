@@ -150,20 +150,14 @@ pub fn a9(ev: &RunEvidence, env: &Env) -> Verdict {
         .collect();
     // A job has two gates a person decides: the specification draft and the pull request. Each
     // leaves a granted record. Every one of them must be a person, other than the requester unless
-    // the approval policy lets the requester approve a low-risk change and this job's risk, as the
-    // approval stage recorded it, is low (the owner who works alone). The last one is the approval
-    // of the pull request, whose judgment the ledger must hold under the APPROVAL run.
-    let low_risk = ev
-        .facts
-        .get("risk_tier")
-        .and_then(serde_json::Value::as_str)
-        == Some("low");
-    let self_approval = env.self_approval_when_low_risk && low_risk;
+    // the solo mode is on (ADR 0021): then the engine granted the requester's approval only with
+    // the solo fact, and with the wait and the phrase where the tier asks for them. The last one is
+    // the approval of the pull request, whose judgment the ledger must hold under the APPROVAL run.
     for record in &approvals {
-        if record.actor == ev.job.requester && !self_approval {
+        if record.actor == ev.job.requester && !env.solo_mode {
             return Verdict::fail(
                 ID,
-                "the requester approved their own request, and the policy allows that only for a low-risk change",
+                "the requester approved their own request, and the solo mode is off",
             );
         }
         if !record.actor.starts_with("human:") {

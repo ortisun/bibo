@@ -848,8 +848,11 @@ pub fn all() -> Vec<Mutation> {
         Mutation {
             name: "the-requester-approved-their-own-request",
             assertion: "A9",
-            what: "The approval is recorded for the requester.",
-            expect: "approved their own request",
+            // With the solo mode on (ADR 0021) the requester may approve their own request, but
+            // then the engine records their judgment in the ledger too. An audit record that names
+            // the requester over a ledger judgment of someone else is a forged approval either way.
+            what: "The approval is recorded for the requester, over a ledger that holds another person's judgment.",
+            expect: "does not hold the approver's judgment",
             base: Production,
             apply: |ev| {
                 let requester = ev.job.requester.clone();
@@ -865,8 +868,11 @@ pub fn all() -> Vec<Mutation> {
         Mutation {
             name: "the-requester-approved-their-own-request-of-medium-risk",
             assertion: "A9",
-            what: "The approval is recorded for the requester, and the job's risk is medium.",
-            expect: "approved their own request",
+            // With the solo mode on (ADR 0021) the requester may approve their own request, but
+            // then the engine records their judgment in the ledger too. An audit record that names
+            // the requester over a ledger judgment of someone else is a forged approval either way.
+            what: "The approval is recorded for the requester, and the job's risk is medium, over a ledger that holds another person's judgment.",
+            expect: "does not hold the approver's judgment",
             base: Production,
             apply: |ev| {
                 let requester = ev.job.requester.clone();
