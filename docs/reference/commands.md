@@ -29,7 +29,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli show-draft` | `--api`, `--token-file`, `--stage-run` | `JOB` | Shows the specification draft a person is asked to approve: the commit that holds it, the head of the ledger, the draft document and the values to give as `head=` and `evidence=`. When the stage asked questions, it lists them and prints the `answer` command that answers them. |
 | `factory-cli artifact` | `--api`, `--token-file` | `JOB SHA256` | Prints one stored document of a job, for example a gate report, through the same sanitizer as every other output. A document that is not text is not printed. |
 | `factory-cli timeline` | `--api`, `--token-file` | `JOB` | Shows the state changes of a job and its audit records, in time order. |
-| `factory-cli approve` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN head=H evidence=sha256:D [reason...]` | Records an approval. |
+| `factory-cli approve` | `--api`, `--token-file`, `--key`, `--confirm` | `JOB STAGE_RUN head=H evidence=sha256:D [reason...]` | Records an approval. |
 | `factory-cli reject` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Records a rejection. |
 | `factory-cli rework` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN target=STAGE reason...` | Sends the work back to a stage. |
 | `factory-cli answer` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN text...` | Answers the questions of a stage run that waits for a person. A word `Q-001:` starts a new line, so `Q-001: yes Q-002: no` answers two questions. Put `--` before the text when it holds a word that starts with `--`. |
@@ -37,10 +37,10 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli resume` | `--api`, `--token-file`, `--key` | `JOB reason...` | Resumes a paused job. |
 | `factory-cli cancel` | `--api`, `--token-file`, `--key` | `JOB reason...` | Cancels a job. |
 | `factory-cli unblock` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Lets a `BLOCKED` stage run go again once the cause is gone. |
-| `factory-cli ack-translation-warning` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN WARNING reason...` | Records an approver's decision about one open translation warning of the approval request. `WARNING` is its number, from 1. |
-| `factory-cli approve-project-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB PATH SHA256 reason...` | Approves one file of build code that the change itself adds, with the exact content the person read. |
-| `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
-| `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
+| `factory-cli ack-translation-warning` | `--api`, `--token-file`, `--key`, `--confirm` | `JOB STAGE_RUN WARNING reason...` | Records an approver's decision about one open translation warning of the approval request. `WARNING` is its number, from 1. |
+| `factory-cli approve-project-build-code` | `--api`, `--token-file`, `--key`, `--stage-run`, `--confirm` | `JOB PATH SHA256 reason...` | Approves one file of build code that the change itself adds, with the exact content the person read. |
+| `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run`, `--confirm` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
+| `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run`, `--confirm` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
 | `factory-cli repository` | `--api`, `--token-file`, `--key`, `--installation`, `--github-repository`, `--name`, `--default-branch`, `--single-maintainer`, `--wait-seconds` | `register`, `confirm-map`, `enable`, `disable`, `show` or `change`, then its own arguments (see below) | Registers a repository, records that a person confirmed its project map, enables it, disables it, or shows it. The subcommands are in the table after the options. |
 | `factory-cli probe` | `--protected-checkout`, `--images-catalog`, `--profile` | none | Runs the start-up checks that need no credential and lists what cannot be checked. |
 
@@ -58,6 +58,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `--source-ref` | The issue the job is for, written `OWNER/NAME#N`. The repository must be the one that `--repository` names. |
 | `--stage-run` | The stage run of a dependency or build code decision, or of `show-draft`. Without it a decision is for the blocked validation stage run of the job, and `show-draft` takes the newest specification stage run. |
 | `--gates` | With `status`: also list the gate reports of the job. |
+| `--confirm` | With `approve`, `approve-dependency`, `approve-build-code`, `approve-project-build-code` and `ack-translation-warning`: the confirmation phrase of the solo mode ([ADR 0021](../adr/0021-solo-approval-mode.md)), quoted as one argument, such as `--confirm "I confirm the solo approval of PR 7 at level high"`. The person who asked for the job and is its only approver sends it for a high or critical pull request and for every decision on a dependency, on build code or on a translation warning. Spaces at the ends, runs of spaces and capital letters of the plain Latin alphabet do not matter. The API keeps only a 16-digit hash of it. Without it, or with another, the API answers `409 confirmation_missing` and the command prints the phrase to send. |
 | `--protected-checkout` | The checkout of the protected configuration branch, for `probe`. |
 | `--images-catalog` | The sandbox image catalog, for `probe`. Without it `probe` reports the catalog as BLOCKED. |
 | `--profile` | `production`, `local` or `test`, for `probe`. |

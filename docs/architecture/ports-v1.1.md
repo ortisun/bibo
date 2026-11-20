@@ -4843,3 +4843,21 @@ Sonnet reviews Opus's, at the code review, the documentation review and the spec
 api_key mode: the other provider; the rule of family: a person), the review tests in
 `crates/workflow/tests/implementation/review.rs` (the audit record and the review record), and the
 delivery test `a_review_by_the_same_family_is_listed_among_the_limitations`.
+
+### 16.7 The count of approving people (the solo mode, owner's decision): made, pending architect confirmation
+
+The solo mode ([ADR 0021](../adr/0021-solo-approval-mode.md)) lets the one approving person of a
+`single_maintainer` repository approve their own request, and the engine checks again at commit
+that exactly one person may approve. The engine reads people only through its `Authority` seam.
+
+| Change | Kind | Where | Notes |
+|---|---|---|---|
+| `Authority::approver_count(tenant, repository) -> Result<u32, AuthorityError>` | Added, no default body | `crates/workflow/src/commands/authority.rs` | How many active human principals of the tenant hold `approver` or `security_approver` on the repository now, an approver and a different security approver being two. A read that fails is `Unavailable` and the engine refuses. `StoreAuthority` reads the repository row, `FileAllowlist::holders_of` and `count_active_people` (the counter of REG-6, shared). |
+| `ApprovalSources::solo_inputs(tenant, job, now) -> Result<SoloInputs, SeamError>` | Added, default `SoloInputs::NONE` | `crates/workflow/src/stages/approval/seams.rs` | Not a port: the approval stage's own seam. `StoreApprovalSources` reads the mark and the count; a source that does not read them never lets the requester approve. |
+
+No store or adapter port changed. The wait of the solo mode reads the time of the stage run's
+last `stage_run.blocked` or `stage_run.waiting_for_human` event from the outbox the `Timeline`
+already reads, and `Engine::state_entered_at` exposes it to the approval stage. The implementors
+updated in the same change: `StoreAuthority`, the workflow rig's `StaticAuthority`
+(`set_approver_count`), and the API test doubles `FixedAuthority`, `LoginAuthority` and
+`PanickingAuthority` (which answer 0).
