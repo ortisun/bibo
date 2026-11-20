@@ -67,6 +67,15 @@ fn the_registry_has_queue_depth_duration_gate_failures_retries_and_spend() {
         // raises it, not the engine, so this file only checks that it is on the page; the
         // behavior is tested in `crates/observability/tests/redaction_signal.rs`.
         ("redactions", "factory_redactions_total"),
+        // Added with the troubleshooter (ADR 0021). The troubleshooter app records them, not the
+        // engine, so this file only checks that they are on the page and, in the test below, that
+        // they follow its naming rules. `crates/observability/tests/metrics.rs` checks that the
+        // page and the registry hold the same rows. No test yet reads them back from a run of the
+        // troubleshooter.
+        ("troubleshooting runs", "factory_troubleshooting_runs_total"),
+        ("probe results", "factory_probe_results_total"),
+        ("gateway calls", "factory_gateway_calls_total"),
+        ("triage issues", "factory_triage_issues_total"),
     ] {
         assert!(
             metrics().iter().any(|m| m.name == name),
@@ -75,7 +84,7 @@ fn the_registry_has_queue_depth_duration_gate_failures_retries_and_spend() {
     }
     assert_eq!(
         metrics().len(),
-        7,
+        11,
         "a metric was added: say what this file does about it"
     );
 }
