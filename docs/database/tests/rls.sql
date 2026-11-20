@@ -607,8 +607,19 @@ $$;
 -- (a trigger function runs as the caller, but a caller can put a temporary table or function first).
 DO $$
 BEGIN
-  PERFORM dbtest.expect_eq('the only SECURITY DEFINER functions in the product schema are the two lookups',
-    (SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prosecdef), 'resolve_installation,resolve_token');
+  PERFORM dbtest.expect_eq('the only SECURITY DEFINER functions in the product schema are the two lookups and the three observer reads',
+    (SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prosecdef),
+    'observer_activity,observer_lock_waits,observer_statements,resolve_installation,resolve_token');
+  -- The observer reads (migration 2026-11-20-003100) run as factory_observer_stats, a role with no member whose only
+  -- membership is pg_read_all_stats, and only factory_observer may call them.
+  PERFORM dbtest.expect_eq('the observer reads are owned by factory_observer_stats and executable by factory_observer alone',
+    (SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' ||
+                       (SELECT string_agg(CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee)::text END, '+' ORDER BY 1)
+                          FROM aclexplode(p.proacl) x WHERE x.privilege_type = 'EXECUTE' AND x.grantee <> p.proowner),
+                       ',' ORDER BY p.proname)
+       FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname LIKE 'observer\_%'),
+    'observer_activity:factory_observer_stats:factory_observer,observer_lock_waits:factory_observer_stats:factory_observer,'
+    'observer_normalize_query:factory_observer_stats:factory_observer,observer_statements:factory_observer_stats:factory_observer');
   PERFORM dbtest.expect_eq('every function in the product schema pins its search path',
     (SELECT coalesce(string_agg(proname, ',' ORDER BY proname), '') FROM pg_proc
       WHERE pronamespace = 'public'::regnamespace AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(proconfig, '{}')) c WHERE c LIKE 'search_path=%')), '');
