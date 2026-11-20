@@ -48,16 +48,16 @@ fn the_stage_list_comes_from_the_state_machine_file_and_is_not_counted_in_code()
     assert_eq!(evidence.stage_runs.len(), env.stages.len());
 }
 
-/// The owner works alone: the policy lets the approver be the requester for a low-risk change
-/// (`policies/approval.yaml`, `approver_may_equal_requester_when_low_risk`). An honest run in which
-/// the requester approves a low-risk request holds A9; the same approval of a request whose risk
-/// is not known to be low does not, and neither does it when the policy says no.
+/// The owner works alone: with the solo mode on (`policies/approval.yaml`, `solo_mode.enabled`,
+/// ADR 0022), an honest run in which the requester approves their own request holds A9, whatever
+/// the tier, because the engine grants that approval only with the solo fact. With the mode off
+/// the same approval does not hold A9.
 #[test]
-fn the_owner_may_approve_their_own_low_risk_request_when_the_policy_allows_it() {
+fn the_owner_may_approve_their_own_request_when_the_solo_mode_is_on() {
     let env = env();
     assert!(
-        env.self_approval_when_low_risk,
-        "the repository policy allows it"
+        env.solo_mode,
+        "the repository policy switches the solo mode on"
     );
     let mut evidence = honest(&env, Options::e1_production());
     let requester = evidence.job.requester.clone();
@@ -92,15 +92,10 @@ fn the_owner_may_approve_their_own_low_risk_request_when_the_policy_allows_it() 
             .find(|verdict| verdict.id == "A9")
             .expect("A9 runs")
     };
-    let unknown_risk = a9(&evidence, &env);
-    assert!(!unknown_risk.pass, "{unknown_risk}");
-    evidence
-        .facts
-        .insert("risk_tier".to_owned(), serde_json::json!("low"));
-    let low = a9(&evidence, &env);
-    assert!(low.pass, "{low}");
+    let solo = a9(&evidence, &env);
+    assert!(solo.pass, "{solo}");
     let strict = Env {
-        self_approval_when_low_risk: false,
+        solo_mode: false,
         ..env
     };
     let refused = a9(&evidence, &strict);

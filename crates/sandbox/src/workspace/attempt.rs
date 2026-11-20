@@ -35,6 +35,9 @@ pub struct GitWorkspace {
     pub(super) job_dirs: JobDirs,
     pub(super) attempt_dirs: AttemptDirs,
     pub(super) base: CommitSha,
+    /// The job's protected base when it is not `base` (ADR 0025): the commit `append_only` and
+    /// `additions_only` judge a changed path against. `None` when `base` is that commit.
+    pub(super) protected: Option<CommitSha>,
     pub(super) rules: PathRules,
     pub(super) tree: Arc<BaseTree>,
     mounts: WorkspaceMounts,
@@ -60,6 +63,7 @@ impl GitWorkspace {
     pub(super) fn new(
         shared: Arc<Shared>,
         req: WorkspaceRequest,
+        protected: Option<CommitSha>,
         job_dirs: JobDirs,
         attempt_dirs: AttemptDirs,
         tree: BaseTree,
@@ -70,6 +74,7 @@ impl GitWorkspace {
             job_dirs,
             attempt_dirs,
             base: req.base,
+            protected,
             rules: req.rules,
             tree: Arc::new(tree),
             mounts,

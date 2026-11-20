@@ -830,6 +830,7 @@ async fn from_the_wait_an_approver_cannot_pass_the_review_without_a_verdict() {
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await

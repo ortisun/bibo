@@ -242,6 +242,9 @@ pub struct Pipeline {
     /// The steps before each claim, in the order a loop runs them: the request cache, the
     /// preflight, the hook.
     pub before_claim: Vec<Arc<dyn BeforeClaim>>,
+    /// The step that applies the signed requests to register, attest and enable. A binary tells
+    /// it about the rules check (`RepositoryChanges::tell_when_onboarded`, ADR 0026).
+    pub repository_changes: Arc<RepositoryChanges>,
     /// The decisions people recorded about new dependencies, read from the ledger by tenant and
     /// job. This is the very value the validation stage's supply chain gate reads.
     pub dependency_approvals: Arc<dyn RecordedApprovals>,
@@ -278,6 +281,16 @@ pub fn job_budget_micro_usd(budget: &BudgetPolicy) -> u64 {
     budget
         .stops_at(Scope::Job, Metric::Usd)
         .map_or(0, |dollars| (dollars * 1_000_000.0).ceil() as u64)
+}
+
+/// Sets the limits of `config` that the budget policy decides, in place of the constants the
+/// engine starts with: the ceiling of a job ([`job_budget_micro_usd`]), the rework cap of each
+/// count (ADR 0023) and the repair cap (ADR 0010). Each cap is at most the engine's default
+/// (`BudgetPolicy` refuses a policy above it and clamps), so the policy can only lower one.
+pub fn apply_budget_policy(config: &mut EngineConfig, budget: &BudgetPolicy) {
+    config.job_budget_micro_usd = job_budget_micro_usd(budget);
+    config.rework_limits = budget.rework_limits();
+    config.repair_cap = budget.repair_cap();
 }
 
 /// The commit of the gate definitions: the configured one, and for the profiles that are not
@@ -867,10 +880,11 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     // added to the floor the engine keeps. The engine reads the gate and the code of a block from
     // the event it stored and holds these back, whatever facts a caller hands an override.
     let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone())
-        .with_non_overridable_blocks(non_overridable_blocks(&policies));
+        .with_non_overridable_blocks(non_overridable_blocks(&policies))
+        // The solo mode (ADR 0022): the engine checks the policy's rules again at commit.
+        .with_solo(policies.engine.authority.solo_rules());
     config.claim_batch = 1;
-    // The ceiling of a job is the policy's, not the constant the engine starts with.
-    config.job_budget_micro_usd = job_budget_micro_usd(&policies.engine.budget);
+    apply_budget_policy(&mut config, &policies.engine.budget);
     if let Some(tune) = tune_engine {
         tune(&mut config);
     }
@@ -990,11 +1004,12 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             keys: decision_keys,
         })
         .with_specification(spec_drafts.clone())
+        .with_policy(Arc::clone(&policies.engine))
         .with_dependencies(dependency_decisions)
         .with_stage_decisions(stage_decisions)
         .with_recorded_decisions(Arc::clone(&dependency_approvals))
         .with_rejections(rejections)
-        .with_repository_changes(repository_changes),
+        .with_repository_changes(Arc::clone(&repository_changes)),
     );
     let check_names = [
         factory_workflow::stages::delivery::CHECK_VALIDATION,
@@ -1045,6 +1060,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         approvals: approval_sources,
         spec_drafts,
         before_claim,
+        repository_changes,
         dependency_approvals,
         supply_chain: external.supply_chain.standings(),
     })

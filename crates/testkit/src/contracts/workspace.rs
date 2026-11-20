@@ -55,6 +55,8 @@ pub const PROTECTED_GLOB: &str = ".github/**";
 /// * `history` is `append_only` on `CHANGELOG.md`;
 /// * `notes` is `additions_only` on `docs/notes.md`;
 /// * `toolchain` is `sensitive` on `Cargo.toml`;
+/// * `unit_tests` is `additions_only` and `goldens` is `append_only` on directories the fixture
+///   does not hold, so a job can add files there and change them in a later round;
 /// * `secrets` hides `.env*` and re-includes `.env.example` in its own group, while the `ci` group
 ///   also names `.env.example` as `deny_write`, to show that a re-inclusion lifts only its group.
 ///
@@ -78,6 +80,8 @@ pub fn fixture_rules() -> PathRules {
         mode("history", "CHANGELOG.md", PathMode::AppendOnly),
         mode("notes", "docs/notes.md", PathMode::AdditionsOnly),
         mode("toolchain", "Cargo.toml", PathMode::Sensitive),
+        mode("unit_tests", "tests/unit/**", PathMode::AdditionsOnly),
+        mode("goldens", "tests/golden/**", PathMode::AppendOnly),
         mode("secrets", ".env*", PathMode::Hidden),
         (
             "secrets".to_owned(),
@@ -196,6 +200,9 @@ pub fn checks() -> Vec<WorkspaceCheck> {
         a_verify_workspace_is_read_only_and_holds_the_holdouts,
         export_patch_is_the_same_for_the_same_commits,
         a_commit_has_a_tree_and_the_tree_follows_the_files,
+        a_file_the_job_added_may_be_changed_in_a_later_round,
+        what_existed_before_the_job_stays_protected_in_a_later_round,
+        a_protected_base_that_cannot_be_read_is_refused,
         disposing_removes_the_host_directories,
         two_workspaces_do_not_share_a_tree,
     ]
@@ -263,6 +270,7 @@ async fn open_as(
                 job: job(n),
                 attempt: attempt(n),
                 base: base.clone(),
+                protected_base: None,
                 rules: fixture_rules(),
                 purpose,
             },
@@ -1044,6 +1052,7 @@ async fn a_second_workspace_can_start_at_a_commit_the_first_made(
                 job: job(1),
                 attempt: attempt(2),
                 base: commit.clone(),
+                protected_base: None,
                 rules: fixture_rules(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -1061,6 +1070,7 @@ async fn a_second_workspace_can_start_at_a_commit_the_first_made(
                     job: job(9),
                     attempt: attempt(9),
                     base: commit,
+                    protected_base: None,
                     rules: fixture_rules(),
                     purpose: WorkspacePurpose::Agent,
                 },
@@ -1070,6 +1080,224 @@ async fn a_second_workspace_can_start_at_a_commit_the_first_made(
         WorkspaceError::NotFetched,
         "a workspace for a job with no object store"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Later rounds: the protected base (ADR 0025)
+// ---------------------------------------------------------------------------------------------
+
+/// The request of a later round of job `n`: an agent workspace at `base` whose protected base is
+/// `protected`.
+fn round_request(
+    n: u128,
+    round: u128,
+    base: &CommitSha,
+    protected: Option<&CommitSha>,
+) -> WorkspaceRequest {
+    WorkspaceRequest {
+        job: job(n),
+        attempt: attempt(n * 100 + round),
+        base: base.clone(),
+        protected_base: protected.cloned(),
+        rules: fixture_rules(),
+        purpose: WorkspacePurpose::Agent,
+    }
+}
+
+async fn open_round(
+    subject: &dyn WorkspaceSubject,
+    n: u128,
+    round: u128,
+    base: &CommitSha,
+    protected: Option<&CommitSha>,
+) -> Result<Box<dyn Workspace>, String> {
+    subject
+        .provider()
+        .create(round_request(n, round, base, protected), &FakeCancel::new())
+        .await
+        .ctx("create a workspace for a later round")
+}
+
+/// Writes `files` in a new workspace of job `n` at `base`, and commits them.
+async fn round_commit(
+    subject: &dyn WorkspaceSubject,
+    n: u128,
+    round: u128,
+    base: &CommitSha,
+    files: &[(&str, &str)],
+) -> Result<CommitSha, String> {
+    let ws = open_round(subject, n, round, base, None).await?;
+    for (file, text) in files {
+        write(subject, &*ws, file, text).await?;
+    }
+    let change = ingest(&*ws).await.ctx("ingest a round")?;
+    let commit = ws
+        .commit(&change, commit_request("A round"))
+        .await
+        .ctx("commit a round")?;
+    ws.dispose().await.ctx("dispose a round")?;
+    Ok(commit)
+}
+
+/// The refusal an ingestion must give, or a message naming what it gave instead.
+async fn refusal(ws: &dyn Workspace, what: &str) -> Result<Vec<(RepoPath, PathMode)>, String> {
+    match ingest(ws).await {
+        Ok(change) => Err(format!(
+            "{what} must be refused, but ingest accepted {change:?}"
+        )),
+        Err(error) => protected(error.clone())
+            .ok_or_else(|| format!("{what}: expected ProtectedPathChanged, found {error:?}")),
+    }
+}
+
+async fn a_file_the_job_added_may_be_changed_in_a_later_round(
+    subject: &dyn WorkspaceSubject,
+) -> Result<(), String> {
+    // Round 1 adds a test under additions_only and a golden file under append_only.
+    let base = fetch(subject, 1).await?.commit;
+    let first = round_commit(
+        subject,
+        1,
+        1,
+        &base,
+        &[
+            ("tests/unit/json_output.rs", "one\ntwo\n"),
+            ("tests/golden/out.txt", "first\n"),
+        ],
+    )
+    .await?;
+    // Round 2 starts from round 1's commit and is judged against the job's base.
+    let second = open_round(subject, 1, 2, &first, Some(&base)).await?;
+    let overlays = second.mounts().protected_overlays;
+    ensure!(
+        !overlays.contains(&path("tests/golden/out.txt")),
+        "an append_only file the job added is writable in a later round: {overlays:?}"
+    );
+    ensure!(
+        overlays.contains(&path("CHANGELOG.md")),
+        "an append_only file from before the job stays read-only: {overlays:?}"
+    );
+    write(subject, &*second, "tests/unit/json_output.rs", "ONE\n").await?;
+    write(subject, &*second, "tests/golden/out.txt", "second\n").await?;
+    let change = ingest(&*second)
+        .await
+        .ctx("a later round that rewrites the files the job added")?;
+    ensure!(
+        change.changes().len() == 2 && change.base() == &first,
+        "the change is reported against the round's own base: {change:?}"
+    );
+    // Deleting a file the job added leaves the path as it was before the job: allowed.
+    let third = open_round(subject, 1, 3, &first, Some(&base)).await?;
+    subject
+        .edit_sandbox_tree(&*third, TreeEdit::Delete(path("tests/unit/json_output.rs")))
+        .await?;
+    ingest(&*third)
+        .await
+        .ctx("a later round that deletes a test the job added")?;
+    // Without a protected base, the round's own base is the protected commit, as before.
+    let unprotected = open_round(subject, 1, 4, &first, None).await?;
+    write(subject, &*unprotected, "tests/unit/json_output.rs", "ONE\n").await?;
+    let listed = refusal(
+        &*unprotected,
+        "with no protected base, an edit of the base's test",
+    )
+    .await?;
+    ensure!(
+        listed == vec![(path("tests/unit/json_output.rs"), PathMode::AdditionsOnly)],
+        "the test is listed under additions_only: {listed:?}"
+    );
+    Ok(())
+}
+
+async fn what_existed_before_the_job_stays_protected_in_a_later_round(
+    subject: &dyn WorkspaceSubject,
+) -> Result<(), String> {
+    let base = fetch(subject, 1).await?.commit;
+    // Round 1 leaves docs/notes.md alone; round 2 removes a line that existed before the job.
+    let untouched = round_commit(subject, 1, 1, &base, &[("src/a.rs", "// a\n")]).await?;
+    let removes = open_round(subject, 1, 2, &untouched, Some(&base)).await?;
+    write(subject, &*removes, "docs/notes.md", "line one\n").await?;
+    let listed = refusal(&*removes, "removing a line from before the job").await?;
+    ensure!(
+        listed == vec![(path("docs/notes.md"), PathMode::AdditionsOnly)],
+        "docs/notes.md is listed under additions_only: {listed:?}"
+    );
+    // Only gaining lines passes.
+    let gains = open_round(subject, 1, 3, &untouched, Some(&base)).await?;
+    write(
+        subject,
+        &*gains,
+        "docs/notes.md",
+        "line one\nline two\nline three\n",
+    )
+    .await?;
+    ingest(&*gains)
+        .await
+        .ctx("a pre-existing file that only gains lines in a later round")?;
+    // An append_only file from before the job, and a deny_write file, stay protected.
+    let edits = open_round(subject, 1, 4, &untouched, Some(&base)).await?;
+    write(subject, &*edits, "CHANGELOG.md", "# Changelog\n").await?;
+    write(subject, &*edits, ".github/workflows/ci.yml", "name: x\n").await?;
+    let listed = refusal(&*edits, "editing protected files from before the job").await?;
+    ensure!(
+        listed.contains(&(path("CHANGELOG.md"), PathMode::AppendOnly))
+            && listed.contains(&(path(".github/workflows/ci.yml"), PathMode::DenyWrite)),
+        "both protected files are listed: {listed:?}"
+    );
+    // Round 1 appended a line; a later round may take that line out again, not an older one.
+    let grown = round_commit(
+        subject,
+        1,
+        5,
+        &base,
+        &[("docs/notes.md", "line one\nline two\nline three\n")],
+    )
+    .await?;
+    let back = open_round(subject, 1, 6, &grown, Some(&base)).await?;
+    write(subject, &*back, "docs/notes.md", "line one\nline two\n").await?;
+    ingest(&*back)
+        .await
+        .ctx("a later round that takes out only the job's own line")?;
+    let older = open_round(subject, 1, 7, &grown, Some(&base)).await?;
+    write(subject, &*older, "docs/notes.md", "line two\nline three\n").await?;
+    refusal(&*older, "taking out a line from before the job").await?;
+    Ok(())
+}
+
+async fn a_protected_base_that_cannot_be_read_is_refused(
+    subject: &dyn WorkspaceSubject,
+) -> Result<(), String> {
+    let base = fetch(subject, 1).await?.commit;
+    let one = round_commit(subject, 1, 1, &base, &[("src/one.rs", "// one\n")]).await?;
+    let other = round_commit(subject, 1, 2, &base, &[("src/other.rs", "// other\n")]).await?;
+    let unknown = CommitSha::parse(&"f".repeat(40)).expect("a sha");
+    let cases = [
+        (3, unknown, "a protected base that is not in the store"),
+        (
+            4,
+            other,
+            "a protected base that is not an ancestor of the base",
+        ),
+    ];
+    for (round, protected_base, what) in cases {
+        let created = subject
+            .provider()
+            .create(
+                round_request(1, round, &one, Some(&protected_base)),
+                &FakeCancel::new(),
+            )
+            .await;
+        ensure!(
+            matches!(created, Err(WorkspaceError::UnknownCommit)),
+            "{what} is refused with UnknownCommit, found {:?}",
+            created.map(|_| ())
+        );
+    }
+    // The base itself, named as the protected base, is the same as none.
+    open_round(subject, 1, 5, &one, Some(&one)).await?;
+    // And the job's base, an ancestor, is accepted.
+    open_round(subject, 1, 6, &one, Some(&base)).await?;
     Ok(())
 }
 

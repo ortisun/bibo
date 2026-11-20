@@ -24,18 +24,19 @@ pub const REQUIRED_HEADINGS: [&str; 9] = [
 ];
 
 /// The fixed instruction that puts external text under no authority. It is the same in every
-/// prompt, so a change to it is a change to all nine prompts and to this file.
+/// prompt, so a change to it is a change to every prompt and to this file.
 pub const UNTRUSTED_INSTRUCTION: &str = include_str!("untrusted_instruction.txt");
 
 /// The closing paragraph after the data blocks.
 pub const END_OF_DATA: &str = include_str!("end_of_data.txt");
 
 /// The stage kind each agent role works in. The stage decides which skill profile applies.
-pub const STAGE_OF_ROLE: [(&str, &str); 9] = [
+pub const STAGE_OF_ROLE: [(&str, &str); 10] = [
     ("intake", "INTAKE"),
     ("specification_writer", "SPECIFICATION"),
     ("specification_reviewer", "SPECIFICATION"),
     ("architect", "ARCHITECTURE"),
+    ("architecture_critic", "ARCHITECTURE"),
     ("planner", "TASK_PLANNING"),
     ("builder", "IMPLEMENTATION"),
     ("code_reviewer", "REVIEW"),
@@ -411,10 +412,18 @@ pub fn input_schema_problems(prompt: &str, schema: &Value) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// The inputs each reviewer role may receive, and no others. None is the author's own account.
-pub const REVIEWER_INPUTS: [(&str, &[&str]); 3] = [
+/// `project_rules` is the project's `AGENTS.md` at the job's base commit, or the factory's
+/// built-in copy (ADR 0026): text the project's owners approved, not anything the author of the
+/// work wrote, so every reviewer may have it.
+pub const REVIEWER_INPUTS: [(&str, &[&str]); 4] = [
     (
         "code_reviewer",
-        &["frozen_specification", "diff", "gate_reports"],
+        &[
+            "frozen_specification",
+            "diff",
+            "gate_reports",
+            "project_rules",
+        ],
     ),
     (
         "specification_reviewer",
@@ -425,6 +434,18 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 3] = [
             "specification",
             "requirements_checklist",
             "people_answers",
+            "project_rules",
+        ],
+    ),
+    (
+        "architecture_critic",
+        // The design it receives is the elements, decisions, risks and open questions; the
+        // architect's summary is withheld by the stage (`Design::for_critic`).
+        &[
+            "frozen_specification",
+            "architecture_design",
+            "repository_map",
+            "project_rules",
         ],
     ),
     (
@@ -435,6 +456,7 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 3] = [
             "code_diff",
             "documentation_diff",
             "gate_reports",
+            "project_rules",
         ],
     ),
 ];

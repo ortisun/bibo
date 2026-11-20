@@ -79,8 +79,8 @@ pub const ARCHITECT_MANIFEST: &str = include_str!("../../../../agents/architect/
 pub const ARCHITECT_PROMPT: &str = include_str!("../../../../agents/architect/prompt.md");
 pub const PLANNER_MANIFEST: &str = include_str!("../../../../agents/planner/manifest.json");
 pub const PLANNER_PROMPT: &str = include_str!("../../../../agents/planner/prompt.md");
-const REVIEWER_MANIFEST: &str = include_str!("../../../../agents/code-reviewer/manifest.json");
-const REVIEWER_PROMPT: &str = include_str!("../../../../agents/code-reviewer/prompt.md");
+const CRITIC_MANIFEST: &str = include_str!("../../../../agents/architecture-critic/manifest.json");
+const CRITIC_PROMPT: &str = include_str!("../../../../agents/architecture-critic/prompt.md");
 pub const SPECIFICATION: &str = include_str!(
     "../../../../schemas/examples/specification-contract/valid/approved-json-output-flag.json"
 );
@@ -877,36 +877,15 @@ pub fn planner_manifest() -> AgentManifest {
     serde_json::from_str(PLANNER_MANIFEST).expect("the real manifest is valid")
 }
 
-/// The prompt of a critic for tests: the code reviewer's prompt with the inputs of an architecture
-/// critic. No such agent exists in `agents/`, so a test builds one to prove what the stage does
-/// when one is added.
+/// The prompt of the real architecture critic, `agents/architecture-critic/prompt.md`.
 pub fn critic_prompt() -> String {
-    let mut text = REVIEWER_PROMPT
-        .replace("# Code reviewer prompt", "# Architecture critic prompt")
-        .replace("Agent: code-reviewer", "Agent: architecture-critic")
-        .replace(
-            "| `diff` | model_output | yes | The exported patch that the builder produced. |",
-            "| `architecture_design` | model_output | yes | The design under review. |",
-        )
-        .replace(
-            "| `gate_reports` | tool_output | yes | The reports of the deterministic gates that ran on the change. |",
-            "| `repository_map` | tool_output | yes | The repository map. |",
-        )
-        .replace("{{input.diff}}", "{{input.architecture_design}}")
-        .replace("{{input.gate_reports}}", "{{input.repository_map}}");
-    text.push('\n');
-    text
+    CRITIC_PROMPT.to_owned()
 }
 
-/// The manifest of a critic for tests, with the options a test needs to break one rule at a time.
+/// The manifest of the real architecture critic, with the options a test needs to break one rule
+/// at a time. With no change it is the file in `agents/` as the registry loads it.
 pub fn critic_manifest(change: impl FnOnce(&mut Value)) -> AgentManifest {
-    let prompt = critic_prompt();
-    let mut value: Value = serde_json::from_str(REVIEWER_MANIFEST).expect("JSON");
-    value["id"] = json!("architecture-critic");
-    value["role"] = json!("architecture_critic");
-    value["title"] = json!("Architecture critic");
-    value["prompt"]["template_path"] = json!("agents/architecture-critic/prompt.md");
-    value["prompt"]["template_sha256"] = json!(Sha256Digest::of(prompt.as_bytes()));
+    let mut value: Value = serde_json::from_str(CRITIC_MANIFEST).expect("JSON");
     change(&mut value);
     serde_json::from_value(value).expect("a manifest")
 }
@@ -915,7 +894,7 @@ pub fn critic_manifest(change: impl FnOnce(&mut Value)) -> AgentManifest {
 
 /// Whether the registry holds a critic, and which.
 pub enum Critic {
-    /// The registry has none, as in `agents/` today.
+    /// The registry has none, as when a deployment names a critic it does not hold.
     None,
     /// The registry has this one.
     Manifest(Box<AgentManifest>),
@@ -1146,7 +1125,13 @@ impl Rig {
                 kind: StageKind::RepositoryIntelligence,
                 contract_id: "stage-contract.repository-intelligence",
                 span: "stage.repository_intelligence",
-                deliverables: vec![(REPOSITORY_MAP, map)],
+                deliverables: vec![
+                    (REPOSITORY_MAP, map),
+                    (
+                        "project-rules",
+                        b"# Rules of the fixture project\n\nWrite the documents first.\n".to_vec(),
+                    ),
+                ],
             },
             Fixed {
                 kind: StageKind::Specification,

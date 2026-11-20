@@ -51,6 +51,10 @@ use crate::stages::intake::common::{
     ContractBudget, ContractCriterion, ContractDeliverable, ContractInput, ContractSpec, Executor,
     GateDefinition, GateFacts, GateSubject, gate_report, stage_contract,
 };
+use crate::stages::project_rules::PROJECT_RULES;
+use factory_domain::project_rules::{
+    FileFound, MAX_RULES_BYTES, RULES_FILE, Template, rules_for_agents,
+};
 
 /// The gate that checks the map against its schema.
 pub const MAP_GATE: &str = "repository-map-valid";
@@ -332,6 +336,12 @@ impl StageHandler for RepoIntelHandler {
                     media_type: "text/markdown",
                     required: true,
                 },
+                ContractDeliverable {
+                    name: PROJECT_RULES,
+                    description: "The project's rules for agents that the later stages give their agents: AGENTS.md at the base commit, or the factory's built-in copy (ADR 0026).",
+                    media_type: "text/markdown",
+                    required: true,
+                },
             ],
             criteria: vec![
                 ContractCriterion {
@@ -498,6 +508,33 @@ impl StageHandler for RepoIntelHandler {
                     })?;
             project_manifest = Some((parsed, text, Sha256Digest::of(&bytes)));
         }
+
+        // The project's rules for agents (ADR 0026), at the base commit and nowhere else. The text
+        // the later stages give their agents is decided here once: the file as it is, the file
+        // after the factory's section, or the built-in copy.
+        let rules_bytes = if visible_set.contains(RULES_FILE) {
+            let path = RepoPath::new(RULES_FILE).map_err(|_| StageError::Internal)?;
+            let max = u64::try_from(MAX_RULES_BYTES).unwrap_or(u64::MAX);
+            match repo
+                .read_file_at(&commit, &path, max, ReadView::Agent)
+                .await
+            {
+                Ok(bytes) => Some(Ok(bytes)),
+                Err(WorkspaceError::TooLarge) => Some(Err(())),
+                Err(WorkspaceError::PathNotFound(_)) => None,
+                Err(other) => return Err(workspace_error(other)),
+            }
+        } else {
+            None
+        };
+        let agent_rules = rules_for_agents(
+            match &rules_bytes {
+                None => FileFound::Missing,
+                Some(Err(())) => FileFound::TooLarge,
+                Some(Ok(bytes)) => FileFound::Bytes(bytes),
+            },
+            Template::current(),
+        );
 
         // The files that detection needs to read.
         let mut texts: BTreeMap<String, String> = BTreeMap::new();
@@ -697,6 +734,15 @@ impl StageHandler for RepoIntelHandler {
             );
         }
         if let Some(object) = repository_map.as_object_mut() {
+            let mut rules = json!({
+                "path": RULES_FILE,
+                "sha256": Sha256Digest::of(agent_rules.text.as_bytes()),
+                "origin": agent_rules.origin.as_str(),
+            });
+            if let (Some(why), Some(fields)) = (agent_rules.fallback, rules.as_object_mut()) {
+                fields.insert("fallback".into(), json!(why.code()));
+            }
+            object.insert("project_rules".into(), rules);
             object.insert("base_branch".into(), json!(base_branch.as_str()));
             if let Some((text, sha)) = &settings_at_base {
                 object.insert(
@@ -734,6 +780,13 @@ impl StageHandler for RepoIntelHandler {
         let summary_ref = self
             .store(ports.artifacts, summary.into_bytes(), "text/markdown")
             .await?;
+        let rules_ref = self
+            .store(
+                ports.artifacts,
+                agent_rules.text.into_bytes(),
+                "text/markdown",
+            )
+            .await?;
         Ok(StageOutput {
             documents: Vec::new(),
             artifacts: vec![
@@ -744,6 +797,10 @@ impl StageHandler for RepoIntelHandler {
                 NamedArtifact {
                     name: slug("context-summary")?,
                     artifact: summary_ref,
+                },
+                NamedArtifact {
+                    name: slug(PROJECT_RULES)?,
+                    artifact: rules_ref,
                 },
             ],
             ..StageOutput::default()
@@ -1006,6 +1063,7 @@ impl RepoIntelHandler {
                     job: ctx.identity.job,
                     attempt: ctx.attempt,
                     base: commit,
+                    protected_base: None,
                     rules: self.config.path_rules.clone(),
                     purpose: WorkspacePurpose::Verify {
                         holdouts: Vec::new(),

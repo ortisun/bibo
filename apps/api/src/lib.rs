@@ -45,6 +45,7 @@ pub mod reads;
 pub mod repositories;
 pub mod routes;
 pub mod server;
+mod solo;
 pub mod stage_decisions;
 pub mod state;
 pub mod tokens;

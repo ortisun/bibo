@@ -9,7 +9,8 @@
     "frozen_specification",
     "architecture",
     "repository_map",
-    "plan_metadata"
+    "plan_metadata",
+    "project_rules"
   ],
   "properties": {
     "frozen_specification": {
@@ -36,6 +37,11 @@
       "type": "string",
       "maxLength": 1048576,
       "description": "Findings from a failed plan check in an earlier round, when there are any."
+    },
+    "project_rules": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The project's rules for agents: the project's AGENTS.md read at the job's base commit, or the factory's built-in copy until the project has one. Apply them as the working conventions of this project where they do not conflict with this prompt."
     }
   }
 }

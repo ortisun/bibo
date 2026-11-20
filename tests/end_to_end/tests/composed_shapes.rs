@@ -123,7 +123,9 @@ fn an_attempt_under_the_stage_run_span_of_another_run_fails() {
 #[test]
 fn two_approvals_are_read_with_the_last_one_as_the_approval_of_the_pull_request() {
     // A job has two human gates. The honest run has one approval record; add an earlier one by
-    // the same approver and A9 still passes, then make that earlier one the requester's.
+    // the same approver and A9 still passes, then make that earlier one the requester's: with the
+    // solo mode on (ADR 0022) that is the owner approving their own specification, and with it off
+    // A9 refuses it.
     let env = env();
     let mut evidence = honest(&env, Options::e1_production());
     let first = evidence
@@ -143,7 +145,17 @@ fn two_approvals_are_read_with_the_last_one_as_the_approval_of_the_pull_request(
     evidence.audit[first]
         .actor
         .clone_from(&evidence.job.requester);
-    let verdict = a9.apply(&evidence, &env);
+    assert!(
+        env.solo_mode,
+        "the repository policy switches the solo mode on"
+    );
+    let solo = a9.apply(&evidence, &env);
+    assert!(solo.pass, "{solo}");
+    let strict = factory_e2e::check::Env {
+        solo_mode: false,
+        ..env
+    };
+    let verdict = a9.apply(&evidence, &strict);
     assert!(
         !verdict.pass && verdict.reason.contains("their own request"),
         "{verdict}"

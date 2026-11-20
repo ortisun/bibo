@@ -89,6 +89,7 @@ async fn prove_sandbox(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: head.clone(),
+                protected_base: None,
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -216,6 +217,8 @@ pub(super) async fn execute(
         .prompt(&manifest)
         .map_err(|_| StageError::Internal)?;
     let rendered = evidence.render();
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = crate::stages::project_rules::block(ctx).await?;
     let assembled = {
         let now = ports.clock.now();
         let tenant_id = identity.tenant;
@@ -251,6 +254,7 @@ pub(super) async fn execute(
                 tenant_id,
                 rendered.clone().into_bytes(),
             )),
+            rules.into_independent(),
         ]
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
@@ -278,6 +282,7 @@ pub(super) async fn execute(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: candidate.head.clone(),
+                protected_base: None,
                 rules: handler.config.path_rules.clone(),
                 // The agent profile takes a writable checkout only. This one is a copy for the
                 // reviewer to read: it is never ingested, and it is disposed of unread.

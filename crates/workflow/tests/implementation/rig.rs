@@ -1372,6 +1372,34 @@ impl Rig {
         None
     }
 
+    /// The request for a person that the last attempt of `run` left, read back from the artifact
+    /// store: the document that holds `needs_human`.
+    pub async fn needs_human_request(&self, run: StageRunId) -> Option<Value> {
+        let tenant = TenantScope::new(self.world.tenant);
+        // The request is the output of the attempt that asked, not a link of the stage run.
+        let mut tx = self.world.store.begin(tenant).await.expect("a tx");
+        let attempts = tx.list_attempts(run).await.expect("the attempts");
+        tx.rollback().await.expect("rollback");
+        for output in attempts
+            .iter()
+            .rev()
+            .filter_map(|attempt| attempt.value.output.clone())
+        {
+            let reference = ArtifactRef {
+                sha256: output,
+                media_type: MediaType::parse("application/json").expect("a media type"),
+                size_bytes: None,
+            };
+            if let Ok(bytes) = ArtifactStore::get(&*self.artifacts, &tenant, &reference).await
+                && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                && value.get("needs_human").is_some()
+            {
+                return Some(value);
+            }
+        }
+        None
+    }
+
     /// The deliverable `name` of one stage run.
     pub async fn deliverable_in(&self, run: StageRunId, name: &str) -> Option<Value> {
         let tenant = TenantScope::new(self.world.tenant);

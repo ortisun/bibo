@@ -118,6 +118,9 @@ pub struct Artifact<'a> {
     pub(crate) title: &'a str,
     pub(crate) body: &'a str,
     pub(crate) doc_type: Option<DocumentType>,
+    /// Whether the title rules read the title. `false` for a page whose title the change kept as
+    /// it was: that title is the project's (documentation policy 9.3).
+    pub(crate) title_judged: bool,
 }
 
 impl<'a> Artifact<'a> {
@@ -128,6 +131,17 @@ impl<'a> Artifact<'a> {
             title,
             body,
             doc_type: None,
+            title_judged: true,
+        }
+    }
+
+    /// Marks the title as one the change kept: no title rule reports on it, and the body is
+    /// still judged.
+    #[must_use]
+    pub fn with_title_kept(self) -> Self {
+        Self {
+            title_judged: false,
+            ..self
         }
     }
 

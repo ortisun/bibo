@@ -132,6 +132,21 @@ impl PermissionSet {
         Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
     }
 
+    /// The credential of the project rules host (ports v1.4, ADR 0026): `contents: write` to write
+    /// the rules files on the branch `factory/project-rules`, `pull_requests: write` to open or
+    /// update the draft pull request, and the `metadata: read` that every installation token
+    /// carries, for one repository. It is minted for this purpose and independent of any stage:
+    /// no stage token is widened and the delivery token is not borrowed. The App held both write
+    /// permissions already, for the delivery stage.
+    #[must_use]
+    pub fn project_rules() -> Self {
+        Self::of(&[
+            ("metadata", Level::Read),
+            ("contents", Level::Write),
+            ("pull_requests", Level::Write),
+        ])
+    }
+
     /// The credential of a troubleshooting run (ports v1.3, ADR 0021 Decision 7): `issues: write`
     /// and `metadata: read`, for the one configured issue repository, and nothing else. It opens
     /// the triage issues and comments on them. It is minted for a run, never for a job: no stage

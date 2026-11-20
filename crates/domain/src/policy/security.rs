@@ -1325,8 +1325,14 @@ strict! {
     pub struct JobCeiling {
         /// Dollars.
         pub max_usd: f64,
-        /// Rework rounds for code. Default 2.
+        /// Rework rounds for code: re-runs of `IMPLEMENTATION`. Default 2.
         pub max_rework_iterations: u32,
+        /// Rework rounds for the specification: re-runs of `SPECIFICATION`. Default 2
+        /// (ADR 0023).
+        pub max_specification_rework_iterations: u32,
+        /// Rework rounds for the design: re-runs of `ARCHITECTURE` and `TASK_PLANNING`. Default 2
+        /// (ADR 0023).
+        pub max_design_rework_iterations: u32,
         /// Rework rounds for documentation. Default 2.
         pub max_documentation_rework_iterations: u32,
         /// Wall clock seconds.

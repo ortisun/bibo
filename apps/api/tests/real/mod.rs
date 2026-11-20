@@ -59,6 +59,7 @@ use factory_composition::startup::{LoadedPolicies, LoadedRouting, load_policy, l
 use factory_composition::system::{RandomIds, SystemClock};
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::security::ProviderCredentialMode;
+use factory_domain::policy::solo::{SoloTarget, SoloWait};
 use factory_domain::redaction::Redactor;
 use factory_domain::state::{StageRunStatus, Status as _};
 use factory_domain::vocabulary::StageKind;
@@ -167,9 +168,11 @@ pub struct Settings {
     pub allowlist_file: PathBuf,
     pub allowlist_text: String,
     pub owner: Owner,
-    /// A person other than the owner who approves: an allowlist entry of the owner's tenant with
-    /// the designation `approver` and another GitHub id. The engine lets nobody approve their own
-    /// request, so without this person no approval of the run can pass.
+    /// A person other than the owner who approves, when the allowlist names one: an entry of the
+    /// owner's tenant with the designation `approver` and another GitHub id. Optional: without it
+    /// the owner approves alone in the solo mode (ADR 0022), because the real tenant's repository
+    /// is seeded `single_maintainer` and the owner is then its one approving person. With it there
+    /// are two approving people, the solo mode does not apply, and this person approves.
     pub approver: Option<Owner>,
     pub token_file: PathBuf,
     pub budget_micro_usd: u64,
@@ -184,8 +187,8 @@ fn mode_of(path: &Path) -> Option<u32> {
 }
 
 /// The owner of the run: the allowlist entry that holds both `requester` and `approver` (they
-/// work alone; `policies/approval.yaml` lets them approve their own low-risk request), or the
-/// first requester.
+/// work alone; the solo mode of `policies/approval.yaml` lets them approve their own request on the
+/// `single_maintainer` repository the run seeds, ADR 0022), or the first requester.
 pub fn owner_in(text: &str) -> Option<Owner> {
     let entries = entries_in(text);
     let chosen = entries
@@ -1110,8 +1113,17 @@ async fn ask_the_owner(
                     .wait_reason(job, run.id)
                     .await
                     .unwrap_or_else(|| "unknown".to_owned());
+                // The independent reviewer may have put a question to a person. It is answered
+                // like the writer's questions; the next attempt reads the answer.
+                let reviewer = match rig.spec_review_question(job, run.id).await {
+                    Some(question) => format!(
+                        "\nThe independent reviewer asks: {question}\n\
+                         Answer it:      {cli} answer {opts} {job_id} {run_id} -- <answer>"
+                    ),
+                    None => String::new(),
+                };
                 tell(&format!(
-                    "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).\n\
+                    "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).{reviewer}\n\
                      See why:        {cli} status {opts} --gates {job_id}\n\
                      Send it back:   {cli} rework {decide} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
                      Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"{answer}"
@@ -1131,12 +1143,39 @@ async fn ask_the_owner(
             match rig.approvals.request(rig.tenant, run.id).await {
                 Ok(request) => {
                     let evidence = rig.ledger_head(job, StageKind::Approval, run.id).await;
+                    // The owner approves alone when nobody else decides (the solo mode, ADR
+                    // 0022): a high or critical pull request needs the phrase and the wait.
+                    let solo = decider_file == token_file;
+                    let (confirm, wait) = match SoloWait::for_pull_request(request.tier) {
+                        Some(which) if solo => {
+                            let phrase = rig
+                                .env()
+                                .state
+                                .policies
+                                .engine
+                                .authority
+                                .solo_rules()
+                                .expected(&SoloTarget::PullRequest {
+                                    number: request.pull_request,
+                                    tier: request.tier,
+                                });
+                            (
+                                format!(" --confirm \"{phrase}\""),
+                                format!(
+                                    "\nIt is at level {}: approve it at least {} minutes after it started to wait, or the factory refuses with solo_delay and you send it again.",
+                                    request.tier.as_str(),
+                                    solo_minutes(rig, which)
+                                ),
+                            )
+                        }
+                        _ => (String::new(), String::new()),
+                    };
                     format!(
                         "WAITING FOR YOU: draft pull request #{} waits for your approval.\n\
                          Read it on GitHub, then\n\
-                         Approve it:  {cli} approve {decide} {job_id} {run_id} head={} evidence={} \"The change does what the issue asked.\"\n\
+                         Approve it:  {cli} approve {decide}{confirm} {job_id} {run_id} head={} evidence={} \"The change does what the issue asked.\"\n\
                          Or reject:   {cli} reject {decide} {job_id} {run_id} \"<why>\"\n\
-                         Approving does not merge anything: the pull request stays a draft.",
+                         Approving does not merge anything: the pull request stays a draft.{wait}",
                         request.pull_request,
                         request.pr_head.as_str(),
                         evidence.as_str()
@@ -1158,10 +1197,27 @@ async fn ask_the_owner(
              The factory refuses an approval here: the review would pass with no review verdict.\n\
              See docs/guides/first-real-run.md, \"Who reviews the code\"."
         ),
-        other => format!(
-            "WAITING FOR YOU: the stage {} of job {job_id} waits for a person. See: {cli} status {opts} --gates {job_id}",
-            other.as_str()
-        ),
+        other => {
+            // The agent's own words, when it left any: why it is blocked or what it asks. In the
+            // twenty-eighth real run the builder was blocked and the owner was told nothing more.
+            let said = match rig.wait_detail(run.id).await {
+                Some(detail) => format!("\nThe agent says: {detail}"),
+                None => String::new(),
+            };
+            let reason = rig
+                .wait_reason(job, run.id)
+                .await
+                .unwrap_or_else(|| "unknown".to_owned());
+            format!(
+                "WAITING FOR YOU: the stage {} of job {job_id} waits for a person (reason: {reason}).{said}\n\
+                 See:            {cli} status {opts} --gates {job_id}\n\
+                 Answer it:      {cli} answer {opts} {job_id} {run_id} -- <answer>\n\
+                 Send it back:   {cli} rework {decide} {job_id} {run_id} target={} \"<what to change>\"\n\
+                 Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"",
+                other.as_str(),
+                other.as_str()
+            )
+        }
     };
     tell(&text);
 }
@@ -1514,8 +1570,8 @@ pub async fn scenario() {
     std::fs::create_dir_all(&out).expect("the output directory");
     let token_file = out.join("owner-api-token");
     live::write_private(&token_file, &owner_token);
-    // The person who approves. The engine lets nobody approve their own request, so a run with
-    // no second approver can be driven to its first approval and no further.
+    // The person who approves: the second approver when the allowlist names one, otherwise the
+    // owner, alone, in the solo mode (ADR 0022).
     let decider_file = match &settings.approver {
         Some(person) => {
             let file = out.join("approver-api-token");
@@ -1528,10 +1584,18 @@ pub async fn scenario() {
             file
         }
         None => {
-            tell(
-                "No allowlist entry of this tenant holds `approver` for a person other than the owner. \
-                 The engine lets nobody approve their own request, so no approval of this run can pass.",
-            );
+            tell(&format!(
+                "You approve this run alone, in the solo mode (ADR 0022): the repository is seeded \
+                 single_maintainer and your allowlist entry is the only one that holds `approver`, so \
+                 the factory lets you approve your own request. The approval of the specification \
+                 and of a low or medium pull request needs no wait and no phrase; a high or critical \
+                 pull request needs a wait ({} minutes at high, {} at critical, from the moment it \
+                 starts to wait) and the confirmation phrase, which the approve command below \
+                 carries. Use your own token: {}.",
+                solo_minutes(&rig, SoloWait::PullRequestHigh),
+                solo_minutes(&rig, SoloWait::PullRequestCritical),
+                token_file.display()
+            ));
             token_file.clone()
         }
     };
@@ -1714,4 +1778,17 @@ impl Sources for LiveRig {
     fn tenant(&self) -> TenantId {
         self.tenant
     }
+}
+
+/// A wait of the solo mode of the policy the run loaded, in whole minutes.
+fn solo_minutes(rig: &LiveRig, which: SoloWait) -> u64 {
+    rig.env()
+        .state
+        .policies
+        .engine
+        .authority
+        .solo_rules()
+        .wait(which)
+        .as_secs()
+        / 60
 }

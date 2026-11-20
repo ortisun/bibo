@@ -103,3 +103,11 @@ You should see `recorded: decision.requested` and then `recorded: decision.appli
 
 - [Command reference](../reference/commands.md): every verb, option and exit code.
 - [Walkthrough](../walkthroughs/test-mode-run.md): the two approvals in a recorded run.
+
+## The refusals of the solo mode
+
+When you asked for the job and are its only approver, the factory lets you approve alone on a repository marked `single_maintainer` ([ADR 0022](../adr/0022-solo-approval-mode.md)). Three refusals belong to that mode:
+
+- `ineligible_approver` (answered at once by the API, `409`): the solo mode does not apply. The reason says why: the mode is switched off, the repository is not `single_maintainer`, more than one person approves (then one of them decides), or you lack the designation the decision needs.
+- `confirmation_missing` (`409`, or `decision.rejected` in the timeline): a high or critical pull request, a dependency, build code or a translation warning needs the confirmation phrase. The answer names it; send the same command with `--confirm "<phrase>"`.
+- `solo_delay` (`decision.rejected` in the timeline): the minimum wait since the stage run started to wait (10 minutes at high, 30 at critical) has not passed, or its start is not known. Send the same command again later.

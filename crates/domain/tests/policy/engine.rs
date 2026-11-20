@@ -198,6 +198,15 @@ fn a_rework_or_repair_cap_above_two_does_not_build() {
             j["budgets"]["hard_ceilings"]["per_job"]["max_documentation_rework_iterations"] =
                 3.into()
         },
+        |j| {
+            j["budgets"]["hard_ceilings"]["per_job"]["max_specification_rework_iterations"] =
+                3.into()
+        },
+        |j| j["budgets"]["hard_ceilings"]["per_job"]["max_design_rework_iterations"] = 3.into(),
+        |j| {
+            j["budgets"]["hard_ceilings"]["per_job"]["max_design_rework_iterations"] =
+                u32::MAX.into()
+        },
         |j| j["budgets"]["rework"]["default_rounds"] = 3.into(),
         |j| j["untrusted_content"]["structured_output"]["bounded_repair_attempts"] = 3.into(),
     ] {
@@ -205,5 +214,54 @@ fn a_rework_or_repair_cap_above_two_does_not_build() {
             matches!(builds_with_security(set), Err(BuildError::Contradiction(_))),
             "a cap of three must not build"
         );
+    }
+}
+
+#[test]
+fn a_policy_without_a_rework_count_of_its_own_does_not_load() {
+    // Fail closed: a file written before ADR 0023 has no specification or design count, and it
+    // is refused rather than read as some default.
+    for key in [
+        "max_specification_rework_iterations",
+        "max_design_rework_iterations",
+    ] {
+        let mut json = security_json();
+        json["budgets"]["hard_ceilings"]["per_job"]
+            .as_object_mut()
+            .expect("per_job is a map")
+            .remove(key);
+        assert!(
+            serde_json::from_value::<factory_domain::policy::SecurityPolicy>(json).is_err(),
+            "a policy without {key} must not load"
+        );
+    }
+}
+
+#[test]
+fn each_rework_count_takes_its_own_policy_value() {
+    use factory_domain::machines::limits::ReworkTrack;
+    for (key, track) in [
+        (
+            "max_specification_rework_iterations",
+            ReworkTrack::Specification,
+        ),
+        ("max_design_rework_iterations", ReworkTrack::Design),
+        ("max_rework_iterations", ReworkTrack::Code),
+        (
+            "max_documentation_rework_iterations",
+            ReworkTrack::Documentation,
+        ),
+    ] {
+        for configured in [0_u32, 1, 2] {
+            let engine = builds_with_security(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"][key] = configured.into();
+            })
+            .expect("a cap of two or less builds");
+            let limits = engine.budget.rework_limits();
+            assert_eq!(u32::from(limits.cap(track).get()), configured, "{key}");
+            for other in ReworkTrack::ALL.iter().filter(|t| **t != track) {
+                assert_eq!(limits.cap(*other).get(), 2, "{key} moved {other}");
+            }
+        }
     }
 }

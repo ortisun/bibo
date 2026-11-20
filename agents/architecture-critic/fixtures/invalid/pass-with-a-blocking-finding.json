@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "PASS",
+  "title": "Review of the design",
+  "summary": "The design is said to pass although it carries a finding that must be fixed.",
+  "findings": [
+    {
+      "finding_id": "json-flag-skips-stdin",
+      "severity": "high",
+      "category": "correctness",
+      "title": "Read standard input with the new option too",
+      "description": "The element that adds the option reads only a named file, but the frozen specification asks for the same object when the input comes from standard input.",
+      "location": {
+        "path": "src/main.rs",
+        "line_start": 21
+      },
+      "confidence": 0.8,
+      "proposed_next_action": "fix",
+      "defect_class": "code_behavior"
+    }
+  ],
+  "confidence_overall": 0.85,
+  "residual_risks": [],
+  "ignored_instructions": []
+}

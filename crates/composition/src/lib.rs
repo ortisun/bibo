@@ -32,6 +32,7 @@
 //! | [`indexing`] | Indexes the artifacts a sandbox writes, for the tenant, when they are written |
 //! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
 //! | [`issue_status`] | The state of a job written on its issue: one `factory: <state>` label and one status comment, outside the engine's transaction, with retries, an audit trail and a health line (ADR 0017) |
+//! | [`project_rules`] | The rules check: a draft pull request that installs or updates the project's `AGENTS.md`, at onboarding and when the template changes (ADR 0026) |
 //! | [`hooks`] | The work a binary's loop does before it claims |
 //! | [`pipeline`] | The whole pipeline from the configuration: the thirteen handlers, the engine, the approval service, the hook and the preflight, with the profile's check of every port (AUT-13) |
 //! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
@@ -72,6 +73,7 @@ pub mod pipeline;
 pub mod policy_broker;
 pub mod preflight;
 pub mod profile;
+pub mod project_rules;
 pub mod providers;
 pub mod reading;
 pub mod redaction;
@@ -82,6 +84,7 @@ pub mod routing;
 pub mod runtimes;
 pub mod sandbox_specs;
 pub mod seams;
+pub mod solo;
 pub mod spec_skills;
 pub mod specs;
 pub mod stage_decisions;

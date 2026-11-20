@@ -29,6 +29,11 @@ pub struct SpecIds {
     pub functional: BTreeSet<String>,
     /// The non-functional requirements and the success criteria, such as `NFR-001` and `SC-001`.
     pub quality: BTreeSet<String>,
+    /// The constraints, such as `C-001`. A design element may say it answers one, and that is a
+    /// reference that resolves; but a constraint limits the solution and is not a requirement, so
+    /// no design element has to answer it. In the twenty-ninth real run the architect tied its
+    /// elements to the constraints of the specification and the gate called them unknown.
+    pub constraints: BTreeSet<String>,
 }
 
 impl SpecIds {
@@ -46,10 +51,22 @@ impl SpecIds {
                 .iter()
                 .map(|requirement| requirement.id.as_str().to_owned())
                 .collect(),
+            constraints: spec
+                .constraints
+                .iter()
+                .map(|constraint| constraint.id.as_str().to_owned())
+                .collect(),
         }
     }
 
-    /// All of them, sorted.
+    /// Every identifier a design element may cite: the requirements, the criteria and the
+    /// constraints.
+    #[must_use]
+    pub fn citable(&self) -> BTreeSet<String> {
+        self.all().union(&self.constraints).cloned().collect()
+    }
+
+    /// The requirements and the criteria, each of which needs a design element, sorted.
     #[must_use]
     pub fn all(&self) -> BTreeSet<String> {
         self.functional.union(&self.quality).cloned().collect()
@@ -220,6 +237,7 @@ pub fn check(
     rules: &Rules,
 ) -> Outcome {
     let known = spec.all();
+    let citable = spec.citable();
     let mut traceability = Vec::new();
     let mut completeness = Vec::new();
 
@@ -227,7 +245,7 @@ pub fn check(
     for element in &design.elements {
         let mut any_known = false;
         for id in &element.satisfies {
-            if known.contains(id) {
+            if citable.contains(id) {
                 satisfied.insert(id.as_str());
                 any_known = true;
             } else {
@@ -362,7 +380,63 @@ mod tests {
         SpecIds {
             functional: functional.iter().map(|s| (*s).to_owned()).collect(),
             quality: quality.iter().map(|s| (*s).to_owned()).collect(),
+            constraints: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn a_constraint_may_be_cited_and_need_not_be_answered() {
+        let spec = SpecIds {
+            constraints: ["C-001".to_owned(), "C-002".to_owned()].into(),
+            ..ids(&["FR-001"], &["SC-001"])
+        };
+        let tied = |satisfies: &[&str]| Design {
+            status: crate::stages::architecture::design::Status::Done,
+            title: "A design for the change".into(),
+            summary: "A short summary of the design.".into(),
+            elements: vec![element("flag", satisfies, &["src/main.rs"])],
+            decisions: vec![decision("d", 2, false)],
+            risks: Vec::new(),
+            open_questions: Vec::new(),
+            uncovered: Vec::new(),
+            human_question: None,
+            ignored_instructions: Vec::new(),
+        };
+        // An element that answers the requirements and cites a constraint is traced.
+        let found = check(
+            &tied(&["FR-001", "SC-001", "C-001"]),
+            &spec,
+            RiskTier::Low,
+            &[],
+            &Rules::default(),
+        );
+        assert!(found.traceability.is_empty(), "{:?}", found.traceability);
+        // A constraint no element cites is not a gap: C-002 is cited by nobody.
+        // An identifier that is in no list is still unknown.
+        let found = check(
+            &tied(&["FR-001", "SC-001", "C-009"]),
+            &spec,
+            RiskTier::Low,
+            &[],
+            &Rules::default(),
+        );
+        assert_eq!(found.traceability.len(), 1, "{:?}", found.traceability);
+        assert!(found.traceability[0].message.contains("C-009"));
+        // An element that cites only a constraint is tied to something that exists.
+        let found = check(
+            &Design {
+                elements: vec![
+                    element("flag", &["FR-001", "SC-001"], &["src/main.rs"]),
+                    element("no-dependency", &["C-001"], &["Cargo.toml"]),
+                ],
+                ..tied(&[])
+            },
+            &spec,
+            RiskTier::Low,
+            &[],
+            &Rules::default(),
+        );
+        assert!(found.traceability.is_empty(), "{:?}", found.traceability);
     }
 
     fn element(id: &str, satisfies: &[&str], touches: &[&str]) -> Element {

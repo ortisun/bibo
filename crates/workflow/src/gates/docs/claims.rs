@@ -256,12 +256,23 @@ pub fn help_mentions(help: &str, word: &str) -> bool {
 
 /// The names a page uses that neither the help text nor the source has.
 #[must_use]
-pub fn invented(claims: &[Claim], help: Option<&str>, source_env: &BTreeSet<String>) -> Vec<Claim> {
+pub fn invented(
+    claims: &[Claim],
+    help: Option<&str>,
+    source_env: &BTreeSet<String>,
+    source_flags: &BTreeSet<String>,
+) -> Vec<Claim> {
     let listed = help.map(flags_of_help).unwrap_or_default();
     claims
         .iter()
         .filter(|claim| match claim.kind {
-            ClaimKind::Flag => claim.name != "--help" && !listed.contains(&claim.name),
+            // The help lists the flag, or the program's source holds it as a literal: a project
+            // may keep its help text unchanged (documentation policy 9.8).
+            ClaimKind::Flag => {
+                claim.name != "--help"
+                    && !listed.contains(&claim.name)
+                    && !source_flags.contains(&claim.name)
+            }
             ClaimKind::Command => !help.is_some_and(|text| help_mentions(text, &claim.name)),
             ClaimKind::EnvVar => {
                 !source_env.contains(&claim.name)
@@ -270,6 +281,28 @@ pub fn invented(claims: &[Claim], help: Option<&str>, source_env: &BTreeSet<Stri
         })
         .cloned()
         .collect()
+}
+
+/// The long flags the source code holds as quoted literals, such as `"--json"`: a double quote,
+/// two dashes, then letters, digits and inner dashes up to the closing quote.
+#[must_use]
+pub fn flags_in_source(text: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for piece in text.split('"').skip(1).step_by(2) {
+        let Some(name) = piece.strip_prefix("--") else {
+            continue;
+        };
+        let well_formed = name
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphanumeric())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !name.ends_with('-');
+        if well_formed {
+            found.insert(piece.to_owned());
+        }
+    }
+    found
 }
 
 /// The names the source code reads from the environment: every upper-case string literal on a
@@ -313,17 +346,44 @@ mod tests {
     fn a_name_the_help_and_the_source_lack_is_invented() {
         let found = claims(&[("README.md", PAGE)], "wc-rs");
         let help = "Usage: wc-rs [OPTIONS] FILE\n\nOptions:\n  --json   Print JSON\n  -h, --help\n";
-        let missing = invented(&found, Some(help), &BTreeSet::new());
+        let missing = invented(&found, Some(help), &BTreeSet::new(), &BTreeSet::new());
         let names: Vec<&str> = missing.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"--count"));
         assert!(names.contains(&"WC_WIDTH"));
         assert!(!names.contains(&"--json"));
         let env: BTreeSet<String> = ["WC_WIDTH".to_owned()].into();
         assert!(
-            !invented(&found, Some(help), &env)
+            !invented(&found, Some(help), &env, &BTreeSet::new())
                 .iter()
                 .any(|c| c.name == "WC_WIDTH")
         );
+    }
+
+    #[test]
+    fn a_flag_the_source_holds_is_the_programs_even_when_the_help_does_not_list_it() {
+        // The thirty-fifth real run: the owner kept the help text unchanged, the README
+        // documented `--json`, and the flag was called invented.
+        let found = claims(&[("README.md", PAGE)], "wc-rs");
+        let help = "Usage: wc-rs FILE\n\nOptions:\n  -h, --help\n";
+        let source = flags_in_source("match arg.as_str() { \"--json\" => json = true, _ => {} }");
+        let missing = invented(&found, Some(help), &BTreeSet::new(), &source);
+        let names: Vec<&str> = missing.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"--json"), "{names:?}");
+        assert!(names.contains(&"--count"), "{names:?}");
+    }
+
+    #[test]
+    fn only_well_formed_long_flags_are_read_from_the_source() {
+        let found = flags_in_source(
+            "\"--json\" \"--max-count\" \"-x\" \"--\" \"--bad-\" \"--a b\" \"text --json\" \"--9lives\"",
+        );
+        let expected: BTreeSet<String> = ["--json", "--max-count", "--9lives"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(found, expected);
+        assert!(flags_in_source("").is_empty());
+        assert!(flags_in_source("no quotes --json here").is_empty());
     }
 
     #[test]

@@ -133,6 +133,7 @@ pub async fn observe_all(
                 job: io.job,
                 attempt: io.attempt,
                 base: commit.clone(),
+                protected_base: None,
                 rules: io.rules.clone(),
                 purpose: WorkspacePurpose::Verify {
                     holdouts: Vec::new(),

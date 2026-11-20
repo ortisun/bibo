@@ -262,6 +262,9 @@ pub(crate) struct Answer {
     pub(crate) denials: Vec<factory_ports::agent::Denial>,
     /// The model, as the router chose it.
     pub(crate) model: String,
+    /// The runtime and the model the router chose, which a reviewer of this answer is routed
+    /// against.
+    pub(crate) selection: factory_ports::agent::ModelSelection,
     /// The runtime adapter.
     pub(crate) runtime: String,
     /// The version of the tool that ran.
@@ -277,6 +280,10 @@ pub(crate) struct Call<'a> {
     pub(crate) risk: RiskTier,
     /// Tell the engine the sandbox is up. Only the first run of an attempt does.
     pub(crate) report_ready: bool,
+    /// For an agent that reviews another agent's answer in the same stage run: the model that
+    /// wrote it. The router then gives only a model that the routing policy says is independent of
+    /// it, as it did when the engine issued the job token.
+    pub(crate) author: Option<factory_ports::agent::ModelSelection>,
 }
 
 /// Runs an agent over its own checkout of the base commit, in the `agent` sandbox, and checks its
@@ -295,6 +302,7 @@ pub(crate) async fn run_agent(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: call.base.clone(),
+                protected_base: None,
                 rules: settings.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -332,7 +340,7 @@ async fn run_in(
         risk: call.risk,
         exclude: Vec::new(),
         probed: tools.probes.probed(),
-        author: None,
+        author: call.author.clone(),
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
@@ -343,6 +351,7 @@ async fn run_in(
     };
     let token = ctx.job_token.ok_or(StageError::Internal)?;
     let model = route.model.model.as_str().to_owned();
+    let selection = route.model.clone();
     let request = AgentRunRequest {
         attempt: ctx.attempt,
         agent: VersionedRef {
@@ -390,6 +399,7 @@ async fn run_in(
         usage: report.usage,
         denials: report.permission_denials,
         model,
+        selection,
         runtime: ports.runtime.id().as_str().to_owned(),
         runtime_version: report
             .runtime_version

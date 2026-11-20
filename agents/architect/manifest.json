@@ -42,7 +42,7 @@
   "inputs_schema": {
     "name": "architect-input",
     "version": 1,
-    "sha256": "sha256:b9b0b0911cdb619194905d57a3dd89e96c3f2262e20ecec93c23e47f3bde50dd"
+    "sha256": "sha256:064f99bc3832c64092046ff55f7b9e632cb80da9c808621cda6ca37813feb908"
   },
   "outputs_schema": {
     "name": "architecture-design",
@@ -98,7 +98,7 @@
   },
   "prompt": {
     "template_path": "agents/architect/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:1eb34ac611dd6368baf25594b54e811a493e06ce769a26289ab116c8a6589c0a"
+    "template_version": "1.3.0",
+    "template_sha256": "sha256:b791ac4ffec0df04965e68937a1808b65f011ff5ec1692846c5e9796a1692dd0"
   }
 }

@@ -236,6 +236,24 @@ async fn a_builder_that_is_blocked_or_needs_a_decision_asks_a_person() {
         assert_eq!(outcome, AttemptOutcome::NeedsHuman, "case {case}");
         assert!(rig.events_of("workspace.ingest").is_empty(), "case {case}");
         assert!(rig.events_of("workspace.commit").is_empty(), "case {case}");
+        // The request for a person carries the builder's own words, so that the person knows why
+        // the stage waits. In the twenty-eighth real run the builder was blocked and its reason
+        // was dropped.
+        let run = rig.run_of(StageKind::Implementation).await;
+        let request = rig
+            .needs_human_request(run)
+            .await
+            .expect("the request for a person is stored");
+        let expected = match case {
+            0 => Some("The task needs a file outside the files it owns."),
+            1 => Some("Which of the two readings of the task is meant?"),
+            _ => None,
+        };
+        assert_eq!(
+            request.get("detail").and_then(Value::as_str),
+            expected,
+            "case {case}: {request}"
+        );
     }
 }
 

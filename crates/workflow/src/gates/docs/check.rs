@@ -168,6 +168,8 @@ pub struct Inputs<'a> {
     pub changelog_added: &'a str,
     /// The environment variable names the source contains at the documentation head.
     pub source_env: &'a BTreeSet<String>,
+    /// The long flags the source holds as quoted literals at the documentation head.
+    pub source_flags: &'a BTreeSet<String>,
     /// The head commit of the code now.
     pub code_head_now: &'a str,
     /// The head commit of the code that the documentation commit was made over.
@@ -723,7 +725,7 @@ fn commands(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
         }
         _ => (None, Vec::new()),
     };
-    let missing = claims::invented(&named, help, inputs.source_env);
+    let missing = claims::invented(&named, help, inputs.source_env, inputs.source_flags);
     let findings = missing
         .iter()
         .map(|claim: &Claim| {
@@ -1024,6 +1026,7 @@ mod tests {
         pages: BTreeMap<String, String>,
         changed: BTreeSet<String>,
         env: BTreeSet<String>,
+        flags: BTreeSet<String>,
         head: String,
     }
 
@@ -1038,6 +1041,7 @@ mod tests {
             changed: pages.keys().cloned().collect(),
             pages,
             env: BTreeSet::new(),
+            flags: BTreeSet::new(),
             head: "b".repeat(40),
         }
     }
@@ -1050,6 +1054,7 @@ mod tests {
             changed_docs: &t.changed,
             changelog_added: added,
             source_env: &t.env,
+            source_flags: &t.flags,
             code_head_now: &t.head,
             written_over: &t.head,
             secret: &|_| Some(false),

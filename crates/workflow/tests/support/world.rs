@@ -241,6 +241,23 @@ impl World {
         }
     }
 
+    /// A test-mode engine with the solo mode of the shipped policy switched on (ADR 0022).
+    pub async fn solo() -> Self {
+        Self::with_config(|config| {
+            *config = config.clone().with_solo(solo_rules());
+        })
+        .await
+    }
+
+    /// Puts the world in the solo mode: the repository is marked `single_maintainer`, exactly one
+    /// person may approve, and the requester holds `roles`. Only on the in-memory backend.
+    pub fn make_solo(&self, roles: &[HumanRole]) {
+        self.memory_store()
+            .set_single_maintainer(self.repository, true);
+        self.authority.set_approver_count(1);
+        self.authority.grant(self.requester, roles);
+    }
+
     /// A second engine over the same store, as after a restart of the process.
     pub fn restarted_engine(&self) -> Engine {
         Engine::new(
@@ -434,6 +451,7 @@ impl World {
                 Decision::Approve {
                     evidence_seen: seen,
                     warnings_decided: true,
+                    proof: None,
                 },
             )
             .await
@@ -535,5 +553,90 @@ impl World {
         let rows = tx.read_ledger(job, 1, 10_000).await.expect("ledger");
         tx.rollback().await.expect("rollback");
         rows
+    }
+}
+
+/// The rules of the solo mode of the shipped approval policy (the domain fixture mirrors it).
+pub fn solo_rules() -> factory_domain::policy::solo::SoloRules {
+    solo_policy().authority.solo_rules()
+}
+
+/// The policy engine of the shipped policies, as the domain fixtures mirror them.
+pub fn solo_policy() -> factory_domain::policy::PolicyEngine {
+    let security: factory_domain::policy::SecurityPolicy = serde_json::from_str(include_str!(
+        "../../../domain/tests/fixtures/policy/security.json"
+    ))
+    .expect("security policy");
+    let approval: factory_domain::policy::ApprovalPolicy = serde_json::from_str(include_str!(
+        "../../../domain/tests/fixtures/policy/approval.json"
+    ))
+    .expect("approval policy");
+    factory_domain::policy::PolicyEngine::new(&security, &approval).expect("a policy engine")
+}
+
+/// The numeric GitHub id every world gives its requester.
+pub const REQUESTER_GITHUB_ID: u64 = 1001;
+
+/// A proof of the shipped policy for the world's requester as the one person who approves, with
+/// the solo fact true (ADR 0022). `decide` asks the policy engine, as the API and the worker do;
+/// the requester holds `requester`, `approver` and `security_approver` here.
+pub fn solo_proof(
+    world: &World,
+    decide: impl FnOnce(
+        &factory_workflow::gates::supply_chain::approval::Request<'_>,
+    ) -> factory_domain::policy::authority::ActionVerdict,
+) -> factory_domain::policy::decision::AuthorizedApproval {
+    use factory_domain::policy::authority::{
+        ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry, AutonomyLevel,
+    };
+    use factory_domain::policy::decision::{Designation, GithubUserId};
+    let policy = solo_policy();
+    let id = GithubUserId::new(REQUESTER_GITHUB_ID).expect("an id");
+    let allowlist = Allowlist::new(
+        "sha256:allowlist-solo",
+        vec![AllowlistEntry {
+            tenant: world.tenant,
+            github_user_id: id,
+            login: "requester".to_owned(),
+            designations: [
+                Designation::Requester,
+                Designation::Approver,
+                Designation::SecurityApprover,
+            ]
+            .into_iter()
+            .collect(),
+            repositories: None,
+            expires_at: None,
+        }],
+    )
+    .expect("no duplicates");
+    let actor = Actor {
+        github_user_id: id,
+        login: "requester",
+        kind: ActorKind::User,
+        github_permission: None,
+        author_association: None,
+    };
+    let now = factory_domain::values::Timestamp::parse("2026-10-28T12:00:00Z").expect("a time");
+    let verdict = decide(&factory_workflow::gates::supply_chain::approval::Request {
+        policy: &policy.authority,
+        level: AutonomyLevel::L1,
+        tenant: &world.tenant,
+        repository: "example-org/app",
+        actor: &actor,
+        allowlist: &allowlist,
+        now: &now,
+        requester: Some(id),
+        risk_tier: factory_domain::vocabulary::RiskTier::Low,
+        protected_path_change: false,
+        sensitive_file_change: false,
+        solo: policy.authority.solo_fact(true, 1),
+    });
+    match verdict {
+        ActionVerdict::Authorized(proof) => {
+            assert!(proof.solo_stamp(), "the proof carries the solo stamp");
+            proof
+        }
+        other => panic!("expected a solo proof, got {other:?}"),
     }
 }

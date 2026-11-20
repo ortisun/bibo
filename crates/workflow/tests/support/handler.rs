@@ -569,6 +569,7 @@ impl StageHandler for ScriptedHandler {
             Step::NeedsHuman => Ok(StageOutput {
                 needs_human: Some(NeedsHumanRequest {
                     reason: Slug::parse("ambiguous-requirement").expect("a slug"),
+                    detail: None,
                 }),
                 ..StageOutput::default()
             }),

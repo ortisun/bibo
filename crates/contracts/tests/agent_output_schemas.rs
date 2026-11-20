@@ -4,7 +4,7 @@
 //! parse (a repeated key is refused) and the same repair-friendly messages.
 //!
 //! The tests run on the real definitions in `agents/`: the three agents named in the work package
-//! (`intake-classifier`, `planner` and `code-reviewer`) in detail, and all nine in one sweep.
+//! (`intake-classifier`, `planner` and `code-reviewer`) in detail, and every agent in one sweep.
 //!
 //! Deliberate breaks, each caught by the test named after it (the `break_` tests):
 //! skip the limits, accept a repeated key, let the schema reference reach a path outside
@@ -26,11 +26,12 @@ use factory_ports::registry::{AgentId, AgentRegistry, VersionReq};
 use serde_json::{Value, json};
 use support::{TempDir, repo_root};
 
-const NINE_AGENTS: [&str; 9] = [
+const EVERY_AGENT: [&str; 10] = [
     "intake-classifier",
     "specification-writer",
     "specification-reviewer",
     "architect",
+    "architecture-critic",
     "planner",
     "builder",
     "code-reviewer",
@@ -116,7 +117,7 @@ fn load_error(result: Result<AgentSchema, SchemaFileError>) -> SchemaFileError {
 
 #[test]
 fn every_agent_manifest_in_the_registry_gives_its_compiled_schemas() {
-    for agent in NINE_AGENTS {
+    for agent in EVERY_AGENT {
         let manifest = manifest_of(agent);
         let schemas = loader()
             .load(&manifest)
@@ -177,8 +178,8 @@ fn invalid_outputs_of_intake_planner_and_code_reviewer_are_refused_with_a_reason
 }
 
 #[test]
-fn all_nine_agents_accept_their_valid_fixtures_and_refuse_their_invalid_ones() {
-    for agent in NINE_AGENTS {
+fn every_agent_accepts_its_valid_fixtures_and_refuses_its_invalid_ones() {
+    for agent in EVERY_AGENT {
         let schema = output_schema_of(agent);
         for (name, bytes) in fixture_bytes(agent, "valid") {
             assert!(

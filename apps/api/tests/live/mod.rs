@@ -917,11 +917,34 @@ impl LiveRig {
         let identity = self
             .identity(job, stage_run, StageKind::Specification)
             .await;
+        // Only a kept contract is a draft to approve. A record with no contract is a stop on a
+        // question, and it is answered, not approved (the thirtieth real run).
         self.spec_drafts
             .load(&identity)
             .await
             .expect("the draft is readable")
+            .filter(|draft| !draft.contract.is_empty())
             .map(|draft| draft.commit.as_str().to_owned())
+    }
+
+    /// The question the independent reviewer of the specification put to a person, when its
+    /// verdict was `NEEDS_HUMAN`: the `human_question` of the review the stage kept with its
+    /// record. `None` when the reviewer asked nothing.
+    pub async fn spec_review_question(
+        &self,
+        job: JobId,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> Option<String> {
+        use factory_workflow::stages::specification::SpecDrafts as _;
+        let identity = self
+            .identity(job, stage_run, StageKind::Specification)
+            .await;
+        let draft = self.spec_drafts.load(&identity).await.ok()??;
+        let evidence: serde_json::Value = serde_json::from_slice(&draft.evidence).ok()?;
+        evidence
+            .pointer("/review/answer/human_question")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
     }
 
     /// The questions the specification stage asked when it kept its draft, as `(id, question)`:
@@ -962,6 +985,30 @@ impl LiveRig {
 
     /// Why a stage run waits for a person: the reason code of the newest transition the store
     /// holds for it, such as `reviewer-needs-a-person`.
+    /// What the agent of a waiting stage run said a person must know or decide: the `detail` of
+    /// the request it left as its last attempt's output. `None` when it said nothing more.
+    pub async fn wait_detail(&self, stage_run: factory_domain::ids::StageRunId) -> Option<String> {
+        let scope = factory_domain::scope::TenantScope::new(self.tenant);
+        let mut tx = self.store.begin(scope).await.ok()?;
+        let attempts = tx.list_attempts(stage_run).await.ok()?;
+        let _ = tx.rollback().await;
+        let output = attempts
+            .iter()
+            .rev()
+            .find_map(|attempt| attempt.value.output.clone())?;
+        let reference = factory_domain::contracts::ArtifactRef {
+            sha256: output,
+            media_type: factory_domain::values::MediaType::parse("application/json").ok()?,
+            size_bytes: None,
+        };
+        let bytes = self.artifacts.get(&scope, &reference).await.ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        value
+            .get("detail")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
     pub async fn wait_reason(
         &self,
         job: JobId,

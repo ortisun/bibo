@@ -65,6 +65,10 @@ pub(crate) enum TokenClass {
     /// that the protection preflight makes ([`PermissionSet::protection_reader`]). It does not
     /// depend on the stage in the scope, and no other call uses it.
     ProtectionRead,
+    /// `contents: write`, `pull_requests: write` and `metadata: read`, for the rules pull request
+    /// ([`PermissionSet::project_rules`], ports v1.4). It does not depend on the stage in the
+    /// scope.
+    ProjectRules,
     /// `issues: write` and `metadata: read` for a troubleshooting run
     /// ([`PermissionSet::troubleshoot_issue`]). Minted only for a [`RunScope`], never for a job.
     TroubleshootIssue,
@@ -291,6 +295,7 @@ impl TokenMinter {
             TokenClass::IssueStatus => Ok(PermissionSet::issue_status()),
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
             TokenClass::ProtectionRead => Ok(PermissionSet::protection_reader()),
+            TokenClass::ProjectRules => Ok(PermissionSet::project_rules()),
             // A troubleshooting run's class is never minted for a job, whatever its stage.
             TokenClass::TroubleshootIssue => Err(GitHostError::Forbidden),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),

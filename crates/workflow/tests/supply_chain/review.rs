@@ -552,6 +552,7 @@ fn a_decision_needs_a_reason_the_right_action_and_a_checksum() {
                 },
                 require_designation: None,
                 step_up_done: false,
+                solo: factory_domain::policy::solo::SoloFact::NONE,
             });
     let proof = authorized(other);
     assert_eq!(

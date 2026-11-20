@@ -104,6 +104,7 @@ pub(super) async fn execute(
             map_bytes.clone(),
         )
         .fetched_at(now),
+        crate::stages::project_rules::block(ctx).await?,
     ];
     if let Some(text) = &feedback {
         inputs.push(
@@ -138,6 +139,7 @@ pub(super) async fn execute(
             stage: StageKind::Architecture,
             risk: RiskTier::Medium,
             report_ready: true,
+            author: None,
         },
     )
     .await?;
@@ -147,19 +149,20 @@ pub(super) async fn execute(
     let job = handler.risk.of(&identity).await.map_err(seam)?;
     let assessment = risk::assess(&design, &handler.policy, job.facts, job.agent_claim);
     let protected = risk::protected_paths(&design, &handler.policy);
+    let sensitive = risk::sensitive_paths(&design, &handler.policy);
     let rules = handler.config.rules;
     let spec_ids = SpecIds::from_contract(&spec);
     let mut usage = answer.usage;
     let mut denials = answer.denials.clone();
-    let (critic_outcome, critic_answer) = if design.status == Status::NeedsHuman {
-        (Outcome::NotRequired, None)
+    let (critic_outcome, critic_answer, critic_model) = if design.status == Status::NeedsHuman {
+        (Outcome::NotRequired, None, None)
     } else {
         let found = checks::check(&design, &spec_ids, assessment.tier, &protected, &rules);
         let clean = found.traceability.is_empty() && found.completeness.is_empty();
         if assessment.tier < rules.critic_from {
-            (Outcome::NotRequired, None)
+            (Outcome::NotRequired, None, None)
         } else if !clean {
-            (Outcome::SkippedDesignFailed, None)
+            (Outcome::SkippedDesignFailed, None, None)
         } else {
             let asked = ask_critic(
                 handler,
@@ -179,7 +182,7 @@ pub(super) async fn execute(
             .await?;
             usage = usage.saturating_add(asked.usage);
             denials.extend(asked.denials);
-            (asked.outcome, asked.answer)
+            (asked.outcome, asked.answer, asked.model)
         }
     };
 
@@ -206,6 +209,10 @@ pub(super) async fn execute(
             "agent_claim": assessment.agent_claim.map(RiskTier::as_str),
             "critic_from": rules.critic_from.as_str(),
             "human_from": rules.human_from.as_str(),
+            // What in the design made the criteria hold: the paths the path policy marks
+            // sensitive, and the decisions a person must approve (counted as `new_dependency`).
+            "sensitive_paths": sensitive,
+            "decisions_for_a_person": risk::decisions_for_a_person(&design),
         },
         "protected_paths": protected,
         "complexity": match &complexity {
@@ -213,7 +220,7 @@ pub(super) async fn execute(
             Complexity::NonTrivial => json!({ "kind": "non_trivial" }),
         },
         "alternatives": checks::alternatives(&design),
-        "critic": critic_outcome.to_json(critic_answer.as_ref()),
+        "critic": critic_record(&critic_outcome, critic_answer.as_ref(), critic_model.as_deref()),
         "needs_human": design.status == Status::NeedsHuman,
         "human_question": design.human_question,
         "ignored_instructions": design.ignored_instructions,
@@ -234,6 +241,16 @@ pub(super) async fn execute(
         permission_denials: denials,
         ..StageOutput::default()
     })
+}
+
+/// The record of the critic: the outcome as [`Outcome::to_json`] writes it, and, when a critic
+/// ran, the model the router gave it, so the record shows that it was not the architect's.
+fn critic_record(outcome: &Outcome, answer: Option<&Value>, model: Option<&str>) -> Value {
+    let mut value = outcome.to_json(answer);
+    if let (Some(model), Some(map)) = (model, value.as_object_mut()) {
+        map.insert("model".to_owned(), json!(model));
+    }
+    value
 }
 
 fn usage_json(usage: Usage) -> Value {
@@ -260,6 +277,7 @@ struct CriticInputs<'a> {
 struct Asked {
     outcome: Outcome,
     answer: Option<Value>,
+    model: Option<String>,
     usage: Usage,
     denials: Vec<factory_ports::agent::Denial>,
 }
@@ -268,6 +286,7 @@ fn absent(reason: Absent) -> Asked {
     Asked {
         outcome: Outcome::Absent(reason),
         answer: None,
+        model: None,
         usage: Usage::default(),
         denials: Vec::new(),
     }
@@ -304,7 +323,9 @@ async fn ask_critic(
     };
     // The type of these inputs is the guard: an agent's account of its own work cannot become one.
     let independent = |input: Input| input.fetched_at(now).into_independent();
+    let rules = crate::stages::project_rules::block(ctx).await?;
     let inputs = vec![
+        rules.into_independent(),
         independent(Input::untrusted(
             critic::INPUT_SPECIFICATION,
             ContentClass::SpecificationText,
@@ -359,6 +380,8 @@ async fn ask_critic(
             stage: StageKind::Architecture,
             risk: given.tier,
             report_ready: false,
+            // The critic is routed against the architect's model, as the job token was.
+            author: Some(given.architect_answer.selection.clone()),
         },
     )
     .await?;
@@ -371,6 +394,7 @@ async fn ask_critic(
             review: Box::new(review),
         },
         answer: Some(answer.validated.value.clone()),
+        model: Some(answer.model.clone()),
         usage: answer.usage,
         denials: answer.denials,
     })

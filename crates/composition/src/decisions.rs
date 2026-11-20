@@ -78,20 +78,27 @@ use async_trait::async_trait;
 use factory_domain::ids::{
     AuditEventId, CausationId, CorrelationId, JobId, PrincipalId, StageRunId, TenantId,
 };
+use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::approval::ApprovalPolicy;
-use factory_domain::policy::authority::{ActorKind, RepositoryIdentity};
-use factory_domain::policy::decision::Designation;
+use factory_domain::policy::authority::{
+    ActionContext, ActionDenialReason, ActionVerdict, Actor as PolicyActor, ActorKind, ChangeFacts,
+    RepositoryIdentity,
+};
+use factory_domain::policy::decision::{Designation, GithubUserId};
+use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, Status as _};
 use factory_domain::values::{GitSha, HumanText, Sha256Digest, Slug, Timestamp};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::vocabulary::{RiskTier, StageKind};
 use factory_ports::clock::Clock;
 use factory_ports::githost::ActorLogin;
 use factory_ports::store::{
     ApprovalChannel, AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule,
     JobFilter, NewAuditEvent, PrincipalKind, Store, StoreError,
 };
-use factory_workflow::commands::{Actor, Decision as EngineDecision, JobCommand, Subject};
+use factory_workflow::commands::{
+    Actor, Decision as EngineDecision, JobCommand, SoloRequest, Subject,
+};
 use factory_workflow::engine::{Engine, EngineError};
 use factory_workflow::gates::supply_chain::approval::{DecisionScope, RecordedApprovals};
 use factory_workflow::handlers::RunIdentity;
@@ -158,6 +165,10 @@ pub struct DecisionFields {
     /// subject, so the word covers the text too, and the hook applies the text only if it has
     /// this hash.
     pub answer: Option<String>,
+    /// For `approve`, the word of the confirmation phrase of the solo mode (ADR 0022): 16
+    /// lowercase hex digits, when the person typed a phrase. Written last, so a subject without
+    /// it is byte for byte the text it always was.
+    pub confirm: Option<String>,
 }
 
 /// The value of the subject's `answer=` word for an answer text.
@@ -185,6 +196,10 @@ impl DecisionFields {
             subject.push_str(" answer=");
             subject.push_str(answer);
         }
+        if let Some(confirm) = &self.confirm {
+            subject.push_str(" confirm=");
+            subject.push_str(confirm);
+        }
         subject
     }
 
@@ -209,6 +224,7 @@ impl DecisionFields {
         let mut evidence = None;
         let mut target = None;
         let mut answer = None;
+        let mut confirm = None;
         for word in subject.split_whitespace() {
             let (key, value) = word.split_once('=')?;
             let some = (value != "none").then(|| value.to_owned());
@@ -225,8 +241,15 @@ impl DecisionFields {
                 "evidence" => evidence = some,
                 "target" => target = some,
                 "answer" => answer = Some(value.to_owned()),
+                "confirm" => confirm = Some(value.to_owned()),
                 _ => return None,
             }
+        }
+        // A confirmation word is 16 lowercase hex digits, and only an approval carries one.
+        if let Some(word) = &confirm
+            && (verb != Some(Verb::Approve) || ConfirmationWord::parse(word).is_none())
+        {
+            return None;
         }
         Some(Self {
             verb: verb?,
@@ -236,6 +259,7 @@ impl DecisionFields {
             evidence,
             target,
             answer,
+            confirm,
         })
     }
 }
@@ -328,11 +352,18 @@ pub enum Reason {
     NotCleared,
     /// Any other refusal of the approval service.
     Refused,
+    /// The solo mode asks for a minimum wait that has not passed, or whose start is not known
+    /// (ADR 0022).
+    SoloDelay,
+    /// The solo mode asks for the confirmation phrase, and the request carries none or another.
+    ConfirmationMissing,
+    /// The requester asked to approve their own request and the solo mode does not apply.
+    IneligibleApprover,
 }
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 25] = [
+    pub const ALL: [Reason; 28] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -358,6 +389,9 @@ impl Reason {
         Self::Ambiguous,
         Self::NotCleared,
         Self::Refused,
+        Self::SoloDelay,
+        Self::ConfirmationMissing,
+        Self::IneligibleApprover,
     ];
 
     /// The sentence the person may read. Authority is never explained.
@@ -397,6 +431,15 @@ impl Reason {
                 "The block has not been cleared, so the stage run was not let go again."
             }
             Self::Refused => "The decision was refused.",
+            Self::SoloDelay => {
+                "The solo mode requires a wait before this decision, and it has not passed or its start is not known. Ask again later."
+            }
+            Self::ConfirmationMissing => {
+                "The solo mode needs the confirmation phrase, and this decision does not carry the right one."
+            }
+            Self::IneligibleApprover => {
+                "The requester may not approve their own request, because the solo mode does not apply to it."
+            }
         }
     }
 
@@ -429,6 +472,18 @@ impl Reason {
             Self::Ambiguous => "ambiguous_package",
             Self::NotCleared => "not_cleared",
             Self::Refused => "refused",
+            Self::SoloDelay => "solo_delay",
+            Self::ConfirmationMissing => "confirmation_missing",
+            Self::IneligibleApprover => "ineligible_approver",
+        }
+    }
+
+    /// The reason of a refusal of the solo mode by the engine.
+    #[must_use]
+    pub const fn of_solo(refusal: factory_workflow::engine::SoloRefusal) -> Self {
+        match refusal {
+            factory_workflow::engine::SoloRefusal::SoloDelay => Self::SoloDelay,
+            factory_workflow::engine::SoloRefusal::ConfirmationMissing => Self::ConfirmationMissing,
         }
     }
 
@@ -1013,6 +1068,7 @@ pub struct ClaimWork {
     recorded: Option<Arc<dyn RecordedApprovals>>,
     rejections: Option<Arc<IntakeRejections>>,
     repository_changes: Option<Arc<RepositoryChanges>>,
+    policy: Option<Arc<PolicyEngine>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
     /// Where the next round of tenants starts, so that the same tenant is not always first.
@@ -1069,6 +1125,7 @@ impl ClaimWork {
             recorded: None,
             rejections: None,
             repository_changes: None,
+            policy: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
             turn: AtomicUsize::new(0),
@@ -1118,6 +1175,16 @@ impl ClaimWork {
     #[must_use]
     pub fn with_rejections(mut self, rejections: Arc<IntakeRejections>) -> Self {
         self.rejections = Some(rejections);
+        self
+    }
+
+    /// Lets the one person who approves on a `single_maintainer` repository approve the
+    /// specification of their own request (the solo mode, ADR 0022). The hook asks the policy for
+    /// the proof of `freeze_specification` with the solo fact, and hands it to the engine, which
+    /// checks the fact again. Without it the requester's approval is refused, as it was before.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Arc<PolicyEngine>) -> Self {
+        self.policy = Some(policy);
         self
     }
 
@@ -1470,7 +1537,7 @@ impl ClaimWork {
                 self.control(tenant, decision, command).await
             }
             Verb::Approve | Verb::Reject | Verb::Rework => {
-                self.approve_or_reject(tenant, decision, command, sender)
+                self.approve_or_reject(tenant, decision, command, sender, &repository)
                     .await
             }
             Verb::Answer => self.answer(tenant, decision, command).await,
@@ -1536,6 +1603,7 @@ impl ClaimWork {
         decision: &Pending,
         command: CausationId,
         sender: Sender,
+        repository: &str,
     ) -> Verdict {
         let fields = &decision.fields;
         let Some(stage_run) = fields.stage_run else {
@@ -1556,7 +1624,12 @@ impl ClaimWork {
             // The specification stage asks a person before it freezes its draft.
             (StageKind::Specification, Verb::Approve) => {
                 return self
-                    .approve_specification(tenant, decision, command, correlation)
+                    .approve_specification(
+                        tenant,
+                        decision,
+                        (command, correlation),
+                        (&sender, repository),
+                    )
                     .await;
             }
             (StageKind::Approval, _) | (_, Verb::Approve) => {}
@@ -1619,6 +1692,7 @@ impl ClaimWork {
                 channel: ApprovalChannel::Dashboard,
                 comment: None,
                 warnings_decided,
+                solo: Some(solo_request_of(decision)),
             },
             request.as_ref(),
         ) {
@@ -1737,8 +1811,8 @@ impl ClaimWork {
         &self,
         tenant: TenantId,
         decision: &Pending,
-        command: CausationId,
-        correlation: CorrelationId,
+        (command, correlation): (CausationId, CorrelationId),
+        (sender, repository): (&Sender, &str),
     ) -> Verdict {
         let fields = &decision.fields;
         let Some(stage_run) = fields.stage_run else {
@@ -1755,9 +1829,13 @@ impl ClaimWork {
             kind: StageKind::Specification,
         };
         let draft = match drafts.load(&identity).await {
-            Ok(Some(draft)) => draft,
-            // The stage kept no draft: nothing was asked, so there is nothing to approve.
-            Ok(None) => return Verdict::Done(Reason::WrongState.into()),
+            // A record with a contract is a draft that passed its gates and waits for its approval.
+            Ok(Some(draft)) if !draft.contract.is_empty() => draft,
+            // The stage kept no draft, or kept one with no contract: it stopped to ask a question
+            // (its own, or the reviewer's), and a question is answered, not approved. In the
+            // thirtieth real run an approval was taken for the answer to the reviewer's question,
+            // and the stage ran again and asked the same question.
+            Ok(_) => return Verdict::Done(Reason::WrongState.into()),
             Err(_) => return Verdict::Later,
         };
         let (Some(head), Some(evidence)) = (
@@ -1772,6 +1850,11 @@ impl ClaimWork {
         if head != draft.commit.as_str() {
             return Verdict::Done(Reason::DraftMoved.into());
         }
+        // The solo mode: the requester's own approval needs the policy's stamped proof.
+        let proof = match self.spec_proof(&identity, sender, repository).await {
+            Ok(proof) => proof,
+            Err(verdict) => return verdict,
+        };
         let actor = Actor {
             tenant,
             principal: decision.principal,
@@ -1788,6 +1871,7 @@ impl ClaimWork {
                 EngineDecision::Approve {
                     evidence_seen: evidence,
                     warnings_decided: true,
+                    proof,
                 },
             )
             .await;
@@ -1805,6 +1889,78 @@ impl ClaimWork {
                 Verdict::Done(Reason::WrongState.into())
             }
             Err(_) => Verdict::Later,
+        }
+    }
+
+    /// The policy's proof for the freezing of a specification by the requester of the job, in the
+    /// solo mode (ADR 0022). `Ok(None)` when the person is not the requester (the engine checks
+    /// their role as before) or when the hook has no policy (the engine then refuses the
+    /// requester). The facts are those of the approval of a pull request but for the change: a
+    /// specification has no pull request and no risk tier yet, so it is the low tier, which asks
+    /// for no designation or person beyond the approver; and it has no wait and no phrase.
+    async fn spec_proof(
+        &self,
+        identity: &RunIdentity,
+        sender: &Sender,
+        repository: &str,
+    ) -> Result<Option<factory_domain::policy::decision::AuthorizedApproval>, Verdict> {
+        let Some(policy) = &self.policy else {
+            return Ok(None);
+        };
+        let tenant = identity.tenant;
+        let (Ok(allowlist), Ok(level), Ok(requester)) = (
+            self.approvals.allowlist(tenant).await,
+            self.approvals.level(tenant, identity.job).await,
+            self.approvals.requester(identity).await,
+        ) else {
+            return Err(Verdict::Later);
+        };
+        if requester != sender.id {
+            return Ok(None);
+        }
+        let now = self.clock.now();
+        let Ok(inputs) = self.approvals.solo_inputs(tenant, identity.job, now).await else {
+            return Err(Verdict::Later);
+        };
+        let Some(id) = GithubUserId::new(sender.id) else {
+            return Err(Verdict::Done(Reason::NotAuthorized.into()));
+        };
+        let actor = PolicyActor {
+            github_user_id: id,
+            login: sender.login.as_str(),
+            kind: sender.kind,
+            github_permission: None,
+            author_association: None,
+        };
+        let verdict = policy.authority.authorize_action(&ActionContext {
+            action: "freeze_specification",
+            level,
+            tenant: &tenant,
+            repository,
+            actor: &actor,
+            allowlist: &allowlist,
+            now: &now,
+            requester: Some(id),
+            change: ChangeFacts {
+                risk_tier: RiskTier::Low,
+                protected_path_change: false,
+                sensitive_file_change: false,
+                new_dependency: false,
+            },
+            require_designation: None,
+            step_up_done: false,
+            solo: policy
+                .authority
+                .solo_fact(inputs.single_maintainer, inputs.approver_count),
+        });
+        match verdict {
+            ActionVerdict::Authorized(proof) => Ok(Some(proof)),
+            ActionVerdict::Denied(denial) if denial.reason == ActionDenialReason::SelfApproval => {
+                Err(Verdict::Done(Reason::IneligibleApprover.into()))
+            }
+            ActionVerdict::Denied(_) | ActionVerdict::NoHumanNeeded { .. } => {
+                Err(Verdict::Done(Reason::NotAuthorized.into()))
+            }
         }
     }
 
@@ -2086,6 +2242,19 @@ fn requested_from(
     })
 }
 
+/// When the person asked and the confirmation word their request carried: the time the database
+/// wrote the signed request, and the `confirm=` word, read only if it is a well formed one.
+fn solo_request_of(decision: &Pending) -> SoloRequest {
+    SoloRequest {
+        requested_at: decision.requested_at,
+        confirmation: decision
+            .fields
+            .confirm
+            .as_deref()
+            .and_then(ConfirmationWord::parse),
+    }
+}
+
 /// True when the person has decided on every open translation warning of the approval request:
 /// with none open there is nothing to decide, and with some open the decisions recorded in the
 /// ledger for this request and this person must cover them all. A source that cannot give any
@@ -2111,10 +2280,16 @@ async fn warnings_decided(
     )
 }
 
-/// The reason for a refusal of the approval service. Authority is never explained.
+/// The reason for a refusal of the approval service. Authority is never explained, with one
+/// exception: `ineligible_approver` names the solo mode (ADR 0022). Whoever reaches the approval
+/// stage's judge has passed step 5 of the hook ("May they, now, on this repository?"): they are on
+/// the allowlist with the role, so the reason does not tell who is on the list.
 fn refusal_reason(code: &str) -> Reason {
     match code {
-        "not_authorized" | "ineligible_approver" | "not_a_command" => Reason::NotAuthorized,
+        "not_authorized" | "not_a_command" => Reason::NotAuthorized,
+        "ineligible_approver" => Reason::IneligibleApprover,
+        "solo_delay" => Reason::SoloDelay,
+        "confirmation_missing" => Reason::ConfirmationMissing,
         "new_commit" => Reason::NewCommit,
         "base_moved" => Reason::BaseMoved,
         "base_retargeted" => Reason::BaseRetargeted,
@@ -2246,6 +2421,7 @@ mod tests {
             evidence: Some(format!("sha256:{}", "b".repeat(64))),
             target: None,
             answer: None,
+            confirm: None,
         };
         assert_eq!(DecisionFields::parse(&fields.subject()), Some(fields));
     }
@@ -2262,6 +2438,7 @@ mod tests {
             evidence: None,
             target: None,
             answer: Some(answer_digest("Q-001: yes")),
+            confirm: None,
         };
         let subject = answer.subject();
         assert!(subject.ends_with(&format!(
@@ -2277,6 +2454,7 @@ mod tests {
             evidence: None,
             target: None,
             answer: None,
+            confirm: None,
         };
         assert!(!pause.subject().contains("answer="));
         assert_eq!(pause.subject().split(' ').count(), 6);
@@ -2427,6 +2605,7 @@ mod tests {
             evidence: None,
             target: None,
             answer: None,
+            confirm: None,
         };
         let request_word = keys.sign(&Signing {
             tenant,
@@ -2472,11 +2651,67 @@ mod tests {
 
     #[test]
     fn a_refusal_of_authority_is_never_explained() {
-        for code in ["not_authorized", "ineligible_approver", "not_a_command"] {
+        for code in ["not_authorized", "not_a_command"] {
             assert_eq!(
                 refusal_reason(code).text(),
                 "The person may not take this decision now."
             );
+        }
+    }
+
+    #[test]
+    fn the_solo_mode_refusals_have_reasons_of_their_own() {
+        for (code, reason) in [
+            ("ineligible_approver", Reason::IneligibleApprover),
+            ("solo_delay", Reason::SoloDelay),
+            ("confirmation_missing", Reason::ConfirmationMissing),
+        ] {
+            assert_eq!(refusal_reason(code), reason);
+            assert_eq!(reason.code(), code);
+            assert_eq!(Reason::code_of(reason.text()), code);
+        }
+        // Every sentence is distinct, so a sentence reads back to one code.
+        let texts: std::collections::BTreeSet<&str> =
+            Reason::ALL.iter().map(|reason| reason.text()).collect();
+        assert_eq!(texts.len(), Reason::ALL.len());
+    }
+
+    #[test]
+    fn only_an_approval_carries_a_confirmation_word_and_it_reads_back() {
+        let job = JobId::from_uuid(uuid::Uuid::from_u128(0x77));
+        let word = ConfirmationWord::of("I confirm the solo approval of PR 3 at level high");
+        let approve = DecisionFields {
+            verb: Verb::Approve,
+            job,
+            stage_run: Some(StageRunId::from_uuid(uuid::Uuid::from_u128(0x78))),
+            head: Some("a".repeat(40)),
+            evidence: Some(Sha256Digest::of(b"x").as_str().to_owned()),
+            target: None,
+            answer: None,
+            confirm: Some(word.as_str().to_owned()),
+        };
+        let subject = approve.subject();
+        assert!(subject.ends_with(&format!(" confirm={}", word.as_str())));
+        assert_eq!(
+            DecisionFields::parse_canonical(&subject),
+            Some(approve.clone())
+        );
+        // Without the word the subject is the six words it always was.
+        let bare = DecisionFields {
+            confirm: None,
+            ..approve.clone()
+        };
+        assert_eq!(bare.subject().split(' ').count(), 6);
+        assert_eq!(DecisionFields::parse_canonical(&bare.subject()), Some(bare));
+        // On another verb, or not sixteen lowercase hex digits, it is not a request.
+        let cancel = DecisionFields {
+            verb: Verb::Cancel,
+            ..approve.clone()
+        };
+        assert_eq!(DecisionFields::parse_canonical(&cancel.subject()), None);
+        for bad in ["ABCDEF0123456789", "0123", "the phrase"] {
+            let changed = subject.replace(word.as_str(), bad);
+            assert_eq!(DecisionFields::parse(&changed), None, "{changed}");
         }
     }
 }

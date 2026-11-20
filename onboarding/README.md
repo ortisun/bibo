@@ -10,6 +10,8 @@ These files are not part of this repository's own build. `scripts/install.sh` co
 | `github/ISSUE_TEMPLATE/` | The two issue forms: propose a new solution, and request a small, clear change. |
 | `github/workflows/git-policy.yml` | The pull request check of the git policy: Conventional Commits and gitflow. It runs `.github/scripts/git_policy.py`, a copy of [`scripts/lib/git_policy.py`](../scripts/lib/git_policy.py), read from the base branch. |
 | `github/githooks/` | The `commit-msg`, `pre-commit` and `pre-push` hooks, copied to `.github/githooks/` and turned on with `git config core.hooksPath .github/githooks`. They run the same `git_policy.py`. |
+| `project-rules/AGENTS.md` | The factory's rules for agents, adapted to a project that is not the factory. The installer does not copy it: the worker opens a pull request that installs it between two markers, with the project's own part kept below (ADR 0026). Its version is `TEMPLATE_VERSION` in `crates/domain/src/project_rules.rs`, and a test pins its digest, so a change to it must raise the version. |
+| `project-rules/docs/` | The index files of the `docs/` folder that the rules ask for. The same pull request adds each one the project does not have, and never replaces one it has. |
 
 The installer also writes `.factory/repository.json`, the project's settings: its repository, its board, its gitflow closing mode and its commit types. It is not a copy of a file here: it comes from flags, from inference and from the person's answers.
 

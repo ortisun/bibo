@@ -93,6 +93,12 @@ pub enum WorkspaceDefect {
     DropsHiddenPathsInCommit,
     /// `tree_of` answers with the commit's own identifier, so equal files give different trees.
     TreeIsTheCommit,
+    /// The request's protected base is ignored: `append_only` and `additions_only` judge a path
+    /// against the workspace's own base, so a later round cannot touch a file the job added.
+    JudgesAgainstTheRoundBase,
+    /// A protected base that is not in the store, or not an ancestor of the base, is ignored
+    /// instead of refused.
+    IgnoresUnreadableProtectedBase,
 }
 
 /// Each defect and the checks of `contracts::workspace` that must fail when the fake has it.
@@ -117,11 +123,15 @@ pub const DEFECTS: &[(WorkspaceDefect, &[&str])] = &[
         &[
             "a_change_to_a_protected_path_is_refused_with_every_changed_path",
             "an_added_test_is_allowed_and_an_edited_test_is_refused_under_additions_only",
+            "what_existed_before_the_job_stays_protected_in_a_later_round",
         ],
     ),
     (
         WorkspaceDefect::TreatsAdditionsOnlyAsFree,
-        &["an_added_test_is_allowed_and_an_edited_test_is_refused_under_additions_only"],
+        &[
+            "an_added_test_is_allowed_and_an_edited_test_is_refused_under_additions_only",
+            "what_existed_before_the_job_stays_protected_in_a_later_round",
+        ],
     ),
     (
         WorkspaceDefect::IgnoresCaseFold,
@@ -214,6 +224,14 @@ pub const DEFECTS: &[(WorkspaceDefect, &[&str])] = &[
     (
         WorkspaceDefect::TreeIsTheCommit,
         &["a_commit_has_a_tree_and_the_tree_follows_the_files"],
+    ),
+    (
+        WorkspaceDefect::JudgesAgainstTheRoundBase,
+        &["a_file_the_job_added_may_be_changed_in_a_later_round"],
+    ),
+    (
+        WorkspaceDefect::IgnoresUnreadableProtectedBase,
+        &["a_protected_base_that_cannot_be_read_is_refused"],
     ),
 ];
 
@@ -773,6 +791,22 @@ impl WorkspaceProvider for FakeWorkspaceProvider {
         if self.has(WorkspaceDefect::ScopesCommitsToWorkspace) && own_commit.is_some() {
             return Err(WorkspaceError::UnknownCommit);
         }
+        // The tree of the protected base, when it is not the base itself (ADR 0025). It must be
+        // in the store and on the base's history, or the workspace is refused.
+        let protected_tree: Option<Tree> = match &req.protected_base {
+            Some(commit) if *commit != req.base => {
+                let found = store.commits.get(commit).cloned();
+                let readable = found.is_some() && is_ancestor(&store.commits, commit, &req.base);
+                match found {
+                    Some(object) if readable => Some(object.tree),
+                    _ if self.has(WorkspaceDefect::IgnoresUnreadableProtectedBase) => None,
+                    _ => return Err(WorkspaceError::UnknownCommit),
+                }
+            }
+            _ => None,
+        };
+        let protected_tree =
+            protected_tree.filter(|_| !self.has(WorkspaceDefect::JudgesAgainstTheRoundBase));
         host.next += 1;
         let number = host.next;
         let read_only = matches!(req.purpose, WorkspacePurpose::Verify { .. })
@@ -801,11 +835,13 @@ impl WorkspaceProvider for FakeWorkspaceProvider {
         } else {
             visible
                 .keys()
-                .filter(|path| {
-                    matches!(
-                        self.classify(&req.rules, path),
-                        Some(PathMode::DenyWrite | PathMode::AppendOnly)
-                    )
+                .filter(|path| match self.classify(&req.rules, path) {
+                    Some(PathMode::DenyWrite) => true,
+                    // An append_only file the job added stays writable.
+                    Some(PathMode::AppendOnly) => protected_tree
+                        .as_ref()
+                        .is_none_or(|tree| tree.contains_key(*path)),
+                    _ => false,
                 })
                 .cloned()
                 .collect()
@@ -832,6 +868,7 @@ impl WorkspaceProvider for FakeWorkspaceProvider {
             job: req.job,
             base: req.base,
             base_tree: object.tree,
+            protected_tree,
             visible,
             rules: req.rules,
             sandbox,
@@ -1111,6 +1148,24 @@ fn file_text(entry: Option<&Entry>) -> String {
     }
 }
 
+/// True when `ancestor` is `descendant` or on its chain of parents in the store.
+fn is_ancestor(
+    commits: &BTreeMap<CommitSha, CommitObject>,
+    ancestor: &CommitSha,
+    descendant: &CommitSha,
+) -> bool {
+    let mut at = Some(descendant.clone());
+    while let Some(current) = at {
+        if current == *ancestor {
+            return true;
+        }
+        at = commits
+            .get(&current)
+            .and_then(|object| object.parent.clone());
+    }
+    false
+}
+
 /// The changed paths between two trees, sorted. A rename is a deletion and an addition.
 fn diff(before: &Tree, after: &Tree) -> Vec<ChangedPath> {
     let mut changes = Vec::new();
@@ -1151,6 +1206,8 @@ struct FakeWorkspace {
     base: CommitSha,
     /// Every path of the base commit, hidden or not.
     base_tree: Tree,
+    /// Every path of the protected base, when the request named one other than the base.
+    protected_tree: Option<Tree>,
     /// What the checkout started as: the base commit without the hidden paths.
     visible: Tree,
     rules: PathRules,
@@ -1295,28 +1352,32 @@ impl FakeWorkspace {
             }
         }
 
+        // `deny_write` judges the change since the base; `append_only` and `additions_only` judge
+        // the path against the protected base (ADR 0025), which is the base when none was named.
+        let protected = self.protected_tree.as_ref().unwrap_or(&self.visible);
         let mut violations = Vec::new();
         let mut sensitive = Vec::new();
         for change in &changes {
             let mode = self.provider.classify(&self.rules, &change.path);
+            let before = protected.get(&change.path);
+            let now = tree.get(&change.path);
             let broke = match mode {
                 _ if self.has(WorkspaceDefect::AllowsAnyEdit) => false,
                 Some(PathMode::DenyWrite) => true,
-                Some(PathMode::AppendOnly) => change.kind != ChangeKind::Added,
+                Some(PathMode::AppendOnly) => before.is_some() && before != now,
                 Some(PathMode::AdditionsOnly)
                     if self.has(WorkspaceDefect::TreatsAdditionsOnlyAsFree) =>
                 {
                     false
                 }
-                Some(PathMode::AdditionsOnly) => {
-                    match (self.visible.get(&change.path), tree.get(&change.path)) {
-                        (Some(Entry::File(old)), Some(Entry::File(new))) => {
-                            !only_gained_lines(old, new)
-                        }
-                        (Some(_), _) => true,
-                        (None, _) => false,
+                Some(PathMode::AdditionsOnly) => match (before, now) {
+                    (Some(Entry::File(old)), Some(Entry::File(new))) => {
+                        !only_gained_lines(old, new)
                     }
-                }
+                    (Some(old), Some(new)) => old != new,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                },
                 Some(PathMode::Hidden) | Some(PathMode::Sensitive) | None => false,
             };
             if broke {

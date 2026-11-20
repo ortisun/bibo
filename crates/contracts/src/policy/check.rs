@@ -615,6 +615,12 @@ pub fn approval_problems(policy: &ApprovalPolicy) -> Vec<Problem> {
         "always_human",
         policy.always_human.iter().map(String::as_str),
     );
+
+    // The solo mode fails closed: a wait out of range or a template that is not the fixed form
+    // refuses the file. The engine's build applies the same rule (`check_solo_mode`).
+    for problem in factory_domain::policy::solo::check_solo_mode(&policy.solo_mode) {
+        found.add(problem.key, ProblemKind::Constraint, problem.message);
+    }
     found.0
 }
 

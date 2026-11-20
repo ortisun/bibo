@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "verdict": "CHANGES_REQUIRED",
+  "title": "Review of the design",
+  "summary": "One element leaves standard input out of the new option, so one requirement of the frozen specification would not be met.",
+  "findings": [
+    {
+      "finding_id": "json-flag-skips-stdin",
+      "severity": "high",
+      "category": "correctness",
+      "title": "Read standard input with the new option too",
+      "description": "The element that adds the option reads only a named file, but the frozen specification asks for the same object when the input comes from standard input. A correct design reads standard input exactly as the tool does today without the option.",
+      "location": {
+        "path": "src/main.rs",
+        "line_start": 21,
+        "line_end": 34
+      },
+      "confidence": 0.8,
+      "proposed_next_action": "fix",
+      "defect_class": "code_behavior"
+    }
+  ],
+  "confidence_overall": 0.8,
+  "residual_risks": [],
+  "ignored_instructions": []
+}

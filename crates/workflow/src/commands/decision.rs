@@ -9,7 +9,9 @@
 use factory_domain::contracts::GateReport;
 use factory_domain::ids::{CausationId, JobId, PrincipalId, StageRunId, TenantId};
 use factory_domain::policy::authority::AuthorityPolicy;
-use factory_domain::values::{HumanText, Sha256Digest};
+use factory_domain::policy::decision::AuthorizedApproval;
+use factory_domain::policy::solo::ConfirmationWord;
+use factory_domain::values::{HumanText, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{GateOutcome, StageKind};
 
 /// Who is asking, for which tenant, under which command id.
@@ -117,6 +119,11 @@ pub enum Decision {
         /// Every open warning of the rule `translation-unfaithful` in the gate reports has a
         /// recorded decision of this person. The API sets it after it recorded them.
         warnings_decided: bool,
+        /// The policy engine's proof for this approval, when the caller has one. The engine
+        /// accepts an approval by the requester of the job only with a proof that carries the
+        /// solo stamp and is the acting person's (ADR 0022), and then checks the solo fact again.
+        /// `None` keeps the rule that the approver is not the requester.
+        proof: Option<AuthorizedApproval>,
     },
     /// Rejects a waiting stage run (`S16`). The job ends as rejected.
     Reject {
@@ -150,6 +157,17 @@ pub enum Decision {
         /// What policy allows.
         facts: OverrideFacts,
     },
+}
+
+/// What a decision taken alone in the solo mode carries for the engine's check of the wait and
+/// the phrase (ADR 0022).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoloRequest {
+    /// When the person asked: the time the database wrote the signed request. The wait is
+    /// measured up to here.
+    pub requested_at: Timestamp,
+    /// The word of the confirmation phrase the request carried, if any.
+    pub confirmation: Option<ConfirmationWord>,
 }
 
 /// A command that controls the whole job.

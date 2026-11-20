@@ -582,7 +582,8 @@ repair_check() {
       cat "$out" >&2
       return 1
     fi
-    [ "$got" \> "20261103002800" ] || break
+    # Versions are 14-digit numbers, so compare them as integers. An empty answer means no migration is left.
+    if [ -z "$got" ] || [ "$got" -le 20261103002800 ]; then break; fi
   done
   if ! psql_db "$db" -f "$TESTS/00_helpers.sql" \
         -c "SELECT dbtest.mk_tenant(1)" \

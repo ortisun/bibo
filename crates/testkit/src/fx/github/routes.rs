@@ -99,8 +99,11 @@ pub(crate) enum Route {
     Collaborator,
     Branch,
     BranchProtection,
-    /// A file or a directory of the default branch (the workflow files, for the preflight).
+    /// A file or a directory at a commit, the default branch when no `ref` is given (the workflow
+    /// files, for the preflight, and the rules file).
     Contents,
+    /// Creates or replaces one file on a branch, as one new commit (the rules pull request).
+    ContentsPut,
     RefGet,
     RefCreate,
     RefUpdate,
@@ -143,6 +146,7 @@ impl Route {
             Route::Branch => "GET /repos/{owner}/{repo}/branches/{branch}",
             Route::BranchProtection => "GET /repos/{owner}/{repo}/branches/{branch}/protection",
             Route::Contents => "GET /repos/{owner}/{repo}/contents/{path}",
+            Route::ContentsPut => "PUT /repos/{owner}/{repo}/contents/{path}",
             Route::RefGet => "GET /repos/{owner}/{repo}/git/ref/heads/{branch}",
             Route::RefCreate => "POST /repos/{owner}/{repo}/git/refs",
             Route::RefUpdate => "PATCH /repos/{owner}/{repo}/git/refs/heads/{branch}",
@@ -215,6 +219,9 @@ pub(crate) fn match_route(method: &str, path: &str) -> Option<(Route, Vec<String
         }
         ("GET", ["repos", o, r, "contents", rest @ ..]) if !rest.is_empty() => {
             (Route::Contents, params(&[o, r, &rest.join("/")]))
+        }
+        ("PUT", ["repos", o, r, "contents", rest @ ..]) if !rest.is_empty() => {
+            (Route::ContentsPut, params(&[o, r, &rest.join("/")]))
         }
         ("GET", ["repos", o, r, "git", "ref", "heads", rest @ ..]) if !rest.is_empty() => {
             (Route::RefGet, params(&[o, r, &rest.join("/")]))
@@ -1013,6 +1020,22 @@ fn protection_summary(protection: &super::Protection) -> Value {
     })
 }
 
+/// The tree of a commit: its own when the contents write route or a lever made it, and the
+/// repository's one tree otherwise.
+pub(crate) fn tree_of(repo: &Repo, sha: &str) -> BTreeMap<String, Option<String>> {
+    repo.trees
+        .get(sha)
+        .cloned()
+        .unwrap_or_else(|| repo.files.clone())
+}
+
+/// A blob id for a file's text: 40 hexadecimal characters that change with the text. Not git's
+/// own blob hash; a caller only sends it back.
+pub(crate) fn blob_sha(text: Option<&str>) -> String {
+    let digest = crate::fx::digest::sha256(text.unwrap_or("\u{0}no text").as_bytes());
+    crate::fx::encoding::hex_encode(digest.get(..20).unwrap_or(&digest), false)
+}
+
 /// Moves every open pull request whose head is `branch` to `sha`, and makes older approvals
 /// stale.
 pub(crate) fn move_pull_heads(repo: &mut Repo, branch: &str, sha: &str) {
@@ -1378,10 +1401,20 @@ fn dispatch_repo(
         }
         Route::Contents => {
             require(token, "contents", "read")?;
-            let files = &state.repos[&full].files;
+            let repo = &state.repos[&full];
+            // The tree of the commit `ref` names (a branch or a commit id), else of the default
+            // branch.
+            let reference = request
+                .query_param("ref")
+                .unwrap_or_else(|| repo.default_branch.clone());
+            let sha = repo.branches.get(&reference).cloned().unwrap_or(reference);
+            let tree = tree_of(repo, &sha);
+            let files = &tree;
             let path = params[2].as_str();
             let name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_owned();
             if let Some(text) = files.get(path) {
+                let blob = blob_sha(text.as_deref());
+                let size = text.as_ref().map_or(2_000_000, String::len);
                 // A file. One the fake has no text for answers as GitHub does for a file over
                 // 1 MB: another encoding and an empty content.
                 let (encoding, content) = match text {
@@ -1397,8 +1430,8 @@ fn dispatch_repo(
                 };
                 return Ok(HttpResponse::json(
                     200,
-                    &json!({"type": "file", "name": name(path), "path": path,
-                        "encoding": encoding, "content": content}),
+                    &json!({"type": "file", "name": name(path), "path": path, "sha": blob,
+                        "size": size, "encoding": encoding, "content": content}),
                 ));
             }
             // A directory: its direct children, a deeper path as one `dir` entry.
@@ -1422,6 +1455,83 @@ fn dispatch_repo(
                 })
                 .collect();
             Ok(HttpResponse::json(200, &Value::Array(listing)))
+        }
+        Route::ContentsPut => {
+            require(token, "contents", "write")?;
+            let body = body_json(request)?;
+            let path = params[2].clone();
+            let Some(branch) = body["branch"].as_str().map(str::to_owned) else {
+                // GitHub writes to the default branch when no branch is named. The fake refuses,
+                // so that a caller that forgot the branch is caught.
+                return Err(ApiError::validation(
+                    "Contents",
+                    "branch",
+                    "missing_field",
+                    None,
+                ));
+            };
+            let text = body["content"]
+                .as_str()
+                .and_then(|encoded| {
+                    let joined: String = encoded.split_whitespace().collect();
+                    crate::fx::encoding::base64_decode(
+                        &joined,
+                        crate::fx::encoding::Base64Alphabet::Standard,
+                    )
+                })
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .ok_or_else(|| ApiError::validation("Contents", "content", "invalid", None))?;
+            if body["message"].as_str().is_none_or(|m| m.trim().is_empty()) {
+                return Err(ApiError::validation(
+                    "Contents",
+                    "message",
+                    "missing_field",
+                    None,
+                ));
+            }
+            let app_slug = state.app.slug.clone();
+            let sha = state.new_sha();
+            let repo = state.repos.get_mut(&full).expect("checked above");
+            let Some(tip) = repo.branches.get(&branch).cloned() else {
+                return Err(not_found());
+            };
+            if let Some(protection) = repo.protection.get(&branch)
+                && protection.require_pull_request
+                && !protection.bypass_apps.contains(&app_slug)
+            {
+                return Err(ApiError::new(
+                    409,
+                    &format!("Protected branch update failed for refs/heads/{branch}."),
+                ));
+            }
+            let mut tree = tree_of(repo, &tip);
+            // Replacing a file needs the blob id of the file it replaces, as on GitHub.
+            match (tree.get(&path), body["sha"].as_str()) {
+                (Some(existing), Some(given)) if given != blob_sha(existing.as_deref()) => {
+                    return Err(ApiError::new(409, "does not match"));
+                }
+                (Some(_), None) => {
+                    return Err(ApiError::new(422, "\"sha\" wasn't supplied."));
+                }
+                _ => {}
+            }
+            let created = !tree.contains_key(&path);
+            tree.insert(path.clone(), Some(text.clone()));
+            repo.trees.insert(sha.clone(), tree);
+            repo.branches.insert(branch.clone(), sha.clone());
+            move_pull_heads(repo, &branch, &sha);
+            state.pushes.push(PushRecord {
+                repo: full,
+                branch,
+                kind: "update".to_owned(),
+                sha: sha.clone(),
+                token_id: Some(token.id),
+            });
+            Ok(HttpResponse::json(
+                if created { 201 } else { 200 },
+                &json!({"content": {"path": path, "sha": blob_sha(Some(&text))},
+                        "commit": {"sha": sha}}),
+            ))
         }
         Route::BranchProtection => {
             require(token, "administration", "read")?;

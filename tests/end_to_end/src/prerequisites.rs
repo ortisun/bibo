@@ -427,17 +427,35 @@ pub fn listed_people(text: &str) -> Vec<ListedPerson> {
     people
 }
 
-/// Whether `policies/approval.yaml` lets the approver be the requester for a low-risk change
-/// (`approver_may_equal_requester_when_low_risk`). A file that cannot be read says no.
+/// Whether `policies/approval.yaml` switches the solo mode on (`solo_mode.enabled`, ADR 0022):
+/// the one person who may approve approves their own request, and the engine checks the
+/// conditions of the mode at each decision. A file that cannot be read says no.
 #[must_use]
-pub fn self_approval_allowed_when_low_risk(root: &Path) -> bool {
-    std::fs::read_to_string(root.join("policies/approval.yaml")).is_ok_and(|text| {
-        text.lines().any(|line| {
-            line.trim()
-                .strip_prefix("approver_may_equal_requester_when_low_risk:")
-                .is_some_and(|value| value.split('#').next().unwrap_or("").trim() == "true")
-        })
-    })
+pub fn solo_mode_enabled(root: &Path) -> bool {
+    std::fs::read_to_string(root.join("policies/approval.yaml"))
+        .is_ok_and(|text| solo_mode_enabled_in(&text))
+}
+
+/// Reads `enabled` in the top-level `solo_mode` block of an approval policy text. A key of the same
+/// name in another block, or a block with no `enabled` line, says no.
+#[must_use]
+pub fn solo_mode_enabled_in(text: &str) -> bool {
+    let mut inside = false;
+    for line in text.lines() {
+        let content = line.split('#').next().unwrap_or("");
+        if content.trim().is_empty() {
+            continue;
+        }
+        let top_level = !content.starts_with(' ') && !content.starts_with('\t');
+        if top_level {
+            inside = content.trim_end() == "solo_mode:";
+            continue;
+        }
+        if inside && let Some(value) = content.trim().strip_prefix("enabled:") {
+            return value.trim() == "true";
+        }
+    }
+    false
 }
 
 fn allowlist(host: &Host<'_>, found: &mut Vec<String>) {
@@ -472,18 +490,17 @@ fn allowlist(host: &Host<'_>, found: &mut Vec<String>) {
             ));
         }
     }
-    // The owner works alone: one person may hold both, when the approval policy lets the approver
-    // be the requester for a low-risk change. Otherwise an approver who is not a requester is
-    // needed.
+    // The owner works alone: one person may hold both when the solo mode is on (ADR 0022).
+    // Otherwise an approver who is not a requester is needed.
     let only_self = !approvers.is_empty()
         && approvers.iter().all(|approver| {
             requesters
                 .iter()
                 .any(|r| r.github_user_id == approver.github_user_id)
         });
-    if only_self && !self_approval_allowed_when_low_risk(host.root) {
+    if only_self && !solo_mode_enabled(host.root) {
         found.push(format!(
-            "the allowlist {} names no approver who is not also a requester, and policies/approval.yaml does not let the approver be the requester (approver_may_equal_requester_when_low_risk)",
+            "the allowlist {} names no approver who is not also a requester, and policies/approval.yaml does not switch the solo mode on (solo_mode.enabled)",
             path.display()
         ));
     }
@@ -530,7 +547,7 @@ pub fn code_owner_problems(
     });
     if only_requesters && !self_approval_allowed {
         return vec![
-            "the fixture's CODEOWNERS lists only the requester, and policies/approval.yaml does not let the requester approve; add a second owner"
+            "the fixture's CODEOWNERS lists only the requester, and policies/approval.yaml does not switch the solo mode on; add a second owner"
                 .to_owned(),
         ];
     }
@@ -567,7 +584,7 @@ fn code_owners(host: &Host<'_>, found: &mut Vec<String>) {
     found.extend(code_owner_problems(
         &text,
         &requesters,
-        self_approval_allowed_when_low_risk(host.root),
+        solo_mode_enabled(host.root),
     ));
 }
 
@@ -962,8 +979,26 @@ mod tests {
     }
 
     #[test]
-    fn the_repository_policy_lets_the_owner_approve_their_own_low_risk_request() {
-        assert!(self_approval_allowed_when_low_risk(&root()));
+    fn the_repository_policy_switches_the_solo_mode_on() {
+        assert!(solo_mode_enabled(&root()));
+    }
+
+    #[test]
+    fn only_the_enabled_line_of_the_solo_mode_block_counts() {
+        let on = "separation_of_duties:\n  enabled: false\nsolo_mode:\n  enabled: true   # the owner works alone\n  minimum_wait_minutes:\n    dependency: 10\n";
+        assert!(solo_mode_enabled_in(on));
+        assert!(!solo_mode_enabled_in(
+            &on.replace("enabled: true", "enabled: false")
+        ));
+        // `enabled` of another block, or after the block ends, is not the switch.
+        assert!(!solo_mode_enabled_in(
+            "other:\n  enabled: true\nsolo_mode:\n  minimum_wait_minutes: {}\n"
+        ));
+        assert!(!solo_mode_enabled_in(
+            "solo_mode:\n  phrase: x\nother:\n  enabled: true\n"
+        ));
+        assert!(!solo_mode_enabled_in("# solo_mode:\n#   enabled: true\n"));
+        assert!(!solo_mode_enabled_in(""));
     }
 
     #[test]

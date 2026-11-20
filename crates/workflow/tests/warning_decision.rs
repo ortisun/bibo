@@ -12,14 +12,15 @@ use factory_domain::policy::authority::{
     ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry, AutonomyLevel,
 };
 use factory_domain::policy::decision::{AuthorizedApproval, Designation, GithubUserId};
+use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::policy::{ApprovalPolicy, PolicyEngine, SecurityPolicy};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::StageRunStatus;
 use factory_domain::values::{HumanText, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{HumanRole, RiskTier, StageKind};
 use factory_ports::store::PrincipalKind;
-use factory_workflow::commands::{RecordWarningDecision, Subject};
-use factory_workflow::engine::EngineError;
+use factory_workflow::commands::{RecordWarningDecision, SoloRequest, Subject};
+use factory_workflow::engine::{EngineError, SoloRefusal};
 use factory_workflow::gates::supply_chain::approval::{
     RecordedApprovals, Request, authorize_build_code, authorize_warning,
 };
@@ -56,7 +57,14 @@ struct Rig {
 
 impl Rig {
     async fn new() -> Self {
-        let world = World::new().await;
+        Self::on(World::new().await).await
+    }
+
+    async fn solo() -> Self {
+        Self::on(World::solo().await).await
+    }
+
+    async fn on(world: World) -> Self {
         world.script(StageKind::Approval).with(|script| {
             script.document = Some(json!({
                 "kind": "approval-request",
@@ -177,6 +185,7 @@ impl Rig {
             risk_tier: RiskTier::Low,
             protected_path_change: false,
             sensitive_file_change: false,
+            solo: factory_domain::policy::solo::SoloFact::NONE,
         })
     }
 
@@ -205,6 +214,7 @@ impl Rig {
                     proof,
                     warning,
                     reason: reason(),
+                    solo: None,
                 },
             )
             .await
@@ -345,6 +355,7 @@ async fn a_repeat_of_the_command_is_applied_once() {
         proof,
         warning: 1,
         reason: reason(),
+        solo: None,
     };
     rig.world
         .engine
@@ -359,4 +370,76 @@ async fn a_repeat_of_the_command_is_applied_once() {
         .await;
     assert!(matches!(again, Err(EngineError::Duplicate)), "{again:?}");
     assert_eq!(rig.world.ledger(rig.job).await.len(), ledger);
+}
+
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
+
+impl Rig {
+    async fn record_solo(
+        &self,
+        phrase: Option<&str>,
+        seconds_after_wait: u64,
+    ) -> Result<factory_workflow::commands::WarningDecisionRecorded, EngineError> {
+        let proof = support::solo_proof(&self.world, authorize_warning);
+        let waited = self
+            .world
+            .engine
+            .state_entered_at(
+                self.world.tenant,
+                self.job,
+                self.run,
+                StageRunStatus::WaitingForHuman,
+            )
+            .await
+            .expect("a read")
+            .expect("the run waits");
+        self.world
+            .engine
+            .record_warning_decision(
+                &self.world.actor(self.world.requester),
+                RecordWarningDecision {
+                    stage: Subject {
+                        job: self.job,
+                        stage_run: self.run,
+                    },
+                    proof,
+                    warning: 1,
+                    reason: reason(),
+                    solo: Some(SoloRequest {
+                        requested_at: waited
+                            .checked_add(std::time::Duration::from_secs(seconds_after_wait))
+                            .expect("a time"),
+                        confirmation: phrase.map(ConfirmationWord::of),
+                    }),
+                },
+            )
+            .await
+    }
+
+    fn phrase(&self) -> String {
+        let job = self.job.as_text();
+        format!(
+            "I confirm the solo approval of translation warning 1 of job {}",
+            &job[..8]
+        )
+    }
+}
+
+#[tokio::test]
+async fn the_solo_wait_of_a_warning_counts_from_waiting_for_human() {
+    let rig = Rig::solo().await;
+    rig.world
+        .make_solo(&[HumanRole::Requester, HumanRole::Approver]);
+    let phrase = rig.phrase();
+    assert_eq!(
+        rig.record_solo(Some(&phrase), 599).await.err(),
+        Some(EngineError::SoloRefused(SoloRefusal::SoloDelay))
+    );
+    assert_eq!(
+        rig.record_solo(None, 600).await.err(),
+        Some(EngineError::SoloRefused(SoloRefusal::ConfirmationMissing))
+    );
+    rig.record_solo(Some(&phrase), 600)
+        .await
+        .expect("ten minutes after the wait began, with the phrase");
 }

@@ -25,7 +25,7 @@ The model that ran the skills was Claude Sonnet 5.5 (`claude-sonnet-5-5`) inside
 I first probed the same procedure in two throwaway copies of the repository, one per host, to learn the file list before touching this repository. The expected list matched the real result exactly.
 
 ```text
-$ cd ortisun-software-factory-ai
+$ cd bibo
 $ specify init --here --force --non-interactive --integration claude
 ```
 

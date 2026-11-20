@@ -225,6 +225,7 @@ struct World {
     pages: BTreeMap<String, String>,
     changed: BTreeSet<String>,
     env: BTreeSet<String>,
+    flags: BTreeSet<String>,
     head: String,
 }
 
@@ -243,6 +244,7 @@ fn world(readme: &str, changelog: Option<&str>) -> World {
         changed: pages.keys().cloned().collect(),
         pages,
         env: BTreeSet::new(),
+        flags: BTreeSet::new(),
         head: "b".repeat(40),
     }
 }
@@ -255,6 +257,7 @@ fn inputs(w: &World) -> Inputs<'_> {
         changed_docs: &w.changed,
         changelog_added: "- Added `--json`.\n",
         source_env: &w.env,
+        source_flags: &w.flags,
         code_head_now: &w.head,
         written_over: &w.head,
         secret: &|_| Some(false),

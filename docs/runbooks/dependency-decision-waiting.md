@@ -67,7 +67,7 @@ When the change itself adds a build script, a procedural macro or build dependen
 factory-cli approve-project-build-code --api "$FACTORY_API_URL" --token-file security.token JOB build.rs HASH_PREFIX I read the build script and it only prints cargo directives.
 ```
 
-Only a security approver other than the requester may decide. The decision counts for exactly that content: if the script is edited, it has another hash and the gate asks again. Then let the stage run go again with `unblock`, as above.
+Only a security approver other than the requester may decide, except in the solo mode ([ADR 0022](../adr/0022-solo-approval-mode.md)): on a `single_maintainer` repository where you are the one approving person, you may decide alone, at least 30 minutes after the stage run blocked, with `--confirm "I confirm the solo approval of build code PATH"`. The decision counts for exactly that content: if the script is edited, it has another hash and the gate asks again. Then let the stage run go again with `unblock`, as above.
 
 ## If something goes wrong
 
@@ -81,3 +81,7 @@ Only a security approver other than the requester may decide. The decision count
 
 - The supply chain gates and their reviews: [supply chain review](../reviews/supply-chain-and-delivery-security-review.md) and [re-review](../reviews/authority-api-supply-chain-security-rereview.md).
 - The policy rows `add_new_direct_dependency` and `approve_build_code` in `policies/approval.yaml`: [policy reference](../reference/policies.md).
+
+## When you asked for the job and approve alone (the solo mode)
+
+On a repository marked `single_maintainer` where you are the only person who holds `approver` or `security_approver`, you may decide on the dependencies of your own request ([ADR 0022](../adr/0022-solo-approval-mode.md)). Wait at least 10 minutes after the stage run blocked (30 for build code), and add the confirmation phrase: `--confirm "I confirm the solo approval of dependency NAME VERSION"` (or `build code NAME VERSION`). Without the phrase the API answers `confirmation_missing` and prints it; too early, the timeline shows `solo_delay` and you send the same command again later. A package published less than 30 days ago, and build code, need `security_approver` on your entry.

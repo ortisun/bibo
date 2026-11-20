@@ -60,6 +60,7 @@ pub mod paths;
 pub mod risk;
 pub mod routing;
 pub mod security;
+pub mod solo;
 pub mod tighten;
 pub mod tools;
 pub mod troubleshooting;

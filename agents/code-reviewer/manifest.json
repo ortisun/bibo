@@ -44,7 +44,7 @@
   "inputs_schema": {
     "name": "code-reviewer-input",
     "version": 1,
-    "sha256": "sha256:b138c731d7d59b7bafaf2ffb13cf6ebe915b27c2d43a64a1979f3e56f1a4e92e"
+    "sha256": "sha256:2aef70fb2d86f512c07f16ceeed1a2ab1274a1ca57a34b699002917cb6feb430"
   },
   "outputs_schema": {
     "name": "review-findings",
@@ -100,7 +100,7 @@
   },
   "prompt": {
     "template_path": "agents/code-reviewer/prompt.md",
-    "template_version": "1.2.0",
-    "template_sha256": "sha256:0804f82bd39348a0596211d329d27b6886b7436248b79bc5114b183bba1ed06c"
+    "template_version": "1.3.0",
+    "template_sha256": "sha256:a9c9b38090a7e567df4b8d76ec2a7ba19ac90b609e8c62a50093450729cff06e"
   }
 }

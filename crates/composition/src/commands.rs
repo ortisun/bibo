@@ -149,6 +149,9 @@ pub struct CommandContext {
     pub comment: Option<CommentEvidence>,
     /// Every open translation warning has a recorded decision of this person.
     pub warnings_decided: bool,
+    /// When the person asked and the confirmation word their request carried, for the solo
+    /// mode (ADR 0022). `None` for a channel that carries neither.
+    pub solo: Option<factory_workflow::commands::SoloRequest>,
 }
 
 impl ParsedDecision {
@@ -205,6 +208,7 @@ impl ParsedDecision {
             seen,
             warnings_decided: context.warnings_decided,
             rework_target: self.target,
+            solo: context.solo,
             comment: context.comment,
         })
     }
@@ -446,6 +450,7 @@ mod tests {
             channel: verb_channel,
             comment: None,
             warnings_decided: false,
+            solo: None,
         }
     }
 

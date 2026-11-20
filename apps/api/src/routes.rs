@@ -504,7 +504,8 @@ pub fn declared_statuses(op: Op) -> &'static [StatusCode] {
         | Op::SpecificationDraft
         | Op::GateReports
         | Op::Artifact => &[StatusCode::OK],
-        Op::Decide => &[StatusCode::ACCEPTED],
+        // A decision the solo mode refuses at once is answered 409 with its reason (ADR 0022).
+        Op::Decide => &[StatusCode::ACCEPTED, StatusCode::CONFLICT],
         // Register, attest and enable are signed requests that the worker applies (REG-2).
         Op::RegisterRepository | Op::AttestProjectMap | Op::EnableRepository => {
             &[StatusCode::ACCEPTED]

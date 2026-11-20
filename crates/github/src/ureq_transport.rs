@@ -70,6 +70,11 @@ impl UreqTransport {
             Method::Post => http::Method::POST,
             Method::Patch => http::Method::PATCH,
             Method::Delete => http::Method::DELETE,
+            // The transport checks the path once more: the client already refused any other.
+            Method::PutContents if crate::wire::is_contents_path(&request.target) => {
+                http::Method::PUT
+            }
+            Method::PutContents => return Err(TransportError::Protocol),
         };
         let mut builder = http::Request::builder().method(method).uri(url);
         for (name, value) in &request.headers {

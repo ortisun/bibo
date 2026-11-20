@@ -1243,6 +1243,70 @@ async fn a_single_maintainer_registration_needs_exactly_one_active_person_who_ho
     assert_eq!(code_of(&rig, none).await, "single_maintainer_not_allowed");
 }
 
+// ---- ADR 0026: the rules check is told about the onboarding acts ------------------------------------------------
+
+/// Records what it was told.
+#[derive(Default)]
+struct Told(Mutex<Vec<(TenantId, RepositoryId)>>);
+
+#[async_trait]
+impl factory_composition::project_rules::RepositoryOnboarded for Told {
+    async fn onboarded(&self, tenant: TenantId, repository: RepositoryId) {
+        self.0.lock().expect("lock").push((tenant, repository));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_rules_check_is_told_after_a_register_and_an_enable_and_not_after_an_attest() {
+    let rig = Rig::new().await;
+    let told = Arc::new(Told::default());
+    rig.step.tell_when_onboarded(told.clone());
+    let operator = rig.person(5_001).await;
+    let approver = rig.person(5_002).await;
+    rig.allowed.permit(operator.github, REGISTER_ACTION);
+    rig.allowed.permit(operator.github, ATTEST_ACTION);
+    rig.allowed.permit(approver.github, ENABLE_ACTION);
+    let id = rig.repository_id();
+    rig.ask(
+        operator,
+        register(id, 8_001, false),
+        &detail("org/new"),
+        Sign::Good,
+    )
+    .await;
+    rig.settle().await;
+    assert_eq!(told.0.lock().expect("lock").clone(), vec![(rig.tenant, id)]);
+    rig.ask(
+        operator,
+        Change::Attest {
+            repository: id,
+            commit: COMMIT.to_owned(),
+        },
+        "I read the map files.",
+        Sign::Good,
+    )
+    .await;
+    rig.settle().await;
+    assert_eq!(
+        told.0.lock().expect("lock").len(),
+        1,
+        "an attest is not an onboarding act"
+    );
+    rig.ask(approver, enable(id), "Read and agreed.", Sign::Good)
+        .await;
+    rig.settle().await;
+    assert_eq!(
+        told.0.lock().expect("lock").clone(),
+        vec![(rig.tenant, id), (rig.tenant, id)]
+    );
+    // A refused request tells nothing: the same enable again is refused as already applied.
+    let before = told.0.lock().expect("lock").len();
+    rig.ask(approver, enable(id), "Read and agreed.", Sign::Good)
+        .await;
+    rig.settle().await;
+    assert_eq!(told.0.lock().expect("lock").len(), before);
+}
+
 // ---- RH-2 and RH-12: what the worker asks and what it writes ---------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]

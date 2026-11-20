@@ -98,24 +98,46 @@ pub fn protected_paths<'a>(design: &'a Design, policy: &PolicyEngine) -> Vec<&'a
         .collect()
 }
 
+/// The paths of the design that the path policy lets an agent change and marks sensitive, such as
+/// a dependency manifest: a change to one runs extra checks and raises the tier to `high`.
+#[must_use]
+pub fn sensitive_paths<'a>(design: &'a Design, policy: &PolicyEngine) -> Vec<&'a str> {
+    design
+        .touched()
+        .into_iter()
+        .filter(|path| {
+            matches!(
+                policy.paths.check(
+                    RepoKind::Target,
+                    path,
+                    Operation::Add,
+                    None,
+                    &ChangeEvidence::default()
+                ),
+                PathVerdict::Allowed(allowance) if !allowance.sensitive.is_empty()
+            )
+        })
+        .collect()
+}
+
+/// The decisions of the design that a person must approve. The policy has no criterion of its own
+/// for them, so each one counts as `new_dependency`, the case the architect's schema names first.
+#[must_use]
+pub fn decisions_for_a_person(design: &Design) -> Vec<&str> {
+    design
+        .decisions
+        .iter()
+        .filter(|decision| decision.needs_person)
+        .map(|decision| decision.id.as_str())
+        .collect()
+}
+
 /// The facts the design shows.
 #[must_use]
 pub fn measure(design: &Design, policy: &PolicyEngine) -> RiskFacts {
     let touched = design.touched();
     let mut facts = RiskFacts::default();
-    let mut sensitive = false;
-    for path in &touched {
-        if let PathVerdict::Allowed(allowance) = policy.paths.check(
-            RepoKind::Target,
-            path,
-            Operation::Add,
-            None,
-            &ChangeEvidence::default(),
-        ) && !allowance.sensitive.is_empty()
-        {
-            sensitive = true;
-        }
-    }
+    let sensitive = !sensitive_paths(design, policy).is_empty();
     let protected = !protected_paths(design, policy).is_empty();
     facts.sensitive_file_change = sensitive;
     facts.protected_path_change = protected;
@@ -126,7 +148,7 @@ pub fn measure(design: &Design, policy: &PolicyEngine) -> RiskFacts {
     facts.multi_module_change = modules.len() > 1;
     facts.public_api_change = design.elements.iter().any(|e| e.kind == "interface");
     facts.schema_migration_without_data_loss = design.elements.iter().any(|e| e.kind == "data");
-    facts.new_dependency = design.decisions.iter().any(|d| d.needs_person);
+    facts.new_dependency = !decisions_for_a_person(design).is_empty();
 
     let every = |kind: &str| {
         !design.elements.is_empty() && design.elements.iter().all(|element| element.kind == kind)
@@ -211,6 +233,173 @@ mod tests {
         );
         assert!(is_single(&one));
         assert!(!is_single(&two));
+    }
+
+    fn policy() -> PolicyEngine {
+        let security: factory_domain::policy::SecurityPolicy = serde_json::from_str(include_str!(
+            "../../../../domain/tests/fixtures/policy/security.json"
+        ))
+        .expect("the security policy fixture");
+        let approval: factory_domain::policy::ApprovalPolicy = serde_json::from_str(include_str!(
+            "../../../../domain/tests/fixtures/policy/approval.json"
+        ))
+        .expect("the approval policy fixture");
+        PolicyEngine::new(&security, &approval).expect("the policies build")
+    }
+
+    fn named(id: &str, kind: &str, satisfies: &[&str], touches: &[&str]) -> Element {
+        Element {
+            id: id.into(),
+            kind: kind.into(),
+            satisfies: satisfies.iter().map(|s| (*s).to_owned()).collect(),
+            ..element(kind, touches)
+        }
+    }
+
+    fn decision(id: &str, needs_person: bool) -> Decision {
+        Decision {
+            id: id.into(),
+            title: "Write the JSON text by hand".into(),
+            choice: "Build the JSON text with the standard library, with no new dependency.".into(),
+            alternatives: vec!["Add a JSON library as a dependency.".into()],
+            consequences: "The formatter escapes nothing, because the object holds three numbers."
+                .into(),
+            needs_person,
+        }
+    }
+
+    /// The design an architect would give for the job of real run 27 of scenario E1: a `--json`
+    /// option on the word count tool, with its tests, README and changelog, and no new dependency
+    /// (FR-001 to FR-013 of the frozen specification).
+    fn json_option_design() -> Design {
+        design(
+            vec![
+                named(
+                    "json-option",
+                    "interface",
+                    &["FR-001", "FR-011", "FR-012"],
+                    &["src/main.rs"],
+                ),
+                named(
+                    "json-formatter",
+                    "module",
+                    &["FR-002", "FR-003", "FR-004", "FR-010", "FR-013"],
+                    &["src/main.rs"],
+                ),
+                named(
+                    "plain-output-kept",
+                    "module",
+                    &["FR-005", "FR-006"],
+                    &["src/main.rs"],
+                ),
+                named(
+                    "json-option-tests",
+                    "test",
+                    &["FR-001", "FR-003", "FR-004", "FR-006", "FR-012"],
+                    &["tests/cli.rs"],
+                ),
+                named(
+                    "json-option-docs",
+                    "documentation",
+                    &["FR-007", "FR-008"],
+                    &["README.md", "CHANGELOG.md"],
+                ),
+            ],
+            vec![decision("hand-written-json", false)],
+        )
+    }
+
+    fn tier_of(design: &Design, claim: Option<RiskTier>) -> RiskAssessment {
+        assess(design, &policy(), RiskFacts::default(), claim)
+    }
+
+    #[test]
+    fn a_json_option_with_tests_and_docs_is_a_public_interface_change_at_medium() {
+        let design = json_option_design();
+        let assessment = tier_of(&design, None);
+        assert_eq!(assessment.tier, RiskTier::Medium);
+        assert_eq!(assessment.computed, RiskTier::Medium);
+        assert_eq!(assessment.matched, ["public_api_change"]);
+        assert!(!assessment.unclassified);
+        // The tests and the top-level documents are no module, so the change spans one module.
+        let facts = measure(&design, &policy());
+        assert!(!facts.multi_module_change);
+        assert!(sensitive_paths(&design, &policy()).is_empty());
+        // The critic is asked from the high tier, so this design needs none.
+        assert!(assessment.tier < super::super::checks::Rules::default().critic_from);
+    }
+
+    #[test]
+    fn the_same_design_without_an_interface_element_is_low() {
+        let mut design = json_option_design();
+        design.elements[0].kind = "module".into();
+        let assessment = tier_of(&design, None);
+        assert_eq!(assessment.tier, RiskTier::Low);
+        assert_eq!(
+            assessment.matched,
+            ["single_module_change_without_sensitive_or_protected_paths"]
+        );
+    }
+
+    #[test]
+    fn a_dependency_manifest_in_touches_makes_the_design_high() {
+        // FR-009 says the change adds no dependency. An element that lists the manifest it read to
+        // show that, as files it touches, says that it changes a sensitive file.
+        let mut design = json_option_design();
+        design.elements.push(named(
+            "no-new-dependency",
+            "module",
+            &["FR-009"],
+            &["Cargo.toml", "Cargo.lock"],
+        ));
+        let assessment = tier_of(&design, None);
+        assert_eq!(assessment.tier, RiskTier::High);
+        assert!(
+            assessment
+                .matched
+                .contains(&"sensitive_file_change".to_owned()),
+            "{:?}",
+            assessment.matched
+        );
+        assert_eq!(
+            sensitive_paths(&design, &policy()),
+            ["Cargo.toml", "Cargo.lock"]
+        );
+    }
+
+    #[test]
+    fn a_decision_for_a_person_counts_as_a_new_dependency_and_is_high() {
+        let mut design = json_option_design();
+        design.decisions[0].needs_person = true;
+        let assessment = tier_of(&design, None);
+        assert_eq!(assessment.tier, RiskTier::High);
+        assert!(assessment.matched.contains(&"new_dependency".to_owned()));
+        assert_eq!(decisions_for_a_person(&design), ["hand-written-json"]);
+    }
+
+    #[test]
+    fn the_intakes_claim_raises_the_tier_and_never_lowers_it() {
+        let design = json_option_design();
+        let raised = tier_of(&design, Some(RiskTier::High));
+        assert_eq!(raised.tier, RiskTier::High);
+        assert_eq!(raised.computed, RiskTier::Medium);
+        let lowered = tier_of(&design, Some(RiskTier::Low));
+        assert_eq!(lowered.tier, RiskTier::Medium);
+    }
+
+    #[test]
+    fn a_design_that_touches_no_file_matches_no_criterion_and_is_high() {
+        let mut design = json_option_design();
+        for element in &mut design.elements {
+            element.touches.clear();
+        }
+        let assessment = tier_of(&design, None);
+        // The interface element still holds; with it gone, nothing is known.
+        assert_eq!(assessment.tier, RiskTier::Medium);
+        design.elements[0].kind = "module".into();
+        let assessment = tier_of(&design, None);
+        assert!(assessment.unclassified);
+        assert_eq!(assessment.tier, RiskTier::High);
     }
 
     fn is_single(design: &Design) -> bool {

@@ -930,7 +930,10 @@ impl Engine {
         let cancel = ctx.cancel;
         let output = prepared.handler.execute(ctx).await?;
         if let Some(request) = &output.needs_human {
-            let document = json!({ "needs_human": request.reason.as_str() });
+            let mut document = json!({ "needs_human": request.reason.as_str() });
+            if let Some(detail) = &request.detail {
+                document["detail"] = json!(detail);
+            }
             let stored = self
                 .store_document("needs-human-request", "application/json", &document)
                 .await?;

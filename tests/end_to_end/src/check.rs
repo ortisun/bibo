@@ -89,10 +89,10 @@ pub struct Env {
     pub stages: Vec<StageSpec>,
     /// The readability catalog that the gate uses.
     pub catalog: Arc<Catalog>,
-    /// Whether `policies/approval.yaml` lets the approver be the requester for a low-risk change
-    /// (`approver_may_equal_requester_when_low_risk`): the owner who works alone approves their
-    /// own low-risk request.
-    pub self_approval_when_low_risk: bool,
+    /// Whether `policies/approval.yaml` switches the solo mode on (`solo_mode.enabled`, ADR 0022):
+    /// the owner who works alone approves their own request, and the engine checks the conditions
+    /// of the mode, its wait and its phrase at each decision.
+    pub solo_mode: bool,
 }
 
 impl fmt::Debug for Env {
@@ -118,9 +118,7 @@ impl Env {
         Ok(Self {
             stages,
             catalog,
-            self_approval_when_low_risk: crate::prerequisites::self_approval_allowed_when_low_risk(
-                repository_root,
-            ),
+            solo_mode: crate::prerequisites::solo_mode_enabled(repository_root),
         })
     }
 

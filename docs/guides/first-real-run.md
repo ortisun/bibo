@@ -26,7 +26,7 @@ One thing is real and weaker than the policy's best: every review is made by ano
 
 ## Who does what
 
-You work alone, so you are the requester and the approver. The approval policy allows this for a low-risk change (`policies/approval.yaml`, `approver_may_equal_requester_when_low_risk: true`). The word-count change is meant to be low risk. The harness accepts your approval of your own request only when the job's recorded risk is low.
+You work alone, so you are the requester and the approver. The solo mode of the approval policy allows this (`policies/approval.yaml`, `solo_mode`; [ADR 0022](../adr/0022-solo-approval-mode.md)): on a repository marked `single_maintainer`, where you are the only person who holds `approver`, you may approve your own request. The word-count change is meant to be low risk, which needs no wait and no confirmation phrase.
 
 There is no public webhook endpoint. The run files the issue and applies the `factory` label with your own `gh` login, because the App has no permission to create issues. It then starts the job through the factory's API (`POST /v1/jobs`), as `factory-cli submit` does. The API checks you by your numeric GitHub id against your allowlist. The intake stage checks you again. It also compares the job's text with the live text of the issue, and refuses a job whose text differs.
 
@@ -124,7 +124,7 @@ Then make the ruleset: `scripts/setup-fixture-repository.sh --ruleset-only --app
 
 ### 6. Write your allowlist
 
-The allowlist names the people the factory knows, by numeric GitHub id. Write one entry for yourself and one for the person who approves. `gh api users/LOGIN --jq .id` prints the numeric id of a login. The tenant is any UUID; make one with `uuidgen | tr A-Z a-z`, and use the same one in both entries. Keep the file outside the repository.
+The allowlist names the people the factory knows, by numeric GitHub id. Write one entry, for yourself, with the three designations `requester`, `approver` and `operator`. `gh api users/LOGIN --jq .id` prints the numeric id of a login. The tenant is any UUID; make one with `uuidgen | tr A-Z a-z`. Keep the file outside the repository.
 
 ```yaml
 version: 1
@@ -132,14 +132,12 @@ entries:
   - tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60
     github_user_id: 1234567
     login: YOURNAME
-    designations: [requester, operator]
-  - tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60
-    github_user_id: 7654321
-    login: APPROVERNAME
-    designations: [approver]
+    designations: [requester, approver, operator]
 ```
 
-The run files the issue as you, so you are the requester of the job. The engine lets nobody approve their own request, so the approver must be another GitHub account. The run writes that person's API token to `approver-api-token` in the evidence folder, and the approve, reject and send-back commands it prints use that file. Without a second approver the run stops at its first approval: the engine refuses the approval of the specification draft.
+The run files the issue as you, so you are the requester of the job, and you approve it too. Nobody approves their own request, except in the solo mode ([ADR 0022](../adr/0022-solo-approval-mode.md)): the run seeds its repository as `single_maintainer`, and your entry is the only one that holds `approver`, so the factory lets you approve alone. The approval of the specification draft and of a low or medium pull request needs nothing more. A high or critical pull request needs a wait (10 minutes at high, 30 at critical, counted from the moment it starts to wait) and the confirmation phrase; the run prints the approve command with `--confirm "I confirm the solo approval of PR N at level high"` already in it. A decision on a new dependency, on build code or on a translation warning also takes a wait and a phrase; if you send it without the phrase, the API answers with the phrase to use. Build code and a critical pull request need `security_approver`: add it to your designations only if you want to decide those alone.
+
+A second approver is optional. If you add a second entry, with the same tenant, another GitHub account and `designations: [approver]`, there are two approving people, the solo mode does not apply, and that person approves: the run writes their API token to `approver-api-token` in the evidence folder, and the approve, reject and send-back commands it prints use that file.
 
 ### 7. Run E1
 
@@ -167,7 +165,7 @@ The run talks to you on the terminal, and it writes the same lines to `target/e2
 | The specification draft waits | Read it with `factory-cli show-draft`. Approve it with `factory-cli approve JOB STAGE_RUN head=H evidence=sha256:D`, or reject it with `factory-cli reject`. The run prints the exact values. |
 | The specification asked questions | `factory-cli show-draft` lists them (`Q-001: ...`). Answer them with `factory-cli answer JOB STAGE_RUN -- Q-001: <answer> Q-002: <answer>`; the stage runs again with the answers. The run prints the command and the questions on its `Answer it:` line. |
 | A review waits (rare: only when no other Claude model is served) | See the next section. The factory refuses an approval there. |
-| The draft pull request waits | Read it on GitHub. Approve it with `factory-cli approve`, or reject it. Approving merges nothing: the pull request stays a draft. |
+| The draft pull request waits | Read it on GitHub. Approve it with `factory-cli approve`, or reject it. At high or critical risk, approving alone takes the wait and the `--confirm` phrase the run prints; too early, the factory refuses with `solo_delay` and you send the same command again later. Approving merges nothing: the pull request stays a draft. |
 
 A decision may wait 240 minutes. Set `FACTORY_E2E_HUMAN_WAIT_MINUTES` to change that. When the time is up, the run stops and records what it has.
 

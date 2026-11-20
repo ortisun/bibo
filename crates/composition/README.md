@@ -57,6 +57,8 @@ needed from this crate, and what it added:
 * `PolicySpecs::verify_sandbox` and `fetch_sandbox`, the fixed part of the sandboxes the validation and documentation review
   stages carry in their own configuration, with the environment the pinned image needs (`CARGO_TARGET_DIR`, `CARGO_HOME`,
   `CARGO_NET_OFFLINE`, `TMPDIR`).
+* `sandbox_specs::agent_build_env`, the build variables of the Claude Code and Codex runs (ADR 0024): the same target and
+  temporary directories as the `verify` sandbox, offline, with the cargo home in each run's own home.
 * `YamlManifests` as the `ManifestReader` of the validation stage.
 * The indexing wrappers (`IndexingSandbox`, `IndexingWorkspaces`) around the sandbox and the workspaces, and the loop noting the
   tenant of each attempt in `ActiveJobs` before it runs it.

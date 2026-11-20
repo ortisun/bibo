@@ -293,6 +293,11 @@
     "path": ".factory/project.yaml",
     "sha256": "sha256:32412ae8c3535aa02d52161b699377c052e5c4e7a3ebe91d68665739a1ee445f"
   },
+  "project_rules": {
+    "origin": "built_in",
+    "path": "AGENTS.md",
+    "sha256": "sha256:7da903fda93875ae6d6ede433ab677d7b8d85d766056ddfb1a19a6e9aa4eccca"
+  },
   "protected_paths": [
     {
       "evidence": {

@@ -238,6 +238,21 @@ fn negative_nt_pol_02_each_widening_is_refused_and_names_its_key() {
             }),
         ),
         (
+            "raises the design rework cap",
+            "budgets.hard_ceilings.per_job.max_design_rework_iterations",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_design_rework_iterations"] = 3.into();
+            }),
+        ),
+        (
+            "raises the specification rework cap",
+            "budgets.hard_ceilings.per_job.max_specification_rework_iterations",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_specification_rework_iterations"] =
+                    3.into();
+            }),
+        ),
+        (
             "adds a tool grant",
             "tools.entries[net.shell]",
             Box::new(|j| {
@@ -729,6 +744,19 @@ fn negative_nt_pol_02_tightenings_are_accepted() {
             }),
         ),
         (
+            "lowers the design rework cap to zero",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_design_rework_iterations"] = 0.into()
+            }),
+        ),
+        (
+            "lowers the specification rework cap to one",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_specification_rework_iterations"] =
+                    1.into()
+            }),
+        ),
+        (
             "lowers a memory limit",
             Box::new(|j| j["sandbox"]["profiles"]["agent"]["limits"]["memory_mb"] = 512.into()),
         ),
@@ -1099,4 +1127,56 @@ fn negative_nt_pol_02_approval_tightenings_are_accepted() {
         let keys = keys_of(app(change));
         assert!(keys.is_empty(), "{name} must be accepted, got {keys:?}");
     }
+}
+
+#[test]
+fn negative_nt_pol_02_a_project_cannot_turn_the_solo_mode_on_or_shorten_the_wait() {
+    // A central policy with the mode off: a project may not turn it on.
+    let mut off = approval_json();
+    off["solo_mode"]["enabled"] = false.into();
+    let central_off = approval_from(off.clone());
+    let mut on = off.clone();
+    on["solo_mode"]["enabled"] = true.into();
+    assert_eq!(
+        keys_of(check_approval(&central_off, &approval_from(on))),
+        vec!["solo_mode.enabled".to_owned()]
+    );
+    // With the mode on centrally, a project may turn it off.
+    assert_eq!(
+        keys_of(app(|j| j["solo_mode"]["enabled"] = false.into())),
+        Vec::<String>::new()
+    );
+    // A shorter wait is refused, a longer one is accepted.
+    for wait in [
+        "pull_request_high",
+        "pull_request_critical",
+        "dependency",
+        "translation_warning",
+        "build_code",
+    ] {
+        let key = format!("solo_mode.minimum_wait_minutes.{wait}");
+        let shorter = keys_of(app(|j| {
+            j["solo_mode"]["minimum_wait_minutes"][wait] = 1.into();
+        }));
+        assert_eq!(shorter, vec![key.clone()], "{wait}");
+        let longer = keys_of(app(|j| {
+            j["solo_mode"]["minimum_wait_minutes"][wait] = 1440.into();
+        }));
+        assert!(longer.is_empty(), "{wait}: {longer:?}");
+    }
+    // The template stays as the central policy writes it.
+    assert_eq!(
+        keys_of(app(|j| {
+            j["solo_mode"]["confirmation_template"] =
+                "I confirm the solo approval of {target}!".into();
+        })),
+        vec!["solo_mode.confirmation_template".to_owned()]
+    );
+    // The requester may not be allowed back to approve at low risk.
+    assert_eq!(
+        keys_of(app(|j| {
+            j["separation_of_duties"]["approver_may_equal_requester_when_low_risk"] = true.into();
+        })),
+        vec!["separation_of_duties.approver_may_equal_requester_when_low_risk".to_owned()]
+    );
 }

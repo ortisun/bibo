@@ -91,6 +91,7 @@ async fn restart_keeps_commits_and_a_new_provider_can_push_and_start_at_them() {
                 job: support::job(1),
                 attempt: support::attempt(2),
                 base: commit.clone(),
+                protected_base: None,
                 rules: fixture_rules(),
                 purpose: WorkspacePurpose::Agent,
             },
