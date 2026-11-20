@@ -237,6 +237,8 @@ A rule may block only when all three of these hold.
 
 Everything else warns. A finding made by the reviewer is always a warning.
 
+The gate judges a page's title only when the change sets or changes it. A title the page already had at the commit the job started from belongs to the project, and the documentation writer may not rename the project's pages to please a rule, so the title rules do not read it; the body of the page is still judged. In the thirty-fifth real run the README of the word count tool kept its title, `word-count`, the name of the program, and the gate failed the page three times for a title the change never touched.
+
 ### 9.4 The rules
 
 Each rule has an identifier that is also a valid `check_id` in a gate report. The exact definition, the word lists and the reference patterns are in `fixtures/readability/rules.json`. Where a rule is a heuristic, the test corpus is the specification at the boundary.
@@ -312,6 +314,8 @@ Master prompt section 10.4 lists what a PASS requires. This table says who decid
 | Claims match the code, tests and behavior | The independent documentation reviewer | `PASS` with no unresolved blocking finding | The reviewer cannot run | The documents make no claims about behavior |
 
 The result is stored with the source-to-document traceability, the documentation changes, the lint results and the reviewer decisions.
+
+How a named flag counts as the program's own: the program's help output lists it, or the program's source code at the documentation commit holds it as a quoted literal (for example `"--json"`). The help output is not enough on its own, because a project may decide that its help text does not change: in the thirty-fifth real run the owner kept the help text of the word count tool as it was, the README documented the new `--json` flag, and the check called the flag invented. A command counts as the program's when the help output names it. An environment variable counts when the source reads it or the help output names it.
 
 ## 10. Changing this policy
 
