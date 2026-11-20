@@ -60,6 +60,7 @@ pub mod routing;
 pub mod security;
 pub mod tighten;
 pub mod tools;
+pub mod troubleshooting;
 
 mod engine;
 
