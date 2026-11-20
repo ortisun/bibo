@@ -54,6 +54,42 @@ pub(super) async fn commit_exists(
     Ok(out.exit_code == Some(0))
 }
 
+/// True when `ancestor` is `descendant` or one of its ancestors in the store. Git answers 0 for
+/// yes and 1 for no; any other answer is a failure, never a yes.
+pub(super) async fn is_ancestor(
+    shared: &Shared,
+    dirs: &JobDirs,
+    ancestor: &CommitSha,
+    descendant: &CommitSha,
+    cancel: &dyn CancelSignal,
+) -> Result<bool, WorkspaceError> {
+    let out = shared
+        .git
+        .run(
+            GitOperation::Read,
+            Invocation::new(
+                &dirs.store,
+                &dirs.dir,
+                &[
+                    "merge-base",
+                    "--is-ancestor",
+                    ancestor.as_str(),
+                    descendant.as_str(),
+                ],
+            ),
+            cancel,
+        )
+        .await?;
+    match out.exit_code {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        exit => Err(WorkspaceError::Git {
+            operation: GitOperation::Read,
+            exit,
+        }),
+    }
+}
+
 /// Makes the store when the job has none.
 async fn ensure_store(
     shared: &Shared,

@@ -897,6 +897,7 @@ impl World {
                     job: self.job,
                     attempt: self.attempt,
                     base: commit.clone(),
+                    protected_base: None,
                     rules: fixture_rules(),
                     purpose: match profile {
                         SandboxProfile::Verify => WorkspacePurpose::Verify {

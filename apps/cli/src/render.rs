@@ -59,6 +59,71 @@ fn text<'a>(value: &'a Value, key: &str) -> Cow<'a, str> {
     printable(value.get(key).and_then(Value::as_str).unwrap_or("unknown"))
 }
 
+/// The lines of a refusal of the solo mode (ADR 0022), or `None` for any other answer. Every
+/// field of the body goes through [`printable`].
+fn solo_refusal(status: u16, code: &str, body: &Value) -> Option<String> {
+    match code {
+        "ineligible_approver" => {
+            let needed = text(body, "needed_designation");
+            let reason = match body.get("reason").and_then(Value::as_str) {
+                Some("solo_mode_disabled") => {
+                    "the solo mode is switched off in the approval policy".to_owned()
+                }
+                Some("not_single_maintainer") => {
+                    "the repository is not marked single_maintainer".to_owned()
+                }
+                Some("more_than_one_approver") => {
+                    "more than one person holds an approving designation".to_owned()
+                }
+                Some("designation_missing") => {
+                    format!("you lack the designation this action needs ({needed})")
+                }
+                _ => "the reason was not given".to_owned(),
+            };
+            let what = if body.get("reason").and_then(Value::as_str) == Some("designation_missing")
+            {
+                format!(
+                    "What to do: get the designation {needed} on the allowlist, or have another person who holds it decide"
+                )
+            } else {
+                "What to do: have another approver decide".to_owned()
+            };
+            let approvers: Vec<String> = body
+                .get("approvers")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .map(|person| {
+                            let id = person
+                                .get("github_user_id")
+                                .and_then(Value::as_u64)
+                                .map_or_else(|| "unknown".to_owned(), |id| id.to_string());
+                            let login = person
+                                .get("login")
+                                .and_then(Value::as_str)
+                                .map_or(Cow::Borrowed("no login"), printable);
+                            format!("{login} ({id})")
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let who = if approvers.is_empty() {
+                "Approvers: nobody else is listed".to_owned()
+            } else {
+                format!("Approvers: {}", approvers.join(", "))
+            };
+            Some(format!(
+                "The API answered {status}: you asked for this job, and the solo mode does not apply: {reason}.\n{what}\n{who}"
+            ))
+        }
+        "confirmation_missing" => Some(format!(
+            "The API answered {status}: the solo mode needs the confirmation phrase for this decision, and yours is missing or wrong.\nSend it with --confirm: {}",
+            text(body, "expected_confirmation")
+        )),
+        _ => None,
+    }
+}
+
 /// A line for an answer with an error code.
 #[must_use]
 pub fn refusal(status: u16, body: &Value) -> String {
@@ -66,6 +131,9 @@ pub fn refusal(status: u16, body: &Value) -> String {
         .get("error")
         .and_then(Value::as_str)
         .unwrap_or("no_reason_given");
+    if let Some(lines) = solo_refusal(status, code, body) {
+        return lines;
+    }
     let field = body.get("field").and_then(Value::as_str).map(printable);
     let meaning = match code {
         "unauthorized" => {

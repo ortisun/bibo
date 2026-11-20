@@ -60,6 +60,17 @@ pub trait Authority: Send + Sync {
         principal: PrincipalId,
     ) -> Result<Vec<HumanRole>, AuthorityError>;
 
+    /// How many active people of the tenant hold an approving designation (`approver` or
+    /// `security_approver`) on `repository`, now. An `approver` and a different
+    /// `security_approver` are two. The solo mode needs exactly one (ADR 0022): the engine asks
+    /// here when it commits a decision the requester took alone. There is no default: a reading
+    /// that fails is [`AuthorityError::Unavailable`] and the engine refuses.
+    async fn approver_count(
+        &self,
+        tenant: TenantId,
+        repository: RepositoryId,
+    ) -> Result<u32, AuthorityError>;
+
     /// Whether the concurrency quota allows another attempt for the job.
     async fn concurrency_allows(
         &self,

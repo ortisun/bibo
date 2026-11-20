@@ -145,6 +145,56 @@ async fn pair_repository_intelligence_to_its_readers() {
     assert_eq!(map.name, implementation_input::REPOSITORY_MAP);
 }
 
+/// ADR 0026: the repository stage stores the rules the later agents get, and the map says where
+/// they came from. The fixture has no `AGENTS.md`, so the rules are the factory's built-in copy.
+#[tokio::test]
+async fn pair_repository_intelligence_rules_to_the_agent_stages() {
+    use factory_workflow::stages::project_rules;
+    let job = Intake::run().await;
+    let rules = job.real(
+        StageKind::RepositoryIntelligence,
+        project_rules::PROJECT_RULES,
+    );
+    assert_eq!(rules.bytes, project_rules::built_in().into_bytes());
+    let map = job
+        .real(StageKind::RepositoryIntelligence, "repository-map")
+        .json();
+    assert_eq!(map["project_rules"]["origin"], "built_in");
+    assert_eq!(map["project_rules"]["path"], "AGENTS.md");
+    assert_eq!(
+        map["project_rules"]["sha256"],
+        Sha256Digest::of(&rules.bytes).as_str()
+    );
+    // A later stage pins what the repository stage stored, by its digest.
+    let specified = Specified::run().await.universe;
+    let stored = specified.find(
+        StageKind::RepositoryIntelligence,
+        project_rules::PROJECT_RULES,
+    );
+    assert_eq!(
+        pinned(
+            &specified,
+            StageKind::Specification,
+            project_rules::PROJECT_RULES
+        ),
+        stored.artifact.sha256
+    );
+    let planned = Planned::run().await;
+    let stored = planned.find(
+        StageKind::RepositoryIntelligence,
+        project_rules::PROJECT_RULES,
+    );
+    for consumer in [StageKind::Architecture, StageKind::TaskPlanning] {
+        if planned.real.contains(&consumer) {
+            assert_eq!(
+                pinned(&planned, consumer, project_rules::PROJECT_RULES),
+                stored.artifact.sha256,
+                "{consumer}"
+            );
+        }
+    }
+}
+
 #[test]
 fn pair_domain_discovery_is_pending() {
     // No producer exists, so the pair is not run. The name the readers ask for is the one the

@@ -69,6 +69,7 @@ async fn defect_1_fixed_a_persons_approval_is_recorded_on_postgres_and_the_job_c
             Decision::Approve {
                 evidence_seen: seen,
                 warnings_decided: true,
+                proof: None,
             },
         )
         .await

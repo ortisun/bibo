@@ -195,6 +195,7 @@ pub async fn in_sandbox(
                 job: io.job,
                 attempt: io.attempt,
                 base: commit.clone(),
+                protected_base: None,
                 rules: io.cfg.path_rules.clone(),
                 purpose: WorkspacePurpose::Verify {
                     holdouts: io.cfg.holdouts.clone(),

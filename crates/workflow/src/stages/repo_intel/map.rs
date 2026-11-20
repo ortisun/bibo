@@ -92,6 +92,20 @@ const MANIFEST: Shape = Shape::Object(&[
     ("sha256", Shape::Text),
     ("evidence", Shape::Place),
 ]);
+/// Where the rules for agents came from (ADR 0026): the path read, the digest of the text the
+/// agents get, its origin, and why the built-in copy was used for a file that is there.
+const RULES: Shape = Shape::Object(&[
+    ("path", Shape::Text),
+    ("sha256", Shape::Text),
+    (
+        "origin",
+        Shape::OneOf(&["repository", "repository_with_factory_rules", "built_in"]),
+    ),
+    (
+        "fallback",
+        Shape::Optional(&Shape::OneOf(&["too_large", "not_utf8"])),
+    ),
+]);
 const BLOCKED: Shape = Shape::Object(&[("code", Shape::Text), ("missing", Shape::Text)]);
 const BASELINE: Shape = Shape::Object(&[
     ("status", Shape::OneOf(&["ready", "blocked"])),
@@ -118,6 +132,7 @@ const MAP: Shape = Shape::Object(&[
     ("documents", Shape::List(&DOCUMENT)),
     ("excluded_paths", Shape::List(&EXCLUDED)),
     ("project_manifest", Shape::Optional(&MANIFEST)),
+    ("project_rules", Shape::Optional(&RULES)),
     ("base_branch", Shape::Optional(&Shape::Text)),
     ("git_settings", Shape::Optional(&MANIFEST)),
     ("baseline", BASELINE),

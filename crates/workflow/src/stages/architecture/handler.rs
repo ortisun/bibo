@@ -165,6 +165,11 @@ fn resolve(
     ) {
         inputs.push(profile);
     }
+    // The project's rules for agents (ADR 0026), given to the architect and the critic.
+    inputs.extend(crate::stages::project_rules::contract_input(
+        ctx.upstream,
+        ctx.now,
+    ));
     inputs.push(ContractInput {
         name: POLICY_INPUT,
         description: "The hash of the policy bundle in force when the stage run was resolved.",
@@ -287,6 +292,15 @@ impl StageHandler for ArchitectureHandler {
             probed: self.probes.probed(),
             author: None,
         })
+    }
+
+    /// The critic runs inside the same stage run as the architect, when the risk tier of the
+    /// design needs one. The engine routes this need against the architect's model and puts both
+    /// models in the job token, so the critic is never routed to the architect's own model. The
+    /// tier is known only after the design exists, so the need is declared for every run: a run
+    /// that needs no critic leaves the second model unused.
+    fn reviewer_routing_need(&self, ctx: &ContractContext<'_>) -> Option<RoutingNeed> {
+        self.routing_need(ctx)
     }
 
     fn contract(&self, ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {

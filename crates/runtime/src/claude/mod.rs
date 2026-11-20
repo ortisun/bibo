@@ -50,7 +50,7 @@ use factory_ports::sandbox::SandboxSession;
 
 use crate::attest::{Attestor, Claim, rejected_note};
 use crate::command::{
-    EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, MCP_TOKEN_LAUNCHER,
+    BuildEnv, EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, MCP_TOKEN_LAUNCHER,
     OAUTH_AND_MCP_TOKEN_LAUNCHER, OAUTH_TOKEN_LAUNCHER, ToolCommand, ToolEnv, broker_origin,
 };
 use crate::future::BoxFuture;
@@ -78,6 +78,10 @@ pub const PINNED_VERSION: &str = "2.1.311";
 /// Where the image puts the tool.
 pub const DEFAULT_BINARY: &str = "/usr/local/bin/claude";
 
+/// The `PATH` Claude Code starts with: the Rust toolchain of the agent image, then the system
+/// directories. Every directory is one the image's own `PATH` lists.
+pub const DEFAULT_PATH: &str = "/opt/rust/bin:/usr/local/bin:/usr/bin:/bin";
+
 /// How the adapter is set up. The defaults match the pinned image.
 #[derive(Debug, Clone)]
 pub struct ClaudeCodeConfig {
@@ -100,6 +104,9 @@ pub struct ClaudeCodeConfig {
     /// How the job token reaches the tool. The composition root sets it from
     /// `credentials.model_providers.mode` of the security policy.
     pub credential: argv::ClaudeCredential,
+    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0024). The
+    /// composition root sets it from the sandbox layout.
+    pub build: BuildEnv,
 }
 
 impl Default for ClaudeCodeConfig {
@@ -107,13 +114,17 @@ impl Default for ClaudeCodeConfig {
         Self {
             binary: DEFAULT_BINARY.to_owned(),
             accepted_versions: vec![PINNED_VERSION.to_owned()],
-            path: "/usr/local/bin:/usr/bin:/bin".to_owned(),
+            // The toolchain of the agent image comes first, as in the image's own PATH
+            // (`infra/sandbox-images/agent/Dockerfile`). Without it the builder of the
+            // thirty-first real run found no `cargo` and could run no test.
+            path: DEFAULT_PATH.to_owned(),
             home_root: "/tmp".to_owned(),
             max_retries: 2,
             transcript_cap_bytes: 16 * 1024 * 1024,
             max_turns_cap: 200,
             spec_skills: None,
             credential: argv::ClaudeCredential::default(),
+            build: BuildEnv::default(),
         }
     }
 }
@@ -330,8 +341,10 @@ impl ClaudeCodeRuntime {
             return early(never_started(), version);
         };
         let env = ToolEnv::new()
-            .set(EnvName::Home, home)
+            .set(EnvName::Home, home.clone())
             .and_then(|e| e.set(EnvName::Path, self.config.path.clone()))
+            // A `cargo` the agent starts builds outside the workspace the ingestion audit walks.
+            .and_then(|e| self.config.build.apply(e, &home))
             .and_then(|e| e.set(EnvName::AnthropicBaseUrl, base))
             .and_then(|e| e.set(EnvName::ClaudeDisableNonessentialTraffic, "1"))
             .and_then(|e| {

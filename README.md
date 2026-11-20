@@ -1,6 +1,8 @@
-# The universal agentic software factory
+# Bibo
 
-This repository holds the control plane of a software factory. It takes one authorized GitHub issue and turns it into a reviewed draft pull request with an evidence trail. A person approves the result. The factory never merges and never deploys.
+Bibo is a universal agentic software factory. Its home is [github.com/ortisun/bibo](https://github.com/ortisun/bibo).
+
+This repository holds the control plane of the software factory. It takes one authorized GitHub issue and turns it into a reviewed draft pull request with an evidence trail. A person approves the result. The factory never merges and never deploys.
 
 ## What the factory is
 

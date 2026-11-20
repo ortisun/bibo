@@ -21,13 +21,15 @@ use crate::support::{read_text, repo_root};
 pub mod checks;
 pub mod render;
 
-/// The Slice 1 agent set, by directory name. The package `s1-agent-definitions` asks for exactly
-/// these nine roles and no others.
-pub const SLICE_1_AGENTS: [&str; 9] = [
+/// The Slice 1 agent set, by directory name. The package `s1-agent-definitions` asked for nine
+/// roles; the tenth, `architecture-critic`, is the independent critic the architecture stage asks
+/// for when the policy's risk tier needs one (`crates/workflow/src/stages/architecture/critic.rs`).
+pub const SLICE_1_AGENTS: [&str; 10] = [
     "intake-classifier",
     "specification-writer",
     "specification-reviewer",
     "architect",
+    "architecture-critic",
     "planner",
     "builder",
     "code-reviewer",
@@ -145,11 +147,12 @@ pub fn profile_value(file: &ProfileFile) -> Value {
 }
 
 /// The output schema each agent returns, by agent directory name. The manifests must agree.
-pub const OUTPUT_SCHEMA_OF: [(&str, &str); 10] = [
+pub const OUTPUT_SCHEMA_OF: [(&str, &str); 11] = [
     ("intake-classifier", "intake-classification"),
     ("specification-writer", "specification-report"),
     ("specification-reviewer", "review-findings"),
     ("architect", "architecture-design"),
+    ("architecture-critic", "review-findings"),
     ("planner", "planner-result"),
     ("builder", "builder-report"),
     ("code-reviewer", "review-findings"),

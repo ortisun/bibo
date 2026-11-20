@@ -37,12 +37,14 @@ use super::error::EngineError;
 use super::ledger::ClaimSpec;
 use super::links;
 use super::record::{Cx, index_entry};
+use super::solo::SoloCheck;
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, RecordWarningDecision, WarningDecisionRecorded};
 use crate::gates::supply_chain::approval::{ApprovalError, DecisionScope};
 use crate::stages::approval::warnings::ARTIFACT_NOTE;
 use crate::stages::approval::warnings::{WarningDecision, warnings_of_request};
+use factory_domain::policy::solo::{SoloTarget, SoloWait};
 
 impl Engine {
     /// Records an approver's decision about one translation warning. See the module notes.
@@ -74,7 +76,7 @@ impl Engine {
                 &mut *tx,
                 &cx,
                 (actor, &roles),
-                (&run, job.value.requester),
+                (&run, &job.value),
                 &timeline,
                 &request,
             )
@@ -90,7 +92,11 @@ impl Engine {
                 cx.commit(tx).await?;
                 Ok(recorded)
             }
-            Err(error @ (EngineError::NotAuthorized(_) | EngineError::Refused(_))) => {
+            Err(
+                error @ (EngineError::NotAuthorized(_)
+                | EngineError::Refused(_)
+                | EngineError::SoloRefused(_)),
+            ) => {
                 drop(tx);
                 self.record_denial(
                     actor,
@@ -109,9 +115,9 @@ impl Engine {
         tx: &mut dyn Tx,
         cx: &Cx<'_>,
         (actor, roles): (&Actor, &[HumanRole]),
-        (run, requester): (
+        (run, job): (
             &factory_ports::store::Versioned<factory_ports::store::StageRun>,
-            factory_domain::ids::PrincipalId,
+            &factory_ports::store::Job,
         ),
         timeline: &Timeline,
         request: &RecordWarningDecision,
@@ -122,12 +128,26 @@ impl Engine {
                 tx,
                 actor,
                 roles,
-                requester,
+                job,
                 &request.proof,
                 (
                     &[Designation::Approver],
                     "the person who asked for the job may not decide on its translation warnings",
                 ),
+                &SoloCheck {
+                    request: request.solo.as_ref(),
+                    milestone: timeline
+                        .run(run.value.id)
+                        .and_then(|r| r.waiting_for_human_at),
+                    wait: SoloWait::TranslationWarning,
+                    expected: self
+                        .config
+                        .solo
+                        .expected_word(&SoloTarget::TranslationWarning {
+                            number: request.warning,
+                            job: cx.job,
+                        }),
+                },
             )
             .await?;
 

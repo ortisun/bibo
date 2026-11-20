@@ -74,7 +74,8 @@ struct OwnComment {
     body: String,
 }
 
-/// Leaves a gap between requests that change something. Also used by the triage issue writer.
+/// Leaves a gap between requests that change something. The triage issue writer (`triage.rs`)
+/// and the rules host (`project_rules.rs`) pace their writes with it too.
 pub(crate) struct Pacer {
     sleeper: Arc<dyn Sleeper>,
     clock: Arc<dyn Clock>,
@@ -82,6 +83,7 @@ pub(crate) struct Pacer {
 }
 
 impl Pacer {
+    /// A pacer that has made no change yet.
     pub(crate) fn new(sleeper: Arc<dyn Sleeper>, clock: Arc<dyn Clock>) -> Self {
         Self {
             sleeper,

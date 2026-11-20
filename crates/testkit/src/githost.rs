@@ -385,6 +385,18 @@ impl FakeChangeHost {
             .clone()
     }
 
+    /// The jobs (or sessions) whose tokens were revoked, in id order.
+    #[must_use]
+    pub fn revoked_jobs(&self) -> Vec<JobId> {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .revoked
+            .iter()
+            .copied()
+            .collect()
+    }
+
     /// The requests the real adapter would have sent for the calls so far, in order.
     #[must_use]
     pub fn recorded_requests(&self) -> Vec<RecordedRequest> {

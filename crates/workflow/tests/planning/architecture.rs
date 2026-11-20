@@ -258,6 +258,11 @@ async fn critic_runs_only_when_policy_requires() {
     assert_eq!(record["risk"]["tier"], "high");
     assert_eq!(record["critic"]["outcome"], "ran");
     assert_eq!(record["critic"]["agent"], "architecture-critic");
+    assert!(
+        record["critic"]["model"].is_string(),
+        "{}",
+        record["critic"]
+    );
     let report = &reports_of_first_run(&rig, CRITIC_GATE).await[0];
     assert_eq!(report["outcome"], "PASSED");
     // The design is for a person to approve at this tier whatever the critic said.
@@ -288,9 +293,25 @@ async fn critic_missing_for_high_risk_work_is_reported_as_missing_and_a_person_d
         .expect("record");
     assert_eq!(record["critic"]["outcome"], "absent");
     assert_eq!(record["critic"]["reason"], "no-such-agent");
+    // The record says what put the design at a tier that needs a critic.
+    assert_eq!(record["risk"]["matched"], json!(["new_dependency"]));
+    assert_eq!(
+        record["risk"]["decisions_for_a_person"],
+        json!(["hand-written-json"])
+    );
+    assert_eq!(record["risk"]["sensitive_paths"], json!([]));
     let report = &reports_of_first_run(&rig, CRITIC_GATE).await[0];
     assert_eq!(report["outcome"], "BLOCKED");
     assert_eq!(report["blocked_reason"]["code"], "tool_unavailable");
+    // So does the report a person reads.
+    let reason = report["reason"].as_str().expect("a reason");
+    assert!(reason.contains("from the high tier"), "{reason}");
+    assert!(
+        reason.contains("The design is in the high tier."),
+        "{reason}"
+    );
+    assert!(reason.contains("`new_dependency`"), "{reason}");
+    assert!(reason.contains("`hand-written-json`"), "{reason}");
     assert!(
         report["blocked_reason"]["missing"][0]
             .as_str()
@@ -311,9 +332,13 @@ async fn critic_missing_for_high_risk_work_is_reported_as_missing_and_a_person_d
 #[tokio::test]
 async fn critic_that_cannot_be_independent_is_not_used() {
     type Change = fn(&mut Value);
-    let cases: [(&str, Change); 3] = [
+    let cases: [(&str, Change); 4] = [
         ("a role that is not a critic", |v| {
             v["role"] = json!("architect")
+        }),
+        // Real run 27 of scenario E1: the configuration named the code reviewer as the critic.
+        ("the code reviewer's role", |v| {
+            v["role"] = json!("code_reviewer")
         }),
         ("a tool that writes", |v| {
             v["allowed_tools"][0]["access"] = json!("write")

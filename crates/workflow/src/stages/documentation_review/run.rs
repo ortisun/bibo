@@ -145,6 +145,9 @@ fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
         })
 }
 
+/// The most bytes of a page that are read at the job's base to compare its title.
+const MAX_BASE_PAGE_BYTES: u64 = 1024 * 1024;
+
 fn title_of<'a>(path: &'a str, text: &'a str) -> &'a str {
     text.lines()
         .find_map(|line| line.strip_prefix("# "))
@@ -256,6 +259,7 @@ pub(super) async fn execute(
         changed_docs: &changed_docs,
         changelog_added: &changelog_added,
         source_env: &tree.env,
+        source_flags: &tree.flags,
         code_head_now: candidate.head.as_str(),
         written_over: &written_over,
         secret: &secret,
@@ -318,6 +322,36 @@ pub(super) async fn execute(
         ids: ports.ids,
     };
     let mut reports: Vec<GateReport> = Vec::with_capacity(check::ALL.len() + 1);
+    // The pages whose title the change kept as it was at the job's base: those titles are the
+    // project's and are not judged (documentation policy 9.3). A page the base lacks, or one
+    // whose title changed, has its title judged.
+    let mut kept_titles: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for path in &changed_docs {
+        let Some(head_text) = tree.pages.get(path) else {
+            continue;
+        };
+        let Ok(repo_path) = factory_ports::paths::RepoPath::new(path) else {
+            continue;
+        };
+        match repo
+            .read_file_at(
+                &candidate.base,
+                &repo_path,
+                MAX_BASE_PAGE_BYTES,
+                factory_ports::workspace::ReadView::Trusted,
+            )
+            .await
+        {
+            Ok(bytes) => {
+                let base_text = String::from_utf8_lossy(&bytes);
+                if title_of(path, &base_text) == title_of(path, head_text) {
+                    kept_titles.insert(path.clone());
+                }
+            }
+            Err(factory_ports::workspace::WorkspaceError::PathNotFound(_)) => {}
+            Err(error) => return Err(workspace_error(error)),
+        }
+    }
     let readability = {
         let pages: Vec<(&String, &String)> = changed_docs
             .iter()
@@ -326,8 +360,14 @@ pub(super) async fn execute(
         let artifacts: Vec<Artifact<'_>> = pages
             .iter()
             .map(|(path, text)| {
-                Artifact::documentation(title_of(path, text), document_type(&plan, path), text)
-                    .at(path)
+                let artifact =
+                    Artifact::documentation(title_of(path, text), document_type(&plan, path), text)
+                        .at(path);
+                if kept_titles.contains(path.as_str()) {
+                    artifact.with_title_kept()
+                } else {
+                    artifact
+                }
             })
             .collect();
         let now = ports.clock.now();
@@ -397,6 +437,8 @@ pub(super) async fn execute(
         .map_err(|_| StageError::Internal)?;
     let rendered = render_reports(&report_values);
     let writer_result = input_artifact(ctx.contract, DOCUMENTATION_RESULT);
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = crate::stages::project_rules::block(ctx).await?;
     let assembled = {
         let now = ports.clock.now();
         let tenant_id = identity.tenant;
@@ -459,6 +501,7 @@ pub(super) async fn execute(
                 tenant_id,
                 rendered.clone().into_bytes(),
             )),
+            rules.into_independent(),
         ]
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
@@ -487,6 +530,7 @@ pub(super) async fn execute(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: docs_head.clone(),
+                protected_base: None,
                 rules: handler.config.path_rules.clone(),
                 // The agent profile takes a writable checkout only. This one is a copy for the
                 // reviewer to read: it is never ingested, and it is disposed of unread.

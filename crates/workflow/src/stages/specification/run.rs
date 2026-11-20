@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use factory_domain::contracts::gate_report::BlockedCode;
+use factory_domain::contracts::specification_contract::OpenQuestion;
 use factory_domain::contracts::specification_contract::QuestionId;
 use factory_domain::contracts::{
     AgentManifest, ArtifactRef, Contract, SpecificationContract, VersionedRef,
@@ -44,7 +45,8 @@ use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::{ExecArgv, ExecRequest, SandboxSession};
 use factory_ports::spec::{
     FeatureDir, HumanAnswer, ParseReason, ResumeRequest, RevisionRequest, ReworkRequest,
-    SpecContext, SpecError, SpecFile, SpecFileSet, SpecOperation, SpecOutcome, SpecRequest,
+    SelfCheckRequest, SpecContext, SpecError, SpecFile, SpecFileSet, SpecOperation, SpecOutcome,
+    SpecRequest,
 };
 use factory_ports::workspace::{
     CommitRequest, JobRepo, ReadView, Workspace, WorkspaceError, WorkspacePurpose, WorkspaceRequest,
@@ -107,6 +109,9 @@ fn op_name(op: SpecOperation) -> &'static str {
         SpecOperation::Checklist => "checklist",
     }
 }
+
+/// The name the evidence gives the self-check pass of an attempt. The skill it runs is clarify.
+const SELF_CHECK_STEP: &str = "self-check";
 
 /// The lower-case letters and digits of a title, joined by hyphens, at most 40 characters.
 fn short_name(title: &str) -> String {
@@ -394,6 +399,9 @@ struct Work<'a> {
     /// Present when this run goes on from the draft that stopped on questions: how many times
     /// people have answered, from 1.
     resume: Option<u8>,
+    /// Present only while the self-check pass of this attempt runs: the list of faults the clarify
+    /// skill reads.
+    self_check: Option<String>,
     manifest: AgentManifest,
     repo: Box<dyn JobRepo>,
     previous: Option<&'a PreviousSpec>,
@@ -420,6 +428,10 @@ async fn run_skill(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: work.head.clone(),
+                // The writer changes only its own feature directory, which no `append_only` or
+                // `additions_only` rule covers, and a revision may start from a frozen
+                // specification's commit; the round's base stays the protected one (ADR 0025).
+                protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -454,9 +466,34 @@ async fn run_skill_in(
     .await?;
     work.tally.sandbox_reported = true;
 
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy,
+    // redacted before they reach the checkout.
+    let rules = match crate::stages::project_rules::text(ctx).await {
+        Ok((_, bytes)) => h
+            .redactor
+            .redact_str(&String::from_utf8_lossy(&bytes))
+            .map(|redacted| redacted.output.into_owned().into_bytes())
+            .map_err(|_| StageError::Internal),
+        Err(error) => Err(error),
+    };
+    let rules = match rules {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
+
     // The stage puts the request and the answers into the checkout. The skills read them as data.
     let prepared = async {
         run_command(&mut *session, ctx.cancel, &["mkdir", "-p", "inputs"], None).await?;
+        run_command(
+            &mut *session,
+            ctx.cancel,
+            &["tee", "--", crate::prompts::skill::RULES_FILE],
+            Some(rules),
+        )
+        .await?;
         run_command(
             &mut *session,
             ctx.cancel,
@@ -473,7 +510,17 @@ async fn run_skill_in(
             )
             .await?;
         }
-        if let Some(repair) = &work.repair {
+        // The self-check pass reads its own list in the file a rework reads its feedback from.
+        // Each skill has a checkout of its own, so the two never meet.
+        if let Some(faults) = &work.self_check {
+            run_command(
+                &mut *session,
+                ctx.cancel,
+                &["tee", "--", FEEDBACK_FILE],
+                Some(faults.clone().into_bytes()),
+            )
+            .await?;
+        } else if let Some(repair) = &work.repair {
             run_command(
                 &mut *session,
                 ctx.cancel,
@@ -536,11 +583,30 @@ async fn run_skill_in(
                     .expect("a fixed sentence is valid text")
             }),
         }),
-        rework: work.repair.as_ref().map(|repair| ReworkRequest {
-            feedback_file: repair.file.clone(),
-            round: repair.round,
-        }),
-        resume: work.resume.map(|round| ResumeRequest { round }),
+        // A self-check is neither a rework round nor a resume: it fixes the draft this attempt
+        // has just written.
+        rework: match (&work.self_check, &work.repair) {
+            (None, Some(repair)) => Some(ReworkRequest {
+                feedback_file: repair.file.clone(),
+                round: repair.round,
+            }),
+            _ => None,
+        },
+        resume: match work.self_check {
+            None => work.resume.map(|round| ResumeRequest { round }),
+            Some(_) => None,
+        },
+        self_check: match work.self_check {
+            Some(_) => Some(SelfCheckRequest {
+                findings_file: RepoPath::new(FEEDBACK_FILE).map_err(|_| StageError::Internal)?,
+            }),
+            None => None,
+        },
+    };
+    let step_name = if work.self_check.is_some() {
+        SELF_CHECK_STEP
+    } else {
+        op_name(op)
     };
     let report = {
         let mut context = SpecContext {
@@ -551,7 +617,7 @@ async fn run_skill_in(
         };
         h.provider.run(&request, &mut context).await
     };
-    work.evidence.operations.push(op_name(op).to_owned());
+    work.evidence.operations.push(step_name.to_owned());
 
     // The sandbox is gone before anything is read from the tree it wrote to.
     let removal = run_command(
@@ -564,6 +630,7 @@ async fn run_skill_in(
             work.request_file.as_str(),
             work.answers_file.as_str(),
             FEEDBACK_FILE,
+            crate::prompts::skill::RULES_FILE,
         ],
         None,
     )
@@ -619,14 +686,14 @@ async fn run_skill_in(
             .map(|t| t.sha256.as_str().to_owned());
         match &run.invocation {
             Some(invocation) => work.evidence.invocations.push(InvocationRecord {
-                operation: op_name(op).to_owned(),
+                operation: step_name.to_owned(),
                 skill: Some(invocation.skill.clone()),
                 arguments: invocation.arguments.clone(),
                 transcript,
             }),
             None if h.provider.fidelity() == Fidelity::Real => {
                 work.evidence.invocations.push(InvocationRecord {
-                    operation: op_name(op).to_owned(),
+                    operation: step_name.to_owned(),
                     skill: None,
                     arguments: String::new(),
                     transcript,
@@ -670,7 +737,7 @@ async fn run_skill_in(
             }
             if !change.is_empty() {
                 let conventions = crate::conventions::load(ctx, &work.head).await?;
-                let subject = format!("write the specification: {} step", op_name(op));
+                let subject = format!("write the specification: {step_name} step");
                 let body = "Committed by the factory after the change was audited.";
                 let message = crate::conventions::message_or(
                     conventions.as_ref(),
@@ -678,7 +745,7 @@ async fn run_skill_in(
                     Some("spec"),
                     &subject,
                     body,
-                    format!("Write the specification: {} step\n\n{body}\n", op_name(op)),
+                    format!("Write the specification: {step_name} step\n\n{body}\n"),
                 );
                 let commit = workspace
                     .commit(
@@ -780,6 +847,52 @@ fn record_assembly_error(work: &mut Work<'_>, error: SpecError) -> Result<Step, 
     }
 }
 
+/// Runs the self-check pass of the attempt: the clarify skill reads the faults the factory's own
+/// checks found and fixes them, and the files are assembled again. `None` when there is nothing to
+/// fix, and then no skill runs.
+///
+/// The faults that led to the pass are recorded in the evidence, and the failures the assembly
+/// recorded for them are cleared: what the gates judge is the draft after the pass, and only what
+/// that draft still holds is reported against it. The caller lets this run once per attempt.
+async fn self_check_pass(
+    h: &SpecificationHandler,
+    ctx: &mut StageContext<'_>,
+    work: &mut Work<'_>,
+    faults: &[crate::gates::spec::Finding],
+    revision: Option<&PreviousSpec>,
+) -> Result<Option<Step>, StageError> {
+    let Some(text) = super::self_check::render(faults) else {
+        return Ok(None);
+    };
+    work.evidence.self_check = super::self_check::normalized(faults);
+    work.evidence.parse_failure = None;
+    work.evidence.post_conditions.clear();
+    work.self_check = Some(text);
+    let step = run_skill(h, ctx, work, SpecOperation::Clarify, None, revision).await;
+    work.self_check = None;
+    step.map(Some)
+}
+
+/// The stage stops to ask a person the questions the files left open.
+async fn stop_on_questions(
+    h: &SpecificationHandler,
+    ctx: &mut StageContext<'_>,
+    work: &mut Work<'_>,
+    questions: &[OpenQuestion],
+) -> Result<StageOutput, StageError> {
+    work.evidence.questions = questions
+        .iter()
+        .map(|q| (q.id.as_str().to_owned(), q.question.as_str().to_owned()))
+        .collect();
+    let rounds = ctx.human_inputs.len();
+    let reason = if rounds >= h.config.max_clarification_rounds {
+        "clarification-limit-reached"
+    } else {
+        "clarification-needed"
+    };
+    asked(h, ctx, work, reason, None).await
+}
+
 /// Reads the text of the specification and of every checklist from the head commit, for the
 /// reviewer.
 async fn review_texts(
@@ -851,6 +964,7 @@ async fn run_reviewer(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: work.head.clone(),
+                protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -902,7 +1016,16 @@ async fn review_in(
         kind: kind.to_owned(),
         id: Sha256Digest::of(bytes).to_string(),
     };
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = match crate::stages::project_rules::block(ctx).await {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
     let inputs = vec![
+        rules,
         Input::untrusted(
             "request",
             ContentClass::IssueText,
@@ -1233,6 +1356,7 @@ pub(super) async fn execute(
         people,
         repair,
         resume: resume.map(|(_, round)| round),
+        self_check: None,
         manifest: writer_manifest,
         repo,
         previous: previous.as_ref(),
@@ -1279,6 +1403,7 @@ pub(super) async fn execute(
             return Ok(StageOutput {
                 needs_human: Some(NeedsHumanRequest {
                     reason: slug("constitution-required")?,
+                    detail: None,
                 }),
                 ..StageOutput::default()
             });
@@ -1323,6 +1448,11 @@ pub(super) async fn execute(
                 "The requirement changed. Apply this change to the specification:\n{reason}\n"
             );
         }
+        // At most one self-check pass in an attempt. It runs where the faults show: right after a
+        // skill whose files could not be assembled for a reason the writer can fix (the skills
+        // after it then go on from the fixed draft), or after the last skill, over the assembled
+        // contract. Faults that remain after the pass go to the gates, as they always did.
+        let mut self_checked = false;
         for (index, op) in operations.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
                 return Err(StageError::Cancelled);
@@ -1339,24 +1469,49 @@ pub(super) async fn execute(
                 _ => None,
             };
             let seed_refs = seed.as_ref().map(|(a, b)| (a.as_str(), b.as_str()));
-            match run_skill(h, ctx, &mut work, *op, seed_refs, revising).await? {
+            let mut step = run_skill(h, ctx, &mut work, *op, seed_refs, revising).await?;
+            if matches!(step, Step::Stopped) && !self_checked {
+                let faults = super::self_check::assembly_faults(&work.evidence);
+                if !faults.is_empty() {
+                    self_checked = true;
+                    if let Some(fixed) =
+                        self_check_pass(h, ctx, &mut work, &faults, revising).await?
+                    {
+                        step = fixed;
+                    }
+                }
+            }
+            match step {
                 Step::Stopped => break,
                 Step::Done(outcome) => match *outcome {
                     SpecOutcome::Draft(draft) => contract = Some(draft.contract),
                     SpecOutcome::NeedsHuman(questions) => {
-                        work.evidence.questions = questions
-                            .iter()
-                            .map(|q| (q.id.as_str().to_owned(), q.question.as_str().to_owned()))
-                            .collect();
-                        let rounds = ctx.human_inputs.len();
-                        let reason = if rounds >= h.config.max_clarification_rounds {
-                            "clarification-limit-reached"
-                        } else {
-                            "clarification-needed"
-                        };
-                        return asked(h, ctx, &work, reason, None).await;
+                        return stop_on_questions(h, ctx, &mut work, &questions).await;
                     }
                 },
+            }
+        }
+        let clean = work.evidence.parse_failure.is_none()
+            && work.evidence.post_conditions.is_empty()
+            && work.evidence.refusal.is_none()
+            && work.evidence.denials.is_empty();
+        if !self_checked
+            && clean
+            && let Some(found) = &contract
+        {
+            let faults = super::self_check::contract_faults(found, &h.config.limits);
+            match self_check_pass(h, ctx, &mut work, &faults, revising).await? {
+                None => {}
+                Some(Step::Done(outcome)) => match *outcome {
+                    SpecOutcome::Draft(draft) => contract = Some(draft.contract),
+                    SpecOutcome::NeedsHuman(questions) => {
+                        return stop_on_questions(h, ctx, &mut work, &questions).await;
+                    }
+                },
+                // The draft at the head could not be assembled after the pass. The contract of the
+                // draft before it does not describe the files at the head, so there is none to
+                // judge, and the evidence says why.
+                Some(Step::Stopped) => contract = None,
             }
         }
     }
@@ -1633,6 +1788,7 @@ async fn asked(
         permission_denials: work.tally.denials.clone(),
         needs_human: Some(NeedsHumanRequest {
             reason: slug(reason)?,
+            detail: None,
         }),
         ..StageOutput::default()
     })
@@ -1653,6 +1809,7 @@ async fn ready_check(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: base.clone(),
+                protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },

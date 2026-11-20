@@ -38,6 +38,7 @@ pub mod broker;
 pub mod githost;
 pub mod issue_status;
 pub mod process;
+pub mod project_rules;
 pub mod register;
 pub mod registry;
 pub mod router;

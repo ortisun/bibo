@@ -89,6 +89,10 @@ pub struct ImplementationEvidence {
     pub base_commit: String,
     /// The last commit the stage made, or the base when it made none.
     pub head_commit: String,
+    /// The commit this run started from: the base for a first run, the head of the run it
+    /// replaced for a rework run. The changes before it were audited by an earlier run. `None` in a
+    /// document written before the field existed; the gate then falls back to the first task.
+    pub started_from: Option<String>,
     /// The tasks that produced a commit, in the order they ran.
     pub tasks: Vec<TaskEvidence>,
     /// The change the audit refused, when one was.
@@ -153,6 +157,7 @@ impl ImplementationEvidence {
             "kind": EVIDENCE,
             "base_commit": self.base_commit,
             "head_commit": self.head_commit,
+            "started_from": self.started_from,
             "tasks": tasks,
             "builder_model": self.builder_model().map(|(runtime, model)| json!({
                 "runtime": runtime,
@@ -244,6 +249,7 @@ impl ImplementationEvidence {
         Some(Self {
             base_commit: text(value, "base_commit")?,
             head_commit: text(value, "head_commit")?,
+            started_from: text(value, "started_from"),
             tasks,
             refusal,
             rework_round: value
@@ -340,6 +346,7 @@ mod tests {
         ImplementationEvidence {
             base_commit: "a".repeat(40),
             head_commit: "b".repeat(40),
+            started_from: Some("a".repeat(40)),
             tasks: vec![TaskEvidence {
                 key: "add-flag".to_owned(),
                 built_on: "a".repeat(40),

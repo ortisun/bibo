@@ -25,6 +25,34 @@ pub fn base64url_encode(input: &[u8]) -> String {
     out
 }
 
+const STANDARD_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard base64 (RFC 4648 section 4) with padding, on one line: the `content` of a file the
+/// contents API writes.
+#[must_use]
+pub fn base64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk.first().copied().unwrap_or(0));
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        for index in 0..4 {
+            if index > chunk.len() {
+                out.push('=');
+                continue;
+            }
+            let shift = 18 - 6 * index;
+            let value = usize::try_from((triple >> shift) & 0x3f).unwrap_or(0);
+            out.push(char::from(
+                STANDARD_ALPHABET.get(value).copied().unwrap_or(b'A'),
+            ));
+        }
+    }
+    out
+}
+
 /// Decodes standard base64 (RFC 4648 section 4) with padding. White space is skipped, as in a
 /// PEM body. Returns `None` for any other character, for a bad length and for bad padding.
 #[must_use]
@@ -123,6 +151,24 @@ mod tests {
             assert_eq!(base64_decode(encoded), Some(plain.as_bytes().to_vec()));
         }
         assert_eq!(base64_decode("Zm9v\nYmFy\n"), Some(b"foobar".to_vec()));
+    }
+
+    #[test]
+    fn base64_encode_matches_the_rfc_4648_vectors_and_reads_back() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(plain.as_bytes()), encoded, "{plain:?}");
+        }
+        let every_byte: Vec<u8> = (0..=255).collect();
+        assert_eq!(base64_decode(&base64_encode(&every_byte)), Some(every_byte));
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xfe]), "+//+");
     }
 
     #[test]

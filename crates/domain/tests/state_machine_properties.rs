@@ -409,15 +409,15 @@ struct Sim {
     runs: Vec<StageRunSnapshot>,
     ledger: ReworkLedger,
     limits: ReworkLimits,
-    granted: [u8; 2],
+    granted: [u8; 4],
     next_id: u128,
 }
 
 fn track_index(track: ReworkTrack) -> usize {
-    match track {
-        ReworkTrack::Code => 0,
-        ReworkTrack::Documentation => 1,
-    }
+    ReworkTrack::ALL
+        .iter()
+        .position(|t| *t == track)
+        .expect("every track is in ALL")
 }
 
 impl Sim {
@@ -438,7 +438,7 @@ impl Sim {
             runs,
             ledger: ReworkLedger::default(),
             limits,
-            granted: [0, 0],
+            granted: [0; 4],
             next_id,
         }
     }
@@ -695,7 +695,7 @@ impl Sim {
         prop_assert!(superseded_before.is_subset(&superseded_now));
 
         // Rework never goes over the cap, and the cap never goes over two.
-        for track in [ReworkTrack::Code, ReworkTrack::Documentation] {
+        for track in ReworkTrack::ALL.iter().copied() {
             let used = self.ledger.used(track);
             let cap = self.limits.cap(track).get();
             prop_assert!(used <= cap, "{track} rework used {used} of a cap of {cap}");
@@ -708,16 +708,22 @@ impl Sim {
     }
 }
 
-fn limits_from(code: u8, documentation: u8) -> ReworkLimits {
-    ReworkLimits::from_policy(code, documentation)
+/// Limits from four policy values, in the order of `ReworkTrack::ALL`.
+fn limits_from(caps: [u8; 4]) -> ReworkLimits {
+    ReworkTrack::ALL
+        .iter()
+        .zip(caps)
+        .fold(ReworkLimits::default(), |limits, (track, configured)| {
+            limits.with_policy(*track, configured)
+        })
 }
 
 #[test]
 fn a_simulated_pipeline_keeps_every_rule_after_every_action() {
-    let strategy = (any::<u8>(), any::<u8>(), vec(action(), 0..80));
+    let strategy = (any::<[u8; 4]>(), vec(action(), 0..80));
     runner(SIMULATIONS)
-        .run(&strategy, |(code, documentation, actions)| {
-            let mut sim = Sim::new(limits_from(code, documentation));
+        .run(&strategy, |(caps, actions)| {
+            let mut sim = Sim::new(limits_from(caps));
             for action in &actions {
                 sim.step(action)?;
             }
@@ -779,9 +785,10 @@ fn a_directed_route_reaches_rework_supersession_and_the_cap() {
     // The simulation must be able to grant rework, supersede runs and use the whole cap, or its
     // checks would be vacuous. This route proves it with no randomness: a specification run is
     // sent back twice, and the third request meets the cap.
-    let mut sim = Sim::new(limits_from(2, 2));
+    let mut sim = Sim::new(limits_from([2; 4]));
+    let spec = track_index(ReworkTrack::Specification);
     assert_eq!(
-        sim.limits.cap(ReworkTrack::Code).get(),
+        sim.limits.cap(ReworkTrack::Specification).get(),
         2,
         "the cap is two rounds"
     );
@@ -789,7 +796,7 @@ fn a_directed_route_reaches_rework_supersession_and_the_cap() {
     advance_to_gating(&mut sim, StageKind::Specification);
     sim.step(&ask_for_rework())
         .expect("round one keeps every rule");
-    assert_eq!(sim.granted[0], 1, "the first request was granted");
+    assert_eq!(sim.granted[spec], 1, "the first request was granted");
     assert!(
         sim.runs
             .iter()
@@ -805,10 +812,10 @@ fn a_directed_route_reaches_rework_supersession_and_the_cap() {
     advance_to_gating(&mut sim, StageKind::Specification);
     sim.step(&ask_for_rework())
         .expect("round two keeps every rule");
-    assert_eq!(sim.granted[0], 2, "the second request was granted");
+    assert_eq!(sim.granted[spec], 2, "the second request was granted");
     assert_eq!(
-        sim.granted[0],
-        sim.limits.cap(ReworkTrack::Code).get(),
+        sim.granted[spec],
+        sim.limits.cap(ReworkTrack::Specification).get(),
         "the whole cap is used"
     );
 
@@ -816,9 +823,15 @@ fn a_directed_route_reaches_rework_supersession_and_the_cap() {
     sim.step(&ask_for_rework())
         .expect("a request over the cap keeps every rule");
     assert_eq!(
-        sim.granted[0], 2,
+        sim.granted[spec], 2,
         "a third request is not granted: the cap holds"
     );
+    // The specification rounds are its own: no other count moved.
+    for track in ReworkTrack::ALL.iter().copied() {
+        if track != ReworkTrack::Specification {
+            assert_eq!(sim.granted[track_index(track)], 0, "{track}");
+        }
+    }
     assert_eq!(
         sim.runs[newest(&sim, StageKind::Specification)].status,
         StageRunStatus::WaitingForHuman,
@@ -831,12 +844,14 @@ fn the_generated_simulation_reaches_rework_supersession_and_the_cap() {
     // The same guard for the random strategy, with a fixed seed: it counts the same on every run,
     // so it cannot fail by bad luck. If the strategy or the simulation stops reaching rework, the
     // cap or supersession, the counts drop to zero and this fails on every run.
-    let strategy = (any::<u8>(), any::<u8>(), vec(action(), 40..80));
+    // Caps of zero to two, so that a count can fill: with four counts, rounds spread over them
+    // and a cap read as two on every count is rarely used up within one simulation.
+    let strategy = ([0u8..=2, 0u8..=2, 0u8..=2, 0u8..=2], vec(action(), 40..80));
     let mut runner = seeded_runner(1_000, 7);
     let seen = std::cell::RefCell::new((0u32, 0u32, 0u32));
     runner
-        .run(&strategy, |(code, documentation, actions)| {
-            let mut sim = Sim::new(limits_from(code, documentation));
+        .run(&strategy, |(caps, actions)| {
+            let mut sim = Sim::new(limits_from(caps));
             for action in &actions {
                 sim.step(action)?;
             }
@@ -844,7 +859,10 @@ fn the_generated_simulation_reaches_rework_supersession_and_the_cap() {
             if sim.granted.iter().any(|g| *g > 0) {
                 seen.0 += 1;
             }
-            if sim.granted[0] == sim.limits.cap(ReworkTrack::Code).get() && sim.granted[0] > 0 {
+            if ReworkTrack::ALL.iter().any(|track| {
+                let granted = sim.granted[track_index(*track)];
+                granted > 0 && granted == sim.limits.cap(*track).get()
+            }) {
                 seen.1 += 1;
             }
             if sim
@@ -868,8 +886,7 @@ fn the_generated_simulation_reaches_rework_supersession_and_the_cap() {
 #[test]
 fn rework_never_exceeds_the_cap_whatever_the_policy_says() {
     let strategy = (
-        any::<u8>(),
-        any::<u8>(),
+        any::<[u8; 4]>(),
         vec(
             (
                 any::<usize>(),
@@ -882,8 +899,8 @@ fn rework_never_exceeds_the_cap_whatever_the_policy_says() {
         ),
     );
     runner(SEQUENCES)
-        .run(&strategy, |(code, documentation, requests)| {
-            let limits = limits_from(code, documentation);
+        .run(&strategy, |(caps, requests)| {
+            let limits = limits_from(caps);
             let mut ledger = ReworkLedger::default();
             for (stage, defect, verdict, differs, budget) in requests {
                 let request = GateReworkRequest {
@@ -911,7 +928,7 @@ fn rework_never_exceeds_the_cap_whatever_the_policy_says() {
                         // Asking a human changes nothing in the ledger.
                     }
                 }
-                for track in [ReworkTrack::Code, ReworkTrack::Documentation] {
+                for track in ReworkTrack::ALL.iter().copied() {
                     prop_assert!(ledger.used(track) <= limits.cap(track).get());
                     prop_assert!(ledger.used(track) <= DEFAULT_REWORK_CAP);
                 }
@@ -924,16 +941,22 @@ fn rework_never_exceeds_the_cap_whatever_the_policy_says() {
 #[test]
 fn a_ledger_cannot_be_pushed_past_its_cap_by_any_number_of_requests() {
     for configured in 0..=u8::MAX {
-        let limits = limits_from(configured, configured);
-        let mut ledger = ReworkLedger::default();
-        let mut taken = 0u32;
-        for _ in 0..600 {
-            if let Ok(next) = ledger.start_round(ReworkTrack::Code, limits) {
-                ledger = next;
-                taken += 1;
+        let limits = limits_from([configured; 4]);
+        for track in ReworkTrack::ALL.iter().copied() {
+            let mut ledger = ReworkLedger::default();
+            let mut taken = 0u32;
+            for _ in 0..600 {
+                if let Ok(next) = ledger.start_round(track, limits) {
+                    ledger = next;
+                    taken += 1;
+                }
             }
+            assert_eq!(
+                taken,
+                u32::from(configured.min(DEFAULT_REWORK_CAP)),
+                "{track}"
+            );
         }
-        assert_eq!(taken, u32::from(configured.min(DEFAULT_REWORK_CAP)));
     }
 }
 

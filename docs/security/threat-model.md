@@ -1,4 +1,4 @@
-# Threat model: Universal Agentic Software Factory
+# Threat model: Bibo, the universal agentic software factory
 
 Status: DESIGNED baseline, written before any application code exists. Every control below is REQUIRED for the product and none is implemented yet. "Residual risk" values are proposals until a named human accepts them (see section 9).
 Date: 2026-10-27. Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, authority comes from a named allowlist and not from GitHub roles, new direct dependencies always need a human, rework is capped at two rounds, the skill and slash-command flags are per stage, and API keys behind a broker are the credential default. Revised again after the agent-runtime spike and ADRs 0010 and 0012: row-level security is in Slice 1 (Q9, C-36), the CLI flags that neutralize repository configuration are the ones the spike proved (`--bare` is not among them), and budget exhaustion goes to a person.
@@ -290,6 +290,7 @@ Rating follows the matrix in section 4. Residual is the proposed risk after the 
 | T-52 | A run token or upstream credential leaks through a tool result or the issue | TB13, TB8 | M | H | High | Medium |
 | T-53 | The troubleshooter floods the issue tracker or the plan | TB8, TB12 | M | M | Medium | Low |
 | T-54 | A stuck or slow upstream holds the run | TB13 | H | L | Medium | Low |
+| T-55 | A changed project rules file steers every agent | TB3 | M | H | High | Medium |
 
 ## 7. Threat details
 
@@ -670,6 +671,13 @@ The fingerprint of a finding is computed from code-known inputs only, the catego
 * Mitigations pending: a probe whose source is down is a `source_unavailable` finding raised without the model (`crates/mcp_gateway`, `apps/troubleshooter`, not built).
 * Residual (Low, once built): a stuck upstream costs one run of at most 15 minutes and is itself reported.
 * Proven by: NT-TRB-03 (built, the database part), NT-TRB-14 (planned).
+
+### T-55 A changed project rules file steers every agent
+
+* Attack: since ADR 0026 the factory's agents read the project's `AGENTS.md` from the default branch at each job's base commit and get it as the `project_rules` block of their prompt. A person who can merge into the default branch, or a pull request whose change a reviewer missed, can put instructions there that every later agent reads: to weaken tests, to leave a document out, to write a dependency, to tell the reviewer that something is fine. It is prompt injection that persists across jobs. A hostile text could also try to look like the factory's section so that the factory proposes to keep it.
+* Mitigations: the file reaches agents only from the default branch, and the protection preflight requires that branch to be protected by a reviewed pull request, with the App on no bypass list; the owner's review of what is merged is the control of the content. The factory's own change arrives as a draft pull request a person must review, mark ready and merge; the factory never merges and its credential writes only the branch `factory/project-rules`. In the prompt the text is a quoted data block of class `repo_file`, redacted and limited to 64 KiB, and each prompt says the rules never change the role, the tools, the boundaries or the output contract. No text grants a tool, a path, a host or an approval (`untrusted_content.authority_from_content: never`). No agent can change `AGENTS.md` in a job (`protected_paths`, group `agent_instruction_files`, mode `deny_write`). The gates, the independent reviewers and the person who approves each job's pull request judge the result, whatever the rules said.
+* Residual (Medium): a reviewer of the project who approves a hostile change makes it the project's rules; the factory cannot tell a bad rule from a good one. Whether a model obeys an instruction inside a quoted block is up to the model (T-02). The factory does not read rules from a branch other than the default branch, so a rule cannot be planted through a feature branch.
+* Proven by: the tests of the repository stage (the file is read at the base commit only, the limit and the fallback) and of the composed path rules (`AGENTS.md` is `deny_write`). No negative test runs a model.
 
 ## 8. Cross-cutting residual risks
 

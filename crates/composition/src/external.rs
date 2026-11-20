@@ -386,6 +386,7 @@ pub fn claude_config(
 ) -> ClaudeCodeConfig {
     let mut config = ClaudeCodeConfig {
         credential: claude_credential(mode),
+        build: crate::sandbox_specs::agent_build_env(),
         ..ClaudeCodeConfig::default()
     };
     if let Some(tool) = tool {
@@ -444,7 +445,10 @@ fn runtime_ids_in(config: &FactoryConfig, mode: ProviderCredentialMode) -> Vec<R
 }
 
 fn codex_config(tool: Option<&RuntimeToolConfig>) -> CodexConfig {
-    let mut config = CodexConfig::default();
+    let mut config = CodexConfig {
+        build: crate::sandbox_specs::agent_build_env(),
+        ..CodexConfig::default()
+    };
     if let Some(tool) = tool {
         if let Some(binary) = &tool.binary {
             config.binary.clone_from(binary);

@@ -1002,6 +1002,68 @@ fn st_06_the_check_would_notice_an_unknown_threat_a_duplicate_key_or_an_anchor()
     }
 }
 
+// ---- The solo mode (ADR 0022): the block is required and fails closed -----------------------
+
+#[test]
+fn negative_nt_pol_03_the_solo_mode_block_is_required_and_its_values_are_in_range() {
+    let text = real(APPROVAL_FILE);
+    // Each field, left out, refuses the file.
+    for line in [
+        "  enabled: true\n  minimum_wait_minutes:",
+        "    pull_request_high: 10\n",
+        "    pull_request_critical: 30\n",
+        "    dependency: 10\n",
+        "    translation_warning: 10\n",
+        "    build_code: 30\n",
+        "  confirmation_template: \"I confirm the solo approval of {target}\"",
+    ] {
+        let to = if line.starts_with("  enabled") {
+            "  minimum_wait_minutes:"
+        } else {
+            ""
+        };
+        let missing = replace_once(&text, line, to);
+        let error = refused(load_approval_text(&missing), line);
+        assert_eq!(error.kind, PolicyErrorKind::Type, "{line}: {error}");
+    }
+    // The whole block, left out.
+    let start = text.find("solo_mode:\n").expect("the block");
+    let end = start + text[start..].find("\n# ---").expect("the next section");
+    let without = format!("{}{}", &text[..start], &text[end..]);
+    let error = refused(load_approval_text(&without), "no solo_mode block");
+    assert!(error.message.contains("solo_mode"), "{error}");
+    // A wait of zero, above a day, or the edge values.
+    for (wait, good) in [("0", false), ("1441", false), ("1", true), ("1440", true)] {
+        let changed = replace_once(
+            &text,
+            "    dependency: 10\n",
+            &format!("    dependency: {wait}\n"),
+        );
+        let result = load_approval_text(&changed);
+        assert_eq!(
+            result.is_ok(),
+            good,
+            "a dependency wait of {wait}: {result:?}"
+        );
+    }
+    let negative = replace_once(&text, "    build_code: 30\n", "    build_code: -1\n");
+    refused(load_approval_text(&negative), "a negative wait");
+    // A template without the placeholder, with two, or with a non-ASCII character.
+    for template in [
+        "I confirm the solo approval of",
+        "I confirm the solo approval of {target} {target}",
+        "I confirm the solo approval of {target} \u{e9}",
+        "Approve {target}",
+    ] {
+        let changed = replace_once(
+            &text,
+            "\"I confirm the solo approval of {target}\"",
+            &format!("\"{template}\""),
+        );
+        refused(load_approval_text(&changed), template);
+    }
+}
+
 /// The text without the last occurrence of `line`: the original entry, once a copy was put earlier.
 fn without_last(text: &str, line: &str) -> String {
     let at = text.rfind(line).expect("the line is in the text");

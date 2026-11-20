@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdict": "PASS",
+  "title": "Review of the design",
+  "summary": "Every requirement of the frozen specification is met by a design element, the plain output stays as in the previous release, and no finding of medium severity or higher was found.",
+  "findings": [
+    {
+      "finding_id": "help-line-wording",
+      "severity": "low",
+      "category": "documentation",
+      "title": "Name the help line in the design",
+      "description": "The design says the help text gains a line for the new option but does not give its wording. The builder can settle it without changing what users observe.",
+      "location": {
+        "path": "architecture_design",
+        "line_start": 14
+      },
+      "confidence": 0.7,
+      "proposed_next_action": "fix",
+      "defect_class": "code_behavior"
+    }
+  ],
+  "confidence_overall": 0.85,
+  "residual_risks": [],
+  "ignored_instructions": []
+}

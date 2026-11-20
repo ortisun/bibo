@@ -212,14 +212,17 @@ async fn files_the_parser_does_not_understand_go_back_to_the_writer_not_to_a_per
     rig.run_until_specification().await;
     rig.a_sound_specification();
     let spec = format!("{}/spec.md", rig.feature());
-    rig.provider
-        .assembly_errors
-        .lock()
-        .expect("lock")
-        .push_back(SpecError::ParseError {
-            path: crate::rig::path(&spec),
-            reason: ParseReason::SectionMissing,
-        });
+    // The fault stays after the one self-check pass of the attempt, so it reaches the gate.
+    for _ in 0..2 {
+        rig.provider
+            .assembly_errors
+            .lock()
+            .expect("lock")
+            .push_back(SpecError::ParseError {
+                path: crate::rig::path(&spec),
+                reason: ParseReason::SectionMissing,
+            });
+    }
     let (_, outcome) = rig.run_next().await;
     assert_eq!(outcome, AttemptOutcome::Succeeded);
     let report = last_report(&rig, "specification-structure").await;
@@ -238,17 +241,20 @@ async fn requirements_with_no_scenario_go_back_to_the_writer_as_a_traceability_f
     let rig = Rig::new().await;
     rig.run_until_specification().await;
     rig.a_sound_specification();
-    rig.provider
-        .assembly_errors
-        .lock()
-        .expect("lock")
-        .push_back(SpecError::PostConditionFailed(vec![
-            factory_ports::spec::PostCondition {
-                name: factory_domain::values::Slug::parse("requirement-without-scenario")
-                    .expect("a slug"),
-                detail: "FR-007 has no acceptance scenario that cites it.".to_owned(),
-            },
-        ]));
+    // The fault stays after the one self-check pass of the attempt, so it reaches the gate.
+    for _ in 0..2 {
+        rig.provider
+            .assembly_errors
+            .lock()
+            .expect("lock")
+            .push_back(SpecError::PostConditionFailed(vec![
+                factory_ports::spec::PostCondition {
+                    name: factory_domain::values::Slug::parse("requirement-without-scenario")
+                        .expect("a slug"),
+                    detail: "FR-007 has no acceptance scenario that cites it.".to_owned(),
+                },
+            ]));
+    }
     rig.run_next().await;
     let report = last_report(&rig, "specification-traceability").await;
     assert_eq!(outcome_of(&report), "FAILED");

@@ -535,6 +535,12 @@ pub struct GithubConfig {
     /// labels and the comment are observability and no job depends on them.
     #[serde(default = "default_true")]
     pub write_issue_status: bool,
+    /// Opens a draft pull request in each repository that installs or updates the factory's rules
+    /// for agents in `AGENTS.md`, at onboarding and when a new release changes them (ADR 0026).
+    /// False stops the worker from opening it. The agents still read the project's `AGENTS.md`, or
+    /// the factory's built-in copy when the project has none.
+    #[serde(default = "default_true")]
+    pub propose_project_rules: bool,
     /// The address of GitHub's web pages, `scheme://host[:port]` with no path, from which the
     /// factory builds the links it writes (the link to the draft pull request in the status
     /// comment of a finished job). The default is `https://github.com`; a GitHub Enterprise server
@@ -804,8 +810,9 @@ pub struct AgentNames {
     /// Designs.
     #[serde(default = "agent_architect")]
     pub architect: String,
-    /// Criticizes the design.
-    #[serde(default = "agent_code_reviewer")]
+    /// Criticizes the design when its risk tier needs an independent critic. The stage uses only
+    /// an agent whose role ends with `_critic`, so the code reviewer cannot stand in for it.
+    #[serde(default = "agent_architecture_critic")]
     pub critic: String,
     /// Plans the tasks.
     #[serde(default = "agent_planner")]
@@ -836,6 +843,9 @@ fn agent_spec_reviewer() -> String {
 fn agent_architect() -> String {
     "architect".to_owned()
 }
+fn agent_architecture_critic() -> String {
+    "architecture-critic".to_owned()
+}
 fn agent_code_reviewer() -> String {
     "code-reviewer".to_owned()
 }
@@ -859,7 +869,7 @@ impl Default for AgentNames {
             specification_writer: agent_spec_writer(),
             specification_reviewer: agent_spec_reviewer(),
             architect: agent_architect(),
-            critic: agent_code_reviewer(),
+            critic: agent_architecture_critic(),
             planner: agent_planner(),
             builder: agent_builder(),
             reviewer: agent_code_reviewer(),
@@ -1828,6 +1838,19 @@ mod tests {
             "  api_base_url: http://127.0.0.1:9\n  write_issue_statuses: false\n",
         );
         assert!(FactoryConfig::from_yaml(&with_world("local", &typo)).is_err());
+    }
+
+    #[test]
+    fn proposing_the_project_rules_is_on_unless_the_file_turns_it_off() {
+        let on = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(on.github.expect("github").propose_project_rules);
+        let off_world = LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            "  api_base_url: http://127.0.0.1:9\n  propose_project_rules: false\n",
+        );
+        assert_ne!(off_world, LOOPBACK_WORLD, "the edit applied");
+        let off = FactoryConfig::from_yaml(&with_world("local", &off_world)).expect("loads");
+        assert!(!off.github.expect("github").propose_project_rules);
     }
 
     #[test]

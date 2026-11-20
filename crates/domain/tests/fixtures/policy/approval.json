@@ -880,7 +880,7 @@
   ],
   "schema_version": 1,
   "separation_of_duties": {
-    "approver_may_equal_requester_when_low_risk": true,
+    "approver_may_equal_requester_when_low_risk": false,
     "approver_must_differ_from_requester_when": [
       "risk_tier_at_least_high",
       "protected_path_change",
@@ -889,5 +889,16 @@
     ],
     "factory_app_may_approve": false,
     "security_approver_must_differ_from_requester": true
+  },
+  "solo_mode": {
+    "confirmation_template": "I confirm the solo approval of {target}",
+    "enabled": true,
+    "minimum_wait_minutes": {
+      "build_code": 30,
+      "dependency": 10,
+      "pull_request_critical": 30,
+      "pull_request_high": 10,
+      "translation_warning": 10
+    }
   }
 }

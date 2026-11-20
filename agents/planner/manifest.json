@@ -42,7 +42,7 @@
   "inputs_schema": {
     "name": "planner-input",
     "version": 1,
-    "sha256": "sha256:0007e73c73c392242fd0721a48c93c8eb3b767ba4dda71c361ae7601a21056d5"
+    "sha256": "sha256:4fca3f4b1d19d2d503c34c0d46842bb02e2b419f119cfe8066b4dcb8dcca057c"
   },
   "outputs_schema": {
     "name": "planner-result",
@@ -98,7 +98,7 @@
   },
   "prompt": {
     "template_path": "agents/planner/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:94c2c4b3bad9a30da73e8f8ee0f73ce5c9f7ac5b51f3ab588be0d489c3190960"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:c3c52d3ba1258fa9e889f3082f03bc89a7da650416abfa436519465893198e44"
   }
 }

@@ -604,26 +604,38 @@ fn rework_cap_matches_the_default() {
         "{}",
         per_job.max_rework_iterations
     );
+    assert!(per_job.max_specification_rework_iterations <= u32::from(DEFAULT_REWORK_CAP));
+    assert!(per_job.max_design_rework_iterations <= u32::from(DEFAULT_REWORK_CAP));
     assert!(per_job.max_documentation_rework_iterations <= u32::from(DEFAULT_REWORK_CAP));
     assert!(policy.budgets.rework.default_rounds <= u32::from(DEFAULT_REWORK_CAP));
     let limits = engine().budget.rework_limits();
-    assert_eq!(u32::from(limits.code.get()), per_job.max_rework_iterations);
-    assert_eq!(
-        u32::from(limits.documentation.get()),
-        per_job.max_documentation_rework_iterations
-    );
-    // Two rounds are allowed, the third is not, for both counts.
-    for track in [ReworkTrack::Code, ReworkTrack::Documentation] {
-        assert!(
-            engine()
-                .budget
-                .rework_allowed(ReworkLedger::new(1, 1), track)
-        );
-        assert!(
-            !engine()
-                .budget
-                .rework_allowed(ReworkLedger::new(2, 2), track)
-        );
+    for (track, configured) in [
+        (
+            ReworkTrack::Specification,
+            per_job.max_specification_rework_iterations,
+        ),
+        (ReworkTrack::Design, per_job.max_design_rework_iterations),
+        (ReworkTrack::Code, per_job.max_rework_iterations),
+        (
+            ReworkTrack::Documentation,
+            per_job.max_documentation_rework_iterations,
+        ),
+    ] {
+        assert_eq!(u32::from(limits.cap(track).get()), configured, "{track}");
+    }
+    // Two rounds are allowed, the third is not, for every count.
+    for track in ReworkTrack::ALL {
+        let one = ReworkLedger::default().with_used(*track, 1);
+        let two = ReworkLedger::default().with_used(*track, 2);
+        assert!(engine().budget.rework_allowed(one, *track), "{track}");
+        assert!(!engine().budget.rework_allowed(two, *track), "{track}");
+        // A full count leaves every other count its rounds.
+        for other in ReworkTrack::ALL.iter().filter(|t| *t != track) {
+            assert!(
+                engine().budget.rework_allowed(two, *other),
+                "{track} -> {other}"
+            );
+        }
     }
 }
 

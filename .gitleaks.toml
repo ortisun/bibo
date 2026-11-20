@@ -47,7 +47,7 @@
 # NO SECRET IS STORED HERE. The file holds only patterns and the made-up values named in the two
 # exceptions. Samples used to test the rules were built at run time and kept outside the repository.
 
-title = "Ortisun software factory secret scan"
+title = "Bibo secret scan"
 
 [extend]
 # Keep gitleaks' own detectors (cloud providers, generic API keys, and many more) and add ours.

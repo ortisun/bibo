@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use factory_domain::machines::limits::{RepairCap, ReworkLimits};
+use factory_domain::policy::solo::SoloRules;
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::{ExecutionMode, StageKind};
 
@@ -97,7 +98,8 @@ pub struct EngineConfig {
     pub heartbeat_interval: Duration,
     /// The grace period for tearing down a cancelled attempt.
     pub teardown_grace: Duration,
-    /// The rework caps. Never above two (ADR 0009 item 6).
+    /// The rework caps, one for each count (ADR 0023). Never above two (ADR 0009 item 6). A
+    /// composition root sets them from the policy's `budgets.hard_ceilings.per_job`.
     pub rework_limits: ReworkLimits,
     /// The repair cap after an invalid output. Never above two (ADR 0010).
     pub repair_cap: RepairCap,
@@ -115,6 +117,10 @@ pub struct EngineConfig {
     /// default holds the block of an unresolved dependency review; a composition root adds the
     /// entries of the policy and never takes this one away.
     pub non_overridable_blocks: BTreeSet<(String, String)>,
+    /// The rules of the solo mode (ADR 0022), which the engine checks again when it commits a
+    /// decision the requester took alone. Off by default; a composition root sets the policy's
+    /// with [`EngineConfig::with_solo`].
+    pub solo: SoloRules,
 }
 
 impl EngineConfig {
@@ -137,10 +143,18 @@ impl EngineConfig {
                 UNRESOLVED_DEPENDENCY_REVIEW.0.to_owned(),
                 UNRESOLVED_DEPENDENCY_REVIEW.1.to_owned(),
             )]),
+            solo: SoloRules::disabled(),
         }
     }
 
     /// Adds blocks that no override may pass. The floor stays: this adds and never removes.
+    /// The same config with the rules of the solo mode of the policy.
+    #[must_use]
+    pub fn with_solo(mut self, solo: SoloRules) -> Self {
+        self.solo = solo;
+        self
+    }
+
     #[must_use]
     pub fn with_non_overridable_blocks(
         mut self,
@@ -203,8 +217,9 @@ mod tests {
         assert_eq!(config.lease_ttl, Duration::from_secs(60));
         assert_eq!(config.heartbeat_interval, Duration::from_secs(15));
         assert_eq!(config.teardown_grace, Duration::from_secs(30));
-        assert_eq!(config.rework_limits.code.get(), 2);
-        assert_eq!(config.rework_limits.documentation.get(), 2);
+        for track in factory_domain::machines::limits::ReworkTrack::ALL {
+            assert_eq!(config.rework_limits.cap(*track).get(), 2, "{track}");
+        }
         assert_eq!(config.repair_cap.get(), 2);
         assert_eq!(config.scope.len(), 13);
         assert_eq!(config.validate(), Ok(()));

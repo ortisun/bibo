@@ -42,17 +42,20 @@
 use factory_domain::contracts::evidence_ledger_entry::{
     ArtifactEvidence, Attestor, ClaimKind, Evidence, ExpertJudgmentEvidence,
 };
-use factory_domain::ids::PrincipalId;
 use factory_domain::policy::decision::{AuthorizedApproval, Designation};
+use factory_domain::policy::solo::{SoloTarget, SoloWait};
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, HumanRole, StageKind};
-use factory_ports::store::{ArtifactDirection, AuditActor, PrincipalKind, StageRun, Tx, Versioned};
+use factory_ports::store::{
+    ArtifactDirection, AuditActor, Job, PrincipalKind, StageRun, Tx, Versioned,
+};
 
 use super::Engine;
 use super::error::EngineError;
 use super::ledger::ClaimSpec;
 use super::links;
 use super::record::{Cx, index_entry};
+use super::solo::{SoloCheck, check_wait_and_phrase};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, DependencyDecisionRecorded, RecordDependencyDecision};
@@ -78,14 +81,21 @@ impl Engine {
     /// GitHub id is the one on the proof, is not the person who asked for the job (separation of
     /// duties, RR-24: the requester is known here and nowhere else), and holds *now* the role of
     /// the designation the proof names, which must be one of `wanted`. Returns that role.
+    ///
+    /// The requester is refused unless the solo mode lets them decide alone (ADR 0022): the proof
+    /// carries the solo stamp, the engine finds the solo fact again in its own transaction, the
+    /// confirmation word is the one `solo` expects and the minimum wait since the stage run asked
+    /// has passed ([`EngineError::SoloRefused`] for the last two).
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn check_person(
         &self,
         tx: &mut dyn Tx,
         actor: &Actor,
         roles: &[HumanRole],
-        requester: PrincipalId,
+        job: &Job,
         proof: &AuthorizedApproval,
         (wanted, requester_refusal): (&[Designation], &'static str),
+        solo: &SoloCheck<'_>,
     ) -> Result<HumanRole, EngineError> {
         let principal = tx.get_principal(actor.principal).await?;
         let PrincipalKind::Human { github_user_id } = principal.kind else {
@@ -97,9 +107,6 @@ impl Engine {
             return Err(EngineError::NotAuthorized(
                 "the proof of authority is for another person",
             ));
-        }
-        if actor.principal == requester {
-            return Err(EngineError::NotAuthorized(requester_refusal));
         }
         let designation = proof.designation();
         let role = wanted
@@ -113,6 +120,12 @@ impl Engine {
             return Err(EngineError::NotAuthorized(
                 "the person no longer holds the role the proof names",
             ));
+        }
+        if actor.principal == job.requester {
+            if !proof.solo_stamp() || !self.solo_fact_now(tx, actor.tenant, job.repository).await? {
+                return Err(EngineError::NotAuthorized(requester_refusal));
+            }
+            check_wait_and_phrase(&self.config.solo, solo)?;
         }
         Ok(role)
     }
@@ -148,7 +161,7 @@ impl Engine {
                 &cx,
                 actor,
                 &roles,
-                (&run, job.value.requester),
+                (&run, &job.value),
                 &timeline,
                 &request,
             )
@@ -164,7 +177,11 @@ impl Engine {
                 cx.commit(tx).await?;
                 Ok(recorded)
             }
-            Err(error @ (EngineError::NotAuthorized(_) | EngineError::Refused(_))) => {
+            Err(
+                error @ (EngineError::NotAuthorized(_)
+                | EngineError::Refused(_)
+                | EngineError::SoloRefused(_)),
+            ) => {
                 drop(tx);
                 self.record_denial(
                     actor,
@@ -185,31 +202,51 @@ impl Engine {
         cx: &Cx<'_>,
         actor: &Actor,
         roles: &[HumanRole],
-        (run, requester): (&Versioned<StageRun>, PrincipalId),
+        (run, job): (&Versioned<StageRun>, &Job),
         timeline: &Timeline,
         request: &RecordDependencyDecision,
     ) -> Result<DependencyDecisionRecorded, EngineError> {
-        // 1. The acting principal is the person the proof is for, is not the requester, and holds
-        // the role now.
+        // 2 first, because the solo check of step 1 names the kind. The proof is for one of the
+        // two actions.
+        let kind =
+            ApprovalKind::of_action(request.proof.action()).ok_or(EngineError::NotAuthorized(
+                "the proof is for an action that is not a dependency decision",
+            ))?;
+        let (name, version) = (
+            request.package.name.as_str(),
+            request.package.version.as_str(),
+        );
+        let (wait, target) = match kind {
+            ApprovalKind::NewDependency => (
+                SoloWait::Dependency,
+                SoloTarget::Dependency { name, version },
+            ),
+            ApprovalKind::BuildCode => {
+                (SoloWait::BuildCode, SoloTarget::BuildCode { name, version })
+            }
+        };
+
+        // 1. The acting principal is the person the proof is for, holds the role now, and is not
+        // the requester unless the solo mode lets them decide alone.
         let role = self
             .check_person(
                 tx,
                 actor,
                 roles,
-                requester,
+                job,
                 &request.proof,
                 (
                     &[Designation::Approver, Designation::SecurityApprover],
                     "the person who asked for the job may not decide on its dependencies",
                 ),
+                &SoloCheck {
+                    request: request.solo.as_ref(),
+                    milestone: timeline.run(run.value.id).and_then(|r| r.blocked_at),
+                    wait,
+                    expected: self.config.solo.expected_word(&target),
+                },
             )
             .await?;
-
-        // 2. The proof is for one of the two actions.
-        let kind =
-            ApprovalKind::of_action(request.proof.action()).ok_or(EngineError::NotAuthorized(
-                "the proof is for an action that is not a dependency decision",
-            ))?;
 
         // 3. The stage run is the job's blocked validation run.
         if run.value.kind != StageKind::Validation

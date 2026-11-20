@@ -121,6 +121,19 @@ pub struct WorkspaceRequest {
     /// The commit to check out, detached. It is the fetched base or a commit the factory made
     /// earlier in this job.
     pub base: CommitSha,
+    /// The commit the job started from (the protected branch tip it fetched), when `base` is a
+    /// commit the factory made later in the job: a later task, or a rework round.
+    ///
+    /// The path modes that protect what existed before the job (`append_only`, `additions_only`)
+    /// judge a path by how it differs from this commit, not from `base`. A file absent here is
+    /// an addition of this job, whatever an earlier task or round did to it; a file present here
+    /// is compared with its content here, so a later round cannot remove a line that existed
+    /// before the job even if an earlier round left it alone. `deny_write` stays absolute: any
+    /// change since `base` is refused. `None` means `base` itself is the protected commit.
+    ///
+    /// The commit must be in the job's object store and an ancestor of `base` (or `base`
+    /// itself); `create` refuses with `UnknownCommit` otherwise (ADR 0025).
+    pub protected_base: Option<CommitSha>,
     /// The path rules from the policy. Adapters take every decision about a path from here.
     pub rules: PathRules,
     /// What the workspace is for.
@@ -136,8 +149,8 @@ pub struct WorkspaceMounts {
     pub workspace_read_only: bool,
     /// The output directory, mounted read-write at `/out`. Build output goes here.
     pub out: PathBuf,
-    /// Paths the rules classify as `DenyWrite` or `AppendOnly`, re-mounted read-only over the
-    /// checkout (`protected_overlay_readonly`).
+    /// Paths the rules classify as `DenyWrite`, and `AppendOnly` paths that existed at the
+    /// protected base, re-mounted read-only over the checkout (`protected_overlay_readonly`).
     pub protected_overlays: Vec<RepoPath>,
     /// True when `/dev/null` is bound over `/workspace/.git`, so the sandbox sees no git data.
     pub git_masked: bool,
@@ -489,6 +502,9 @@ pub trait JobRepo: Send + Sync {
 /// A successful `ingest` means the no-follow audit walk found no hidden path, no escaping
 /// symlink, no gitlink and no nested git directory; the tree difference from the base commit,
 /// computed on the host with a temporary index, passed every path rule; and no secret was found.
+/// For each path in that difference, `deny_write` refuses any change, while `append_only` and
+/// `additions_only` judge the path by its difference from the request's `protected_base` (the
+/// base commit when there is none).
 /// `commit` commits exactly the tree that `ingest` audited, with the base commit as its only
 /// parent, and records the commit as made by the factory in this job. It refuses a change this
 /// workspace never ingested.

@@ -103,6 +103,7 @@ pub struct AuthorizedApproval {
     allowlist_version: String,
     decided_at: Timestamp,
     rule: RuleRef,
+    solo: bool,
 }
 
 impl AuthorizedApproval {
@@ -113,6 +114,7 @@ impl AuthorizedApproval {
         allowlist_version: &str,
         decided_at: Timestamp,
         rule: RuleRef,
+        solo: bool,
     ) -> Self {
         Self {
             action: action.to_owned(),
@@ -121,6 +123,7 @@ impl AuthorizedApproval {
             allowlist_version: allowlist_version.to_owned(),
             decided_at,
             rule,
+            solo,
         }
     }
 
@@ -158,5 +161,13 @@ impl AuthorizedApproval {
     #[must_use]
     pub fn rule(&self) -> &RuleRef {
         &self.rule
+    }
+
+    /// True when the approver is the requester of the job and the policy allowed it only because
+    /// the solo fact held (ADR 0022). The engine accepts an approver who is the requester only
+    /// with this stamp, and checks the fact again when it commits.
+    #[must_use]
+    pub fn solo_stamp(&self) -> bool {
+        self.solo
     }
 }

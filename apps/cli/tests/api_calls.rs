@@ -1369,3 +1369,125 @@ fn a_refused_change_says_the_code_in_plain_words_and_exits_2() {
     }
     assert_eq!(api.requests.lock().expect("lock").len(), 2);
 }
+
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
+
+#[test]
+fn confirm_is_sent_by_the_five_commands_that_take_it_and_refused_by_the_others() {
+    let recorded = r#"{"decision_id":"d-9","status":"recorded","applied":false}"#;
+    let api = fake(vec![(202, recorded); 5]);
+    let file = token_file(0o600);
+    let phrase = "I confirm the solo approval of dependency tally-counter 0.3.1";
+    let head = "a".repeat(40);
+    let evidence = format!("sha256:{}", "b".repeat(64));
+    let digest = "ab".repeat(8);
+    let lines: [Vec<String>; 5] = [
+        words(&format!(
+            "approve {JOB} {RUN} head={head} evidence={evidence}"
+        )),
+        words(&format!(
+            "approve-dependency {JOB} tally-counter 0.3.1 Read the maintainers and the licence."
+        )),
+        words(&format!(
+            "approve-build-code {JOB} tally-counter 0.3.1 Read the build script of the crate."
+        )),
+        words(&format!(
+            "approve-project-build-code {JOB} build.rs {digest} Read the script; it prints directives."
+        )),
+        words(&format!(
+            "ack-translation-warning {JOB} {RUN} 1 The translation says what the original says."
+        )),
+    ];
+    for line in &lines {
+        let mut args = line.clone();
+        args.extend(words(&format!(
+            "--api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        )));
+        args.push("--confirm".to_owned());
+        args.push(phrase.to_owned());
+        let ran = cli_with(&args);
+        assert_eq!(ran.exit, Exit::Ok, "{line:?}: {}", ran.err);
+    }
+    let sent = api.requests.lock().expect("lock").clone();
+    assert_eq!(sent.len(), 5);
+    for request in &sent {
+        assert!(
+            request.contains(&format!(r#""confirm":"{phrase}""#)),
+            "{request}"
+        );
+    }
+    // A verb that is not an approval takes no phrase: refused before a request.
+    let mut args = words(&format!(
+        "reject {JOB} {RUN} Not what was asked --api http://{} --token-file {}",
+        api.addr,
+        file.display()
+    ));
+    args.push("--confirm".to_owned());
+    args.push(phrase.to_owned());
+    assert_eq!(cli_with(&args).exit, Exit::Failed);
+    assert_eq!(api.requests.lock().expect("lock").len(), 5);
+}
+
+#[test]
+fn a_refusal_of_the_solo_mode_says_why_what_to_do_and_who_may_approve_in_that_order() {
+    let api = fake(vec![
+        (
+            409,
+            r#"{"error":"ineligible_approver","reason":"more_than_one_approver","approvers":[{"github_user_id":1001,"login":"owner"},{"github_user_id":2002,"login":null}]}"#,
+        ),
+        (
+            409,
+            r#"{"error":"ineligible_approver","reason":"designation_missing","needed_designation":"security_approver","approvers":[]}"#,
+        ),
+        (
+            409,
+            r#"{"error":"confirmation_missing","expected_confirmation":"I confirm the solo approval of PR 7 at level high"}"#,
+        ),
+    ]);
+    let file = token_file(0o600);
+    let head = "a".repeat(40);
+    let evidence = format!("sha256:{}", "b".repeat(64));
+    let line = format!(
+        "approve --api http://{} --token-file {} {JOB} {RUN} head={head} evidence={evidence}",
+        api.addr,
+        file.display()
+    );
+    let first = cli(&line);
+    assert_eq!(first.exit, Exit::Refused);
+    let lines: Vec<&str> = first.err.lines().collect();
+    assert!(
+        lines[0].ends_with(
+            "The API answered 409: you asked for this job, and the solo mode does not apply: more than one person holds an approving designation."
+        ),
+        "{}",
+        first.err
+    );
+    assert_eq!(lines[1], "What to do: have another approver decide");
+    assert_eq!(lines[2], "Approvers: owner (1001), no login (2002)");
+
+    let second = cli(&line);
+    let lines: Vec<&str> = second.err.lines().collect();
+    assert!(
+        lines[0].ends_with("you lack the designation this action needs (security_approver)."),
+        "{}",
+        second.err
+    );
+    assert_eq!(
+        lines[1],
+        "What to do: get the designation security_approver on the allowlist, or have another person who holds it decide"
+    );
+    assert_eq!(lines[2], "Approvers: nobody else is listed");
+
+    let third = cli(&line);
+    let lines: Vec<&str> = third.err.lines().collect();
+    assert_eq!(
+        lines[0],
+        "factory-cli: The API answered 409: the solo mode needs the confirmation phrase for this decision, and yours is missing or wrong."
+    );
+    assert_eq!(
+        lines[1],
+        "Send it with --confirm: I confirm the solo approval of PR 7 at level high"
+    );
+}

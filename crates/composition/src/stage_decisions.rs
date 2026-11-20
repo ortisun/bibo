@@ -49,8 +49,11 @@ use factory_domain::ids::{
     AuditEventId, CausationId, CorrelationId, JobId, PrincipalId, StageRunId, TenantId,
 };
 use factory_domain::policy::PolicyEngine;
-use factory_domain::policy::authority::{ActionVerdict, Actor as PolicyActor, ActorKind};
+use factory_domain::policy::authority::{
+    ActionDenialReason, ActionVerdict, Actor as PolicyActor, ActorKind,
+};
 use factory_domain::policy::decision::GithubUserId;
+use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus, Status as _};
@@ -63,7 +66,7 @@ use factory_ports::store::{
     PrincipalKind, Store, StoreError,
 };
 use factory_workflow::commands::{
-    Actor, Decision, RecordProjectBuildCodeDecision, RecordWarningDecision, Subject,
+    Actor, Decision, RecordProjectBuildCodeDecision, RecordWarningDecision, SoloRequest, Subject,
 };
 use factory_workflow::engine::{Engine, EngineError};
 use factory_workflow::gates::scope::own_build_code::{BuildScript, EVIDENCE_KEY};
@@ -171,13 +174,22 @@ pub struct StageFields {
     pub digest: Option<String>,
     /// The number of a warning, counted from 1.
     pub index: Option<u32>,
+    /// The word of the confirmation phrase of the solo mode (ADR 0022): 16 lowercase hex digits,
+    /// when the person typed a phrase. Never on `unblock`. Without it the subject is the six words
+    /// it always was.
+    pub confirm: Option<String>,
 }
+
+/// The longest path of a request that carries a confirmation word: ten bytes less than
+/// [`MAX_PATH_BYTES`], so that the audit subject with ` confirm=` and 16 hex digits stays within
+/// the 500 characters of the column (`subject` 382 - 10 + 25, plus 103 fixed, is 500).
+pub const MAX_PATH_BYTES_WITH_CONFIRM: usize = MAX_PATH_BYTES - 10;
 
 impl StageFields {
     /// The subject text of the audit record.
     #[must_use]
     pub fn subject(&self) -> String {
-        format!(
+        let mut subject = format!(
             "verb={} job={} run={} path={} digest={} index={}",
             self.verb.as_str(),
             self.job.as_text(),
@@ -187,7 +199,12 @@ impl StageFields {
             self.digest.as_deref().unwrap_or("none"),
             self.index
                 .map_or_else(|| "none".to_owned(), |index| index.to_string()),
-        )
+        );
+        if let Some(confirm) = &self.confirm {
+            subject.push_str(" confirm=");
+            subject.push_str(confirm);
+        }
+        subject
     }
 
     /// Reads a subject back and accepts it only if it is exactly the text [`Self::subject`] writes
@@ -201,6 +218,10 @@ impl StageFields {
         let path = words.next()?.strip_prefix("path=")?;
         let digest = words.next()?.strip_prefix("digest=")?;
         let index = words.next()?.strip_prefix("index=")?;
+        let confirm = match words.next() {
+            Some(word) => Some(word.strip_prefix("confirm=")?.to_owned()),
+            None => None,
+        };
         if words.next().is_some() {
             return None;
         }
@@ -217,6 +238,7 @@ impl StageFields {
             } else {
                 Some(index.parse().ok()?)
             },
+            confirm,
         };
         (fields.is_well_formed() && fields.subject() == subject).then_some(fields)
     }
@@ -230,9 +252,14 @@ impl StageFields {
                     .bytes()
                     .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
         };
+        let longest = if self.confirm.is_some() {
+            MAX_PATH_BYTES_WITH_CONFIRM
+        } else {
+            MAX_PATH_BYTES
+        };
         let path_ok = |path: &str| {
             !path.is_empty()
-                && path.len() <= MAX_PATH_BYTES
+                && path.len() <= longest
                 && path
                     .bytes()
                     .all(|byte| byte.is_ascii_graphic() && byte != b'\\')
@@ -261,7 +288,14 @@ impl StageFields {
                         .is_some_and(|number| (1..=MAX_WARNING).contains(&number))
             }
         };
+        // A confirmation word is 16 lowercase hex digits, and `unblock` takes none.
+        let confirm_ok = match (self.verb, self.confirm.as_deref()) {
+            (_, None) => true,
+            (StageVerb::Unblock, Some(_)) => false,
+            (_, Some(word)) => ConfirmationWord::parse(word).is_some(),
+        };
         words_of_the_verb
+            && confirm_ok
             && self.path.as_deref().is_none_or(path_ok)
             && self.digest.as_deref().is_none_or(digest_ok)
     }
@@ -624,6 +658,21 @@ impl StageDecisions {
             author_association: None,
         };
         let now = self.deps.clock.now();
+        // The solo mode (ADR 0022): the facts of the repository now, turned into the solo fact by
+        // the one function of the policy that computes it. `unblock` is not an approval action,
+        // so the fact changes nothing for it.
+        let Ok(inputs) = self.deps.sources.solo_inputs(tenant, fields.job, now).await else {
+            return Verdict::Later;
+        };
+        let solo = self
+            .deps
+            .policy
+            .authority
+            .solo_fact(inputs.single_maintainer, inputs.approver_count);
+        let solo_request = SoloRequest {
+            requested_at: request.requested_at,
+            confirmation: fields.confirm.as_deref().and_then(ConfirmationWord::parse),
+        };
         let authority_request = Request {
             policy: &self.deps.policy.authority,
             level,
@@ -636,16 +685,24 @@ impl StageDecisions {
             risk_tier: RiskTier::Medium,
             protected_path_change: false,
             sensitive_file_change: false,
+            solo,
         };
         let verdict = match fields.verb {
             StageVerb::Unblock => authorize_unblock(&authority_request),
             StageVerb::ApproveProjectBuildCode => authorize_build_code(&authority_request),
             StageVerb::AckTranslationWarning => authorize_warning(&authority_request),
         };
-        // A refusal is never explained, and a policy that needs no person for the action is not a
-        // reason to accept one.
-        let ActionVerdict::Authorized(proof) = verdict else {
-            return Verdict::Done(Reason::NotAuthorized.into());
+        // The requester who holds the designation learns that the solo mode does not apply; any
+        // other refusal is never explained, and a policy that needs no person for the action is
+        // not a reason to accept one.
+        let proof = match verdict {
+            ActionVerdict::Authorized(proof) => proof,
+            ActionVerdict::Denied(denial) if denial.reason == ActionDenialReason::SelfApproval => {
+                return Verdict::Done(Reason::IneligibleApprover.into());
+            }
+            ActionVerdict::Denied(_) | ActionVerdict::NoHumanNeeded { .. } => {
+                return Verdict::Done(Reason::NotAuthorized.into());
+            }
         };
 
         // 6. The engine applies it, and checks the roles and the guard again.
@@ -710,6 +767,7 @@ impl StageDecisions {
                             proof,
                             script,
                             reason,
+                            solo: Some(solo_request.clone()),
                         },
                     )
                     .await;
@@ -741,6 +799,7 @@ impl StageDecisions {
                             proof,
                             warning,
                             reason,
+                            solo: Some(solo_request.clone()),
                         },
                     )
                     .await;
@@ -1065,6 +1124,7 @@ fn engine_verdict(error: EngineError) -> Verdict {
     match error {
         EngineError::Duplicate => Verdict::Done(already()),
         EngineError::NotAuthorized(_) => Verdict::Done(Reason::NotAuthorized.into()),
+        EngineError::SoloRefused(refusal) => Verdict::Done(Reason::of_solo(refusal).into()),
         EngineError::GuardUnmet(_) => Verdict::Done(Reason::NotCleared.into()),
         EngineError::Refused(_) | EngineError::Illegal(_) => {
             Verdict::Done(Reason::WrongState.into())
@@ -1141,6 +1201,7 @@ mod tests {
             path: None,
             digest: None,
             index: None,
+            confirm: None,
         }
     }
 
@@ -1181,6 +1242,7 @@ mod tests {
             path: Some("crates/a/build.rs".to_owned()),
             digest: Some("ab".repeat(8)),
             index: None,
+            confirm: None,
         }
     }
 
@@ -1232,6 +1294,7 @@ mod tests {
             path: None,
             digest: None,
             index: Some(2),
+            confirm: None,
         }
     }
 
@@ -1279,5 +1342,50 @@ mod tests {
         for word in ["", "merge", "deploy", "ready", "override", "Unblock"] {
             assert_eq!(StageVerb::parse(word), None, "{word}");
         }
+    }
+
+    #[test]
+    fn a_confirmation_word_fits_the_column_with_a_shorter_path_and_never_rides_on_unblock() {
+        let word = factory_domain::policy::solo::ConfirmationWord::of(
+            "I confirm the solo approval of build code a",
+        )
+        .as_str()
+        .to_owned();
+        let longest = StageFields {
+            path: Some("a".repeat(MAX_PATH_BYTES_WITH_CONFIRM)),
+            digest: Some("f".repeat(64)),
+            stage_run: Some(StageRunId::from_uuid(uuid::Uuid::from_u128(0x2222))),
+            confirm: Some(word.clone()),
+            ..build_code()
+        };
+        assert!(longest.is_well_formed());
+        // " at=" + 30 + " mac=" + 64
+        assert!(longest.subject().len() + 4 + 30 + 5 + 64 <= 500);
+        assert_eq!(
+            StageFields::parse_canonical(&longest.subject()),
+            Some(longest.clone())
+        );
+        // The full path with the word would not fit, so it is not well formed.
+        let too_long = StageFields {
+            path: Some("a".repeat(MAX_PATH_BYTES)),
+            ..longest.clone()
+        };
+        assert!(!too_long.is_well_formed());
+        // A warning takes the word; unblock does not; a malformed word is refused.
+        let ack = StageFields {
+            confirm: Some(word.clone()),
+            ..warning()
+        };
+        assert_eq!(StageFields::parse_canonical(&ack.subject()), Some(ack));
+        let unblock = StageFields {
+            confirm: Some(word),
+            ..unblock()
+        };
+        assert!(!unblock.is_well_formed());
+        let bad = StageFields {
+            confirm: Some("NOTHEX".to_owned()),
+            ..warning()
+        };
+        assert!(!bad.is_well_formed());
     }
 }

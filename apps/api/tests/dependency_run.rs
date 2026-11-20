@@ -788,6 +788,7 @@ async fn the_reason_of_a_person_is_redacted_before_the_engine_stores_it() {
         package: PACKAGE.to_owned(),
         version: VERSION.to_owned(),
         checksum: None,
+        confirm: None,
     };
     let event = AuditEventId::from_uuid(uuid::Uuid::from_u128(0x5eed_5eed));
     let requested_at = journey.rig.env.state.ports.clock.now().as_text();
@@ -879,6 +880,7 @@ async fn a_request_for_a_dependency_decision_that_the_api_did_not_sign_is_reject
         package: PACKAGE.to_owned(),
         version: VERSION.to_owned(),
         checksum: None,
+        confirm: None,
     };
     let person = &journey.rig.env.a.approver;
     let scope = TenantScope::new(journey.rig.tenant);

@@ -123,6 +123,25 @@ pub struct SpecRequest {
     /// Present when the draft in the feature's directory stopped on questions, a person answered
     /// them, and this operation goes on from that draft.
     pub resume: Option<ResumeRequest>,
+    /// Present when this operation repairs, inside the attempt that wrote the draft, the faults
+    /// the factory's own deterministic checks found before any review.
+    pub self_check: Option<SelfCheckRequest>,
+}
+
+/// A request to fix what the factory's own deterministic checks found in a draft, in the same
+/// attempt that wrote it and before the independent reviewer reads it.
+///
+/// It differs from a [`ReworkRequest`]: a rework repairs a draft the gate sent back and costs a
+/// rework round. A self-check runs at most once in an attempt, costs no round, and lists only
+/// faults the writer can fix without a person, such as a requirement that no acceptance scenario
+/// cites or a requirement without MUST, SHOULD or MAY. The operation is always the clarify skill,
+/// on the draft the attempt has just written, so what the provider noted about the earlier skills
+/// of the attempt is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfCheckRequest {
+    /// The file that lists the faults. The skill reads it as data that says what to change in the
+    /// specification and nothing else.
+    pub findings_file: RepoPath,
 }
 
 /// The draft an earlier attempt of the same stage run left when it stopped to ask a person. The

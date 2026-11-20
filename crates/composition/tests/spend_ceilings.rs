@@ -482,6 +482,59 @@ async fn a_third_job_of_a_repository_does_not_start_while_two_are_running() {
 // ---- the ceiling of one job ---------------------------------------------------------------------------
 
 #[test]
+fn the_rework_caps_of_each_count_are_read_from_the_policy() {
+    use factory_composition::pipeline::apply_budget_policy;
+    use factory_domain::machines::limits::ReworkTrack;
+    use factory_domain::values::Sha256Digest;
+    use factory_domain::vocabulary::ExecutionMode;
+    use factory_workflow::engine::EngineConfig;
+
+    let loaded = load_policy(&root(), &[]).expect("the real policies load");
+    let config_for = |security: &factory_domain::policy::SecurityPolicy| {
+        let engine = PolicyEngine::new(security, &loaded.approval).expect("the evaluators build");
+        let mut config = EngineConfig::new(ExecutionMode::Test, Sha256Digest::of(b"policy"));
+        apply_budget_policy(&mut config, &engine.budget);
+        config
+    };
+    // The real policy: two rounds on every count, two repairs.
+    let config = config_for(&loaded.security);
+    for track in ReworkTrack::ALL {
+        assert_eq!(config.rework_limits.cap(*track).get(), 2, "{track}");
+    }
+    assert_eq!(config.repair_cap.get(), 2);
+    assert_eq!(config.job_budget_micro_usd, 25_000_000);
+
+    // A policy that lowers one count lowers that count in the engine and no other.
+    let mut lowered = (*loaded.security).clone();
+    lowered
+        .budgets
+        .hard_ceilings
+        .per_job
+        .max_design_rework_iterations = 0;
+    lowered
+        .budgets
+        .hard_ceilings
+        .per_job
+        .max_specification_rework_iterations = 1;
+    lowered
+        .untrusted_content
+        .structured_output
+        .bounded_repair_attempts = 1;
+    let config = config_for(&lowered);
+    assert_eq!(config.rework_limits.cap(ReworkTrack::Design).get(), 0);
+    assert_eq!(
+        config.rework_limits.cap(ReworkTrack::Specification).get(),
+        1
+    );
+    assert_eq!(config.rework_limits.cap(ReworkTrack::Code).get(), 2);
+    assert_eq!(
+        config.rework_limits.cap(ReworkTrack::Documentation).get(),
+        2
+    );
+    assert_eq!(config.repair_cap.get(), 1);
+}
+
+#[test]
 fn the_ceiling_of_a_job_is_read_from_the_policy() {
     use factory_composition::pipeline::job_budget_micro_usd;
     // `budgets.hard_ceilings.per_job.max_usd` is 25 dollars, and work stops at the whole of it.

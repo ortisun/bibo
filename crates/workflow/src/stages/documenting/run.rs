@@ -279,6 +279,7 @@ pub(super) async fn execute(
             repo.as_ref(),
             &manifest,
             &on,
+            &candidate.base,
             &plan_artifact.artifact,
             &plan_bytes,
             &specification,
@@ -291,7 +292,7 @@ pub(super) async fn execute(
     } else {
         // Nothing to write: the sandbox is still proved, because the contract declares one and the
         // engine fails a stage that declares a sandbox and never reports it ready.
-        prove_sandbox(handler, ctx, &candidate.head).await?;
+        prove_sandbox(handler, ctx, &candidate.head, &candidate.base).await?;
         Outcome {
             head: candidate.head.clone(),
             writer_ran: false,
@@ -316,6 +317,7 @@ pub(super) async fn execute(
             usage: outcome.spent,
             needs_human: Some(NeedsHumanRequest {
                 reason: slug(reason)?,
+                detail: None,
             }),
             ..StageOutput::default()
         });
@@ -384,6 +386,7 @@ async fn prove_sandbox(
     handler: &DocumentingHandler,
     ctx: &mut StageContext<'_>,
     head: &CommitSha,
+    job_base: &CommitSha,
 ) -> Result<(), StageError> {
     let workspace = ctx
         .ports
@@ -393,6 +396,7 @@ async fn prove_sandbox(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: head.clone(),
+                protected_base: Some(job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -424,6 +428,7 @@ async fn write_in_sandbox(
     repo: &dyn JobRepo,
     manifest: &AgentManifest,
     on: &CommitSha,
+    job_base: &CommitSha,
     plan_ref: &ArtifactRef,
     plan_bytes: &[u8],
     specification: &[u8],
@@ -432,6 +437,8 @@ async fn write_in_sandbox(
     changed_paths: &[&str],
     feedback_text: Option<String>,
 ) -> Result<Outcome, StageError> {
+    // The writer's rounds start from the code head or an earlier round, and are judged against
+    // the commit the job started from, as the builder's are (ADR 0025).
     let workspace = ctx
         .ports
         .workspaces
@@ -440,6 +447,7 @@ async fn write_in_sandbox(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: on.clone(),
+                protected_base: Some(job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -501,6 +509,14 @@ async fn write_in(
         .registry
         .prompt(manifest)
         .map_err(|_| StageError::Internal)?;
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = match crate::stages::project_rules::block(ctx).await {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
     let assembled = {
         let now = ports.clock.now();
         let tenant = identity.tenant;
@@ -534,6 +550,7 @@ async fn write_in(
             )
             .touching(changed_paths.iter().map(|p| (*p).to_owned()))
             .fetched_at(now),
+            rules,
         ];
         if let Some(text) = feedback_text {
             inputs.push(
@@ -662,9 +679,27 @@ async fn write_in(
             };
         }
     };
-    // The writer says it is done and the tree is as it was: its word is contradicted.
-    if change.is_empty() || change.base() != on {
+    if change.base() != on {
         return Err(StageError::InvalidOutput);
+    }
+    // The writer found the pages already written (the builder often updates the README and the
+    // changelog with the code), wrote nothing and said so: there is no documentation commit, and
+    // the review still reads the pages (documentation policy 8.2, item 8). A writer that names a
+    // file and leaves the tree as it was is contradicted. In the thirty-fourth real run the first
+    // case was taken for the second and the stage failed twice.
+    if change.is_empty() {
+        if !parsed.files_written.is_empty() {
+            return Err(StageError::InvalidOutput);
+        }
+        let tree = read_tree(repo, on).await.map_err(workspace_error)?;
+        outcome.unresolved = parsed
+            .claims
+            .iter()
+            .filter(|(_, path)| !tree.files.contains(strip_place(path)))
+            .map(|(_, path)| path.clone())
+            .collect();
+        outcome.report = Some(parsed);
+        return Ok(outcome);
     }
     if ctx.cancel.is_cancelled() {
         return Err(StageError::Cancelled);

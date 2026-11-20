@@ -499,7 +499,13 @@ pub fn register_around(
             StageKind::RepositoryIntelligence,
             "stage-contract.repository-intelligence",
             "stage.repository_intelligence",
-            vec![("repository-map", map)],
+            vec![
+                ("repository-map", map),
+                (
+                    "project-rules",
+                    b"# Rules of the fixture project\n\nWrite the documents first.\n".to_vec(),
+                ),
+            ],
         ),
         fixed(
             StageKind::Specification,

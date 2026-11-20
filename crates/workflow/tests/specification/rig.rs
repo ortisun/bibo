@@ -644,6 +644,13 @@ impl SpecificationProvider for ScriptedProvider {
                 .collect(),
         );
         value["open_questions"] = Value::Array(checklist_questions(dir, files));
+        // A writer that left out the requirement keyword: the first requirement says what the
+        // tool does without MUST, SHOULD or MAY.
+        if text.contains(NO_KEYWORD) {
+            value["requirements"][0]["statement"] = json!(
+                "When the --json flag is given, the tool prints the line, word and character counts as one JSON object."
+            );
+        }
         if req.revision.is_some() {
             value["metadata"]["spec_version"] = json!(2);
             value["metadata"]["supersedes_spec_version"] = json!(1);
@@ -1397,7 +1404,13 @@ fn register_around(
             kind: StageKind::RepositoryIntelligence,
             contract_id: "stage-contract.repository-intelligence",
             span: "stage.repository_intelligence",
-            deliverables: vec![("repository-map", map)],
+            deliverables: vec![
+                ("repository-map", map),
+                (
+                    "project-rules",
+                    b"# Rules of the fixture project\n\nWrite the documents first.\n".to_vec(),
+                ),
+            ],
         },
         Fixed {
             kind: StageKind::Architecture,
@@ -1448,6 +1461,10 @@ fn short_name(title: &str) -> String {
 pub fn write(path_text: &str, text: &str) -> TreeEdit {
     TreeEdit::Write(path(path_text), text.as_bytes().to_vec())
 }
+
+/// Text that makes the scripted provider assemble a contract whose FR-001 has no requirement
+/// keyword.
+pub const NO_KEYWORD: &str = "<!-- rig: FR-001 without a keyword -->";
 
 pub const SPEC_TEXT: &str = "# Feature Specification: Add a json flag\n\nA recorded stand-in for the text of a specification.\n";
 pub const REQUIREMENTS_MD: &str = "# Specification Quality Checklist\n\n- [x] No implementation details\n- [x] Requirements are testable\n";

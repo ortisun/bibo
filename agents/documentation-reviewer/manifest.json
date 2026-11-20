@@ -37,7 +37,7 @@
   "inputs_schema": {
     "name": "documentation-reviewer-input",
     "version": 1,
-    "sha256": "sha256:54859a295ca0340884e9a0dc8508f317445bf745efa97d792ff2dc69fcb4e8d9"
+    "sha256": "sha256:a80df68f6cf6d3d9ffcf941a44f187d8a37727374e9c89e5863cf81298d0738d"
   },
   "outputs_schema": {
     "name": "review-findings",
@@ -93,7 +93,7 @@
   },
   "prompt": {
     "template_path": "agents/documentation-reviewer/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:0560dc5f5f62c48312479de2d73c39fc1fd03496f99089ee1f13193c6aa3dd7c"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:04f6d057930016dd77d8aed8a8b1cd7442f5d92b82b0532bea5f6ca75dd213c7"
   }
 }

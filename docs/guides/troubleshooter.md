@@ -1,8 +1,8 @@
 # The troubleshooter
 
-This guide is for the owner and for whoever operates the factory. It says what the troubleshooter does, what you must create before it can run for real, how it decides when to look, and what to do with the issues it opens. The design is [ADR 0021](../adr/0021-troubleshooter-agent-and-mcp-sources.md).
+This guide is for the owner and for whoever operates the factory. It says what the troubleshooter does, what you must create before it can run for real, how it decides when to look, and what to do with the issues it opens. The design is in architecture decision record (ADR) [0021](../adr/0021-troubleshooter-agent-and-mcp-sources.md).
 
-**Status on 2026-11-20.** Built: the read-only PostgreSQL MCP server ([`apps/mcp-postgres`](../../apps/mcp-postgres/README.md)) and its database role, the troubleshooter's agent definition (`agents/troubleshooter`), its policy ([`policies/troubleshooting.yaml`](../../policies/troubleshooting.yaml)), the runtime flags and the sandbox relay it needs, the VictoriaMetrics MCP server's container ([`infra/troubleshooter`](../../infra/troubleshooter/README.md)) and the Datadog overlay of the telemetry stack ([`infra/otel`](../../infra/otel/README.md)). Not built: the MCP gateway (`crates/mcp_gateway`), the issue writer and the program itself (`apps/troubleshooter`). Until they exist the troubleshooter does not run. The parts of this guide that describe the program say how it is designed to behave.
+**Status on 2026-11-20.** Built: the read-only PostgreSQL Model Context Protocol (MCP) server ([`apps/mcp-postgres`](../../apps/mcp-postgres/README.md)) and its database role, the troubleshooter's agent definition (`agents/troubleshooter`), its policy ([`policies/troubleshooting.yaml`](../../policies/troubleshooting.yaml)), the runtime flags and the sandbox relay it needs, the VictoriaMetrics MCP server's container ([`infra/troubleshooter`](../../infra/troubleshooter/README.md)) and the Datadog overlay of the telemetry stack ([`infra/otel`](../../infra/otel/README.md)). Not built: the MCP gateway (`crates/mcp_gateway`), the issue writer and the program itself (`apps/troubleshooter`). Until they exist the troubleshooter does not run. The parts of this guide that describe the program say how it is designed to behave.
 
 ## What it does, and what it does not
 
@@ -23,7 +23,7 @@ Skip this part if you do not use Datadog. Without it the troubleshooter still ha
 1. In Datadog, create a **service account** for the troubleshooter, with a role that holds only these permissions:
    - `mcp_read` (use of the Datadog MCP server for reading);
    - Logs Read Data and Logs Read Index Data;
-   - APM read;
+   - APM (application performance monitoring) read;
    - Metrics read;
    - Monitors read;
    - Incidents read.
@@ -43,7 +43,7 @@ Skip this part if you do not use Datadog. Without it the troubleshooter still ha
 
 ### The database login `factory_troubleshooter`
 
-The migrations up to `2026-11-20-003100_observer_hardening` must be applied (by a superuser: it revokes the advisory lock functions from `PUBLIC`). Then a database administrator creates the login once per cluster, from the root of a checkout, with [`docs/database/observer-login.sql`](../database/observer-login.sql). It reads the password from a file and sets it as a SCRAM verifier computed on your machine by `scripts/scram-verifier.py`, so the password is never in the SQL text that the server log or `pg_stat_statements` keep:
+The migrations up to `2026-11-20-003100_observer_hardening` must be applied (by a superuser: it revokes the advisory lock functions from `PUBLIC`). Then a database administrator creates the login once per cluster, from the root of a checkout, with [`docs/database/observer-login.sql`](../database/observer-login.sql). It reads the password from a file and sets it as a SCRAM (Salted Challenge Response Authentication Mechanism) verifier computed on your machine by `scripts/scram-verifier.py`, so the password is never in the SQL text that the server log or `pg_stat_statements` keep:
 
 ```bash no-run reason="needs a database administrator's connection"
 umask 077

@@ -3,11 +3,31 @@
 use async_trait::async_trait;
 use factory_domain::ids::{JobId, StageRunId, TenantId};
 use factory_domain::policy::authority::{Allowlist, AutonomyLevel};
+use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::Fidelity;
 
 use super::request::ApprovalRequest;
 use crate::handlers::RunIdentity;
 use crate::stages::delivery::SeamError;
+
+/// The facts of the solo mode about a job's repository, read now (ADR 0022): whether it is marked
+/// `single_maintainer` and how many active people may approve on it. The policy turns them into
+/// the solo fact (`AuthorityPolicy::solo_fact`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoloInputs {
+    /// The repository is marked `single_maintainer`.
+    pub single_maintainer: bool,
+    /// The active people who hold `approver` or `security_approver` on it.
+    pub approver_count: u32,
+}
+
+impl SoloInputs {
+    /// Facts under which the solo mode never applies.
+    pub const NONE: Self = Self {
+        single_maintainer: false,
+        approver_count: 0,
+    };
+}
 
 /// Facts about the people and the policy around a job.
 ///
@@ -39,6 +59,20 @@ pub trait ApprovalSources: Send + Sync {
     /// # Errors
     /// [`SeamError`].
     async fn level(&self, tenant: TenantId, job: JobId) -> Result<AutonomyLevel, SeamError>;
+
+    /// The facts of the solo mode for the job's repository, now. The default is
+    /// [`SoloInputs::NONE`]: a source that does not read them never lets the requester approve.
+    ///
+    /// # Errors
+    /// [`SeamError`]. The caller refuses.
+    async fn solo_inputs(
+        &self,
+        _tenant: TenantId,
+        _job: JobId,
+        _now: Timestamp,
+    ) -> Result<SoloInputs, SeamError> {
+        Ok(SoloInputs::NONE)
+    }
 
     /// The request of an approval stage run.
     ///

@@ -38,7 +38,9 @@ use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::{ExecResult, SandboxSession};
 
 use crate::attest::{Attestor, Claim, rejected_note};
-use crate::command::{EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin};
+use crate::command::{
+    BuildEnv, EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin,
+};
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
 use crate::io::RunIo;
@@ -63,6 +65,11 @@ pub const PINNED_VERSION: &str = "0.163.0";
 /// Where the image puts the tool.
 pub const DEFAULT_BINARY: &str = "/opt/codex/bin/codex";
 
+/// The `PATH` Codex starts with: the Rust toolchain of the agent image, Codex's own directories,
+/// then the system directories. Every directory is one the image's own `PATH` lists.
+pub const DEFAULT_PATH: &str =
+    "/opt/rust/bin:/opt/codex/codex-path:/opt/codex/bin:/usr/local/bin:/usr/bin:/bin";
+
 /// How the adapter is set up. The defaults match the pinned image.
 #[derive(Debug, Clone)]
 pub struct CodexConfig {
@@ -80,6 +87,9 @@ pub struct CodexConfig {
     pub transcript_cap_bytes: u64,
     /// The skills the specification stage may see. `None` makes that stage unavailable.
     pub spec_skills: Option<Vec<String>>,
+    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0024). The
+    /// composition root sets it from the sandbox layout.
+    pub build: BuildEnv,
 }
 
 impl Default for CodexConfig {
@@ -87,11 +97,14 @@ impl Default for CodexConfig {
         Self {
             binary: DEFAULT_BINARY.to_owned(),
             accepted_versions: vec![PINNED_VERSION.to_owned()],
-            path: "/opt/codex/codex-path:/opt/codex/bin:/usr/local/bin:/usr/bin:/bin".to_owned(),
+            // The toolchain of the agent image first, then Codex's own directories, as in the
+            // image's own PATH (`infra/sandbox-images/agent/Dockerfile`).
+            path: DEFAULT_PATH.to_owned(),
             home_root: "/tmp".to_owned(),
             retries: 1,
             transcript_cap_bytes: 16 * 1024 * 1024,
             spec_skills: None,
+            build: BuildEnv::default(),
         }
     }
 }
@@ -339,8 +352,10 @@ impl CodexRuntime {
             }
         };
         let env = ToolEnv::new()
-            .set(EnvName::Home, home)
-            .and_then(|e| e.set(EnvName::Path, self.config.path.clone()));
+            .set(EnvName::Home, home.clone())
+            .and_then(|e| e.set(EnvName::Path, self.config.path.clone()))
+            // A `cargo` the agent starts builds outside the workspace the ingestion audit walks.
+            .and_then(|e| self.config.build.apply(e, &home));
         let Ok(env) = env else {
             return early(never_started(), version);
         };

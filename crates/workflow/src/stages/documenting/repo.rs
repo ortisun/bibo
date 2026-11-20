@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use factory_ports::paths::{CommitSha, RepoGlob, RepoPath};
 use factory_ports::workspace::{JobRepo, ReadView, WorkspaceError};
 
-use crate::gates::docs::claims::env_names_in_source;
+use crate::gates::docs::claims::{env_names_in_source, flags_in_source};
 
 /// The most paths one listing returns.
 const MAX_PATHS: usize = 20_000;
@@ -26,6 +26,9 @@ pub struct Tree {
     pub pages: BTreeMap<String, String>,
     /// The environment variable names the source contains.
     pub env: BTreeSet<String>,
+    /// The long flags the program's source holds as quoted literals. Test files are left out, so
+    /// a flag that only a test names does not count as the program's.
+    pub flags: BTreeSet<String>,
     /// `Cargo.toml`, when there is one.
     pub manifest: Option<String>,
 }
@@ -64,6 +67,9 @@ pub async fn read_tree(repo: &dyn JobRepo, commit: &CommitSha) -> Result<Tree, W
         } else if path.ends_with(".rs") {
             let source = text(repo, commit, path, MAX_SOURCE_BYTES).await?;
             tree.env.extend(env_names_in_source(&source));
+            if !path.starts_with("tests/") && !path.contains("/tests/") {
+                tree.flags.extend(flags_in_source(&source));
+            }
         }
     }
     if tree.files.contains("Cargo.toml") {

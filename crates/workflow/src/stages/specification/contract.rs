@@ -54,7 +54,7 @@ pub fn resolve(
         REPOSITORY_MAP,
     )
     .ok_or_else(missing)?;
-    let inputs = vec![
+    let mut inputs = vec![
         ContractInput {
             name: NORMALIZED_REQUEST,
             description: "The request in plain English, written by the intake stage.",
@@ -90,6 +90,11 @@ pub fn resolve(
             trust: "trusted_internal",
         },
     ];
+    // The project's rules for agents (ADR 0026), given to the writer and the reviewer.
+    inputs.extend(crate::stages::project_rules::contract_input(
+        ctx.upstream,
+        ctx.now,
+    ));
     let criteria: Vec<ContractCriterion> = gates()
         .into_iter()
         .map(|gate| ContractCriterion {

@@ -48,8 +48,11 @@ use factory_domain::ids::{
     AuditEventId, CausationId, CorrelationId, JobId, PrincipalId, StageRunId, TenantId,
 };
 use factory_domain::policy::PolicyEngine;
-use factory_domain::policy::authority::{ActionVerdict, Actor as PolicyActor, ActorKind};
+use factory_domain::policy::authority::{
+    ActionDenialReason, ActionVerdict, Actor as PolicyActor, ActorKind,
+};
 use factory_domain::policy::decision::GithubUserId;
+use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus, Status as _};
@@ -61,7 +64,7 @@ use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule, NewAuditEvent,
     PrincipalKind, Store, StoreError,
 };
-use factory_workflow::commands::{Actor, RecordDependencyDecision, Subject};
+use factory_workflow::commands::{Actor, RecordDependencyDecision, SoloRequest, Subject};
 use factory_workflow::engine::{Engine, EngineError};
 use factory_workflow::gates::supply_chain::approval::{
     ApprovalKind, MIN_REASON_CHARS, Request, Subject as Package, authorize, authorize_build_code,
@@ -129,6 +132,10 @@ pub struct DependencyFields {
     /// The start of the checksum, 12 to 64 lower case hexadecimal digits, when the person wrote
     /// one.
     pub checksum: Option<String>,
+    /// The word of the confirmation phrase of the solo mode (ADR 0022): 16 lowercase hex digits,
+    /// the `ConfirmationWord` of the phrase the person typed, when they typed one. Without it the
+    /// subject is the six words it always was.
+    pub confirm: Option<String>,
 }
 
 impl DependencyFields {
@@ -144,7 +151,7 @@ impl DependencyFields {
     /// The subject text of the audit record.
     #[must_use]
     pub fn subject(&self) -> String {
-        format!(
+        let mut subject = format!(
             "verb={} job={} run={} package={} version={} checksum={}",
             self.verb(),
             self.job.as_text(),
@@ -153,7 +160,12 @@ impl DependencyFields {
             self.package,
             self.version,
             self.checksum.as_deref().unwrap_or("none"),
-        )
+        );
+        if let Some(confirm) = &self.confirm {
+            subject.push_str(" confirm=");
+            subject.push_str(confirm);
+        }
+        subject
     }
 
     /// Reads a subject back and accepts it only if it is exactly the text [`Self::subject`] writes
@@ -172,6 +184,10 @@ impl DependencyFields {
         let package = words.next()?.strip_prefix("package=")?;
         let version = words.next()?.strip_prefix("version=")?;
         let checksum = words.next()?.strip_prefix("checksum=")?;
+        let confirm = match words.next() {
+            Some(word) => Some(word.strip_prefix("confirm=")?.to_owned()),
+            None => None,
+        };
         if words.next().is_some() {
             return None;
         }
@@ -184,6 +200,7 @@ impl DependencyFields {
             package: package.to_owned(),
             version: version.to_owned(),
             checksum: (checksum != "none").then(|| checksum.to_owned()),
+            confirm,
         };
         (fields.is_well_formed() && fields.subject() == subject).then_some(fields)
     }
@@ -197,6 +214,10 @@ impl DependencyFields {
             && Ecosystem::Cargo.valid_name(&self.package)
             && factory_workflow::gates::supply_chain::version::Version::parse(&self.version)
                 .is_some()
+            && self
+                .confirm
+                .as_deref()
+                .is_none_or(|word| ConfirmationWord::parse(word).is_some())
             && self.checksum.as_deref().is_none_or(|prefix| {
                 (factory_workflow::gates::supply_chain::command::MIN_CHECKSUM_PREFIX..=64)
                     .contains(&prefix.len())
@@ -528,6 +549,16 @@ impl DependencyDecisions {
             author_association: None,
         };
         let now = self.deps.clock.now();
+        // The solo mode (ADR 0022): the facts of the repository now, turned into the solo fact by
+        // the one function of the policy that computes it.
+        let Ok(inputs) = self.deps.sources.solo_inputs(tenant, fields.job, now).await else {
+            return Verdict::Later;
+        };
+        let solo = self
+            .deps
+            .policy
+            .authority
+            .solo_fact(inputs.single_maintainer, inputs.approver_count);
         let authority_request = Request {
             policy: &self.deps.policy.authority,
             level,
@@ -542,6 +573,7 @@ impl DependencyDecisions {
             risk_tier: RiskTier::Medium,
             protected_path_change: false,
             sensitive_file_change: false,
+            solo,
         };
         let verdict = match chosen.kind {
             ApprovalKind::NewDependency => authorize(&authority_request, chosen.needs),
@@ -549,8 +581,13 @@ impl DependencyDecisions {
         };
         let proof = match verdict {
             ActionVerdict::Authorized(proof) => proof,
-            // A refusal is never explained, and a policy that needs no person for the action is
-            // not a reason to accept one.
+            // The requester who holds the designation learns that the solo mode does not apply:
+            // they are on the list with the role, so the reason tells nobody else anything.
+            ActionVerdict::Denied(denial) if denial.reason == ActionDenialReason::SelfApproval => {
+                return Verdict::Done(Reason::IneligibleApprover.into());
+            }
+            // Any other refusal is never explained, and a policy that needs no person for the
+            // action is not a reason to accept one.
             ActionVerdict::Denied(_) | ActionVerdict::NoHumanNeeded { .. } => {
                 return Verdict::Done(Reason::NotAuthorized.into());
             }
@@ -579,6 +616,10 @@ impl DependencyDecisions {
                         checksum: chosen.subject.checksum.clone(),
                     },
                     reason,
+                    solo: Some(SoloRequest {
+                        requested_at: request.requested_at,
+                        confirmation: fields.confirm.as_deref().and_then(ConfirmationWord::parse),
+                    }),
                 },
             )
             .await;
@@ -593,6 +634,9 @@ impl DependencyDecisions {
             })),
             Err(EngineError::Duplicate) => Verdict::Done(already()),
             Err(EngineError::NotAuthorized(_)) => Verdict::Done(Reason::NotAuthorized.into()),
+            Err(EngineError::SoloRefused(refusal)) => {
+                Verdict::Done(Reason::of_solo(refusal).into())
+            }
             Err(EngineError::Refused(_) | EngineError::Illegal(_) | EngineError::GuardUnmet(_)) => {
                 Verdict::Done(Reason::Refused.into())
             }
@@ -944,6 +988,7 @@ mod tests {
             package: "tally-counter".to_owned(),
             version: "0.3.1".to_owned(),
             checksum: Some("ab".repeat(8)),
+            confirm: None,
         }
     }
 
@@ -999,5 +1044,31 @@ mod tests {
         assert!(longest.is_well_formed());
         // " at=" + 30 + " mac=" + 64
         assert!(longest.subject().len() + 4 + 30 + 5 + 64 <= 500);
+    }
+
+    #[test]
+    fn the_subject_with_a_confirmation_word_fits_and_reads_back() {
+        let word = factory_domain::policy::solo::ConfirmationWord::of(
+            "I confirm the solo approval of dependency a 1.0.0",
+        )
+        .as_str()
+        .to_owned();
+        let longest = DependencyFields {
+            package: "a".repeat(MAX_NAME_BYTES),
+            version: format!("1.0.0-{}", "a".repeat(MAX_VERSION_BYTES - 6)),
+            checksum: Some("f".repeat(64)),
+            confirm: Some(word.clone()),
+            ..fields(ApprovalKind::BuildCode)
+        };
+        assert!(longest.is_well_formed());
+        assert!(longest.subject().len() + 4 + 30 + 5 + 64 <= 500);
+        assert_eq!(
+            DependencyFields::parse_canonical(&longest.subject()),
+            Some(longest.clone())
+        );
+        let bad = longest.subject().replace(&word, "XYZ");
+        assert_eq!(DependencyFields::parse_canonical(&bad), None);
+        let extra = format!("{} more=1", longest.subject());
+        assert_eq!(DependencyFields::parse_canonical(&extra), None);
     }
 }

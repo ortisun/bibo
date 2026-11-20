@@ -1,4 +1,4 @@
-//! Shared fixtures: the nine real agents, the real policy, a redactor built from the policy
+//! Shared fixtures: the real agents, the real policy, a redactor built from the policy
 //! patterns, and builders for inputs.
 
 #![allow(dead_code)]
@@ -38,6 +38,7 @@ macro_rules! agent_files {
 
 const AGENT_FILES: &[(&str, &str, &str)] = agent_files!(
     "architect",
+    "architecture-critic",
     "builder",
     "code-reviewer",
     "documentation-reviewer",

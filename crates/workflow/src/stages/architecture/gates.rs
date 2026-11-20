@@ -50,6 +50,78 @@ fn tier_of(record: &Value) -> Option<RiskTier> {
     }
 }
 
+/// Why the design is in its tier, in plain English, from what the stage measured at run time: the
+/// criteria of the policy that held, the claim of the intake classifier, the sensitive paths and
+/// the decisions for a person. A blocked or skipped critic gate says it, so that a person reading
+/// the report sees what put the design at a tier that needs a critic.
+fn why_this_tier(record: &Value, tier: RiskTier) -> String {
+    // At most this many items of a list are named, so that the reason stays within the length the
+    // report schema allows whatever the design holds.
+    const SHOWN: usize = 8;
+    let texts = |pointer: &str| -> Vec<String> {
+        let all: Vec<String> = record
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|item| item.chars().take(80).collect())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut named: Vec<String> = all
+            .iter()
+            .take(SHOWN)
+            .map(|item| format!("`{item}`"))
+            .collect();
+        if all.len() > SHOWN {
+            named.push(format!("and {} more", all.len() - SHOWN));
+        }
+        named
+    };
+    let text = |pointer: &str| record.pointer(pointer).and_then(Value::as_str);
+    let mut why = format!("The design is in the {} tier.", tier.as_str());
+    let matched = texts("/risk/matched");
+    if record.pointer("/risk/unclassified") == Some(&Value::Bool(true)) || matched.is_empty() {
+        why.push_str(
+            " No criterion of the policy held for it, and the policy puts a change it cannot classify in the high tier.",
+        );
+    } else {
+        why.push_str(&format!(
+            " The policy computed the {} tier from the criteria that held: {}.",
+            text("/risk/computed").unwrap_or("unknown"),
+            matched.join(", ")
+        ));
+    }
+    if let Some(claim) = text("/risk/agent_claim") {
+        if text("/risk/computed") == Some(tier.as_str()) {
+            why.push_str(&format!(
+                " The intake classifier claimed the {claim} tier, and a claim never lowers the tier."
+            ));
+        } else {
+            why.push_str(&format!(
+                " The intake classifier claimed the {claim} tier, which raised it."
+            ));
+        }
+    }
+    let sensitive = texts("/risk/sensitive_paths");
+    if !sensitive.is_empty() {
+        why.push_str(&format!(
+            " The design says it changes files that the path policy marks sensitive: {}.",
+            sensitive.join(", ")
+        ));
+    }
+    let decisions = texts("/risk/decisions_for_a_person");
+    if !decisions.is_empty() {
+        why.push_str(&format!(
+            " These decisions need a person, and each counts as a new dependency: {}.",
+            decisions.join(", ")
+        ));
+    }
+    why
+}
+
 fn not_a_design() -> &'static str {
     "The architect asked a person a question, so there is no finished design to check."
 }
@@ -193,6 +265,7 @@ pub(super) async fn evaluate(
             .decisions
             .iter()
             .any(|decision| decision.needs_person);
+    let why_tier = why_this_tier(&record, tier);
     let critic_facts = |outcome: &'static str,
                         title: &str,
                         reason: &str,
@@ -202,7 +275,7 @@ pub(super) async fn evaluate(
             definition(CRITIC_GATE, CRITIC_TEXT, commit),
             outcome,
             title,
-            reason,
+            &format!("{reason} {why_tier}"),
             list,
             vec![format!("tier={}", tier.as_str()), evidence],
         )
@@ -249,7 +322,10 @@ pub(super) async fn evaluate(
             let mut blocked = critic_facts(
                 "BLOCKED",
                 "No independent critic could review this design",
-                "The policy requires an independent critic for this risk tier and none could be used, so no critic reviewed the design. A person must decide.",
+                &format!(
+                    "The policy requires an independent critic from the {} tier and none could be used, so no critic reviewed the design. A person must decide.",
+                    rules.critic_from.as_str()
+                ),
                 Vec::new(),
                 format!("critic=absent:{}", why.code()),
             );
@@ -361,5 +437,73 @@ fn finding_id(id: &str) -> String {
         "critic-finding".to_owned()
     } else {
         format!("critic.{trimmed}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_reason_names_the_criteria_the_claim_the_paths_and_the_decisions() {
+        let record = json!({ "risk": {
+            "tier": "high", "computed": "high", "unclassified": false, "agent_claim": "low",
+            "matched": ["public_api_change", "sensitive_file_change"],
+            "sensitive_paths": ["Cargo.toml"], "decisions_for_a_person": ["add-a-json-library"],
+        }});
+        let why = why_this_tier(&record, RiskTier::High);
+        assert!(why.starts_with("The design is in the high tier."), "{why}");
+        assert!(
+            why.contains(
+                "the high tier from the criteria that held: `public_api_change`, `sensitive_file_change`."
+            ),
+            "{why}"
+        );
+        assert!(
+            why.contains("claimed the low tier, and a claim never lowers the tier"),
+            "{why}"
+        );
+        assert!(why.contains("marks sensitive: `Cargo.toml`."), "{why}");
+        assert!(why.contains("`add-a-json-library`"), "{why}");
+    }
+
+    #[test]
+    fn the_reason_says_when_the_claim_raised_the_tier_or_nothing_matched() {
+        let raised = json!({ "risk": {
+            "tier": "high", "computed": "medium", "unclassified": false, "agent_claim": "high",
+            "matched": ["public_api_change"], "sensitive_paths": [], "decisions_for_a_person": [],
+        }});
+        let why = why_this_tier(&raised, RiskTier::High);
+        assert!(
+            why.contains("claimed the high tier, which raised it"),
+            "{why}"
+        );
+        assert!(!why.contains("sensitive"), "{why}");
+        let unknown = json!({ "risk": {
+            "tier": "high", "computed": "high", "unclassified": true, "matched": [],
+        }});
+        let why = why_this_tier(&unknown, RiskTier::High);
+        assert!(
+            why.contains("No criterion of the policy held for it"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_long_list_is_cut_so_the_reason_fits_the_report() {
+        let paths: Vec<String> = (0..200)
+            .map(|i| format!("{}/Cargo.toml", "d".repeat(500 + i)))
+            .collect();
+        let record = json!({ "risk": {
+            "tier": "high", "computed": "high", "unclassified": false,
+            "matched": ["sensitive_file_change"], "sensitive_paths": paths,
+            "decisions_for_a_person": paths,
+        }});
+        let why = why_this_tier(&record, RiskTier::High);
+        assert!(why.contains("and 192 more"), "{why}");
+        // The longest fixed text of a critic report is under 300 characters, and the report
+        // allows 4000.
+        assert!(why.chars().count() + 300 < 4000, "{}", why.chars().count());
     }
 }

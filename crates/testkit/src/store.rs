@@ -643,6 +643,15 @@ impl InMemoryStore {
         }
     }
 
+    /// Marks a repository `single_maintainer` or not, as its registration does (the solo mode,
+    /// ADR 0022, reads the mark).
+    pub fn set_single_maintainer(&self, repository: RepositoryId, value: bool) {
+        let mut g = lock(&self.inner);
+        if let Some(row) = g.committed.repositories.get_mut(&repository) {
+            row.value.single_maintainer = value;
+        }
+    }
+
     /// True when a committed transaction indexed the artifact for the tenant. The in-memory
     /// artifact store reads this to answer for a tenant, as the database adapter reads the index
     /// (`InMemoryArtifactStore::indexed_by`).

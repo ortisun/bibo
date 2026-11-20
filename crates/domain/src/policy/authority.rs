@@ -38,6 +38,7 @@ use crate::vocabulary::{HumanRole, RiskTier};
 use super::approval::{ApprovalPolicy, LevelRequirement, Requirement};
 use super::decision::{AuthorizedApproval, Designation, GithubUserId};
 use super::security::SecurityPolicy;
+use super::solo::{SOLO_ACTIONS, SoloFact, SoloRules};
 use super::{BuildError, RuleRef};
 
 /// The autonomy ladder. A higher level lets the factory do more without a human.
@@ -448,6 +449,9 @@ pub struct ActionContext<'a> {
     pub require_designation: Option<Designation>,
     /// Whether the actor passed step-up authentication for this decision.
     pub step_up_done: bool,
+    /// The solo fact ([`AuthorityPolicy::solo_fact`]): the requester may take an approval action
+    /// of [`SOLO_ACTIONS`] alone. [`SoloFact::NONE`] outside the solo mode.
+    pub solo: SoloFact,
 }
 
 /// A change to the authority allowlist that is being approved.
@@ -626,6 +630,8 @@ pub struct AuthorityPolicy {
     nonwaivable_gates: BTreeSet<String>,
     /// The (gate, block code) pairs that no override may pass.
     non_overridable_blocks: BTreeSet<(String, String)>,
+    /// The rules of the solo mode (`solo_mode`), read by `solo.rs`.
+    pub(super) solo: SoloRules,
 }
 
 /// The block that must always be on the list: a new direct dependency waits for a recorded human
@@ -940,6 +946,15 @@ impl AuthorityPolicy {
             }
         }
 
+        // The solo mode is refused, not read leniently, when a wait or the template is out of
+        // range: the same check the policy loader runs.
+        let solo = SoloRules::from_block(&approval.solo_mode).map_err(|problem| {
+            BuildError::UnknownValue {
+                key: problem.key,
+                found: problem.message,
+            }
+        })?;
+
         let mut non_overridable_blocks = BTreeSet::new();
         for block in &security.gate_integrity.non_overridable_blocks {
             BlockedCode::parse(&block.code).map_err(|_| BuildError::UnknownValue {
@@ -991,6 +1006,7 @@ impl AuthorityPolicy {
                 .cloned()
                 .collect(),
             non_overridable_blocks,
+            solo,
         })
     }
 
@@ -1164,10 +1180,13 @@ impl AuthorityPolicy {
         }
     }
 
-    /// The number of distinct approvals a tier needs.
+    /// The number of distinct approvals a tier needs. In the solo mode it is one at every tier:
+    /// the fact holds only where exactly one person may approve (ADR 0022).
     #[must_use]
-    pub fn required_approvals(&self, tier: RiskTier) -> u32 {
-        self.tiers.get(&tier).map_or(u32::MAX, |t| t.approvals)
+    pub fn required_approvals(&self, tier: RiskTier, solo: SoloFact) -> u32 {
+        self.tiers
+            .get(&tier)
+            .map_or(u32::MAX, |t| if solo.holds() { 1 } else { t.approvals })
     }
 
     /// The number of approvals every pull request needs, whatever its risk tier: the smallest
@@ -1283,9 +1302,12 @@ impl AuthorityPolicy {
             return Self::denied(ActionDenialReason::MissingDesignation { needed }, row_rule);
         };
 
-        if let Some(denial) = self.separation_of_duties(ctx, used, tier_rule) {
-            return Self::denied(denial, RuleRef::new("separation_of_duties", ctx.action));
-        }
+        let solo = match self.separation_of_duties(ctx, ctx.action, used, tier_rule) {
+            Ok(solo) => solo,
+            Err(denial) => {
+                return Self::denied(denial, RuleRef::new("separation_of_duties", ctx.action));
+            }
+        };
         if self.step_up.contains(ctx.action) && !ctx.step_up_done {
             return Self::denied(
                 ActionDenialReason::StepUpRequired,
@@ -1302,15 +1324,28 @@ impl AuthorityPolicy {
             ctx.allowlist.version_hash(),
             *ctx.now,
             row_rule,
+            solo,
         ))
     }
 
+    /// Separation of duties for `action`. `Ok(true)` when the requester takes the action and only
+    /// the solo exception allowed it, so the proof carries the solo stamp; `Ok(false)` when the
+    /// rule holds without it.
+    ///
+    /// * An approval action ([`SOLO_ACTIONS`]): the requester may take it only with the solo fact,
+    ///   which then passes over the conditions of the change and the security approver's own rule
+    ///   (the one security approver is the requester). The policy's
+    ///   `approver_may_equal_requester_when_low_risk` is `false`, so nothing else lets them.
+    /// * Any other action (`reject`, `rework`, `pause`, `resume`, `cancel`, the waiver of a gate,
+    ///   the autonomy changes): the rule of before, untouched by the solo fact. The requester may
+    ///   take it when no condition of the change, of the tier or of the security approver applies.
     fn separation_of_duties(
         &self,
         ctx: &ActionContext<'_>,
+        action: &str,
         used: Designation,
         tier: Option<&TierRule>,
-    ) -> Option<ActionDenialReason> {
+    ) -> Result<bool, ActionDenialReason> {
         let change = &ctx.change;
         let by_change = (self.sod_when.contains(&SodCondition::HighRisk)
             && change.risk_tier >= RiskTier::High)
@@ -1323,13 +1358,26 @@ impl AuthorityPolicy {
         let by_role = self.security_approver_differs && used == Designation::SecurityApprover;
         match ctx.requester {
             Some(requester) if requester == ctx.actor.github_user_id => {
-                (by_change || by_role || !self.equal_allowed_when_low_risk)
-                    .then_some(ActionDenialReason::SelfApproval)
+                let locked = by_change || by_role;
+                if SOLO_ACTIONS.contains(&action) {
+                    if !locked && self.equal_allowed_when_low_risk {
+                        Ok(false)
+                    } else if ctx.solo.holds() {
+                        Ok(true)
+                    } else {
+                        Err(ActionDenialReason::SelfApproval)
+                    }
+                } else if locked {
+                    Err(ActionDenialReason::SelfApproval)
+                } else {
+                    Ok(false)
+                }
             }
-            Some(_) => None,
+            Some(_) => Ok(false),
             // A change that triggers the rule belongs to a job, so a missing requester is a
             // mistake of the caller, and the answer is no.
-            None => by_change.then_some(ActionDenialReason::RequesterUnknown),
+            None if by_change => Err(ActionDenialReason::RequesterUnknown),
+            None => Ok(false),
         }
     }
 
@@ -1437,7 +1485,8 @@ impl AuthorityPolicy {
                 rule,
             );
         };
-        if let Some(denial) = self.separation_of_duties(ctx, used, None) {
+        // No autonomy action is an approval action, so the solo exception never applies here.
+        if let Err(denial) = self.separation_of_duties(ctx, action, used, None) {
             return Self::denied(denial, rule);
         }
         ActionVerdict::Authorized(AuthorizedApproval::new(
@@ -1447,6 +1496,7 @@ impl AuthorityPolicy {
             ctx.allowlist.version_hash(),
             *ctx.now,
             rule,
+            false,
         ))
     }
 

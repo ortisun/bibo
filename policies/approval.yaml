@@ -165,9 +165,39 @@ separation_of_duties:
     - protected_path_change
     - sensitive_file_change
     - new_dependency
-  approver_may_equal_requester_when_low_risk: true      # single-maintainer repositories
+  # Only for the approval actions (approve_pr, freeze_specification, the decisions on a new
+  # dependency, on build code and on a translation warning). Nobody approves their own request;
+  # a person who works alone is served by the solo fact of solo_mode below, never by this value.
+  # reject, rework, pause, resume and cancel keep the rule of the change's conditions.
+  approver_may_equal_requester_when_low_risk: false
   factory_app_may_approve: false
   security_approver_must_differ_from_requester: true
+
+# -----------------------------------------------------------------------------
+# 2b. Solo mode (ADR 0022)
+# -----------------------------------------------------------------------------
+# The requester of a job may take an approval action on it alone when all of these hold at the
+# moment of the decision, and the engine checks them again when it commits:
+#   1. the repository is marked single_maintainer (set when it was registered);
+#   2. exactly one active person holds approver or security_approver on that repository;
+#   3. that person is the requester;
+#   4. that person holds the designation the action needs (security_approver at the critical
+#      tier, for build code and for a package younger than the minimum age).
+# The approval of a specification and of a low or medium pull request needs no wait and no
+# phrase. A high or critical pull request, a new dependency, build code and a translation warning
+# need the minimum wait below, counted from the moment the stage run last entered
+# WAITING_FOR_HUMAN or BLOCKED, and the confirmation phrase, sent with --confirm.
+# Every field is required: a field left out, a wait of zero or a wait above 1440 refuses the
+# file. A project policy may switch the mode off or lengthen a wait, never the other way.
+solo_mode:
+  enabled: true
+  minimum_wait_minutes:        # whole minutes, 1 to 1440
+    pull_request_high: 10
+    pull_request_critical: 30
+    dependency: 10
+    translation_warning: 10
+    build_code: 30
+  confirmation_template: "I confirm the solo approval of {target}"   # one {target}, printable ASCII
 
 # -----------------------------------------------------------------------------
 # 3. Risk tiers (inputs to routing and to the checks above)

@@ -72,6 +72,10 @@ struct Shared {
     feedback: Option<String>,
     /// The answers people gave to a question of this stage run, as text for the task block.
     answers: String,
+    /// The commit the job started from (the repository map's). Every workspace of the run names
+    /// it as its protected base, so a later task or rework round may change the files the job
+    /// added while what existed before the job stays protected (ADR 0025).
+    job_base: CommitSha,
 }
 
 /// The most bytes of one human answer that go into a prompt.
@@ -100,8 +104,8 @@ enum TaskOutcome {
     Committed(TaskEvidence, CommitSha),
     /// The audit refused the change. Nothing was committed.
     Refused(Refusal),
-    /// The builder cannot go on, and a person is needed.
-    Asked(&'static str),
+    /// The builder cannot go on, and a person is needed: the code, and what the builder said.
+    Asked(&'static str, Option<String>),
 }
 
 pub(crate) fn ledger_error(error: LedgerError) -> StageError {
@@ -257,6 +261,9 @@ pub(super) async fn execute(
     let mut head = rework
         .as_ref()
         .map_or_else(|| base.clone(), |context| context.previous_head.clone());
+    // The commit this run starts from. The commits gate accounts for the changes after it only:
+    // the ones before it were audited by the run this one replaces.
+    let started_from = head.clone();
 
     // 3. The task graph.
     let planned: Vec<PlannedTask> = if rework.is_some() {
@@ -308,6 +315,7 @@ pub(super) async fn execute(
         architecture_sha: arch_ref.sha256.clone(),
         feedback: rework.as_ref().map(super::feedback::render),
         answers: human_answers(ctx).await?,
+        job_base: base.clone(),
     };
 
     let repo = ports
@@ -318,7 +326,7 @@ pub(super) async fn execute(
     let mut tally = Tally::default();
     let mut tasks: Vec<TaskEvidence> = Vec::new();
     let mut refusal: Option<Refusal> = None;
-    let mut asked: Option<&'static str> = None;
+    let mut asked: Option<(&'static str, Option<String>)> = None;
 
     // A run with nothing left to build still proves that the sandbox can be made, because the
     // engine fails a stage that declares a sandbox and never reports one.
@@ -383,23 +391,24 @@ pub(super) async fn execute(
                 refusal = Some(found);
                 break;
             }
-            TaskOutcome::Asked(reason) => {
-                asked = Some(reason);
+            TaskOutcome::Asked(reason, detail) => {
+                asked = Some((reason, detail));
                 break;
             }
         }
     }
 
     if nothing_left && !tally.sandbox_reported {
-        ready_check(handler, ctx, &head, &mut tally).await?;
+        ready_check(handler, ctx, &head, &shared.job_base, &mut tally).await?;
     }
 
-    if let Some(reason) = asked {
+    if let Some((reason, detail)) = asked {
         return Ok(StageOutput {
             usage: tally.usage,
             permission_denials: tally.denials,
             needs_human: Some(NeedsHumanRequest {
                 reason: slug(reason)?,
+                detail,
             }),
             ..StageOutput::default()
         });
@@ -408,6 +417,7 @@ pub(super) async fn execute(
     // 5. What leaves the stage.
     let evidence = ImplementationEvidence {
         base_commit: base.as_str().to_owned(),
+        started_from: Some(started_from.as_str().to_owned()),
         head_commit: head.as_str().to_owned(),
         tasks,
         refusal,
@@ -631,6 +641,7 @@ async fn ready_check(
     handler: &ImplementationHandler,
     ctx: &mut StageContext<'_>,
     head: &CommitSha,
+    job_base: &CommitSha,
     tally: &mut Tally,
 ) -> Result<(), StageError> {
     let workspace = ctx
@@ -641,6 +652,7 @@ async fn ready_check(
                 job: ctx.identity.job,
                 attempt: ctx.attempt,
                 base: head.clone(),
+                protected_base: Some(job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -684,6 +696,7 @@ async fn run_one(
                 job: identity.job,
                 attempt: ctx.attempt,
                 base: on.clone(),
+                protected_base: Some(shared.job_base.clone()),
                 rules: handler.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
             },
@@ -733,6 +746,15 @@ async fn build_in(
     let identity = ctx.identity;
     let mut session = open_builder_sandbox(handler, ctx, workspace, tally).await?;
 
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = match crate::stages::project_rules::block(ctx).await {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
+
     // The prompt. Everything the builder reads is untrusted data in a quoted block.
     let assembled = {
         let now = ports.clock.now();
@@ -766,6 +788,7 @@ async fn build_in(
                 shared.architecture.clone(),
             )
             .fetched_at(now),
+            rules,
         ];
         if let Some(feedback) = &shared.feedback {
             inputs.push(
@@ -874,12 +897,22 @@ async fn build_in(
         return Err(StageError::InvalidOutput);
     }
     match parsed.status {
-        Status::Blocked => return Ok(TaskOutcome::Asked("builder-blocked")),
-        Status::NeedsHuman => return Ok(TaskOutcome::Asked("builder-needs-human")),
+        // What the builder said goes to the person with the request, so that they know why the
+        // stage waits. In the twenty-eighth real run the builder was blocked and nobody could
+        // read its reason.
+        Status::Blocked => {
+            return Ok(TaskOutcome::Asked("builder-blocked", parsed.for_a_person));
+        }
+        Status::NeedsHuman => {
+            return Ok(TaskOutcome::Asked(
+                "builder-needs-human",
+                parsed.for_a_person,
+            ));
+        }
         Status::Done => {}
     }
     if parsed.dependency_requests > 0 {
-        return Ok(TaskOutcome::Asked("dependency-requested"));
+        return Ok(TaskOutcome::Asked("dependency-requested", None));
     }
 
     // The audit. A refusal is a result, not a failure to try again.

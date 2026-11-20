@@ -123,6 +123,33 @@ pub(crate) struct DecisionBody {
     pub(crate) warning: Option<u32>,
     #[serde(default)]
     pub(crate) answer: Option<String>,
+    /// The confirmation phrase of the solo mode (ADR 0022), as the person typed it. Taken by
+    /// `approve`, `approve-dependency`, `approve-build-code`, `approve-project-build-code` and
+    /// `ack-translation-warning`; the record keeps only its word.
+    #[serde(default)]
+    pub(crate) confirm: Option<String>,
+}
+
+/// The longest confirmation phrase a body may carry, in characters.
+pub(crate) const MAX_CONFIRM_CHARS: usize = 200;
+
+/// The word of the phrase a body carries, after the checks every channel's text gets: one clean
+/// line of at most [`MAX_CONFIRM_CHARS`] characters.
+///
+/// # Errors
+/// [`ApiError::BadRequest`] naming `confirm`.
+pub(crate) fn confirm_word(confirm: Option<&str>) -> Result<Option<String>, ApiError> {
+    confirm
+        .map(|text| {
+            if text.chars().count() > MAX_CONFIRM_CHARS || !clean_line(text) {
+                Err(ApiError::BadRequest("confirm"))
+            } else {
+                Ok(factory_domain::policy::solo::ConfirmationWord::of(text)
+                    .as_str()
+                    .to_owned())
+            }
+        })
+        .transpose()
 }
 
 /// The longest slice of a reason the audit record keeps, in bytes.
@@ -240,6 +267,11 @@ pub async fn decide(
     } else if parsed.answer.is_some() {
         return Err(ApiError::BadRequest("answer"));
     }
+    // A confirmation phrase is a word of an approval, and of no other verb of this grammar.
+    if parsed.confirm.is_some() && parsed.verb != Verb::Approve.as_str() {
+        return Err(ApiError::BadRequest("confirm"));
+    }
+    let confirm = confirm_word(parsed.confirm.as_deref())?;
     for (field, value) in [
         ("verb", Some(&parsed.verb)),
         ("head", parsed.head.as_ref()),
@@ -308,6 +340,7 @@ pub async fn decide(
 
     let mut tx = state.ports.store.begin(caller.scope()).await?;
     let mut found_job = None;
+    let mut found_repository = None;
     if allowed {
         let job = tx.get_job(job_id).await?;
         // The designation holds on the repositories the allowlist entry names (API-1). A person
@@ -320,6 +353,34 @@ pub async fn decide(
             Err(other) => return Err(other),
         }
         found_job = Some(job);
+        found_repository = Some(repository);
+    }
+    // The solo mode (ADR 0022): the requester's own approval is refused at once, with the reason,
+    // when the mode does not apply or the phrase is missing.
+    let mut explained = None;
+    if let (true, Verb::Approve, Some(job), Some(repository), Some(run)) = (
+        allowed,
+        decision.verb,
+        found_job.as_ref(),
+        found_repository.as_ref(),
+        stage_run,
+    ) && job.value.requester == caller.principal
+    {
+        let found = tx.get_stage_run(run).await?;
+        if found.value.job_id != job.value.id {
+            return Err(ApiError::NotFound);
+        }
+        if let Some(ask) = crate::solo::approve_ask(state, caller, &mut *tx, run).await? {
+            explained = crate::solo::refusal(
+                state,
+                caller,
+                &mut *tx,
+                (&job.value, &repository.value),
+                &ask,
+                parsed.confirm.as_deref(),
+            )
+            .await?;
+        }
     }
     let (job_ref, correlation_id) = if let (true, Some(job)) = (allowed, found_job) {
         if let Some(run) = stage_run {
@@ -349,9 +410,21 @@ pub async fn decide(
         evidence: decision.evidence.as_ref().map(|e| e.as_str().to_owned()),
         target: decision.target.map(|t| t.as_str().to_owned()),
         answer: (decision.verb == Verb::Answer).then(|| answer_digest(&decision.reason)),
+        confirm,
     };
     if !allowed {
         return refuse(state, caller, tx, fields.subject(), correlation_id).await;
+    }
+    if let Some(explained) = explained {
+        return crate::solo::refuse_explained(
+            state,
+            caller,
+            tx,
+            fields.subject(),
+            correlation_id,
+            explained,
+        )
+        .await;
     }
     let reason = format!("requested: {}", kept(&decision.reason));
     let accepted = || {
@@ -526,6 +599,7 @@ async fn decide_dependency(
         package: command.name,
         version: command.version,
         checksum: command.checksum_prefix,
+        confirm: confirm_word(parsed.confirm.as_deref())?,
     };
     if !fields.is_well_formed() {
         return Err(ApiError::BadRequest("package"));
@@ -553,9 +627,36 @@ async fn decide_dependency(
             Err(ApiError::Forbidden) => allowed = false,
             Err(other) => return Err(other),
         }
-        found_job = Some(job);
+        found_job = Some((job, repository));
     }
-    let (job_ref, correlation_id) = if let (true, Some(job)) = (allowed, found_job) {
+    // The solo mode (ADR 0022): the requester's own decision is refused at once, with the reason,
+    // when the mode does not apply or the phrase is missing. Build code needs a security approver.
+    let mut explained = None;
+    if let (true, Some((job, repository))) = (allowed, found_job.as_ref()) {
+        let (name, version) = (fields.package.as_str(), fields.version.as_str());
+        let ask = match kind {
+            ApprovalKind::NewDependency => crate::solo::SoloAsk::untiered(
+                kind.action(),
+                None,
+                factory_domain::policy::solo::SoloTarget::Dependency { name, version },
+            ),
+            ApprovalKind::BuildCode => crate::solo::SoloAsk::untiered(
+                kind.action(),
+                Some(factory_domain::policy::decision::Designation::SecurityApprover),
+                factory_domain::policy::solo::SoloTarget::BuildCode { name, version },
+            ),
+        };
+        explained = crate::solo::refusal(
+            state,
+            caller,
+            &mut *tx,
+            (&job.value, &repository.value),
+            &ask,
+            parsed.confirm.as_deref(),
+        )
+        .await?;
+    }
+    let (job_ref, correlation_id) = if let (true, Some((job, _))) = (allowed, found_job) {
         if let Some(run) = stage_run {
             let found = tx.get_stage_run(run).await?;
             if found.value.job_id != job.value.id {
@@ -573,6 +674,17 @@ async fn decide_dependency(
     };
     if !allowed {
         return refuse(state, caller, tx, fields.subject(), correlation_id).await;
+    }
+    if let Some(explained) = explained {
+        return crate::solo::refuse_explained(
+            state,
+            caller,
+            tx,
+            fields.subject(),
+            correlation_id,
+            explained,
+        )
+        .await;
     }
     let stored_reason = format!("requested: {}", kept(reason));
     let accepted = || {

@@ -11,7 +11,7 @@ use factory_domain::contracts::ArtifactRef;
 use factory_domain::policy::decision::AuthorizedApproval;
 use factory_domain::values::{HumanText, Sha256Digest};
 
-use super::Subject;
+use super::{SoloRequest, Subject};
 use crate::gates::scope::own_build_code::BuildScript;
 use crate::gates::supply_chain::approval::{ApprovalKind, Subject as Package};
 
@@ -33,6 +33,9 @@ pub struct RecordDependencyDecision {
     pub package: Package,
     /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
     pub reason: HumanText,
+    /// When the person asked and the confirmation they sent, for a decision the requester takes
+    /// alone in the solo mode (ADR 0022). `None` outside it: the engine then refuses the requester.
+    pub solo: Option<SoloRequest>,
 }
 
 /// What the engine stored.
@@ -62,6 +65,9 @@ pub struct RecordProjectBuildCodeDecision {
     pub script: BuildScript,
     /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
     pub reason: HumanText,
+    /// When the person asked and the confirmation they sent, for a decision the requester takes
+    /// alone in the solo mode (ADR 0022). `None` outside it: the engine then refuses the requester.
+    pub solo: Option<SoloRequest>,
 }
 
 /// What the engine stored for a decision on the project's own build code.
@@ -90,6 +96,9 @@ pub struct RecordWarningDecision {
     pub warning: u32,
     /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
     pub reason: HumanText,
+    /// When the person asked and the confirmation they sent, for a decision the requester takes
+    /// alone in the solo mode (ADR 0022). `None` outside it: the engine then refuses the requester.
+    pub solo: Option<SoloRequest>,
 }
 
 /// What the engine stored for a decision about a translation warning.

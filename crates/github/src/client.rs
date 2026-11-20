@@ -143,6 +143,11 @@ impl Client {
         body: Option<&Value>,
         conditional: bool,
     ) -> Result<Reply, GitHostError> {
+        // The one `PUT` the adapter has writes a file of the contents API and nothing else: never
+        // a merge. Refused before a token is asked for, whoever the caller is.
+        if method == Method::PutContents && !crate::wire::is_contents_path(target) {
+            return Err(GitHostError::Forbidden);
+        }
         let payload = body.map(|v| v.to_string().into_bytes()).unwrap_or_default();
         let key = (caller.tenant(), target.to_owned());
         let mut retried = false;

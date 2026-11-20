@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "CHANGES_REQUIRED",
+  "title": "Review of the design",
+  "summary": "One element leaves standard input out of the new option, so one requirement would not be met.",
+  "findings": [
+    {
+      "finding_id": "json-flag-skips-stdin",
+      "severity": "high",
+      "category": "correctness",
+      "title": "Read standard input with the new option too",
+      "description": "The element that adds the option reads only a named file, but the frozen specification asks for the same object when the input comes from standard input.",
+      "location": {
+        "path": "architecture_design"
+      },
+      "confidence": 0.8,
+      "proposed_next_action": "fix",
+      "defect_class": "code_behavior"
+    }
+  ],
+  "confidence_overall": 0.8,
+  "residual_risks": [],
+  "ignored_instructions": []
+}

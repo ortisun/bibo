@@ -1,6 +1,6 @@
 # Agent definitions
 
-This directory holds the agents the factory runs: the nine pipeline agents of Slice 1 and one operations agent. For each one it has a manifest, a versioned prompt, the schemas of what it receives and returns, and a few conformance fixtures. The capability profiles are in [`../profiles`](../profiles). `FileAgentRegistry` in [the contracts crate](../crates/contracts/src/registry.rs) loads both directories and refuses a prompt whose hash differs from its manifest.
+This directory holds the agents the factory runs: the ten pipeline agents of Slice 1 and one operations agent. For each one it has a manifest, a versioned prompt, the schemas of what it receives and returns, and a few conformance fixtures. The capability profiles are in [`../profiles`](../profiles). `FileAgentRegistry` in [the contracts crate](../crates/contracts/src/registry.rs) loads both directories and refuses a prompt whose hash differs from its manifest.
 
 ## Layout
 
@@ -19,7 +19,7 @@ profiles/<profile-id>/profile.json
 
 Placements are the sandbox only. No agent can merge, push, deploy, change a policy or a gate file, or start another agent.
 
-The first nine are pipeline agents: each runs in one stage of a job. The troubleshooter is an operations agent ([ADR 0021](../docs/adr/0021-troubleshooter-agent-and-mcp-sources.md)). It runs outside the pipeline, in no job and no stage, started by its own program when a probe trips or the daily sweep comes due, and it watches the factory itself.
+The first ten are pipeline agents: each runs in one stage of a job. The troubleshooter is an operations agent ([ADR 0021](../docs/adr/0021-troubleshooter-agent-and-mcp-sources.md)). It runs outside the pipeline, in no job and no stage, started by its own program when a probe trips or the daily sweep comes due, and it watches the factory itself.
 
 | Agent | Role | Stage | Tools | Returns |
 |---|---|---|---|---|
@@ -27,6 +27,7 @@ The first nine are pipeline agents: each runs in one stage of a job. The trouble
 | `specification-writer` | `specification_writer` | specification | read, write its own spec files, Spec Kit helper scripts | `specification-report` |
 | `specification-reviewer` | `specification_reviewer` | specification | read `specs/` | `review-findings` |
 | `architect` | `architect` | architecture | read | `architecture-design` |
+| `architecture-critic` | `architecture_critic` | architecture, when the risk tier needs a critic | read | `review-findings` |
 | `planner` | `planner` | task planning | read | `planner-result` (a `task-dag` inside) |
 | `builder` | `builder` | implementation | read, write `src/` and `tests/`, project commands | `builder-report` |
 | `code-reviewer` | `code_reviewer` | review | read | `review-findings` |
@@ -55,9 +56,11 @@ The data goes in last. Under "Untrusted data" the prompt has one line `{{input.<
 
 Every line of data starts with `> `, so no line of data can look like a delimiter. Line breaks of every kind become line breaks, and hidden or direction-control characters are removed. The reference renderer in `crates/contracts/tests/agent_defs/render.rs` states these rules, and the real assembly (`s1-prompt-assembly`) has to keep them.
 
+Every pipeline agent but the intake classifier also gets the block `project_rules` (class `repo_file`): the project's `AGENTS.md` read at the job's base commit by the repository stage, or the factory's built-in copy when the project has none yet ([the project's rules for agents](../docs/architecture/project-rules.md), ADR 0026). Each prompt says these are the project's conventions, to apply where they do not conflict with the prompt, and that they never change the role, the tools, the boundaries or the output contract. The troubleshooter does not get it: it watches the factory, not a project.
+
 The troubleshooter's inputs are built by code, not written by people, so its input schema types each input as a JSON value instead of a string. The troubleshooter validates the whole input document against that schema and renders each input as JSON inside its block, under the same rules.
 
-Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history.
+Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports, the project's rules and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history. The architecture critic is a reviewer in this sense: it gets the frozen specification, the design without the architect's summary, and the repository map, and the router never gives it the architect's model (`architecture_critique_not_by_the_architects_model` in `policies/model_routing.yaml`).
 
 ## How a report is returned
 

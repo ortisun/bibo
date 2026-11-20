@@ -20,6 +20,7 @@ use crate::core::{BackoffPolicy, HttpCore, Sleeper};
 use crate::issues::GithubIssueSource;
 use crate::jwt::JwtSigner;
 use crate::permissions::{AppAudit, AppPolicy};
+use crate::project_rules::GithubProjectRules;
 use crate::status::GithubIssueStatus;
 use crate::text::{Outbound, OutboundPolicy};
 use crate::token::{InstallationDirectory, MinterSettings, TokenMinter};
@@ -171,6 +172,19 @@ impl GithubAdapter {
             Arc::clone(&self.sleeper),
             Arc::clone(&self.clock),
             issue_repository,
+        )
+    }
+
+    /// The project rules host: the draft pull request that installs or updates the project's
+    /// rules for agents, with a token of its own that holds `contents: write` and
+    /// `pull_requests: write` for one repository (ports v1.4, ADR 0026).
+    #[must_use]
+    pub fn project_rules_host(&self) -> GithubProjectRules {
+        GithubProjectRules::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.outbound),
+            Arc::clone(&self.sleeper),
+            Arc::clone(&self.clock),
         )
     }
 

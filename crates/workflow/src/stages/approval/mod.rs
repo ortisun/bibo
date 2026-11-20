@@ -50,5 +50,5 @@ pub use contract::{GATE, REQUEST};
 pub use handler::{ApprovalConfig, ApprovalHandler, ApprovalHandlerDeps};
 pub use judge::{Accepted, Context, Live, NotACommand, Refusal, judge};
 pub use request::{ApprovalRequest, TRANSLATION_WARNING, VALID_HOURS};
-pub use seams::ApprovalSources;
+pub use seams::{ApprovalSources, SoloInputs};
 pub use service::{ApprovalDeps, ApprovalService, Outcome, ServiceError};

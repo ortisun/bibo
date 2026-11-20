@@ -68,7 +68,7 @@
   "inputs_schema": {
     "name": "specification-writer-input",
     "version": 1,
-    "sha256": "sha256:b73562b4b7e93a32a4c73b9f39d7450c9c9d7abd36668fd0b50019145c9681a5"
+    "sha256": "sha256:6f323a78667aa2da974de54880cf9ca6f1b8b8d5bae784fadc41109e6d0ca2cd"
   },
   "outputs_schema": {
     "name": "specification-report",
@@ -130,7 +130,7 @@
   },
   "prompt": {
     "template_path": "agents/specification-writer/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:13417c9214ac1a9441493b0fe2bad7da39acd5463bf9b8535d78c97df82c0045"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:00e72942e104ed7dcc4ae54411164a13eaf0e66055ab6c319c6985eee36191e0"
   }
 }

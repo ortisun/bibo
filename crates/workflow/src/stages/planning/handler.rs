@@ -129,7 +129,7 @@ fn resolve(
                 trust,
             })
         };
-    let inputs = vec![
+    let mut inputs = vec![
         from(
             StageKind::Specification,
             SPECIFICATION_CONTRACT,
@@ -160,6 +160,11 @@ fn resolve(
             trust: "trusted_internal",
         },
     ];
+    // The project's rules for agents (ADR 0026), given to the planner.
+    inputs.extend(crate::stages::project_rules::contract_input(
+        ctx.upstream,
+        ctx.now,
+    ));
     let budget = &config.budget;
     stage_contract(&ContractSpec {
         kind: StageKind::TaskPlanning,

@@ -73,6 +73,7 @@ fn prompts_template_the_code_reviewer_table_is_read_exactly() {
             ),
             ("diff", ContentClass::ModelOutput, true),
             ("gate_reports", ContentClass::ToolOutput, true),
+            ("project_rules", ContentClass::RepoFile, true),
         ]
     );
 }

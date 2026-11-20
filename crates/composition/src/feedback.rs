@@ -62,6 +62,10 @@ struct Replaced {
     round: u8,
     /// The run that failed its gate or was sent back, when it can be told.
     failing: Option<StageRunId>,
+    /// Whether this run is the one the rework move sent the work back to. A move re-creates the
+    /// target stage and every stage after it; only the target's run is a rework round with
+    /// feedback. The others are first runs over the new upstream work.
+    is_target: bool,
 }
 
 impl StoreFeedback {
@@ -111,10 +115,22 @@ impl StoreFeedback {
                     other.value.id == *id && other.value.status == StageRunStatus::ReworkRequested
                 })
             });
+        // The target of the move is the earliest stage, in pipeline order, among the runs the move
+        // created. In the thirtieth real run the specification was sent back, the implementation
+        // run that the move re-created read the specification's failed gates as its own feedback,
+        // and its builder asked a person to fix the specification.
+        let target = runs
+            .iter()
+            .filter(|candidate| {
+                candidate.value.rework_of.is_some() && candidate.value.created_at == this.created_at
+            })
+            .map(|candidate| candidate.value.kind)
+            .min();
         Ok(Some(Replaced {
             previous,
             round,
             failing,
+            is_target: target.is_none_or(|kind| kind == this.kind),
         }))
     }
 
@@ -311,7 +327,10 @@ impl ReworkSource for StoreFeedback {
     async fn of(&self, run: &RunIdentity) -> Result<Option<ReworkContext>, SeamError> {
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {
-            let Some(replaced) = Self::replaced(&mut *tx, run).await? else {
+            let Some(replaced) = Self::replaced(&mut *tx, run)
+                .await?
+                .filter(|replaced| replaced.is_target)
+            else {
                 return Ok(None);
             };
             let (failed_reports, findings) = match replaced.failing {
@@ -354,7 +373,12 @@ impl RoundSource for StoreFeedback {
     async fn previous(&self, run: &RunIdentity) -> Result<Option<PreviousRound>, SeamError> {
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {
-            let Some(replaced) = Self::replaced(&mut *tx, run).await? else {
+            // A run the move re-created downstream of its target is a first run over the new
+            // upstream work: it has no round and no failed reports of its own.
+            let Some(replaced) = Self::replaced(&mut *tx, run)
+                .await?
+                .filter(|replaced| replaced.is_target)
+            else {
                 return Ok(None);
             };
             let failed_reports = match replaced.failing {

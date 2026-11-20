@@ -191,6 +191,6 @@
   "prompt": {
     "template_path": "agents/troubleshooter/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:54c1656bee9ab48c28cf20ae6c965327cfb9c204b89e7507aacf0331e9d3810e"
+    "template_sha256": "sha256:6dbc97744d131f58ff923612dc7b685b497fb2fce126bb885aedd22f49238223"
   }
 }

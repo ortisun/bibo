@@ -58,6 +58,7 @@ fn fields() -> DecisionFields {
         evidence: Some(format!("sha256:{}", "b".repeat(64))),
         target: None,
         answer: None,
+        confirm: None,
     }
 }
 

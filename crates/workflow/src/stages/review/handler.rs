@@ -136,6 +136,11 @@ fn resolve(config: &ReviewConfig, ctx: &ContractContext<'_>) -> Result<StageCont
             "trust": trust,
         }));
     }
+    // The project's rules for agents (ADR 0026), given to the code reviewer.
+    inputs.extend(crate::stages::project_rules::contract_input_json(
+        ctx.upstream,
+        &retrieved,
+    ));
     inputs.push(json!({
         "name": POLICY_INPUT,
         "description": "The hash of the policy bundle in force when the stage run was resolved.",

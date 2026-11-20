@@ -326,6 +326,7 @@ impl Rig {
             evidence: None,
             target: target.map(str::to_owned),
             answer: None,
+            confirm: None,
         };
         let mut tx = self
             .world
@@ -924,6 +925,7 @@ async fn r2_a_subject_that_is_not_the_canonical_text_is_rejected_and_nothing_mov
         evidence: None,
         target: None,
         answer: None,
+        confirm: None,
     };
     let canonical = cancel.subject();
     let id = job.as_text();
@@ -1007,6 +1009,7 @@ async fn r2_the_columns_and_the_actor_must_agree_with_the_subject() {
         evidence: None,
         target: None,
         answer: None,
+        confirm: None,
     };
     // The subject names one job and the column another. Each record carries the API's word, so the
     // columns are what is wrong with it.
@@ -1066,6 +1069,7 @@ fn fields_of(verb: Verb, job: JobId) -> DecisionFields {
         evidence: None,
         target: None,
         answer: None,
+        confirm: None,
     }
 }
 
@@ -1255,6 +1259,7 @@ async fn r3_a_request_for_a_job_of_another_tenant_is_rejected_and_that_job_does_
         evidence: None,
         target: None,
         answer: None,
+        confirm: None,
     };
     // The record lives in our tenant; it can name the job only in its text, because the column is a
     // foreign key into our own jobs. It carries the API's word, so it is the job that is wrong.
@@ -1835,6 +1840,7 @@ impl Rig {
             evidence: None,
             target: None,
             answer: Some(answer_digest(hashed)),
+            confirm: None,
         };
         let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
         let mut tx = self
@@ -2158,4 +2164,214 @@ async fn a_rejection_of_a_stage_that_does_not_wait_is_refused_as_out_of_place() 
     assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
     assert_eq!(rig.status(job).await, JobStatus::Active, "nothing moved");
     assert!(rig.submitter.seen.lock().expect("lock").is_empty());
+}
+
+// ------------------------------------------------------------------------------------------
+// The solo mode (ADR 0022): the requester approves the specification of their own request
+// ------------------------------------------------------------------------------------------
+
+/// The draft the specification stage kept, as a fixed commit: the hook compares the commit the
+/// person named with it. `true` when the stage kept a contract, that is a draft that waits for its
+/// approval; `false` when it stopped on a question and kept only the commit.
+struct OneDraft(bool);
+
+const DRAFT_COMMIT: &str = "abababababababababababababababababababab";
+
+#[async_trait]
+impl factory_workflow::stages::specification::SpecDrafts for OneDraft {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn save(
+        &self,
+        _: &factory_workflow::handlers::RunIdentity,
+        _: factory_workflow::stages::specification::DraftRecord,
+    ) -> Result<(), factory_workflow::stages::delivery::SeamError> {
+        Ok(())
+    }
+
+    async fn load(
+        &self,
+        _: &factory_workflow::handlers::RunIdentity,
+    ) -> Result<
+        Option<factory_workflow::stages::specification::DraftRecord>,
+        factory_workflow::stages::delivery::SeamError,
+    > {
+        Ok(Some(factory_workflow::stages::specification::DraftRecord {
+            commit: factory_ports::paths::CommitSha::parse(DRAFT_COMMIT).expect("a commit"),
+            feature_directory: "specs/001-x".to_owned(),
+            contract: if self.0 {
+                b"{\"kept\":\"a draft contract\"}".to_vec()
+            } else {
+                Vec::new()
+            },
+            evidence: Vec::new(),
+        }))
+    }
+}
+
+impl Rig {
+    /// The rig with an engine that runs the solo mode of the real policy, and the repository
+    /// marked `single_maintainer` at level L1 with its preflight passed, as the real tenant is
+    /// seeded: `freeze_specification` starts at L1 in the action table.
+    async fn solo(entries: &[(u64, &str, &str)]) -> Self {
+        let mut rig = Self::new().await;
+        rig.write_allowlist(entries);
+        rig._db
+            .run(&format!(
+                "UPDATE repositories SET single_maintainer = true, autonomy_ceiling = 'L1', \
+                 protection_preflight_passed = true, version = version + 1 WHERE id = '{}'",
+                rig.world.repository.as_uuid()
+            ))
+            .await;
+        let mut deps = rig.world.deps.clone();
+        deps.authority = Arc::new(StoreAuthority::new(
+            rig.world.store.clone(),
+            rig.allowlist.clone(),
+            Arc::clone(&rig.policies.engine),
+            rig.world.deps.clock.clone(),
+        ));
+        let config = rig
+            .world
+            .config
+            .clone()
+            .with_solo(rig.policies.engine.authority.solo_rules());
+        rig.engine = Arc::new(
+            Engine::new(deps, config, rig.world.handlers.clone()).expect("the engine starts"),
+        );
+        rig
+    }
+
+    /// The hook as the worker builds it in the solo mode: the drafts and the policy.
+    fn solo_hook(&self) -> ClaimWork {
+        self.hook()
+            .with_specification(Arc::new(OneDraft(true)))
+            .with_policy(Arc::clone(&self.policies.engine))
+    }
+
+    /// The signed `approve` of the specification draft, by `by`, naming the draft's commit and
+    /// the ledger head now.
+    async fn approve_spec_request(&self, by: PrincipalId, job: JobId, run: StageRunId) {
+        let mut tx = self
+            .world
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let head = tx
+            .ledger_head(job)
+            .await
+            .expect("a head")
+            .expect("an entry")
+            .hash;
+        let correlation = tx.get_job(job).await.expect("a job").value.correlation_id;
+        let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
+        let fields = DecisionFields {
+            verb: Verb::Approve,
+            job,
+            stage_run: Some(run),
+            head: Some(DRAFT_COMMIT.to_owned()),
+            evidence: Some(head.as_str().to_owned()),
+            target: None,
+            answer: None,
+            confirm: None,
+        };
+        tx.record_audit(NewAuditEvent {
+            id,
+            actor: AuditActor::Human(by),
+            action: AuditAction::new(REQUESTED).expect("an action"),
+            subject: self.signed(id, by, &fields),
+            decision: AuditDecision::Record,
+            reason: "requested: the draft says what I asked".to_owned(),
+            policy_hash: self.policies.hash.clone(),
+            job: Some(job),
+            stage_run: Some(run),
+            correlation_id: correlation,
+        })
+        .await
+        .expect("the request is recorded");
+        tx.commit().await.expect("commit");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_solo_requester_approves_their_own_specification_through_the_hook() {
+    // The owner's allowlist entry of a real run: one person, requester, approver and operator.
+    let rig = Rig::solo(&[(REQUESTER, "owner", "requester, approver, operator")]).await;
+    let (job, run) = rig.asking().await;
+    rig.approve_spec_request(rig.world.requester, job, run)
+        .await;
+    rig.solo_hook().pass(rig.tenant).await;
+    assert_eq!(
+        rig.trail(job).await,
+        [REQUESTED, APPLIED],
+        "{:?}",
+        rig.reason_of(job, REJECTED).await
+    );
+    assert_eq!(rig.run_status(job, run).await, StageRunStatus::Ready);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_specification_that_stopped_on_a_question_cannot_be_approved() {
+    // The thirtieth real run: the reviewer asked a question, the stage kept the commit and no
+    // contract, the owner was shown an approve command, and the approval sent the run back to
+    // READY. The stage ran again and asked the same question. A question is answered.
+    let rig = Rig::solo(&[(REQUESTER, "owner", "requester, approver, operator")]).await;
+    let (job, run) = rig.asking().await;
+    rig.approve_spec_request(rig.world.requester, job, run)
+        .await;
+    rig.hook()
+        .with_specification(Arc::new(OneDraft(false)))
+        .with_policy(Arc::clone(&rig.policies.engine))
+        .pass(rig.tenant)
+        .await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::WrongState.text())
+    );
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn negative_nt_solo_01_with_a_second_approver_the_requester_is_ineligible() {
+    let rig = Rig::solo(&[
+        (REQUESTER, "owner", "requester, approver, operator"),
+        (APPROVER, "approver-one", "approver"),
+    ])
+    .await;
+    let (job, run) = rig.asking().await;
+    rig.approve_spec_request(rig.world.requester, job, run)
+        .await;
+    rig.solo_hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::IneligibleApprover.text())
+    );
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_without_the_policy_keeps_refusing_the_requester() {
+    let rig = Rig::solo(&[(REQUESTER, "owner", "requester, approver, operator")]).await;
+    let (job, run) = rig.asking().await;
+    rig.approve_spec_request(rig.world.requester, job, run)
+        .await;
+    rig.hook()
+        .with_specification(Arc::new(OneDraft(true)))
+        .pass(rig.tenant)
+        .await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::NotAuthorized.text())
+    );
 }
