@@ -63,6 +63,11 @@ pub const PINNED_VERSION: &str = "0.163.0";
 /// Where the image puts the tool.
 pub const DEFAULT_BINARY: &str = "/opt/codex/bin/codex";
 
+/// The `PATH` Codex starts with: the Rust toolchain of the agent image, Codex's own directories,
+/// then the system directories. Every directory is one the image's own `PATH` lists.
+pub const DEFAULT_PATH: &str =
+    "/opt/rust/bin:/opt/codex/codex-path:/opt/codex/bin:/usr/local/bin:/usr/bin:/bin";
+
 /// How the adapter is set up. The defaults match the pinned image.
 #[derive(Debug, Clone)]
 pub struct CodexConfig {
@@ -87,7 +92,9 @@ impl Default for CodexConfig {
         Self {
             binary: DEFAULT_BINARY.to_owned(),
             accepted_versions: vec![PINNED_VERSION.to_owned()],
-            path: "/opt/codex/codex-path:/opt/codex/bin:/usr/local/bin:/usr/bin:/bin".to_owned(),
+            // The toolchain of the agent image first, then Codex's own directories, as in the
+            // image's own PATH (`infra/sandbox-images/agent/Dockerfile`).
+            path: DEFAULT_PATH.to_owned(),
             home_root: "/tmp".to_owned(),
             retries: 1,
             transcript_cap_bytes: 16 * 1024 * 1024,

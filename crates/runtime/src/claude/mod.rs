@@ -73,6 +73,10 @@ pub const PINNED_VERSION: &str = "2.1.311";
 /// Where the image puts the tool.
 pub const DEFAULT_BINARY: &str = "/usr/local/bin/claude";
 
+/// The `PATH` Claude Code starts with: the Rust toolchain of the agent image, then the system
+/// directories. Every directory is one the image's own `PATH` lists.
+pub const DEFAULT_PATH: &str = "/opt/rust/bin:/usr/local/bin:/usr/bin:/bin";
+
 /// How the adapter is set up. The defaults match the pinned image.
 #[derive(Debug, Clone)]
 pub struct ClaudeCodeConfig {
@@ -102,7 +106,10 @@ impl Default for ClaudeCodeConfig {
         Self {
             binary: DEFAULT_BINARY.to_owned(),
             accepted_versions: vec![PINNED_VERSION.to_owned()],
-            path: "/usr/local/bin:/usr/bin:/bin".to_owned(),
+            // The toolchain of the agent image comes first, as in the image's own PATH
+            // (`infra/sandbox-images/agent/Dockerfile`). Without it the builder of the
+            // thirty-first real run found no `cargo` and could run no test.
+            path: DEFAULT_PATH.to_owned(),
             home_root: "/tmp".to_owned(),
             max_retries: 2,
             transcript_cap_bytes: 16 * 1024 * 1024,
