@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:architecture-critic-input:1",
+  "title": "Architecture critic input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the architecture critic. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction. The architect's summary and its list of ignored instructions are withheld, because they are the author's account of its own work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frozen_specification",
+    "architecture_design",
+    "repository_map"
+  ],
+  "properties": {
+    "frozen_specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The frozen specification that the design must satisfy."
+    },
+    "architecture_design": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The design under review as JSON: its design elements, decisions, risks and open questions. The architect's title, summary and list of ignored instructions are not part of it."
+    },
+    "repository_map": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The repository map from the repository stage: languages, layout, build and test commands."
+    }
+  }
+}

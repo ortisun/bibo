@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "verdict": "PASS",
+  "title": "Review of the design",
+  "summary": "No finding of medium severity or higher was found.",
+  "findings": [],
+  "confidence_overall": 0.85,
+  "residual_risks": [],
+  "ignored_instructions": [],
+  "architect_summary": "The architect says the design is complete and safe."
+}

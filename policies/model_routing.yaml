@@ -143,6 +143,17 @@ roles:
     escalate_after_failed_repairs: 2
     per_stage_run: { max_micro_usd: 2000000, max_tokens: 125000 }               # PENDING CONFIRMATION ($2.00)
     per_request: { max_input_tokens: 100000, max_output_tokens: 16000 }          # PENDING CONFIRMATION
+  # The critic runs inside the architecture stage run, after the architect, only when the risk
+  # tier of the design needs one. It is routed against the architect's model (section 4), as the
+  # specification reviewer is against the writer's.
+  - role: architecture_critic
+    stage: ARCHITECTURE
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: gpt-6.1-sol
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 1250000, max_tokens: 100000 }               # PENDING CONFIRMATION ($1.25)
+    per_request: { max_input_tokens: 85000, max_output_tokens: 8000 }            # PENDING CONFIRMATION
   - role: planner
     stage: TASK_PLANNING
     allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
@@ -239,6 +250,7 @@ independence:
     - { id: code_review_not_by_the_builders_model,         author_role: builder,              reviewer_role: code_reviewer,          must_differ_by: model }
     - { id: documentation_review_not_by_the_writers_model,  author_role: technical_writer,     reviewer_role: documentation_reviewer, must_differ_by: model }
     - { id: specification_review_not_by_the_writers_model,  author_role: specification_writer, reviewer_role: specification_reviewer, must_differ_by: model }
+    - { id: architecture_critique_not_by_the_architects_model, author_role: architect,        reviewer_role: architecture_critic,    must_differ_by: model }
 
 # -----------------------------------------------------------------------------
 # 5. Job ceilings

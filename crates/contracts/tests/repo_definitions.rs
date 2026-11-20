@@ -210,7 +210,7 @@ fn the_registry_loads_every_manifest_profile_and_prompt() {
 }
 
 #[test]
-fn the_agent_set_is_exactly_the_nine_slice_1_roles() {
+fn the_agent_set_is_exactly_the_slice_1_roles() {
     let found: BTreeSet<String> = agents().into_iter().map(|a| a.dir_name).collect();
     let wanted: BTreeSet<String> = SLICE_1_AGENTS.iter().map(|s| (*s).to_owned()).collect();
     assert_eq!(found, wanted);
@@ -476,11 +476,13 @@ fn models_are_explicit_with_a_cheaper_default_an_escalation_and_bounded_limits()
 
 #[test]
 fn reviewers_receive_no_account_from_the_author_of_the_work() {
+    // A reviewer is an agent whose role judges another agent's work: a `_reviewer` or the
+    // architecture `_critic`, the roles the prompt assembler treats as independent.
     let reviewers: Vec<Agent> = agents()
         .into_iter()
-        .filter(|a| a.dir_name.ends_with("reviewer"))
+        .filter(|a| a.dir_name.ends_with("reviewer") || a.dir_name.ends_with("critic"))
         .collect();
-    assert_eq!(reviewers.len(), 3);
+    assert_eq!(reviewers.len(), 4);
     for reviewer in &reviewers {
         let problems = checks::reviewer_problems(&reviewer.manifest, &reviewer.prompt);
         assert!(problems.is_empty(), "{}: {problems:#?}", reviewer.dir_name);

@@ -6,7 +6,7 @@ use proptest::prelude::*;
 
 use super::prompts_check::{CLOSE, OPEN, decode, neutralize_oracle};
 use super::prompts_support::{
-    AssembleAny, agents, all_inputs, assemble, assembler, assembler_with, input, names,
+    AssembleAny, agent, agents, all_inputs, assemble, assembler, assembler_with, input, names,
     outside_lines,
 };
 
@@ -41,7 +41,7 @@ proptest! {
     #[test]
     fn prompts_properties_arbitrary_bytes_never_panic_and_are_refused_or_contained(
         bytes in proptest::collection::vec(any::<u8>(), 0..3000),
-        which in 0usize..9,
+        which in 0usize..10,
     ) {
         let agents = agents();
         let agent = &agents[which];
@@ -67,7 +67,7 @@ proptest! {
     #[test]
     fn prompts_properties_no_text_can_end_its_block_or_appear_outside_it(
         text in text(),
-        which in 0usize..9,
+        which in 0usize..10,
     ) {
         let agents = agents();
         let agent = &agents[which];
@@ -96,7 +96,7 @@ proptest! {
     #[test]
     fn prompts_properties_the_same_inputs_give_the_same_bytes(
         text in text(),
-        which in 0usize..9,
+        which in 0usize..10,
         rotate in 0usize..6,
     ) {
         let agents = agents();
@@ -117,8 +117,7 @@ proptest! {
     fn prompts_properties_data_that_comes_out_of_a_block_goes_through_again_unchanged(
         text in text(),
     ) {
-        let agents = agents();
-        let agent = &agents[5]; // the intake classifier: one input
+        let agent = &agent("intake-classifier"); // one input
         let once = assemble(agent, vec![input(agent, "request", text)]).expect("assembles");
         let body = decode(&outside_lines(agent), &names(agent), once.text()).bodies.remove(0);
         let twice = assemble(agent, vec![input(agent, "request", body.clone())]).expect("assembles");
@@ -139,8 +138,7 @@ proptest! {
         max_prompt in 5_000usize..400_000,
         line in 1usize..400,
     ) {
-        let agents = agents();
-        let agent = &agents[2]; // the code reviewer: three inputs
+        let agent = &agent("code-reviewer"); // three inputs
         let limits = Limits {
             max_block_bytes: max_block,
             max_prompt_bytes: max_prompt,
@@ -170,8 +168,7 @@ proptest! {
 
 #[test]
 fn prompts_properties_extreme_shapes_stay_contained_and_bounded() {
-    let agents = agents();
-    let agent = &agents[1]; // the builder
+    let agent = &agent("builder");
     let shapes: Vec<(&str, String)> = vec![
         ("a 4 MiB line", "A".repeat(4 << 20)),
         ("a million line breaks", "\n".repeat(1_000_000)),

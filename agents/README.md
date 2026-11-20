@@ -15,7 +15,7 @@ agents/
 profiles/<profile-id>/profile.json
 ```
 
-## The nine agents
+## The ten agents
 
 Placements are the sandbox only. No agent can merge, push, deploy, change a policy or a gate file, or start another agent.
 
@@ -25,6 +25,7 @@ Placements are the sandbox only. No agent can merge, push, deploy, change a poli
 | `specification-writer` | `specification_writer` | specification | read, write its own spec files, Spec Kit helper scripts | `specification-report` |
 | `specification-reviewer` | `specification_reviewer` | specification | read `specs/` | `review-findings` |
 | `architect` | `architect` | architecture | read | `architecture-design` |
+| `architecture-critic` | `architecture_critic` | architecture, when the risk tier needs a critic | read | `review-findings` |
 | `planner` | `planner` | task planning | read | `planner-result` (a `task-dag` inside) |
 | `builder` | `builder` | implementation | read, write `src/` and `tests/`, project commands | `builder-report` |
 | `code-reviewer` | `code_reviewer` | review | read | `review-findings` |
@@ -37,7 +38,7 @@ Each agent lists `recommended_models` with a cheaper starting model and a larger
 
 ## How a prompt is built
 
-Every prompt has the same sections in the same order: role and boundaries, how to treat untrusted data, input contract, output contract, evidence required, stop conditions, when information is missing, untrusted data, and end of data. The second section is one fixed text, identical in all nine prompts.
+Every prompt has the same sections in the same order: role and boundaries, how to treat untrusted data, input contract, output contract, evidence required, stop conditions, when information is missing, untrusted data, and end of data. The second section is one fixed text, identical in every prompt.
 
 The data goes in last. Under "Untrusted data" the prompt has one line `{{input.<name>}}` for each input of its table, and nothing else. Whoever assembles the prompt replaces each of those lines with a block:
 
@@ -50,7 +51,7 @@ The data goes in last. Under "Untrusted data" the prompt has one line `{{input.<
 
 Every line of data starts with `> `, so no line of data can look like a delimiter. Line breaks of every kind become line breaks, and hidden or direction-control characters are removed. The reference renderer in `crates/contracts/tests/agent_defs/render.rs` states these rules, and the real assembly (`s1-prompt-assembly`) has to keep them.
 
-Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history.
+Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history. The architecture critic is a reviewer in this sense: it gets the frozen specification, the design without the architect's summary, and the repository map, and the router never gives it the architect's model (`architecture_critique_not_by_the_architects_model` in `policies/model_routing.yaml`).
 
 ## How a report is returned
 

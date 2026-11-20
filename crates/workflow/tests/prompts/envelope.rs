@@ -180,7 +180,7 @@ proptest! {
     #[test]
     fn envelope_collision_check_generated_fields(
         text in hostile_text(),
-        which in 0usize..9,
+        which in 0usize..10,
         field in 0usize..6,
     ) {
         let agents = agents();

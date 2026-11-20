@@ -14,7 +14,8 @@ use super::prompts_support::{
     shared_redactor, tenant,
 };
 
-const REVIEWERS: [&str; 3] = [
+const REVIEWERS: [&str; 4] = [
+    "architecture-critic",
     "code-reviewer",
     "documentation-reviewer",
     "specification-reviewer",

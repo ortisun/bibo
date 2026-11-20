@@ -1,4 +1,4 @@
-//! The nine real agent definitions against the assembler: hashes, the fixed instruction, the
+//! The real agent definitions against the assembler: hashes, the fixed instruction, the
 //! input schemas, and the policy patterns on the prompt texts themselves.
 
 use factory_domain::values::Sha256Digest;
@@ -20,6 +20,7 @@ macro_rules! schemas {
 
 const INPUT_SCHEMAS: &[(&str, &str)] = schemas!(
     "architect" => "architect-input.v1.schema.json",
+    "architecture-critic" => "architecture-critic-input.v1.schema.json",
     "builder" => "builder-input.v1.schema.json",
     "code-reviewer" => "code-reviewer-input.v1.schema.json",
     "documentation-reviewer" => "documentation-reviewer-input.v1.schema.json",
@@ -42,7 +43,7 @@ fn fixed_section(agent: &Agent) -> String {
 }
 
 #[test]
-fn prompts_real_the_fixed_instruction_is_identical_in_all_nine_prompts() {
+fn prompts_real_the_fixed_instruction_is_identical_in_every_prompt() {
     let agents = agents();
     let first = fixed_section(&agents[0]);
     for phrase in [

@@ -1,13 +1,15 @@
 //! The independent architecture critic, for work whose risk tier the policy says needs one.
 //!
-//! # What the factory can and cannot do today
+//! # Where the critic comes from
 //!
-//! The agent definitions hold no critic. The stage looks for an agent called by the configuration
-//! (`architecture-critic` by default) and, when the registry has none, it records that no critic
-//! ran and why, and asks a person. It never writes a verdict in the critic's name and it never lets
-//! the architect review its own design.
+//! The stage asks the agent the configuration names (`architecture-critic` by default, defined in
+//! `agents/architecture-critic/`). When the registry has no such agent, or the agent cannot be a
+//! critic, the stage records that no critic ran and why, and the gate blocks for a person. It
+//! never writes a verdict in the critic's name and it never lets the architect review its own
+//! design. The router never gives the critic the architect's model (the routing policy's rule
+//! `architecture_critique_not_by_the_architects_model`).
 //!
-//! # What a critic must be, when one is added
+//! # What a critic must be
 //!
 //! * Its role ends with `_critic`, so the prompt assembler treats it as an independent reviewer.
 //! * It differs from the architect, and its manifest grants only tools that read.

@@ -300,6 +300,7 @@ fn every_reviewing_rule_asks_for_another_model_and_never_the_authors_own() {
         "code_reviewer",
         "documentation_reviewer",
         "specification_reviewer",
+        "architecture_critic",
     ] {
         let rule = policy.rule_for_reviewer(reviewer).expect("a rule");
         assert_eq!(rule.must_differ_by, DifferBy::Model, "{reviewer}");
@@ -367,6 +368,7 @@ fn every_reviewing_role_has_a_rule_and_the_first_route_is_independent_of_the_fir
         ("code_reviewer", "builder"),
         ("documentation_reviewer", "technical_writer"),
         ("specification_reviewer", "specification_writer"),
+        ("architecture_critic", "architect"),
     ] {
         let rule = policy
             .rule_for_reviewer(reviewer)
@@ -614,6 +616,11 @@ fn lowering_a_ceiling_and_dropping_a_model_only_tighten() {
 #[test]
 fn every_way_to_widen_the_policy_is_reported_by_its_key() {
     let central = real();
+    let builder = central
+        .roles
+        .iter()
+        .position(|r| r.role == "builder")
+        .expect("builder");
     let widen = |change: &dyn Fn(&mut ModelRoutingPolicy)| -> Vec<String> {
         let mut project = central.clone();
         change(&mut project);
@@ -623,11 +630,11 @@ fn every_way_to_widen_the_policy_is_reported_by_its_key() {
             .collect()
     };
     assert_eq!(
-        widen(&|p| p.roles[5].per_stage_run.max_micro_usd += 1),
+        widen(&|p| p.roles[builder].per_stage_run.max_micro_usd += 1),
         ["roles[builder].per_stage_run.max_micro_usd"]
     );
     assert_eq!(
-        widen(&|p| p.roles[5].per_request.max_output_tokens += 1),
+        widen(&|p| p.roles[builder].per_request.max_output_tokens += 1),
         ["roles[builder].per_request.max_output_tokens"]
     );
     assert_eq!(widen(&|p| p.job.max_micro_usd += 1), ["job.max_micro_usd"]);
@@ -665,12 +672,12 @@ fn every_way_to_widen_the_policy_is_reported_by_its_key() {
         ["independence.rules[code_review_not_by_the_builders_model]"]
     );
     assert!(
-        widen(&|p| p.roles[5].escalate_after_failed_repairs = 1)
+        widen(&|p| p.roles[builder].escalate_after_failed_repairs = 1)
             .contains(&"roles[builder].escalate_after_failed_repairs".to_owned())
     );
     assert!(
         widen(&|p| {
-            p.roles.remove(5);
+            p.roles.remove(builder);
         })
         .contains(&"roles[builder]".to_owned())
     );

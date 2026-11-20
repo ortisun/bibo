@@ -213,6 +213,7 @@ pub(super) async fn execute(
             stage: StageKind::TaskPlanning,
             risk: RiskTier::Medium,
             report_ready: true,
+            author: None,
         },
     )
     .await?;

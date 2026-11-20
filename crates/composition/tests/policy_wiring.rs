@@ -679,6 +679,8 @@ fn reviewing_needs() -> Vec<RoutingNeed> {
         need(StageKind::Review),
         need(StageKind::DocumentationReview),
         specification,
+        // The architecture critic, routed against the architect's model.
+        need(StageKind::Architecture),
     ]
 }
 
@@ -776,7 +778,7 @@ fn claude_opus_on_the_standard_route_of_a_review_is_refused_by_the_policy_check(
 /// Subscription mode with the shipped policy: the work of Claude Sonnet is reviewed by Claude
 /// Opus, found at the large tier although the stage asked for the standard one, and the decision
 /// says it is a review by the same family. This holds for the code review, the documentation
-/// review and the specification review.
+/// review, the specification review and the architecture critic.
 #[test]
 fn in_subscription_mode_claude_opus_reviews_the_work_of_claude_sonnet() {
     let policy = (*loaded().policy).clone();

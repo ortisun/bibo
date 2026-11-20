@@ -1,7 +1,7 @@
 //! The prompt assembler (`s1-prompt-assembly`).
 //!
 //! This is where text that other people or programs wrote enters a model prompt, so it is the main
-//! defence against prompt injection. The tests here run the real assembler over the nine real
+//! defence against prompt injection. The tests here run the real assembler over the real
 //! agent definitions (`agents/*/manifest.json` and `prompt.md`, read at compile time) and the real
 //! policy (`policies/security.yaml` as kept in `crates/domain/tests/fixtures/policy`).
 //!

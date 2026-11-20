@@ -216,7 +216,7 @@ Every setting has a default, the numbers the stage tests use. A deployment names
 | `stages.agents.specification_writer` | text | no | specification-writer | Writes the specification. |
 | `stages.agents.specification_reviewer` | text | no | specification-reviewer | Reviews the specification. |
 | `stages.agents.architect` | text | no | architect | Designs. |
-| `stages.agents.critic` | text | no | code-reviewer | Criticizes the design. |
+| `stages.agents.critic` | text | no | architecture-critic | Criticizes the design when its risk tier needs an independent critic. The stage uses only an agent whose role ends with `_critic` and that is not the architect. |
 | `stages.agents.planner` | text | no | planner | Plans the tasks. |
 | `stages.agents.builder` | text | no | builder | Writes the code. |
 | `stages.agents.reviewer` | text | no | code-reviewer | Reviews the code. It must not be the builder. |

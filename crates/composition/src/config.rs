@@ -799,8 +799,9 @@ pub struct AgentNames {
     /// Designs.
     #[serde(default = "agent_architect")]
     pub architect: String,
-    /// Criticizes the design.
-    #[serde(default = "agent_code_reviewer")]
+    /// Criticizes the design when its risk tier needs an independent critic. The stage uses only
+    /// an agent whose role ends with `_critic`, so the code reviewer cannot stand in for it.
+    #[serde(default = "agent_architecture_critic")]
     pub critic: String,
     /// Plans the tasks.
     #[serde(default = "agent_planner")]
@@ -831,6 +832,9 @@ fn agent_spec_reviewer() -> String {
 fn agent_architect() -> String {
     "architect".to_owned()
 }
+fn agent_architecture_critic() -> String {
+    "architecture-critic".to_owned()
+}
 fn agent_code_reviewer() -> String {
     "code-reviewer".to_owned()
 }
@@ -854,7 +858,7 @@ impl Default for AgentNames {
             specification_writer: agent_spec_writer(),
             specification_reviewer: agent_spec_reviewer(),
             architect: agent_architect(),
-            critic: agent_code_reviewer(),
+            critic: agent_architecture_critic(),
             planner: agent_planner(),
             builder: agent_builder(),
             reviewer: agent_code_reviewer(),

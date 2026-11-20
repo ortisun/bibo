@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "id": "architecture-critic",
+  "version": "1.0.0",
+  "title": "Architecture critic",
+  "description": "Independent review of an architecture design against the frozen specification and the repository map, for work whose risk tier the policy says needs one. It never sees the architect's summary, reads the repository without changing it, and is never the architect.",
+  "role": "architecture_critic",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "fs.read",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.list",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.search",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "specification-artifact-hash"
+  ],
+  "inputs_schema": {
+    "name": "architecture-critic-input",
+    "version": 1,
+    "sha256": "sha256:866fa3f8fb554e7b51f5bda0d72d7384c03fc3ac91dc179008400c07c5ee153d"
+  },
+  "outputs_schema": {
+    "name": "review-findings",
+    "version": 1,
+    "sha256": "sha256:ee27adfbdbfcb2c3ddb51643d8df6b8db77fe8c51cb8b0721c7757fe7eb3720f"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 900,
+    "max_tokens": 200000,
+    "max_cost_usd": 2.5,
+    "max_tool_calls": 60,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "**"
+      ],
+      "write": []
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "Reviewing a design for a small change is within what the starting model can do, but the router never gives the critic the model the architect ran on."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "In subscription mode the architect runs on Claude Sonnet, so the router sends the critic to this model, the only one that differs from it. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "architecture-critic-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/architecture-critic/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:02ebfc76ceda9853509980b3f9dac8dfa4e99c7d0d265cfdec6f3829f8d0e540"
+  }
+}
