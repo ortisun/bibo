@@ -1,4 +1,4 @@
-# Threat model: Universal Agentic Software Factory
+# Threat model: Bibo, the universal agentic software factory
 
 Status: DESIGNED baseline, written before any application code exists. Every control below is REQUIRED for the product and none is implemented yet. "Residual risk" values are proposals until a named human accepts them (see section 9).
 Date: 2026-10-27. Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, authority comes from a named allowlist and not from GitHub roles, new direct dependencies always need a human, rework is capped at two rounds, the skill and slash-command flags are per stage, and API keys behind a broker are the credential default. Revised again after the agent-runtime spike and ADRs 0010 and 0012: row-level security is in Slice 1 (Q9, C-36), the CLI flags that neutralize repository configuration are the ones the spike proved (`--bare` is not among them), and budget exhaustion goes to a person.

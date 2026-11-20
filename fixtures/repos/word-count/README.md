@@ -3,7 +3,7 @@
 A small command line tool that counts the lines, words and characters of a text file, or of
 standard input. It has no dependencies and builds without a network.
 
-This repository is the fixture that the Universal Agentic Software Factory works on in its
+This repository is the fixture that Bibo, the universal agentic software factory, works on in its
 end-to-end proof. It is a real tool with real checks, kept small on purpose.
 
 ## Install

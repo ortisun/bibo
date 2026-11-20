@@ -1,4 +1,4 @@
-//! The end-to-end acceptance harness of the Universal Agentic Software Factory.
+//! The end-to-end acceptance harness of Bibo, the universal agentic software factory.
 //!
 //! # What is here
 //!
