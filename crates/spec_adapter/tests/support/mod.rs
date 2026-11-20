@@ -9,7 +9,7 @@ use factory_ports::paths::{CommitSha, RepoPath};
 use factory_ports::spec::{
     FeatureDir, SpecFile, SpecFileSet, SpecOperation, SpecRequest, SpecificationProvider,
 };
-use factory_spec_adapter::invocation::{FixedInstruction, Host, Separator};
+use factory_spec_adapter::invocation::{FixedInstruction, Host, Separator, Sources};
 use factory_spec_adapter::{SpecKitConfig, SpecKitProvider};
 
 mod recorded;
@@ -48,12 +48,18 @@ pub fn request(op: SpecOperation) -> SpecRequest {
         request_file: path(REQUEST),
         answers: Vec::new(),
         revision: None,
+        rework: None,
     }
 }
 
 pub fn instruction() -> FixedInstruction {
-    FixedInstruction::build(SpecOperation::Specify, &feature(), &path(REQUEST), None)
-        .expect("an instruction")
+    FixedInstruction::build(
+        SpecOperation::Specify,
+        &feature(),
+        &path(REQUEST),
+        &Sources::default(),
+    )
+    .expect("an instruction")
 }
 
 /// A set of committed files that starts as the recording and can be edited.

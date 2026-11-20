@@ -3494,8 +3494,16 @@ pub trait OutputValidator: Send + Sync {
 
 ```rust
 // crates/ports/src/spec.rs (ports-v1.1): `SpecificationProvider` splits in two. `SpecOperation`,
-// `FeatureDir`, `HumanAnswer`, `RevisionRequest`, `SpecRequest`, `SpecificationDraft`,
-// `SpecOutcome` and `PostCondition` are unchanged.
+// `FeatureDir`, `HumanAnswer`, `RevisionRequest`, `SpecificationDraft`, `SpecOutcome` and
+// `PostCondition` are unchanged.
+//
+// Added on 2026-11-20, additive: `SpecRequest::rework: Option<ReworkRequest>`, where
+// `ReworkRequest { feedback_file: RepoPath, round: u8 }`. It is present when the draft in the
+// feature's directory was sent back by the gate and is being repaired. The provider then tells the
+// clarify skill to read the feedback file as data and to resolve every finding in it. Before this
+// field, a rework round had no way to tell the skill that feedback existed, and the skill was told
+// "No answers exist yet". A revision (`RevisionRequest`) is another thing: it makes a new version
+// of a frozen specification.
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;

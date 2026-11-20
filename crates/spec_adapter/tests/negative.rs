@@ -10,7 +10,8 @@ use factory_domain::contracts::specification_contract::SpecStatus;
 use factory_domain::policy::SecurityPolicy;
 use factory_ports::spec::{SpecOperation, SpecOutcome};
 use factory_spec_adapter::invocation::{
-    DENIED_SKILLS, FixedInstruction, InvocationError, OPERATIONS, Recognised, recognise, skill_name,
+    DENIED_SKILLS, FixedInstruction, InvocationError, OPERATIONS, Recognised, Sources, recognise,
+    skill_name,
 };
 use support::{Files, assemble, feature, path, provider, request};
 
@@ -124,7 +125,12 @@ fn negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction() {
             continue;
         };
         assert_eq!(
-            FixedInstruction::build(SpecOperation::Specify, &feature(), &hostile_path, None),
+            FixedInstruction::build(
+                SpecOperation::Specify,
+                &feature(),
+                &hostile_path,
+                &Sources::default()
+            ),
             Err(InvocationError::UnsafePath),
             "{hostile:?}"
         );
@@ -134,7 +140,7 @@ fn negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction() {
             SpecOperation::Specify,
             &feature(),
             &path("inputs/request.md"),
-            None
+            &Sources::default()
         )
         .is_ok()
     );

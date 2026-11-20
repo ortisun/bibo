@@ -195,6 +195,72 @@ async fn a_rework_run_after_a_review_reads_the_findings() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_specification_rework_builds_on_the_draft_that_was_sent_back() {
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Specification)
+        .queue_evals([Eval::Fail("specification-review")]);
+    run_through(&world, StageKind::Specification).await;
+    // The evidence the stage would have stored: the commit the draft is in.
+    let first = identity_of(&world, job, StageKind::Specification, 0).await;
+    deliver(
+        &world,
+        &first,
+        "specification-evidence",
+        &serde_json::json!({"base_commit": commit('a').as_str(), "head_commit": commit('d').as_str()}),
+    )
+    .await;
+
+    let second = identity_of(&world, job, StageKind::Specification, 1).await;
+    let context = feedback(&world)
+        .of(&second)
+        .await
+        .expect("readable")
+        .expect("a rework run has feedback");
+    assert_eq!(context.round, 1);
+    // The draft, and not the base of the job: the writer repairs what the reviewer read.
+    assert_eq!(context.previous_head, commit('d'));
+    assert_eq!(context.failed_reports.len(), 1, "{context:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_specification_rework_with_no_draft_starts_from_the_base_of_the_job() {
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Specification)
+        .queue_evals([Eval::Fail("specification-structure")]);
+    run_through(&world, StageKind::RepositoryIntelligence).await;
+    let map = identity_of(&world, job, StageKind::RepositoryIntelligence, 0).await;
+    deliver(
+        &world,
+        &map,
+        "repository-map",
+        &serde_json::json!({"commit_sha": commit('a').as_str()}),
+    )
+    .await;
+    run_through(&world, StageKind::Specification).await;
+    // The run left evidence that names no commit: it was sent back before it wrote a draft.
+    let first = identity_of(&world, job, StageKind::Specification, 0).await;
+    deliver(
+        &world,
+        &first,
+        "specification-evidence",
+        &serde_json::json!({"base_commit": commit('a').as_str(), "head_commit": null}),
+    )
+    .await;
+
+    let second = identity_of(&world, job, StageKind::Specification, 1).await;
+    let context = feedback(&world)
+        .of(&second)
+        .await
+        .expect("readable")
+        .expect("a rework run has feedback");
+    assert_eq!(context.previous_head, commit('a'));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_planning_rework_gets_the_previous_plan_and_its_version() {
     let (_db, world, _) = pg_world().await;
     let job = world.admitted_job().await;

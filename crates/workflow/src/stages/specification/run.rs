@@ -7,8 +7,11 @@
 //!    written once for the repository and approved apart from any feature request, so a feature
 //!    run never writes it.
 //! 2. Ask where the run stands: a first specification, a revision of a frozen one (a new feature
-//!    directory, seeded from the old one), a rework round with feedback, or a run that resumes a
-//!    draft a person is about to approve.
+//!    directory, seeded from the old one), a rework round, or a run that resumes a draft a person
+//!    is about to approve. A rework round repairs the draft that was sent back: it starts from the
+//!    commit the draft is in, runs the clarify and checklist skills, and gives the clarify skill
+//!    what the gates and the reviewer found, in a file of its own ([`FEEDBACK_FILE`]). When the
+//!    run that was sent back left no draft, there is nothing to repair and the run starts again.
 //! 3. Run the skills one at a time. Each skill has its own workspace over the commit of the skill
 //!    before it and its own sandbox. The request is written into the checkout by the stage, the
 //!    skill runs with a fixed instruction that names the file, the stage removes the file, the
@@ -40,8 +43,8 @@ use factory_ports::paths::{CommitSha, RepoGlob, RepoPath};
 use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::{ExecArgv, ExecRequest, SandboxSession};
 use factory_ports::spec::{
-    FeatureDir, HumanAnswer, ParseReason, RevisionRequest, SpecContext, SpecError, SpecFile,
-    SpecFileSet, SpecOperation, SpecOutcome, SpecRequest,
+    FeatureDir, HumanAnswer, ParseReason, RevisionRequest, ReworkRequest, SpecContext, SpecError,
+    SpecFile, SpecFileSet, SpecOperation, SpecOutcome, SpecRequest,
 };
 use factory_ports::workspace::{
     CommitRequest, JobRepo, ReadView, Workspace, WorkspaceError, WorkspacePurpose, WorkspaceRequest,
@@ -51,7 +54,7 @@ use serde_json::{Value, json};
 use super::evidence::{Evidence, Failure, InvocationRecord, Refusal, ReviewRecord, Revision};
 use super::handler::SpecificationHandler;
 use super::input::{
-    ANSWERS_FILE, EVIDENCE, NORMALIZED_REQUEST, REPOSITORY_MAP, REQUEST_FILE,
+    ANSWERS_FILE, EVIDENCE, FEEDBACK_FILE, NORMALIZED_REQUEST, REPOSITORY_MAP, REQUEST_FILE,
     SPECIFICATION_CONTRACT, input_artifact, map_commit,
 };
 use super::judge::{JudgeInput, all_clear, judge};
@@ -317,6 +320,16 @@ async fn read_set(
     }))
 }
 
+/// The feedback of a rework round that repairs the draft the gate sent back.
+struct Repair {
+    /// The file the skill reads the feedback from.
+    file: RepoPath,
+    /// What the gates and the independent reviewer found.
+    text: String,
+    /// Which round this is, from 1.
+    round: u8,
+}
+
 struct Work<'a> {
     feature: FeatureDir,
     request_file: RepoPath,
@@ -324,6 +337,8 @@ struct Work<'a> {
     answers_file: RepoPath,
     answers: String,
     answered: Vec<HumanAnswer>,
+    /// Present when this run repairs a draft that was sent back.
+    repair: Option<Repair>,
     manifest: AgentManifest,
     repo: Box<dyn JobRepo>,
     previous: Option<&'a PreviousSpec>,
@@ -403,6 +418,15 @@ async fn run_skill_in(
             )
             .await?;
         }
+        if let Some(repair) = &work.repair {
+            run_command(
+                &mut *session,
+                ctx.cancel,
+                &["tee", "--", repair.file.as_str()],
+                Some(repair.text.clone().into_bytes()),
+            )
+            .await?;
+        }
         if let Some((from, to)) = seed {
             run_command(&mut *session, ctx.cancel, &["cp", "-R", from, to], None).await?;
         }
@@ -456,6 +480,10 @@ async fn run_skill_in(
                     .expect("a fixed sentence is valid text")
             }),
         }),
+        rework: work.repair.as_ref().map(|repair| ReworkRequest {
+            feedback_file: repair.file.clone(),
+            round: repair.round,
+        }),
     };
     let report = {
         let mut context = SpecContext {
@@ -478,6 +506,7 @@ async fn run_skill_in(
             "--",
             work.request_file.as_str(),
             work.answers_file.as_str(),
+            FEEDBACK_FILE,
         ],
         None,
     )
@@ -1030,10 +1059,7 @@ pub(super) async fn execute(
     let previous = h.history.previous(&identity).await.map_err(seam_error)?;
     let kept = h.drafts.load(&identity).await.map_err(seam_error)?;
     let rework = h.rework.of(&identity).await.map_err(seam_error)?;
-    let (mut answers, waivers, answered) = answers_text(ctx).await?;
-    if let Some(context) = &rework {
-        answers.push_str(&crate::stages::implementation::feedback::render(context));
-    }
+    let (answers, waivers, answered) = answers_text(ctx).await?;
 
     let writer_manifest = ports
         .registry
@@ -1049,9 +1075,39 @@ pub(super) async fn execute(
         }
         None => feature_directory(&title, &identity.job.to_string(), version)?,
     };
-    let start = previous
-        .as_ref()
-        .map_or_else(|| base.clone(), |p| p.commit.clone());
+    // A draft that the gate sent back is repaired where it stands: the run starts from the commit
+    // the draft is in, and the clarify skill reads what the gates and the reviewer found. A run
+    // that was sent back before it left a draft has nothing to repair and starts again.
+    let repair = match &rework {
+        Some(context) if kept.is_none() => {
+            let draft = RepoPath::new(&format!("{}/spec.md", feature.as_str()))
+                .map_err(|_| StageError::Internal)?;
+            match repo
+                .read_file_at(
+                    &context.previous_head,
+                    &draft,
+                    h.config.max_file_bytes,
+                    ReadView::Trusted,
+                )
+                .await
+            {
+                Ok(_) | Err(WorkspaceError::TooLarge) => Some(Repair {
+                    file: RepoPath::new(FEEDBACK_FILE).map_err(|_| StageError::Internal)?,
+                    text: super::feedback::render(context),
+                    round: context.round,
+                }),
+                Err(WorkspaceError::PathNotFound(_)) => None,
+                Err(error) => return Err(workspace_error(error)),
+            }
+        }
+        _ => None,
+    };
+    let start = match (&repair, &rework, &previous) {
+        (Some(_), Some(context), _) => context.previous_head.clone(),
+        (_, _, Some(revised)) => revised.commit.clone(),
+        _ => base.clone(),
+    };
+    let repairing = repair.is_some();
     let mut work = Work {
         feature: feature.clone(),
         request_file: RepoPath::new(REQUEST_FILE).map_err(|_| StageError::Internal)?,
@@ -1059,6 +1115,7 @@ pub(super) async fn execute(
         answers_file: RepoPath::new(ANSWERS_FILE).map_err(|_| StageError::Internal)?,
         answers,
         answered,
+        repair,
         manifest: writer_manifest,
         repo,
         previous: previous.as_ref(),
@@ -1129,7 +1186,9 @@ pub(super) async fn execute(
         ready_check(h, ctx, &work.head).await?;
     } else {
         let revising = previous.as_ref();
-        let operations: Vec<SpecOperation> = if revising.is_some() {
+        // The clarify skill is the one that changes a specification that exists: the frozen one
+        // of a revision, or the draft a rework repairs. The specify skill writes a new one.
+        let operations: Vec<SpecOperation> = if revising.is_some() || repairing {
             vec![SpecOperation::Clarify, SpecOperation::Checklist]
         } else if work.answers.is_empty() {
             vec![SpecOperation::Specify, SpecOperation::Checklist]
@@ -1150,8 +1209,10 @@ pub(super) async fn execute(
             if ctx.cancel.is_cancelled() {
                 return Err(StageError::Cancelled);
             }
+            // A revision copies the frozen specification into its new directory. A repair works in
+            // the directory the draft is already in.
             let seed = match (revising, index) {
-                (Some(p), 0) => p
+                (Some(p), 0) if !repairing => p
                     .contract
                     .provenance
                     .feature_directory

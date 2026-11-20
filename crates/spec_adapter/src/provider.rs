@@ -28,7 +28,9 @@ use factory_ports::spec::{
 use serde_json::Value;
 
 use crate::assemble::{ANSWERS_FILE, AssembleConfig, RunNotes, assemble};
-use crate::invocation::{FixedInstruction, Host, Invocation, Recognised, Separator, recognise};
+use crate::invocation::{
+    FixedInstruction, Host, Invocation, Recognised, Separator, Sources, recognise,
+};
 use crate::postcond::known_paths;
 use crate::question::{Origin, Question, detect};
 
@@ -88,18 +90,15 @@ impl SpecKitProvider {
     /// # Errors
     /// As for [`Self::prompt`].
     pub fn invocation(&self, req: &SpecRequest) -> Result<Invocation, SpecError> {
-        let answers = if req.answers.is_empty() {
-            None
-        } else {
-            Some(RepoPath::new(ANSWERS_FILE).expect("a fixed path is valid"))
+        let answers = (!req.answers.is_empty())
+            .then(|| RepoPath::new(ANSWERS_FILE).expect("a fixed path is valid"));
+        let sources = Sources {
+            answers: answers.as_ref(),
+            feedback: req.rework.as_ref().map(|rework| &rework.feedback_file),
         };
-        let instruction = FixedInstruction::build(
-            req.op,
-            &req.feature_directory,
-            &req.request_file,
-            answers.as_ref(),
-        )
-        .map_err(|_| SpecError::ToolMissing)?;
+        let instruction =
+            FixedInstruction::build(req.op, &req.feature_directory, &req.request_file, &sources)
+                .map_err(|_| SpecError::ToolMissing)?;
         Ok(Invocation::new(
             self.config.host,
             self.config.separator,
@@ -198,8 +197,11 @@ impl SpecKitProvider {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             // The first skill of a feature starts its notes again: what an earlier attempt heard
             // or ran is not a fact about this one.
+            // A revision and a rework start with the clarify skill, on a specification that an
+            // earlier run wrote.
             let starts = req.op == SpecOperation::Specify
-                || (req.op == SpecOperation::Clarify && req.revision.is_some());
+                || (req.op == SpecOperation::Clarify
+                    && (req.revision.is_some() || req.rework.is_some()));
             let key = Self::key(req);
             if starts {
                 notes.remove(&key);

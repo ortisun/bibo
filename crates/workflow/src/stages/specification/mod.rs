@@ -52,6 +52,7 @@
 
 pub mod contract;
 pub mod evidence;
+pub mod feedback;
 mod gates;
 pub mod handler;
 pub mod input;
@@ -65,8 +66,8 @@ pub use handler::{
     CommitIdentity, SpecificationConfig, SpecificationDeps, SpecificationHandler, StageBudget,
 };
 pub use input::{
-    ANSWERS_FILE, EVIDENCE, NORMALIZED_REQUEST, REPOSITORY_MAP, REQUEST_FILE, REVIEWER,
-    SPECIFICATION_CONTRACT, WRITER,
+    ANSWERS_FILE, EVIDENCE, FEEDBACK_FILE, NORMALIZED_REQUEST, REPOSITORY_MAP, REQUEST_FILE,
+    REVIEWER, SPECIFICATION_CONTRACT, WRITER,
 };
 pub use judge::REVIEW;
 pub use seams::{

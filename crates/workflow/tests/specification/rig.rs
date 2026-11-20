@@ -403,7 +403,23 @@ impl SpecHistory for RigHistory {
     }
 }
 
-pub struct RigRework;
+/// Stands for the composition root's feedback source. A test sets what the store would hold for
+/// the next run: the commit of the draft that was sent back and the reports that failed.
+pub struct RigRework {
+    context: Mutex<Option<ReworkContext>>,
+}
+
+impl RigRework {
+    pub fn new() -> Self {
+        Self {
+            context: Mutex::new(None),
+        }
+    }
+
+    pub fn set(&self, context: ReworkContext) {
+        *lock(&self.context) = Some(context);
+    }
+}
 
 #[async_trait]
 impl ReworkSource for RigRework {
@@ -412,9 +428,12 @@ impl ReworkSource for RigRework {
     }
 
     async fn of(&self, _run: &RunIdentity) -> Result<Option<ReworkContext>, SeamError> {
-        Ok(None)
+        Ok(lock(&self.context).clone())
     }
 }
+
+/// What the stage wrote into the sandbox with `tee`: the path and the bytes, in order.
+pub type Written = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
 // ---- the scripted specification provider ----------------------------------------------------
 
@@ -891,6 +910,9 @@ pub struct Rig {
     pub approvals: Arc<RigApprovals>,
     pub drafts: Arc<RigDrafts>,
     pub history: Arc<RigHistory>,
+    pub rework: Arc<RigRework>,
+    /// The files the stage put into the sandbox for the skills to read.
+    pub written: Written,
     pub artifacts: Arc<Granting>,
     pub repo: RepoRef,
     pub base: CommitSha,
@@ -996,10 +1018,16 @@ impl Rig {
             .expect("the fetch works");
         let base = fetched.commit;
 
+        let written: Written = Arc::new(Mutex::new(Vec::new()));
+        let tee_log = written.clone();
         let sandbox = Arc::new(
             FakeSandbox::new(world.clock.clone(), artifacts.clone(), sandbox_policy())
                 .with_program("mkdir", ok)
-                .with_program("tee", ok)
+                .with_program("tee", move |argv, stdin| {
+                    let file = argv.last().cloned().unwrap_or_default();
+                    lock(&tee_log).push((file, stdin.to_vec()));
+                    ok(argv, stdin)
+                })
                 .with_program("rm", ok)
                 .with_program("cp", ok),
         );
@@ -1034,6 +1062,7 @@ impl Rig {
         let approvals = Arc::new(RigApprovals::new());
         let drafts = Arc::new(RigDrafts::new());
         let history = Arc::new(RigHistory::new());
+        let rework = Arc::new(RigRework::new());
         let handler = SpecificationHandler::new(
             SpecificationConfig {
                 writer: Slug::parse("specification-writer").expect("a slug"),
@@ -1081,7 +1110,7 @@ impl Rig {
                 approvals: approvals.clone(),
                 drafts: drafts.clone(),
                 history: history.clone(),
-                rework: Arc::new(RigRework),
+                rework: rework.clone(),
             },
         );
         let mut handlers = HandlerRegistry::new();
@@ -1110,6 +1139,8 @@ impl Rig {
             approvals,
             drafts,
             history,
+            rework,
+            written,
             artifacts,
             repo,
             base,

@@ -19,6 +19,15 @@ const MESSAGE_MAX: usize = 600;
 /// The feedback as the builder reads it.
 #[must_use]
 pub fn render(context: &ReworkContext) -> String {
+    render_with(context, MESSAGE_MAX)
+}
+
+/// The feedback, with each message cut at `message_max` characters. A stage whose failure
+/// messages are findings written by a reviewer keeps more of each than a stage whose messages are
+/// the output of a command.
+#[must_use]
+pub fn render_with(context: &ReworkContext, message_max: usize) -> String {
+    let clip = |message: &str| clip(message, message_max);
     let mut text = format!(
         "Rework round {}. The previous attempt at this work was sent back. Fix only what is listed below.\n",
         context.round
@@ -94,12 +103,12 @@ const fn severity_rank(severity: Severity) -> u8 {
     }
 }
 
-fn clip(message: &str) -> String {
+fn clip(message: &str, max: usize) -> String {
     let flat: String = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= MESSAGE_MAX {
+    if flat.chars().count() <= max {
         flat
     } else {
-        let mut cut: String = flat.chars().take(MESSAGE_MAX).collect();
+        let mut cut: String = flat.chars().take(max).collect();
         cut.push_str(" (cut)");
         cut
     }
@@ -141,7 +150,7 @@ mod tests {
     #[test]
     fn a_long_message_is_cut_and_whitespace_is_flattened() {
         let long = format!("start\n\n   {}", "word ".repeat(400));
-        let cut = clip(&long);
+        let cut = clip(&long, MESSAGE_MAX);
         assert!(cut.ends_with("(cut)"));
         assert!(!cut.contains('\n'));
         assert!(cut.chars().count() < 700);

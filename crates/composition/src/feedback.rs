@@ -12,8 +12,9 @@
 //! 2. **Why.** Each gate report the failing run produced is a ledger entry with test evidence, and
 //!    the report is stored by its hash; the ones whose result is `failed` are the failed reports.
 //!    A review verdict is a ledger entry with artifact evidence; its findings are the review's.
-//! 3. **What the replaced run built.** Its output `implementation-result` or `documentation-result`
-//!    names the head commit; the new run builds on it.
+//! 3. **What the replaced run built.** Its output `implementation-result`, `documentation-result`
+//!    or `specification-evidence` names the head commit; the new run builds on it. A specification
+//!    run that left no draft names none, and the new run starts from the base of the job.
 //!
 //! A run that replaces nothing has no feedback (`None`). A store that cannot be read is
 //! `Unavailable` and the stage fails closed, as the contract of both traits says: a rework run must
@@ -169,9 +170,12 @@ impl StoreFeedback {
         run: &RunIdentity,
         previous: StageRunId,
     ) -> Result<Option<CommitSha>, SeamError> {
+        // The document of each stage that names the commit its work is in. The specification
+        // stage has no result document: its evidence names the commit the draft is in.
         let name = match run.kind {
             StageKind::Implementation => "implementation-result",
             StageKind::Documenting => "documentation-result",
+            StageKind::Specification => "specification-evidence",
             _ => return Ok(None),
         };
         let outputs = Reader::outputs(tx, previous).await?;
@@ -241,7 +245,8 @@ impl ReworkSource for StoreFeedback {
             };
             let previous_head = match self.head_of(&mut *tx, run, replaced.previous).await? {
                 Some(head) => head,
-                // A stage with no result document builds on the base of the job.
+                // A stage with no result document, or a run that left no commit, builds on the
+                // base of the job.
                 None => self.base_of(&mut *tx, run).await?,
             };
             Ok(Some(ReworkContext {

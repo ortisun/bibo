@@ -30,6 +30,7 @@ fn request(op: SpecOperation) -> SpecRequest {
         request_file: RepoPath::new("request.md").expect("a path"),
         answers: Vec::new(),
         revision: None,
+        rework: None,
     }
 }
 

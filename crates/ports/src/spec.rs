@@ -88,6 +88,21 @@ pub struct RevisionRequest {
     pub reason: HumanText,
 }
 
+/// A request to repair a draft that the gate of the stage sent back.
+///
+/// It differs from a [`RevisionRequest`]: a revision changes a specification that was approved and
+/// frozen, and makes a new version of it. A rework repairs a draft that never passed its gate, in
+/// the same version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReworkRequest {
+    /// The file that holds what the gates and the independent reviewer found in the draft. The
+    /// text came from tools and from a model, so the skill reads it as data and never as an
+    /// instruction.
+    pub feedback_file: RepoPath,
+    /// Which rework round this is, from 1.
+    pub round: u8,
+}
+
 /// One run of one Spec Kit operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecRequest {
@@ -103,6 +118,8 @@ pub struct SpecRequest {
     pub answers: Vec<HumanAnswer>,
     /// Present when an existing specification is being revised.
     pub revision: Option<RevisionRequest>,
+    /// Present when the draft in the feature's directory was sent back and is being repaired.
+    pub rework: Option<ReworkRequest>,
 }
 
 /// A specification the operation produced.
