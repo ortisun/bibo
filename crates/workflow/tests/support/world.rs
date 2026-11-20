@@ -241,7 +241,7 @@ impl World {
         }
     }
 
-    /// A test-mode engine with the solo mode of the shipped policy switched on (ADR 0021).
+    /// A test-mode engine with the solo mode of the shipped policy switched on (ADR 0022).
     pub async fn solo() -> Self {
         Self::with_config(|config| {
             *config = config.clone().with_solo(solo_rules());
@@ -578,7 +578,7 @@ pub fn solo_policy() -> factory_domain::policy::PolicyEngine {
 pub const REQUESTER_GITHUB_ID: u64 = 1001;
 
 /// A proof of the shipped policy for the world's requester as the one person who approves, with
-/// the solo fact true (ADR 0021). `decide` asks the policy engine, as the API and the worker do;
+/// the solo fact true (ADR 0022). `decide` asks the policy engine, as the API and the worker do;
 /// the requester holds `requester`, `approver` and `security_approver` here.
 pub fn solo_proof(
     world: &World,

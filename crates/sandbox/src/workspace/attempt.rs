@@ -35,7 +35,7 @@ pub struct GitWorkspace {
     pub(super) job_dirs: JobDirs,
     pub(super) attempt_dirs: AttemptDirs,
     pub(super) base: CommitSha,
-    /// The job's protected base when it is not `base` (ADR 0024): the commit `append_only` and
+    /// The job's protected base when it is not `base` (ADR 0025): the commit `append_only` and
     /// `additions_only` judge a changed path against. `None` when `base` is that commit.
     pub(super) protected: Option<CommitSha>,
     pub(super) rules: PathRules,

@@ -763,7 +763,7 @@ fn separation_of_duties_follows_the_change_and_the_designation() {
         },
         high,
     ];
-    // A low-risk change: the requester may not approve outside the solo mode (ADR 0021), now that
+    // A low-risk change: the requester may not approve outside the solo mode (ADR 0022), now that
     // `approver_may_equal_requester_when_low_risk` is false.
     assert_eq!(
         reason(&decide(
@@ -1544,7 +1544,7 @@ fn rh_3_the_policy_asks_an_entry_with_the_id_by_the_id_when_it_is_given_the_regi
 }
 
 // ---------------------------------------------------------------------------------------------
-// The solo mode (ADR 0021): the requester who is the one approver
+// The solo mode (ADR 0022): the requester who is the one approver
 // ---------------------------------------------------------------------------------------------
 
 /// One person who asks and approves, with or without `security_approver`.

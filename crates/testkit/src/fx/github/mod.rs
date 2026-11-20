@@ -800,6 +800,62 @@ impl FakeGithub {
         number
     }
 
+    /// An issue opened by the App itself (its bot account), as the troubleshooter opens one. No user
+    /// record is needed for the author.
+    ///
+    /// # Panics
+    /// When the repository is not known.
+    pub fn add_app_issue(&self, repo: &str, title: &str, body: &str, labels: &[&str]) -> u64 {
+        let now = self.now();
+        let mut state = self.lock();
+        let author = state.app.bot_login();
+        let repo = state.repos.get_mut(repo).expect("a known repository");
+        let number = repo.next_number;
+        repo.next_number += 1;
+        repo.issues.insert(
+            number,
+            Issue {
+                number,
+                title: title.to_owned(),
+                body: body.to_owned(),
+                state: "open".to_owned(),
+                is_pull: false,
+                author,
+                labels: labels.iter().map(|l| (*l).to_owned()).collect(),
+                created_at: now,
+                updated_at: now,
+                body_edited_at: None,
+                comments: Vec::new(),
+                events: Vec::new(),
+                events_newest_first: false,
+            },
+        );
+        number
+    }
+
+    /// An issue as the API shows it.
+    #[must_use]
+    pub fn issue_json(&self, repo: &str, number: u64) -> Option<Value> {
+        let state = self.lock();
+        let repo_state = state.repos.get(repo)?;
+        Some(routes::issue_json(
+            &state,
+            repo_state,
+            repo_state.issues.get(&number)?,
+        ))
+    }
+
+    /// The numbers of the issues of a repository, pull requests included, lowest first.
+    #[must_use]
+    pub fn issue_numbers(&self, repo: &str) -> Vec<u64> {
+        let state = self.lock();
+        state
+            .repos
+            .get(repo)
+            .map(|r| r.issues.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// Changes the body of an issue, as an author editing it after the label was applied
     /// (NT-AUTHZ-05).
     ///

@@ -29,7 +29,7 @@ strict! {
         pub roles: Vec<Role>,
         /// Separation of duties.
         pub separation_of_duties: SeparationOfDuties,
-        /// The solo mode: when the requester of a job may approve it alone (ADR 0021).
+        /// The solo mode: when the requester of a job may approve it alone (ADR 0022).
         pub solo_mode: SoloMode,
         /// Risk tiers.
         pub risk_tiers: Vec<RiskTierRule>,
@@ -248,7 +248,7 @@ strict! {
 }
 
 strict! {
-    /// The solo mode (ADR 0021): the one person who approves on a repository marked
+    /// The solo mode (ADR 0022): the one person who approves on a repository marked
     /// `single_maintainer` may approve what they asked for themselves, under a minimum wait and a
     /// confirmation phrase for the riskier decisions. Every field is required, and
     /// [`check_solo_mode`](super::solo::check_solo_mode) refuses a value out of range, so a file

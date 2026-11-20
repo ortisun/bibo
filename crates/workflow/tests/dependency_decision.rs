@@ -311,7 +311,7 @@ impl Rig {
     }
 
     /// A proof for the requester of the job as the one person who approves, with the solo fact
-    /// the API and the worker compute (ADR 0021).
+    /// the API and the worker compute (ADR 0022).
     async fn solo_proof(&self, kind: ApprovalKind) -> AuthorizedApproval {
         let tenant = self.world.tenant;
         let id = self.github(self.world.requester).await;
@@ -887,7 +887,7 @@ async fn negative_nt_solo_01_the_requester_of_the_job_cannot_decide_on_its_depen
         .expect("another approver records the decision");
 }
 
-// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
 
 const SOME_CRATE_PHRASE: &str = "I confirm the solo approval of dependency some-crate 0.1.0";
 const TEN_MINUTES: u64 = 600;

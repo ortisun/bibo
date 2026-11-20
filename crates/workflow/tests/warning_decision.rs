@@ -372,7 +372,7 @@ async fn a_repeat_of_the_command_is_applied_once() {
     assert_eq!(rig.world.ledger(rig.job).await.len(), ledger);
 }
 
-// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
 
 impl Rig {
     async fn record_solo(

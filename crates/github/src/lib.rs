@@ -3,8 +3,9 @@
 //! This crate implements [`factory_ports::githost::IssueSource`],
 //! [`factory_ports::githost::ChangeHost`] and [`factory_ports::githost::WebhookVerifier`] for
 //! GitHub, authenticated as a GitHub App (ports-v1.1, ADR 0014). It also implements
-//! [`factory_ports::issue_status::IssueStatusWriter`] (ports v1.2, ADR 0017) and
-//! [`factory_ports::project_rules::ProjectRulesHost`] (ports v1.3, ADR 0026). It has no merge call,
+//! [`factory_ports::issue_status::IssueStatusWriter`] (ports v1.2, ADR 0017),
+//! [`factory_ports::triage_issue::TriageIssueWriter`] (ports v1.3, ADR 0021), and
+//! [`factory_ports::project_rules::ProjectRulesHost`] (ports v1.4, ADR 0026). It has no merge call,
 //! no call that marks a pull request ready for review, and no call that writes a workflow file. Its
 //! one `PUT` writes a file of the contents API on the branch `factory/project-rules`, and the client
 //! refuses it for any other path.
@@ -43,6 +44,7 @@
 //! | `text` | Secret check and markdown hygiene for everything sent to GitHub. |
 //! | `issues`, `changes`, `protection` | The two ports and the ruleset reader. |
 //! | `status` | The status writer (ports v1.2): one `factory: <state>` label and one status comment, with a token of its own. |
+//! | `triage` | The troubleshooter's triage issues (ports v1.3): found by a fingerprint marker in the body, opened and commented on under a run's scope, with a token of its own. |
 //! | `webhook` | The webhook verifier and the replay filter. |
 //! | `adapter` | The composition. |
 //!
@@ -68,6 +70,7 @@ mod protection;
 mod status;
 mod text;
 mod token;
+mod triage;
 mod ureq_transport;
 mod webhook;
 mod wire;
@@ -86,6 +89,7 @@ pub use protection::{protection_from_rules, with_classic_protection};
 pub use status::{GithubIssueStatus, MUTATION_PAUSE};
 pub use text::{OutboundPolicy, keeps_link};
 pub use token::{InstallationDirectory, StaticInstallations};
+pub use triage::GithubTriageIssues;
 pub use ureq_transport::{MAX_RESPONSE_BYTES, REQUEST_TIMEOUT, UreqTransport};
 pub use webhook::{
     BadSecret, GithubWebhookVerifier, MAX_BODY_BYTES, MAX_DEPTH, MIN_SECRET_BYTES, NoSecrets,

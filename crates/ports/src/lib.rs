@@ -2,8 +2,10 @@
 //! the store, the sandbox, the agent runtime, the change host, the clock and others. Ring 1: it
 //! depends on `factory-domain` only and makes no I/O call (rule DEP-05).
 //!
-//! This is **version 1.2** of the ports (ADR 0014 and `docs/architecture/ports-v1.1.md` for v1.1, ADR 0017 and
-//! `docs/architecture/ports-v1.2.md` for the status writer added in v1.2). Every
+//! This is **version 1.4** of the ports (ADR 0014 and `docs/architecture/ports-v1.1.md` for v1.1, ADR 0017 and
+//! `docs/architecture/ports-v1.2.md` for the status writer added in v1.2, the section "Ports v1.3" of that
+//! document for the troubleshooter's triage issue writer added in v1.3, ADR 0021, and ADR 0026 and
+//! `docs/architecture/ports-v1.4.md` for the project rules host added in v1.4). Every
 //! adapter is built against it, and every adapter must pass the same shared contract suite as its
 //! in-memory fake (`factory-testkit`, module `contracts`). A port changes only by a reviewed pull
 //! request that updates the trait, the fake and the contract suite together.
@@ -22,8 +24,9 @@
 //! | [`spec`] | `SpecificationProvider` |
 //! | [`githost`] | `IssueSource`, `ChangeHost`, `WebhookVerifier` |
 //! | [`issue_status`] | `IssueStatusWriter`: one `factory: <state>` label and one status comment on the issue a job came from (v1.2) |
+//! | [`triage_issue`] | `TriageIssueWriter`: the troubleshooter's triage issues, found by a fingerprint marker, under a `RunScope` that is not a job's (v1.3) |
 //! | [`process`] | `ProcessRunner` |
-//! | [`project_rules`] | `ProjectRulesHost`: the draft pull request that installs or updates the project's rules for agents in `AGENTS.md` (v1.3) |
+//! | [`project_rules`] | `ProjectRulesHost`: the draft pull request that installs or updates the project's rules for agents in `AGENTS.md` (v1.4) |
 //! | [`paths`] | Checked names shared by the ports: `RepoPath`, `RepoGlob`, `BranchName`, `RepoRef`, and the policy's `PathRules` |
 //!
 //! # Async strategy
@@ -74,6 +77,7 @@ pub mod registry;
 pub mod sandbox;
 pub mod spec;
 pub mod store;
+pub mod triage_issue;
 pub mod workspace;
 
 use factory_domain::vocabulary::{ExecutionMode, Fidelity};

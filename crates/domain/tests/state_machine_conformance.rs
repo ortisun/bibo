@@ -1108,7 +1108,7 @@ fn human_rework_routes_match(doc: &Value) {
                     panic!("human rework {from} -> {target} is in the file: {decision:?}");
                 };
                 assert_eq!(plan.target, *target);
-                // The count follows the target's phase (ADR 0022).
+                // The count follows the target's phase (ADR 0023).
                 let expected_track = match *target {
                     StageKind::Specification => ReworkTrack::Specification,
                     StageKind::Architecture | StageKind::TaskPlanning => ReworkTrack::Design,

@@ -1,4 +1,4 @@
-//! An in-memory fake of `ProjectRulesHost` (ports v1.3, ADR 0026), with deliberate defects that
+//! An in-memory fake of `ProjectRulesHost` (ports v1.4, ADR 0026), with deliberate defects that
 //! the contract suite must catch.
 //!
 //! The fake keeps one repository per name: a default branch `main`, branches with their files at

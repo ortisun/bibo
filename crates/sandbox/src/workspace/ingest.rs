@@ -14,7 +14,7 @@
 //! 5. **Rules** (`rules`): the path modes of the request, and the compiled policy when given.
 //!    When the workspace starts later in the job than its protected base, a second difference,
 //!    from the protected base to the same head tree, is what `append_only` and `additions_only`
-//!    judge a changed path by (ADR 0024).
+//!    judge a changed path by (ADR 0025).
 //! 6. **Secret scan** of the blobs as the store holds them, which are the bytes a commit will hold.
 //!
 //! Only after all six does `ingest` build an `IngestedChange`, and this is the only place in the
@@ -126,7 +126,7 @@ async fn run(
     if facts.len() > shared.settings.limits.max_changed_files {
         return Err(WorkspaceError::TooLarge);
     }
-    // And from the job's protected base, when the workspace starts later in the job (ADR 0024).
+    // And from the job's protected base, when the workspace starts later in the job (ADR 0025).
     // A store that cannot give it fails the ingestion: nothing is judged without it.
     let protected = match &ws.protected {
         Some(commit) => Some(difference(ws, commit, &tree_sha, &manifest, cancel).await?),

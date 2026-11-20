@@ -2,7 +2,7 @@
 //!
 //! When a gate sends work back, a new run of an earlier stage replaces the failing one. Three
 //! tables in the `pipeline` section of `state-machine.json` decide where it goes, and the cap of
-//! ADR 0009 says how many times: two rounds on each count, then a human decides. ADR 0022 gives
+//! ADR 0009 says how many times: two rounds on each count, then a human decides. ADR 0023 gives
 //! the specification, the design (`ARCHITECTURE` and `TASK_PLANNING`), the code and the
 //! documentation each their own count, charged by the stage a round targets
 //! ([`ReworkTrack::for_target`]).

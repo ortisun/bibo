@@ -164,7 +164,7 @@ impl AuthorizedApproval {
     }
 
     /// True when the approver is the requester of the job and the policy allowed it only because
-    /// the solo fact held (ADR 0021). The engine accepts an approver who is the requester only
+    /// the solo fact held (ADR 0022). The engine accepts an approver who is the requester only
     /// with this stamp, and checks the fact again when it commits.
     #[must_use]
     pub fn solo_stamp(&self) -> bool {

@@ -603,6 +603,9 @@ closed_set! {
         ProxiedAllowlist,
         /// Only to the model broker.
         ModelBrokerOnly,
+        /// To the model broker and the troubleshooter's MCP gateway, each through a fixed relay
+        /// of the sidecar (ADR 0021). The `troubleshooter` profile only.
+        ModelBrokerAndMcpGateway,
     }
 }
 
@@ -667,7 +670,7 @@ strict! {
 }
 
 strict! {
-    /// The three sandbox profiles.
+    /// The sandbox profiles.
     pub struct SandboxProfiles {
         /// Downloads dependencies.
         pub fetch_deps: SandboxProfile,
@@ -675,6 +678,8 @@ strict! {
         pub agent: SandboxProfile,
         /// Runs the trusted gates.
         pub verify: SandboxProfile,
+        /// Runs the troubleshooter (ADR 0021).
+        pub troubleshooter: SandboxProfile,
     }
 }
 
@@ -789,6 +794,8 @@ strict! {
         pub fetch_deps: EgressProfile,
         /// The agent.
         pub agent: EgressProfile,
+        /// The troubleshooter: the model broker and the MCP gateway (ADR 0021).
+        pub troubleshooter: EgressProfile,
     }
 }
 
@@ -1321,10 +1328,10 @@ strict! {
         /// Rework rounds for code: re-runs of `IMPLEMENTATION`. Default 2.
         pub max_rework_iterations: u32,
         /// Rework rounds for the specification: re-runs of `SPECIFICATION`. Default 2
-        /// (ADR 0022).
+        /// (ADR 0023).
         pub max_specification_rework_iterations: u32,
         /// Rework rounds for the design: re-runs of `ARCHITECTURE` and `TASK_PLANNING`. Default 2
-        /// (ADR 0022).
+        /// (ADR 0023).
         pub max_design_rework_iterations: u32,
         /// Rework rounds for documentation. Default 2.
         pub max_documentation_rework_iterations: u32,

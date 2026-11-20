@@ -48,7 +48,7 @@ Each metric is an entry of kind `metric` in the knowledge base, with the fields 
 | Metric | Unit | Formula | Cut by |
 |---|---|---|---|
 | First-pass gate success | ratio | Tasks whose first attempt passed every gate / tasks | agent, pack, model |
-| Rework rounds | count | Rework rounds per phase per job (ADR 0022) | phase, agent |
+| Rework rounds | count | Rework rounds per phase per job (ADR 0023) | phase, agent |
 | Review precision | ratio | Findings a person or a later fix confirmed / findings raised | reviewer agent, model |
 | Escaped defects | count | Bugs linked to a merged factory pull request within 30 days of the merge | project, pack |
 | Flaky tests | count | Tests whose result changed with no code change, in the window | project |

@@ -98,7 +98,7 @@ pub struct EngineConfig {
     pub heartbeat_interval: Duration,
     /// The grace period for tearing down a cancelled attempt.
     pub teardown_grace: Duration,
-    /// The rework caps, one for each count (ADR 0022). Never above two (ADR 0009 item 6). A
+    /// The rework caps, one for each count (ADR 0023). Never above two (ADR 0009 item 6). A
     /// composition root sets them from the policy's `budgets.hard_ceilings.per_job`.
     pub rework_limits: ReworkLimits,
     /// The repair cap after an invalid output. Never above two (ADR 0010).
@@ -117,7 +117,7 @@ pub struct EngineConfig {
     /// default holds the block of an unresolved dependency review; a composition root adds the
     /// entries of the policy and never takes this one away.
     pub non_overridable_blocks: BTreeSet<(String, String)>,
-    /// The rules of the solo mode (ADR 0021), which the engine checks again when it commits a
+    /// The rules of the solo mode (ADR 0022), which the engine checks again when it commits a
     /// decision the requester took alone. Off by default; a composition root sets the policy's
     /// with [`EngineConfig::with_solo`].
     pub solo: SoloRules,

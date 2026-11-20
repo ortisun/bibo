@@ -150,7 +150,7 @@ pub struct CommandContext {
     /// Every open translation warning has a recorded decision of this person.
     pub warnings_decided: bool,
     /// When the person asked and the confirmation word their request carried, for the solo
-    /// mode (ADR 0021). `None` for a channel that carries neither.
+    /// mode (ADR 0022). `None` for a channel that carries neither.
     pub solo: Option<factory_workflow::commands::SoloRequest>,
 }
 

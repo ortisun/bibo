@@ -1,6 +1,6 @@
 //! The rework cap, the repair cap, and the count of rework rounds already used.
 //!
-//! ADR 0009 item 6 sets the default for rework: two rounds, then a human decides. ADR 0022 gives
+//! ADR 0009 item 6 sets the default for rework: two rounds, then a human decides. ADR 0023 gives
 //! the specification, the design, the code and the documentation each their own count. ADR 0010 sets the same default for repairs after an
 //! invalid output. A project policy may lower a cap and may never raise it, because raising it is
 //! a widening that needs a recorded human decision. So a cap is built with
@@ -21,7 +21,7 @@ string_enum! {
     ///
     /// Each phase of the pipeline that ends in an artifact a later phase is judged against has its
     /// own count, so rounds spent converging one artifact never use the rounds of the next one
-    /// (ADR 0022). The count follows the stage the round targets, see [`for_target`](Self::for_target).
+    /// (ADR 0023). The count follows the stage the round targets, see [`for_target`](Self::for_target).
     pub enum ReworkTrack("rework track") {
         /// A re-run of `SPECIFICATION`: the clarify loop that ends when the specification is
         /// frozen. Policy key `max_specification_rework_iterations`.

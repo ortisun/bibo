@@ -34,7 +34,7 @@ pub struct RecordDependencyDecision {
     /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
     pub reason: HumanText,
     /// When the person asked and the confirmation they sent, for a decision the requester takes
-    /// alone in the solo mode (ADR 0021). `None` outside it: the engine then refuses the requester.
+    /// alone in the solo mode (ADR 0022). `None` outside it: the engine then refuses the requester.
     pub solo: Option<SoloRequest>,
 }
 
@@ -66,7 +66,7 @@ pub struct RecordProjectBuildCodeDecision {
     /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
     pub reason: HumanText,
     /// When the person asked and the confirmation they sent, for a decision the requester takes
-    /// alone in the solo mode (ADR 0021). `None` outside it: the engine then refuses the requester.
+    /// alone in the solo mode (ADR 0022). `None` outside it: the engine then refuses the requester.
     pub solo: Option<SoloRequest>,
 }
 
@@ -97,7 +97,7 @@ pub struct RecordWarningDecision {
     /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
     pub reason: HumanText,
     /// When the person asked and the confirmation they sent, for a decision the requester takes
-    /// alone in the solo mode (ADR 0021). `None` outside it: the engine then refuses the requester.
+    /// alone in the solo mode (ADR 0022). `None` outside it: the engine then refuses the requester.
     pub solo: Option<SoloRequest>,
 }
 

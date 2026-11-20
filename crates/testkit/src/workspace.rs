@@ -665,6 +665,32 @@ impl WorkspaceProvider for FakeWorkspaceProvider {
         Fidelity::Fake
     }
 
+    async fn list_branches(
+        &self,
+        _job: JobId,
+        target: &FetchTarget,
+        prefix: &str,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Vec<BranchName>, WorkspaceError> {
+        if cancel.is_cancelled() {
+            return Err(WorkspaceError::Cancelled);
+        }
+        if target.repo != self.repo {
+            return Err(WorkspaceError::Unauthorized);
+        }
+        let remote = self
+            .remote
+            .state
+            .lock()
+            .expect("the lock is never poisoned");
+        Ok(remote
+            .branches
+            .keys()
+            .filter(|(repo, branch)| *repo == target.repo && branch.as_str().starts_with(prefix))
+            .map(|(_, branch)| branch.clone())
+            .collect())
+    }
+
     async fn fetch(
         &self,
         job: JobId,
@@ -765,7 +791,7 @@ impl WorkspaceProvider for FakeWorkspaceProvider {
         if self.has(WorkspaceDefect::ScopesCommitsToWorkspace) && own_commit.is_some() {
             return Err(WorkspaceError::UnknownCommit);
         }
-        // The tree of the protected base, when it is not the base itself (ADR 0024). It must be
+        // The tree of the protected base, when it is not the base itself (ADR 0025). It must be
         // in the store and on the base's history, or the workspace is refused.
         let protected_tree: Option<Tree> = match &req.protected_base {
             Some(commit) if *commit != req.base => {
@@ -1327,7 +1353,7 @@ impl FakeWorkspace {
         }
 
         // `deny_write` judges the change since the base; `append_only` and `additions_only` judge
-        // the path against the protected base (ADR 0024), which is the base when none was named.
+        // the path against the protected base (ADR 0025), which is the base when none was named.
         let protected = self.protected_tree.as_ref().unwrap_or(&self.visible);
         let mut violations = Vec::new();
         let mut sensitive = Vec::new();

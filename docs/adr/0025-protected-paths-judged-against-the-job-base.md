@@ -1,4 +1,4 @@
-# 0024: Protected paths are judged against the commit the job started from
+# 0025: Protected paths are judged against the commit the job started from
 
 - Status: **Proposed, pending the owner**. Built on the branch `fix/agent-report-channel` from real run 33 of scenario E1. No independent review has covered it.
 - Date: 2026-11-20

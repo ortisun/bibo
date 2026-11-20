@@ -1370,7 +1370,7 @@ fn a_refused_change_says_the_code_in_plain_words_and_exits_2() {
     assert_eq!(api.requests.lock().expect("lock").len(), 2);
 }
 
-// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
 
 #[test]
 fn confirm_is_sent_by_the_five_commands_that_take_it_and_refused_by_the_others() {

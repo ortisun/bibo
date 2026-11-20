@@ -990,7 +990,7 @@ fn only_agent_produced_stages_are_targets() {
 #[test]
 fn the_cap_and_the_counts_follow_the_target_a_person_names() {
     // Rework to DOCUMENTING is charged to the documentation count, to ARCHITECTURE or
-    // TASK_PLANNING to the design count, and to IMPLEMENTATION to the code count (ADR 0022).
+    // TASK_PLANNING to the design count, and to IMPLEMENTATION to the code count (ADR 0023).
     let to_documenting = approver_sends(StageKind::Approval, StageKind::Documenting);
     let HumanReworkDecision::Rework(plan) = &to_documenting else {
         panic!("{to_documenting:?}");

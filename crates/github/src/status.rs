@@ -74,8 +74,8 @@ struct OwnComment {
     body: String,
 }
 
-/// Leaves a gap between requests that change something. The rules host (`project_rules.rs`)
-/// paces its writes with it too.
+/// Leaves a gap between requests that change something. The triage issue writer (`triage.rs`)
+/// and the rules host (`project_rules.rs`) pace their writes with it too.
 pub(crate) struct Pacer {
     sleeper: Arc<dyn Sleeper>,
     clock: Arc<dyn Clock>,
@@ -137,11 +137,7 @@ impl GithubIssueStatus {
         Self {
             client,
             outbound,
-            pacer: Arc::new(Pacer {
-                sleeper,
-                clock,
-                last_change: Mutex::new(None),
-            }),
+            pacer: Arc::new(Pacer::new(sleeper, clock)),
         }
     }
 

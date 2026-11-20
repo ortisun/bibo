@@ -2167,7 +2167,7 @@ async fn a_rejection_of_a_stage_that_does_not_wait_is_refused_as_out_of_place() 
 }
 
 // ------------------------------------------------------------------------------------------
-// The solo mode (ADR 0021): the requester approves the specification of their own request
+// The solo mode (ADR 0022): the requester approves the specification of their own request
 // ------------------------------------------------------------------------------------------
 
 /// The draft the specification stage kept, as a fixed commit: the hook compares the commit the

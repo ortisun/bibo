@@ -74,7 +74,7 @@ struct Shared {
     answers: String,
     /// The commit the job started from (the repository map's). Every workspace of the run names
     /// it as its protected base, so a later task or rework round may change the files the job
-    /// added while what existed before the job stays protected (ADR 0024).
+    /// added while what existed before the job stays protected (ADR 0025).
     job_base: CommitSha,
 }
 
@@ -86,6 +86,8 @@ struct Unit {
     key: Slug,
     title: String,
     text: String,
+    /// The kind of the task, for the type of its commit. A rework round has none.
+    kind: Option<factory_domain::contracts::task_dag::TaskKind>,
 }
 
 /// What the run has used and said so far.
@@ -488,6 +490,7 @@ fn units_of(
                 key: plan::key(task),
                 title: task.title.as_str().to_owned(),
                 text: plan::render_task(task),
+                kind: Some(task.kind),
             })
             .collect());
     };
@@ -514,6 +517,7 @@ fn units_of(
         key,
         title: "Fix the problems found in the previous round".to_owned(),
         text,
+        kind: None,
     }])
 }
 
@@ -851,6 +855,7 @@ async fn build_in(
         limits: shared.manifest.resource_limits.clone(),
         model: route.model,
         flag_set: route.flag_set,
+        mcp_gateway: None,
     };
     let report = ports.runtime.run(&mut *session, request, ctx.cancel).await;
     tally.usage = tally.usage.saturating_add(report.usage);
@@ -945,16 +950,28 @@ async fn build_in(
         .await
         .map_err(ledger_error)?;
 
-    // The commit is made on the host, from the tree that was audited, and then recorded.
+    // The commit is made on the host, from the tree that was audited, and then recorded. Its
+    // message follows the project's git conventions when it has them.
+    let conventions = crate::conventions::load(ctx, on).await?;
+    let body = format!(
+        "Task {} of the plan, committed by the factory after the change was audited.",
+        unit.key.as_str()
+    );
+    let message = crate::conventions::message_or(
+        conventions.as_ref(),
+        conventions
+            .as_ref()
+            .map_or("feat", |c| c.task_type(unit.kind)),
+        None,
+        &unit.title,
+        &body,
+        format!("{}\n\n{body}\n", unit.title),
+    );
     let commit = workspace
         .commit(
             &change,
             CommitRequest {
-                message: format!(
-                    "{}\n\nTask {} of the plan, committed by the factory after the change was audited.\n",
-                    unit.title,
-                    unit.key.as_str()
-                ),
+                message,
                 author_name: handler.config.identity.name.clone(),
                 author_email: handler.config.identity.email.clone(),
             },

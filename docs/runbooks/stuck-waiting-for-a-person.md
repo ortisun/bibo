@@ -106,7 +106,7 @@ You should see `recorded: decision.requested` and then `recorded: decision.appli
 
 ## The refusals of the solo mode
 
-When you asked for the job and are its only approver, the factory lets you approve alone on a repository marked `single_maintainer` ([ADR 0021](../adr/0021-solo-approval-mode.md)). Three refusals belong to that mode:
+When you asked for the job and are its only approver, the factory lets you approve alone on a repository marked `single_maintainer` ([ADR 0022](../adr/0022-solo-approval-mode.md)). Three refusals belong to that mode:
 
 - `ineligible_approver` (answered at once by the API, `409`): the solo mode does not apply. The reason says why: the mode is switched off, the repository is not `single_maintainer`, more than one person approves (then one of them decides), or you lack the designation the decision needs.
 - `confirmation_missing` (`409`, or `decision.rejected` in the timeline): a high or critical pull request, a dependency, build code or a translation warning needs the confirmation phrase. The answer names it; send the same command with `--confirm "<phrase>"`.

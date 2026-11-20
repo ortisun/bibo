@@ -682,6 +682,210 @@ tools:
       roles: ["*"]                     # every role; output schema comes from its manifest
       limits: { max_calls_per_task: 20, max_result_bytes: 524288, timeout_s: 5 }
       human_gate: none
+    # Gateway tools of the troubleshooter (ADR 0021, Decisions 3 and 6). Each runs in the
+    # troubleshooter's MCP gateway in the control plane, so `profiles` is empty, like net.fetch:
+    # the agent reaches it only through the fixed relay of its sandbox sidecar. Each is read only
+    # and held by the `troubleshooter` role alone. The id is `mcp.<upstream>.<name>`; the gateway
+    # offers it to the agent as `<prefix>_<name>` (datadog_, vm_, pg_) and calls one upstream tool.
+    # policies/troubleshooting.yaml holds that mapping, and its loader refuses a gateway tool that
+    # is not in this table. A gateway run has its own call budget there; the limits here are per
+    # run as well and never above it.
+    - id: mcp.datadog.search_logs
+      risk: low
+      description: "Searches Datadog logs. Gateway tool; upstream `search_datadog_logs` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.analyze_logs
+      risk: low
+      description: "Aggregates Datadog logs. Gateway tool; upstream `analyze_datadog_logs` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_trace
+      risk: low
+      description: "Reads one Datadog trace. Gateway tool; upstream `get_datadog_trace` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_spans
+      risk: low
+      description: "Searches Datadog spans. Gateway tool; upstream `search_datadog_spans` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.aggregate_spans
+      risk: low
+      description: "Aggregates Datadog spans. Gateway tool; upstream `aggregate_spans` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_metric
+      risk: low
+      description: "Reads a Datadog metric series. Gateway tool; upstream `get_datadog_metric` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_metric_context
+      risk: low
+      description: "Reads the tags and metadata of a Datadog metric. Gateway tool; upstream `get_datadog_metric_context` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_metrics
+      risk: low
+      description: "Lists Datadog metrics by name. Gateway tool; upstream `search_datadog_metrics` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_monitors
+      risk: low
+      description: "Searches Datadog monitors and their states. Gateway tool; upstream `search_datadog_monitors` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_incidents
+      risk: low
+      description: "Searches Datadog incidents. Gateway tool; upstream `search_datadog_incidents` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_incident
+      risk: low
+      description: "Reads one Datadog incident. Gateway tool; upstream `get_datadog_incident` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.query
+      risk: low
+      description: "Runs an instant PromQL or MetricsQL query. Gateway tool; upstream `query` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.query_range
+      risk: low
+      description: "Runs a range PromQL or MetricsQL query. Gateway tool; upstream `query_range` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.labels
+      risk: low
+      description: "Lists label names. Gateway tool; upstream `labels` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.label_values
+      risk: low
+      description: "Lists the values of one label. Gateway tool; upstream `label_values` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.metrics
+      risk: low
+      description: "Lists metric names. Gateway tool; upstream `metrics` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.metrics_metadata
+      risk: low
+      description: "Reads the metadata of metrics. Gateway tool; upstream `metrics_metadata` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.alerts
+      risk: low
+      description: "Lists the alerts of the alerting rules. Gateway tool; upstream `alerts` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.active_queries
+      risk: low
+      description: "Lists the queries VictoriaMetrics is running. Gateway tool; upstream `active_queries` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.explain_query
+      risk: low
+      description: "Explains how a query is parsed. Gateway tool; upstream `explain_query` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.list_relations
+      risk: low
+      description: "Lists the tables and views the observer role can read. Gateway tool; upstream `pg_list_relations` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.describe_relation
+      risk: low
+      description: "Describes the readable columns of one relation. Gateway tool; upstream `pg_describe_relation` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.query
+      risk: medium
+      description: "Runs one read-only query, boxed as a subquery in a read-only transaction. Gateway tool; upstream `pg_query` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.explain
+      risk: low
+      description: "Explains a query without running it (no ANALYZE). Gateway tool; upstream `pg_explain` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.activity
+      risk: low
+      description: "Reads sessions, waits and the oldest transaction. Gateway tool; upstream `pg_activity` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.locks
+      risk: low
+      description: "Reads blocked and blocking sessions. Gateway tool; upstream `pg_locks` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.table_health
+      risk: low
+      description: "Reads dead tuples, vacuum and analyze times and sequential scans. Gateway tool; upstream `pg_table_health` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.factory_health
+      risk: low
+      description: "Runs the fixed factory health checks over the observer columns. Gateway tool; upstream `pg_factory_health` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
   threats: [T-06, T-07, T-13]
 
 # -----------------------------------------------------------------------------
@@ -856,6 +1060,18 @@ sandbox:
       tmpfs_exec: false
       gate_definitions_from: base_commit_or_central
       holdouts_mounted: true           # only here, only read-only, never in agent
+    troubleshooter:
+      # ADR 0021 (Decisions 5 and 6). The agent profile's hardening, with no repository: the
+      # workspace is an empty directory mounted read-only, and the agent has no built-in tool.
+      # Two secrets, each a file mounted read-only: the broker job token and the run token of
+      # the MCP gateway. Its sidecar adds one second fixed relay, to the gateway only.
+      purpose: "The troubleshooter's agent run. No repository and no built-in tool. Reaches only the model broker and the MCP gateway."
+      network: model_broker_and_mcp_gateway
+      egress_profile: troubleshooter
+      secrets: broker_job_token_and_mcp_run_token
+      workspace: { mode: ro, scope: empty }
+      limits: { cpus: 1.0, memory_mb: 2048, memory_swap_mb: 2048, pids: 128, wall_clock_s: 1800, workspace_disk_mb: 64, tmpfs_mb: 256, nofile: 1024, max_file_mb: 64 }
+      tmpfs_exec: false
   watchdog:
     wall_clock_kill: supervisor        # Docker has no run-time limit flag (verified); supervisor sends kill at the deadline
     disk_poll_interval_s: 5
@@ -920,6 +1136,16 @@ egress:
       allow:
         # `host` is a placeholder internal name for the per-job sidecar's address; the real name is set by the sandbox crate.
         - { id: model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay", review_by: "2027-01-31", terminates_tls: true }
+    troubleshooter:
+      # ADR 0021, Decision 5: the troubleshooter reaches its MCP gateway through a second,
+      # fixed relay of its sidecar (no host list, no CONNECT, no DNS). This egress widening was
+      # approved by the owner on 2026-11-20 for this profile only. The security review that
+      # `widening_requires` asks for is STILL OWED. `mcp_gateway` may appear in this profile and
+      # in no other: the policy check refuses it anywhere else.
+      allow:
+        # `host` is a placeholder internal name, like the agent profile's; the real address is the sidecar's alias and second relay port.
+        - { id: troubleshooter_model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay, as for the agent profile", review_by: "2027-01-31", terminates_tls: true }
+        - { id: mcp_gateway, host: mcp-gateway.sandbox.internal, ports: [8444], methods: [POST, GET, DELETE], justification: "the troubleshooter's MCP gateway (Streamable HTTP) through the sidecar's second fixed relay; the gateway holds every upstream credential and allows a fixed list of read tools (ADR 0021)", review_by: "2027-01-31" }
   broker_upstreams:                    # hosts the BROKER (not the sandbox) may call
     - { id: anthropic_api, host: api.anthropic.com, paths: ["/v1/messages", "/v1/messages/count_tokens"], justification: "Claude models", review_by: "2027-01-31" }
     - { id: openai_api,    host: api.openai.com,    paths: ["/v1/responses", "/v1/chat/completions"],    justification: "Codex and OpenAI models", review_by: "2027-01-31" }
@@ -1019,6 +1245,12 @@ credentials:
       mint: per_job
       repositories: exactly_one        # narrowed with the `repositories` body parameter
       permissions: narrowed_per_stage  # read-only for analysis stages; the intake stage asks for `issues: read` and `metadata: read` only (LB-03, crates/github/src/permissions.rs)
+      # Token classes that are not a stage's: `issue_status` and `protection_reader` (see their
+      # notes in crates/github/src/permissions.rs), and since ports v1.3 (ADR 0021, Decision 7)
+      # `troubleshoot_issue`: `issues: write` and `metadata: read`, minted for a troubleshooting
+      # run (not a job) and the configured issue repository only, refused for every job stage,
+      # kept apart from every job's tokens and revoked when the run ends
+      # (PermissionSet::troubleshoot_issue). The App needs no new permission for it.
       lifetime_s: 3600                 # fixed by GitHub (documented); factory revokes earlier
       revoke_on_job_end: true          # DELETE /installation/token
       # LB-04. `revoke_on_job_end` is the end of the JOB (completed, failed, cancelled, rejected).
@@ -1158,7 +1390,7 @@ webhook:
 # Starting values only; tune with measured data. Raising a ceiling is an
 # always_human decision.
 #
-# Rework cap (ADR 0009 item 6, ADR 0022). A job has four rework counts, one per
+# Rework cap (ADR 0009 item 6, ADR 0023). A job has four rework counts, one per
 # phase, charged by the stage a round sends work back to:
 #   max_specification_rework_iterations  re-runs of SPECIFICATION (the clarify loop)
 #   max_design_rework_iterations         re-runs of ARCHITECTURE and TASK_PLANNING

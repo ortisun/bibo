@@ -1,11 +1,11 @@
-# 0021: The solo mode: the one approver may approve their own request
+# 0022: The solo mode: the one approver may approve their own request
 
 - Status: **Decided by the owner** (design "Aprovação solo, definition of done e PR legível", section 6, Slice A; the owner's instruction of 2026-11-20 not to add other users). Built on the branch `fix/agent-report-channel`. No independent review has covered it.
 - Date: 2026-11-20
 - Deciders: the owner. The engineer wrote the code from the owner's design.
 - Amends: the value of `separation_of_duties.approver_may_equal_requester_when_low_risk` in `policies/approval.yaml` (from `true` to `false`), and the rule "the approver is not the requester" of guard `G_APPROVER_AUTHORIZED` for the case below.
 - Related: [ADR 0009](0009-operating-defaults-pending-confirmation.md) item 5 (authority from the named allowlist), finding REG-6 (the `single_maintainer` registration), threats T-23, T-29 and T-30.
-- Numbering: the design reserved 0020 for this record; 0020 was taken by the subscription mode in the meantime, so this is 0021 (rule 6 of the README keeps the numbers monotonic).
+- Numbering: the design reserved 0020 for this record; 0020 was taken by the subscription mode in the meantime, so this was 0021. When `develop` was merged into this branch on 2026-11-20, develop's troubleshooter record already held 0021, so this record became 0022 and the three after it moved up by one (rule 6 of the README keeps the numbers monotonic).
 
 ## Context and problem statement
 

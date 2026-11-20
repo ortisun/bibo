@@ -198,7 +198,7 @@ async fn the_same_approval_twice_is_applied_once() {
     assert!(matches!(again, Err(EngineError::Duplicate)), "{again:?}");
 }
 
-// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
 
 /// The policy engine's proof for the requester's freezing of the specification, with the solo
 /// fact, as the worker asks for it: no tier, so the low one, and no wait or phrase.

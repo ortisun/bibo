@@ -280,7 +280,7 @@ fn read_tool_uses(message: &Value, stream: &mut Stream) {
             .get("name")
             .and_then(Value::as_str)
             .and_then(ClaudeTool::from_name)
-            .map_or(UNLISTED, ClaudeTool::name);
+            .map_or(UNLISTED, |tool| tool.fixed_word());
         let input = part.get("input").unwrap_or(&Value::Null);
         stream.tool_uses.push(ToolUse {
             id: id.to_owned(),

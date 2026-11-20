@@ -9,6 +9,8 @@ Review update: 2026-11-12, third. The owner decided that the factory runs on the
 Review update: 2026-11-12, second. The owner allowed the App `administration: read` so that the protection preflight reads classic branch protection next to the rulesets; `administration` above read stays refused. The residual risk is under T-24. It is unverified against the real GitHub and no independent review has covered it.
 
 Review update: 2026-11-12. T-48 now has one control in code: the protection preflight reads the workflow files of the default branch and caps a repository whose workflows are exposed to factory branches. Its entry says what the check covers and what it cannot see. Every rule of the check is written from GitHub's documentation and is unverified against the real GitHub, and no independent review has covered it. The risk is still open and not accepted.
+
+Review update: 2026-11-20. ADR 0021 adds a troubleshooter: a separate program whose agent reads the factory's own telemetry and database through one MCP gateway and whose findings become issues for a person to triage. It adds the boundary TB13 and the threats T-49 to T-54. Part of the controls exist in code (the read-only PostgreSQL MCP server and its database role, the troubleshooter's flag set, the sidecar's second relay, the troubleshooting policy and its loader, the hardened upstream containers); the gateway, the issue writer and the program itself are not built, so most of each mitigation is still a design. No independent review has covered any of it.
 Method: Shostack's four questions and STRIDE per element, with a likelihood by impact rating. No CVSS vectors are given because no implementation exists to score.
 Related files:
 
@@ -88,6 +90,8 @@ flowchart TB
         AUD["Audit writer"]
         BRK["Model broker"]
         STORE[("PostgreSQL, NATS, object store")]
+        TRB["Troubleshooter and its MCP gateway"]
+        VMM["VictoriaMetrics MCP server"]
     end
     subgraph Z3["Z3 Agent runtime (model output is untrusted)"]
         AD["Agent adapters, structured outputs, tool requests"]
@@ -99,6 +103,7 @@ flowchart TB
     subgraph Z7["Z7 External services"]
         MP["Model provider"]
         REG["Package registries"]
+        DD["Datadog MCP server"]
     end
     U1 -->|"issues and comments"| GH
     GH -->|"TB1 signed webhook"| API
@@ -115,6 +120,11 @@ flowchart TB
     WF <-->|"TB9 state and events"| STORE
     OP -->|"TB10 approve, reject, pause"| API
     BRK -->|"TB12 real keys"| MP
+    SIDE -->|"TB13 second relay, troubleshooter profile only"| TRB
+    TRB -->|"TB13 upstream credentials"| DD
+    TRB -->|"TB13 token"| VMM
+    TRB -->|"TB9 factory_observer, read only"| STORE
+    TRB -->|"TB8 issues for triage"| GH
     API --> WF
     WF --> GHC
     WF --> SUPV
@@ -139,6 +149,7 @@ flowchart TB
 | TB10 | Humans to dashboard, CLI, GitHub comments | Approvals and commands | Spoofed approvals, CSRF, XSS, self-approval |
 | TB11 | Package registries to builds | Dependency code and metadata | Typosquatting, install scripts, poisoned caches |
 | TB12 | Control plane and broker to model provider | Prompts, completions, API keys | Data disclosure, key theft, cost abuse |
+| TB13 | Troubleshooter MCP gateway to its upstreams (Datadog, VictoriaMetrics, the factory database) and back into the troubleshooter's prompt (ADR 0021) | Tool calls out; log lines, spans, metric labels and database values in; upstream credentials held by the gateway | Injection through observed data, over-reading, a new upstream write tool, credential leakage, a stuck upstream |
 
 ## 3. STRIDE by boundary
 
@@ -158,6 +169,7 @@ Cells list the concrete threat IDs from section 6. A dash means the category doe
 | TB10 humans | T-23 forged approval | T-14 approval bound to an old head | T-31 | T-32 | T-26 | T-23, T-32 session takeover |
 | TB11 registries | T-29 typosquat | T-29, T-30 | - | - | - | T-29 install script |
 | TB12 provider | T-19 stolen key | - | T-31 | T-20 | T-26 | - |
+| TB13 troubleshooter upstreams | T-52 a leaked run token used by another caller | T-49 observed data that carries instructions | T-31 | T-50 over-reading the database, T-52 credentials in a result or an issue | T-53 flooding issues or the plan, T-54 a stuck upstream | T-51 an upstream write tool |
 
 ## 4. Rating scale
 
@@ -272,7 +284,13 @@ Rating follows the matrix in section 4. Residual is the proposed risk after the 
 | T-43 | Injection through the status comment (a marker pasted by a person, text of the issue or of a model carried into the comment) | TB2, TB8 | M | M | Medium | Low |
 | T-44 | Write amplification against GitHub's secondary rate limits (a flood of state changes or of forged jobs makes the factory write on issues without end) | TB8 | M | M | Medium | Low |
 | T-48 | The target repository's own continuous integration runs agent-written code with the repository's secrets before a person has read it | TB8 | M | C | Critical | High |
-| T-49 | A changed project rules file steers every agent | TB3 | M | H | High | Medium |
+| T-49 | A log line, span attribute, metric label or database value carries instructions to the troubleshooter (prompt injection through observed data) | TB13, TB8 | M | M | Medium | Low |
+| T-50 | The troubleshooter reads more of the database than it should | TB9, TB13 | M | H | High | Low |
+| T-51 | An upstream MCP server adds a write tool | TB13 | M | M | Medium | Low |
+| T-52 | A run token or upstream credential leaks through a tool result or the issue | TB13, TB8 | M | H | High | Medium |
+| T-53 | The troubleshooter floods the issue tracker or the plan | TB8, TB12 | M | M | Medium | Low |
+| T-54 | A stuck or slow upstream holds the run | TB13 | H | L | Medium | Low |
+| T-55 | A changed project rules file steers every agent | TB3 | M | H | High | Medium |
 
 ## 7. Threat details
 
@@ -604,8 +622,57 @@ Each entry lists the concrete attacker action, the controls that address it, the
 * Residual (High): the check is new, unreviewed and unverified against the real GitHub. It lowers the likelihood that a repository with an obviously exposed workflow runs above level `L0` without anyone having said so. It does not make the code that a workflow runs trustworthy, and it does not see the settings listed above. A repository capped at `L0` for this reason opens no pull request until its owner changes the workflows or records an acknowledgement. An owner who acknowledges has accepted the exposure for that repository; the factory has not reduced it. A person must still confirm the GitHub behaviour on the target repository before the first live run.
 * Proven by: no test runs a workflow, and none can against the fake GitHub host of the test kit. What is tested is the check: `crates/composition/tests/preflight.rs` (each rule through the preflight over a real PostgreSQL, the acknowledgement, the audit record), `crates/contracts/src/workflows.rs` and `crates/contracts/tests/workflow_properties.rs` (the classifier, and a property test that it never panics), `crates/github/tests/workflow_files.rs` (the adapter reads the files with `contents: read` and fails closed), and `crates/ports/src/githost.rs` (the verdict). The catalog of negative tests has no entry for this threat yet.
 
+### T-49 Injection through observed data reaching the troubleshooter
 
-### T-49 A changed project rules file steers every agent
+* Attack: someone who can make the factory write text into a log line, a span, a metric label or a database column (a webhook with a crafted field that ends in an error message, a GitHub answer quoted in a reason, a query text in `pg_stat_activity`) writes instructions there. The troubleshooter's agent reads it through a gateway tool and obeys: it opens a misleading finding, asks for more data than it needs, or puts what it read into the issue.
+* Mitigations in code now: the troubleshooter's Claude Code runs with `FlagSet::Troubleshooting` (`crates/runtime/src/claude/argv.rs`): `--strict-mcp-config`, an inline `--mcp-config` that names only the factory gateway, `--tools=` with no built-in tool, `--allowedTools` limited to the gateway tools and `--permission-mode=dontAsk`, so it has no `Bash`, `Write`, `Edit`, `Read` or GitHub tool. Every other flag set refuses a gateway and its tools. The agent's manifest and prompt (`agents/troubleshooter`) hold only gateway tools and the output channel, and treat every tool result as untrusted data. The PostgreSQL server returns rows as JSON values, and other sessions' query texts reach it only through the observer functions of migration `2026-11-20-003100_observer_hardening`, with their literals and comments replaced (`crates/mcp_postgres`). The collector overlay keeps only the factory's own JSON lines, and agent sandboxes log nothing (`infra/otel/collector.datadog.yaml`). After the security review of 2026-11-20 ([troubleshooter-security-review.md](../reviews/troubleshooter-security-review.md)): the gateway offers each tool with the description written in `policies/troubleshooting.yaml`, never the upstream's, refuses an input schema over 16 KiB, and withholds a tool whose upstream definition changed since it was pinned (TR-7); an agent call the gateway refused gets no call id, and every recorded call carries the digest of the text its caller received, with `RunRecord::citable` and `RunRecord::evidence` for the check (TR-5); a finding's fingerprint depends only on the category, the component and the probes that tripped, never on the tools the agent cited (TR-8).
+* Mitigations pending: the engine refuses a finding whose observations cite no call the gateway recorded; the issue writer renders a closed template in which every agent-written field is quoted and capped, links are not clickable and mentions are neutralised (`apps/troubleshooter`, not built); a person triages every issue, and nothing becomes factory work by its label.
+* Residual (Low, once the pending parts exist): the agent can still be steered inside its read-only tools and write a wrong or misleading finding. A person reads it before anything happens. The schema of an upstream tool, capped and pinned, is still upstream text that the model reads. Until the issue writer exists, the troubleshooter cannot run at all.
+* Proven by: NT-TRB-05 (built), NT-TRB-10, NT-TRB-11 and NT-TRB-12 (planned).
+
+### T-50 The troubleshooter reads more of the database than it should
+
+* Attack: through free SQL, a curated tool or a role with too many powers, the troubleshooter reads a request text, an issue body, a token digest, a key or a signature; writes or signals; or ends another session. A new sensitive column is added to a table it can read and nobody notices.
+* Mitigations in code now: migration `2026-11-20-002900_observer_role` creates the group `factory_observer` (no login, no `BYPASSRLS`, no `CREATE`) with `SELECT` on classified columns only (`docs/database/observer-columns.txt`), one `FOR SELECT ... USING (true)` policy per readable table, and a refusal to run when a role of that name already has more powers. After the security review of 2026-11-20 ([troubleshooter-security-review.md](../reviews/troubleshooter-security-review.md)), migration `2026-11-20-003100_observer_hardening` takes `pg_read_all_stats` away from the group and makes it `NOINHERIT` (other roles' query texts read `<insufficient privilege>`; the curated tools use three `SECURITY DEFINER` functions of a separate `NOLOGIN` role that return them normalized, TR-3), revokes every advisory lock function from `PUBLIC` so the observer cannot hold the audit chain lock (TR-4), and withholds the GitHub installation and repository ids (TR-11). The login `factory_troubleshooter` (`docs/database/observer-login.sql`) is read-only by default, with a 5 s statement timeout, a 1 s lock timeout and four connections. `crates/mcp_postgres` runs every call in `BEGIN READ ONLY ... ROLLBACK` then `DISCARD ALL`, wraps free SQL as a subquery sent with the extended protocol (one statement, no writes, no DDL), caps rows and bytes and stops reading a result at the byte cap, so a query of gigabytes is never read into the process (TR-2), redacts every value, and refuses any login that is more than a member of `factory_observer`: another membership, a predefined role, ownership, or a column or a write beyond the group's, whatever grants it (an allowlist, TR-1). The login's password is set as a SCRAM verifier computed on the client, never as cleartext SQL (TR-10). A test lists every readable column and fails when one appears that nobody classified.
+* Residual (Low): the troubleshooter reads across tenants by design (the owner chose the factory itself as its scope), so a finding can quote one tenant's identifiers into an issue of the factory's repository. The classification is a list that a person keeps; a column classified wrongly is readable. Roles are cluster wide: while another database of the same cluster runs migration 002900, the group holds `pg_read_all_stats` again for a moment with no inherited privilege, and a login could only use it with an explicit `SET ROLE`.
+* Proven by: NT-TRB-01, NT-TRB-02 and NT-TRB-04 (built; the database tests need PostgreSQL and report BLOCKED without `FACTORY_DB_ADMIN_URL`).
+
+### T-51 An upstream MCP server adds a write tool
+
+* Attack: Datadog says its MCP server is "under significant development", and its core toolset already holds notebook tools that write. A release adds a tool that changes a monitor, mutes an alert or writes a notebook, or VictoriaMetrics enables a debug or export tool, and the agent calls it.
+* Mitigations in code now: `policies/troubleshooting.yaml` asks Datadog for the `core` toolset with every notebook tool omitted, disables `export`, `flags`, the debug tools, `test_rules` and `metric_statistics` on VictoriaMetrics, and lists a closed allowlist of gateway tools that each map to one upstream tool. The loader (`crates/contracts/src/policy/troubleshooting.rs`) refuses a file that loosens the narrowing, maps a tool to one the narrowing removes, or names a tool that the security policy does not give to the `troubleshooter` role alone. `infra/troubleshooter/compose.yaml` starts `mcp-victoriametrics` v1.21.0, pinned by digest, with exactly that disabled list; on 2026-11-20 its `tools/list` offered none of the disabled tools (a manual check, not a test). The Datadog application key that the guide asks for has no `mcp_write` (`docs/guides/troubleshooter.md`), a control that a person sets up and that nothing in the factory checks.
+The gateway lists only allowlisted tools to the agent and refuses a call to any other (`crates/mcp_gateway`), and since TR-7 of the 2026-11-20 review pins a digest of each allowlisted upstream tool's definition when it first lists it and withholds the tool when it changes (`CatalogReport::changed`).
+* Mitigations pending: none in the gateway. The troubleshooter program raises the reported tools as findings.
+* Residual (Low): three independent layers must all fail.
+* Proven by: NT-TRB-07 (built), NT-TRB-08 (planned).
+
+### T-52 A run token or upstream credential leaks through a tool result or the issue
+
+* Attack: the Datadog keys, the VictoriaMetrics token, the database password or the gateway run token appear in a tool result (an upstream echoes a header, an error quotes a connection string), in the run record, in the agent's report and from there in the issue; or the run token outlives its run and another caller uses it.
+* Mitigations in code now: the run token reaches the sandbox only as a read-only file at a fixed path and is read into `FACTORY_MCP_TOKEN` by the launcher; the inline MCP configuration names the variable and never the value, and the value is in no argument and no recorded command (`crates/runtime`, `crates/sandbox`). The sidecar's second relay goes to one fixed address, only for the `troubleshooter` profile, and shares the job's byte quota (`crates/egress`). `crates/mcp_postgres` and `apps/mcp-postgres` read secrets from `0600` files only, never from an argument or the environment, redact every result and error with the factory's redactor, and keep connection settings out of error messages. The upstream containers take their secrets as Docker secret files (`infra/otel/compose.datadog.yaml`, `infra/troubleshooter/compose.yaml`).
+The gateway registers every upstream credential and the run token with the redactor by exact value, refuses to build with one too short to register, and redacts every result before the agent sees it; run tokens expire with the run and carry a call budget (`crates/mcp_gateway`). Since TR-9 of the 2026-11-20 review `apps/mcp-postgres` also refuses to start with a password or token too short for the redactor, and since TR-10 the login's password is set as a SCRAM verifier, so it is not in the SQL text that the server log and `pg_stat_statements` keep.
+* Mitigations pending: the issue writer passes the body through the redactor and the secret scan before it is sent (`apps/troubleshooter`, not built).
+* Residual (Medium): the Datadog keys are long-lived and read everything in the Datadog organization that the service account can see. The VictoriaMetrics token sits in the environment of the server process inside its container. Redaction is not perfect (section 8, item 4).
+* Proven by: NT-TRB-04 and NT-TRB-06 (built), NT-TRB-09, NT-TRB-10 and NT-TRB-12 (planned).
+
+### T-53 The troubleshooter floods the issue tracker or the plan
+
+* Attack: a lasting fault, a flapping probe or injected text makes the troubleshooter run the agent again and again and open an issue each time, spending the plan and burying real issues.
+* Mitigations in code now: `policies/troubleshooting.yaml` sets a 5-minute probe period, a 24-hour sweep, a 6-hour cool-down per probe, one concurrent agent run, eight agent runs a day, three new issues a day, one comment per issue a day and 60 gateway calls per run; the loader refuses values outside fixed caps and an issue label in the `factory` or `design:` namespaces. The `troubleshooter` role has its own day ceiling in `policies/model_routing.yaml`.
+The fingerprint of a finding is computed from code-known inputs only, the category, the component and the probes that tripped, so the agent cannot split one problem into several issues by citing other tools (TR-8 of the 2026-11-20 review).
+* Mitigations pending: the scheduler and the issue writer that enforce those numbers (`apps/troubleshooter`).
+* Residual (Low, once built): at most three issues and eight runs a day, under the role's ceiling.
+* Proven by: NT-TRB-07 (built, the policy only), NT-TRB-13 (planned).
+
+### T-54 A stuck or slow upstream holds the run
+
+* Attack: Datadog, VictoriaMetrics or the database stops answering or answers very slowly. The run waits, holds its one concurrent slot and stops every later investigation, so the troubleshooter goes quiet exactly when something is broken.
+* Mitigations in code now: the PostgreSQL server cancels a statement at 5 s, fails fast and briefly on an unreachable database, stops reading a result at its byte cap (TR-2), and enforces a call budget per run behind the gateway and per window alone, so one run cannot spend the next one's (TR-6). The policy sets a 20 s call deadline and a 900 s run wall clock, which the gateway enforces (`crates/mcp_gateway`). The control plane has its own share of the run record, so refused agent calls cannot leave the probes without a record (TR-5). The VictoriaMetrics server caps one answer at 256 KiB.
+* Mitigations pending: a probe whose source is down is a `source_unavailable` finding raised without the model (`crates/mcp_gateway`, `apps/troubleshooter`, not built).
+* Residual (Low, once built): a stuck upstream costs one run of at most 15 minutes and is itself reported.
+* Proven by: NT-TRB-03 (built, the database part), NT-TRB-14 (planned).
+
+### T-55 A changed project rules file steers every agent
 
 * Attack: since ADR 0026 the factory's agents read the project's `AGENTS.md` from the default branch at each job's base commit and get it as the `project_rules` block of their prompt. A person who can merge into the default branch, or a pull request whose change a reviewer missed, can put instructions there that every later agent reads: to weaken tests, to leave a document out, to write a dependency, to tell the reviewer that something is fine. It is prompt injection that persists across jobs. A hostile text could also try to look like the factory's section so that the factory proposes to keep it.
 * Mitigations: the file reaches agents only from the default branch, and the protection preflight requires that branch to be protected by a reviewed pull request, with the App on no bypass list; the owner's review of what is merged is the control of the content. The factory's own change arrives as a draft pull request a person must review, mark ready and merge; the factory never merges and its credential writes only the branch `factory/project-rules`. In the prompt the text is a quoted data block of class `repo_file`, redacted and limited to 64 KiB, and each prompt says the rules never change the role, the tools, the boundaries or the output contract. No text grants a tool, a path, a host or an approval (`untrusted_content.authority_from_content: never`). No agent can change `AGENTS.md` in a job (`protected_paths`, group `agent_instruction_files`, mode `deny_write`). The gates, the independent reviewers and the person who approves each job's pull request judge the result, whatever the rules said.
@@ -711,6 +778,12 @@ Written on 2026-10-29 by the `s1-security-review-and-tests` work package. An ind
 | T-43 Injection through the status comment | Mitigated in part | none | none | NT-STAT-03, NT-STAT-06 | As T-42. How GitHub renders the cleaned text is unverified (the same as T-18). |
 | T-44 Write amplification against GitHub's secondary rate limits | Mitigated in part | none | none | NT-STAT-04, NT-STAT-05 | As T-42. The numbers of the real limits are unverified. |
 | T-48 The target repository's own continuous integration runs agent-written code with the repository's secrets | Mitigated in part, open | none | none | none in the catalog; the tests named in the entry | Added on 2026-11-11 after an independent review. Since 2026-11-12 the protection preflight reads the workflow files of the default branch and caps a repository with an exposed workflow at `L0`, unless its owner acknowledged exactly those workflows. The check reads files and not settings, and its rules are taken from GitHub's documentation and were not exercised against the real GitHub. No independent review has covered it. |
+| T-49 Injection through observed data reaching the troubleshooter | Mitigated in part | none | none | none | Added on 2026-11-20 (ADR 0021). Built: the troubleshooter's flag set gives the agent gateway tools only (NT-TRB-05, P1); after the 2026-11-20 review the gateway serves the policy's tool descriptions and pins upstream definitions (TR-7), refused agent calls get no citable id and each call carries a result digest (TR-5), and the fingerprint ignores the agent's tool choices (TR-8). Not built in this branch: the evidence check and the issue writer (NT-TRB-10 to NT-TRB-12, planned). |
+| T-50 The troubleshooter reads more of the database than it should | Mitigated in part | none | none | none | Built: the observer role, the column classification test, read-only calls and redaction (NT-TRB-01, NT-TRB-02, NT-TRB-04, P1). After the 2026-11-20 review: the login check is an allowlist (TR-1), reading stops at the byte cap (TR-2), migration 003100 removes `pg_read_all_stats`, advisory locks and the GitHub ids from the observer (TR-3, TR-4, TR-11), and the login's password is a SCRAM verifier (TR-10); the database tests ran against PostgreSQL 18.7. |
+| T-51 An upstream MCP server adds a write tool | Mitigated in part | none | none | none | Built: the policy's narrowing and its loader (NT-TRB-07, P1), the VictoriaMetrics container with the disabled list (checked by hand), the gateway allowlist, and since TR-7 a pinned digest of each upstream tool that withholds a changed one. The Datadog key without `mcp_write` is a person's setup. |
+| T-52 A run token or upstream credential leaks through a tool result or the issue | Mitigated in part | none | none | none | Built: the run token stays out of arguments, the second relay is fixed, the PostgreSQL server and the gateway redact, run tokens expire (NT-TRB-04, NT-TRB-06, P1); too-short secrets are refused (TR-9) and the observer's password is a SCRAM verifier (TR-10). Not built in this branch: issue redaction (NT-TRB-12, planned). |
+| T-53 The troubleshooter floods the issue tracker or the plan | Not built | none | none | none | The caps are in the policy, whose loader refuses loose values (NT-TRB-07), and the fingerprint is computed from code-known inputs only (TR-8). The scheduler and issue writer that enforce the caps are not in this branch (NT-TRB-13, planned). |
+| T-54 A stuck or slow upstream holds the run | Mitigated in part | none | none | none | Built: the PostgreSQL server's timeouts, its byte cap while reading (TR-2) and its budget per run (TR-6) (NT-TRB-03, P1); the gateway's deadline and wall clock, and the control plane's own share of the record (TR-5). Not built in this branch: `source_unavailable` findings (NT-TRB-14, planned). |
 
 ### 11.3 Findings of the reviews
 
@@ -749,6 +822,7 @@ The audit coverage and the owners of the fourteen event types are in the matrix 
 | F-7 the reviewer summary is stored unredacted (T-16) | medium | Closed. The review stage redacts the reviewer reply before it is stored; the composed NT-SEC-01 passes. |
 | RR-14 of the isolation re-review: a process started before the tool can write into the output channel (T-37) | high | Limited by the broker's attestation, not closed. The pipe race itself needs Docker to show and is BLOCKED here. The private output channel that the first review proposed is the fix. Not accepted. |
 | T-48 the target repository's workflows run agent-written code with its secrets before a person reads it | high | Open, with one control. The protection preflight caps a repository whose workflows are exposed to `factory/*` branches, as far as the workflow files of the default branch show it. It cannot see organization secrets policy, environment protection or the token's default permissions, and its rules are unverified against the real GitHub. An owner can acknowledge an exposure and proceed. Delivery from a fork is a proposal. Not accepted. |
+| T-50 and T-52 the troubleshooter's database reach and its upstream credentials | high | Open. The gateway, the issue writer and `apps/troubleshooter` are not built, so the troubleshooter cannot run and nothing is exposed yet. The database controls are built and tested on PostgreSQL. A person must create the Datadog keys without `mcp_write`, the `factory_troubleshooter` login and the token files before a live run (`docs/guides/troubleshooter.md`). Not accepted. |
 | AUT-5 a new `build.rs` in a repository's own crate | high at the review | Fixed: `aut_5_a_new_build_script_is_blocked_until_a_security_review` passes in the review of 2026-10-29, as does the gate test in the validation target. Listed for completeness. |
 
 No item in this document is accepted by a person. The Residual column of section 6 is a proposal. Risk acceptance and waivers belong to the people named in the allowlist with the `org_admin` designation, and the allowlist has no members yet (Q10). Until a person is named and writes the acceptance, every residual stays a proposal and every open item stays open.

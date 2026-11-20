@@ -121,7 +121,7 @@ pub enum Decision {
         warnings_decided: bool,
         /// The policy engine's proof for this approval, when the caller has one. The engine
         /// accepts an approval by the requester of the job only with a proof that carries the
-        /// solo stamp and is the acting person's (ADR 0021), and then checks the solo fact again.
+        /// solo stamp and is the acting person's (ADR 0022), and then checks the solo fact again.
         /// `None` keeps the rule that the approver is not the requester.
         proof: Option<AuthorizedApproval>,
     },
@@ -160,7 +160,7 @@ pub enum Decision {
 }
 
 /// What a decision taken alone in the solo mode carries for the engine's check of the wait and
-/// the phrase (ADR 0021).
+/// the phrase (ADR 0022).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoloRequest {
     /// When the person asked: the time the database wrote the signed request. The wait is

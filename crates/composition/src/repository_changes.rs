@@ -358,7 +358,7 @@ pub async fn single_maintainer_is_possible(
 /// How many active human principals of the tenant are among `holders` (numeric GitHub ids). A
 /// holder who has no principal, or whose principal is switched off or is not a person, is not
 /// counted. The one counter of people that both the registration of a `single_maintainer`
-/// repository (finding RH-6) and the solo mode (ADR 0021) use, so the two cannot count apart.
+/// repository (finding RH-6) and the solo mode (ADR 0022) use, so the two cannot count apart.
 ///
 /// # Errors
 /// The store's error, when a principal cannot be read. The caller refuses or waits; it never allows.

@@ -245,6 +245,25 @@ impl StoreDeliverySources {
     }
 }
 
+/// The branch a job worked from, as its repository map records it: the integration branch of the
+/// project's gitflow. A map written before the field existed names none, and the job worked from
+/// `default`.
+///
+/// # Errors
+/// [`SeamError::Unavailable`] when the map is not JSON, or names the branch with something that is
+/// not text: the stored map is the factory's own, so either means it cannot be trusted.
+pub fn base_branch_of(map: &[u8], default: &str) -> Result<String, SeamError> {
+    let map =
+        serde_json::from_slice::<serde_json::Value>(map).map_err(|_| SeamError::Unavailable)?;
+    match map.get("base_branch") {
+        None => Ok(default.to_owned()),
+        Some(recorded) => recorded
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(SeamError::Unavailable),
+    }
+}
+
 /// The name of the factory branch of a job.
 ///
 /// # Errors
@@ -298,10 +317,23 @@ impl DeliverySources for StoreDeliverySources {
                 .and_then(|value| Design::read(&value).ok())
                 .ok_or(SeamError::Unavailable)?;
             let risk = either(job_facts, measure(&design, &self.policy));
+            // The branch the job worked from: the repository map records it (the integration branch
+            // of the project's gitflow); a map written before it did names none, and the job worked
+            // from the default branch.
+            let mut base = repository.default_branch.clone();
+            if let Some(intelligence) = runs.iter().rfind(|candidate| {
+                candidate.value.kind == StageKind::RepositoryIntelligence
+                    && candidate.value.status == StageRunStatus::Passed
+            }) {
+                let outputs = Reader::outputs(&mut *tx, intelligence.value.id).await?;
+                if let Some(hash) = outputs.get("repository-map") {
+                    let bytes = self.reader.bytes(&mut *tx, run.tenant, hash).await?;
+                    base = base_branch_of(&bytes, &base)?;
+                }
+            }
             Ok(DeliveryTarget {
                 repo: RepoRef::parse(&repository.full_name).map_err(|_| SeamError::NotFound)?,
-                base: BranchName::new(&repository.default_branch)
-                    .map_err(|_| SeamError::NotFound)?,
+                base: BranchName::new(&base).map_err(|_| SeamError::NotFound)?,
                 head: job_branch(run.job)?,
                 issue,
                 risk,
@@ -374,5 +406,27 @@ impl DeliverySources for StoreDeliverySources {
             factory_ports::workspace::WorkspaceError::UnknownCommit => SeamError::NotFound,
             _ => SeamError::Unavailable,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SeamError, base_branch_of};
+
+    #[test]
+    fn the_base_branch_is_the_one_the_map_records_or_the_default() {
+        assert_eq!(
+            base_branch_of(br#"{"base_branch":"develop"}"#, "main").as_deref(),
+            Ok("develop")
+        );
+        assert_eq!(
+            base_branch_of(br#"{"commit_sha":"a"}"#, "main").as_deref(),
+            Ok("main")
+        );
+        assert_eq!(
+            base_branch_of(br#"{"base_branch":7}"#, "main"),
+            Err(SeamError::Unavailable)
+        );
+        assert_eq!(base_branch_of(b"{", "main"), Err(SeamError::Unavailable));
     }
 }

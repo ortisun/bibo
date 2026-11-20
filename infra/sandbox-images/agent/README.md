@@ -69,7 +69,7 @@ These come from the spike (`docs/spikes/agent-runtime.md`) and are not enforced 
 - Mount a **writable, `noexec` tmpfs at `/home/agent`** and set `HOME`. Codex fails with "Read-only file system" without one. Do not bind-mount anything below `~/.codex`; the parent directories would belong to root and Codex fails with "Permission denied".
 - Use `--setting-sources user` and `--strict-mcp-config` for Claude Code, and the Codex switches of spike section 6.1. The image holds no configuration that could replace them.
 - Deliver the job token with `apiKeyHelper` or `auth.command`, never as an environment variable.
-- Point cargo outside the workspace: `CARGO_TARGET_DIR=/out/target`, `CARGO_HOME` in the run's home, `CARGO_NET_OFFLINE=true`, `TMPDIR=/out`. Without them `cargo test` writes `target/` in `/workspace`, where the ingestion audit refuses every file, and `/tmp` and the home are `noexec`, so test programs and `rustdoc` could not run from there (real run 32 of scenario E1, ADR 0023). The adapters set them from the closed list of `crates/runtime/src/command.rs`, after `env -i`.
+- Point cargo outside the workspace: `CARGO_TARGET_DIR=/out/target`, `CARGO_HOME` in the run's home, `CARGO_NET_OFFLINE=true`, `TMPDIR=/out`. Without them `cargo test` writes `target/` in `/workspace`, where the ingestion audit refuses every file, and `/tmp` and the home are `noexec`, so test programs and `rustdoc` could not run from there (real run 32 of scenario E1, ADR 0024). The adapters set them from the closed list of `crates/runtime/src/command.rs`, after `env -i`.
 - Do not set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. It needs bubblewrap, which this image does not hold, and the tool stops.
 
 ## Build and test

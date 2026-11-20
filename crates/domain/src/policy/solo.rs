@@ -1,4 +1,4 @@
-//! The solo mode (ADR 0021): when the person who asked for a job may approve it alone.
+//! The solo mode (ADR 0022): when the person who asked for a job may approve it alone.
 //!
 //! "Nobody approves their own request" holds everywhere except where one person is the only one
 //! who can approve. The exception is a fact, the **solo fact**, and [`AuthorityPolicy::solo_fact`]

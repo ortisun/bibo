@@ -1882,7 +1882,7 @@ async fn a_retried_decision_on_a_dependency_is_one_record_and_a_changed_one_is_a
     env.stop().await;
 }
 
-// ---- the solo mode (ADR 0021): the immediate refusal -----------------------------------------
+// ---- the solo mode (ADR 0022): the immediate refusal -----------------------------------------
 
 /// A stage run of `kind` for the job, written as the worker would.
 async fn stage_run_of(env: &Env, tenant: &Tenant, job: &str, kind: StageKind) -> StageRunId {

@@ -19,7 +19,7 @@ use factory_ports::githost::{GitHostError, GitScope};
 use serde_json::Value;
 
 use crate::core::{HttpCore, error_for};
-use crate::token::{TokenClass, TokenMinter, api_headers};
+use crate::token::{Caller, TokenClass, TokenMinter, api_headers};
 use crate::wire::{ApiBase, Method, WireRequest, WireResponse};
 
 /// How listings are read.
@@ -130,16 +130,29 @@ impl Client {
         body: Option<&Value>,
         conditional: bool,
     ) -> Result<Reply, GitHostError> {
+        self.call_as(Caller::Job(scope, class), method, target, body, conditional)
+            .await
+    }
+
+    /// One call for a job or for a troubleshooting run, with the caller's credential.
+    pub(crate) async fn call_as(
+        &self,
+        caller: Caller<'_>,
+        method: Method,
+        target: &str,
+        body: Option<&Value>,
+        conditional: bool,
+    ) -> Result<Reply, GitHostError> {
         // The one `PUT` the adapter has writes a file of the contents API and nothing else: never
-        // a merge. Refused before a token is asked for.
+        // a merge. Refused before a token is asked for, whoever the caller is.
         if method == Method::PutContents && !crate::wire::is_contents_path(target) {
             return Err(GitHostError::Forbidden);
         }
         let payload = body.map(|v| v.to_string().into_bytes()).unwrap_or_default();
-        let key = (scope.tenant, target.to_owned());
+        let key = (caller.tenant(), target.to_owned());
         let mut retried = false;
         loop {
-            let bearer = self.minter.token_for(scope, class).await?;
+            let bearer = self.minter.token_as(caller).await?;
             let mut headers = api_headers(bearer.expose(), !payload.is_empty());
             let cached = if conditional && method == Method::Get {
                 self.cached(&key)
@@ -160,7 +173,7 @@ impl Client {
                 .await?;
             if response.status == 401 && !retried {
                 retried = true;
-                self.minter.discard(scope.job, &bearer).await;
+                self.minter.discard(caller, &bearer).await;
                 continue;
             }
             return self.reply_from(&key, response, cached, conditional);
@@ -270,12 +283,23 @@ impl Client {
         target: &str,
         max_pages: u32,
     ) -> Result<Pages, GitHostError> {
+        self.pages_as(Caller::Job(scope, class), target, max_pages)
+            .await
+    }
+
+    /// Reads a listing page by page, up to `max_pages`, as a job or as a troubleshooting run.
+    pub(crate) async fn pages_as(
+        &self,
+        caller: Caller<'_>,
+        target: &str,
+        max_pages: u32,
+    ) -> Result<Pages, GitHostError> {
         let separator = if target.contains('?') { '&' } else { '?' };
         let mut next = format!("{target}{separator}per_page={}", self.pages.per_page);
         let mut items = Vec::new();
         for _ in 0..max_pages {
             let reply = self
-                .call(scope, class, Method::Get, &next, None, false)
+                .call_as(caller, Method::Get, &next, None, false)
                 .await?;
             let link = reply.header("link").and_then(next_link).map(str::to_owned);
             match reply.json {

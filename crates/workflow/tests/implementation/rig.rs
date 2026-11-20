@@ -748,6 +748,15 @@ impl WorkspaceProvider for SpyWorkspaces {
             artifacts: self.artifacts.clone(),
         }))
     }
+    async fn list_branches(
+        &self,
+        job: JobId,
+        target: &FetchTarget,
+        prefix: &str,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Vec<BranchName>, WorkspaceError> {
+        self.inner.list_branches(job, target, prefix, cancel).await
+    }
     async fn dispose_job(&self, job: JobId) -> Result<(), WorkspaceError> {
         self.inner.dispose_job(job).await
     }
@@ -778,6 +787,14 @@ impl Workspace for SpyWorkspace {
         req: CommitRequest,
     ) -> Result<CommitSha, WorkspaceError> {
         note(&self.log, format!("workspace.commit:{}", req.author_name));
+        // The first line of the message, under its own prefix so the commit events stay as they are.
+        note(
+            &self.log,
+            format!(
+                "commit.header:{}",
+                req.message.lines().next().unwrap_or_default()
+            ),
+        );
         self.inner.commit(change, req).await
     }
     async fn dispose(self: Box<Self>) -> Result<(), WorkspaceError> {

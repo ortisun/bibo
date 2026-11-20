@@ -112,6 +112,15 @@ pub fn all() -> Vec<SuiteEntry> {
             waivers: super::issue_status::WAIVERS,
         },
         SuiteEntry {
+            suite: "triage issue writer",
+            checks: super::triage_issue::triage_issue_checks()
+                .iter()
+                .map(|c| c.name)
+                .collect(),
+            defects: defects(crate::triage_issue::TRIAGE_ISSUE_DEFECTS),
+            waivers: super::triage_issue::WAIVERS,
+        },
+        SuiteEntry {
             suite: "project rules host",
             checks: super::project_rules::project_rules_checks()
                 .iter()

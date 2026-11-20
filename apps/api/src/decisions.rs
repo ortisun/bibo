@@ -123,7 +123,7 @@ pub(crate) struct DecisionBody {
     pub(crate) warning: Option<u32>,
     #[serde(default)]
     pub(crate) answer: Option<String>,
-    /// The confirmation phrase of the solo mode (ADR 0021), as the person typed it. Taken by
+    /// The confirmation phrase of the solo mode (ADR 0022), as the person typed it. Taken by
     /// `approve`, `approve-dependency`, `approve-build-code`, `approve-project-build-code` and
     /// `ack-translation-warning`; the record keeps only its word.
     #[serde(default)]
@@ -355,7 +355,7 @@ pub async fn decide(
         found_job = Some(job);
         found_repository = Some(repository);
     }
-    // The solo mode (ADR 0021): the requester's own approval is refused at once, with the reason,
+    // The solo mode (ADR 0022): the requester's own approval is refused at once, with the reason,
     // when the mode does not apply or the phrase is missing.
     let mut explained = None;
     if let (true, Verb::Approve, Some(job), Some(repository), Some(run)) = (
@@ -629,7 +629,7 @@ async fn decide_dependency(
         }
         found_job = Some((job, repository));
     }
-    // The solo mode (ADR 0021): the requester's own decision is refused at once, with the reason,
+    // The solo mode (ADR 0022): the requester's own decision is refused at once, with the reason,
     // when the mode does not apply or the phrase is missing. Build code needs a security approver.
     let mut explained = None;
     if let (true, Some((job, repository))) = (allowed, found_job.as_ref()) {

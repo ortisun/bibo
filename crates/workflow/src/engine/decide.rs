@@ -221,7 +221,7 @@ impl Engine {
             } => {
                 let head = tx.ledger_head(cx.job).await?;
                 // Nobody approves their own request, unless the solo mode lets the one approver
-                // do it (ADR 0021): the proof carries the solo stamp, is this person's and for
+                // do it (ADR 0022): the proof carries the solo stamp, is this person's and for
                 // this approval, and the engine finds the solo fact again now.
                 let distinct_or_solo = !is_requester
                     || self

@@ -124,7 +124,7 @@ fn an_attempt_under_the_stage_run_span_of_another_run_fails() {
 fn two_approvals_are_read_with_the_last_one_as_the_approval_of_the_pull_request() {
     // A job has two human gates. The honest run has one approval record; add an earlier one by
     // the same approver and A9 still passes, then make that earlier one the requester's: with the
-    // solo mode on (ADR 0021) that is the owner approving their own specification, and with it off
+    // solo mode on (ADR 0022) that is the owner approving their own specification, and with it off
     // A9 refuses it.
     let env = env();
     let mut evidence = honest(&env, Options::e1_production());

@@ -471,7 +471,7 @@ async fn a_repeat_of_the_command_is_applied_once() {
     );
 }
 
-// ---- The solo mode (ADR 0021) ---------------------------------------------------------------
+// ---- The solo mode (ADR 0022) ---------------------------------------------------------------
 
 #[tokio::test]
 async fn the_solo_security_approver_decides_on_the_build_code_after_thirty_minutes() {

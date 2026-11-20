@@ -37,6 +37,20 @@ pub const SLICE_1_AGENTS: [&str; 10] = [
     "documentation-reviewer",
 ];
 
+/// The operations agents, by directory name: agents that run outside the pipeline, in no job and
+/// no stage, started by a program of their own (ADR 0021). They follow every rule of a pipeline
+/// agent that does not depend on a stage, and the rules in `checks` that are written for them.
+pub const OPERATIONS_AGENTS: [&str; 1] = ["troubleshooter"];
+
+/// Every agent the repository defines: the pipeline agents first, then the operations agents.
+pub fn all_agent_names() -> Vec<&'static str> {
+    SLICE_1_AGENTS
+        .iter()
+        .chain(OPERATIONS_AGENTS.iter())
+        .copied()
+        .collect()
+}
+
 pub fn agents_dir() -> PathBuf {
     repo_root().join("agents")
 }
@@ -133,7 +147,7 @@ pub fn profile_value(file: &ProfileFile) -> Value {
 }
 
 /// The output schema each agent returns, by agent directory name. The manifests must agree.
-pub const OUTPUT_SCHEMA_OF: [(&str, &str); 10] = [
+pub const OUTPUT_SCHEMA_OF: [(&str, &str); 11] = [
     ("intake-classifier", "intake-classification"),
     ("specification-writer", "specification-report"),
     ("specification-reviewer", "review-findings"),
@@ -144,6 +158,7 @@ pub const OUTPUT_SCHEMA_OF: [(&str, &str); 10] = [
     ("code-reviewer", "review-findings"),
     ("documentation-writer", "documentation-report"),
     ("documentation-reviewer", "review-findings"),
+    ("troubleshooter", "health-findings"),
 ];
 
 /// The factory schemas an agent's answer is checked against besides its own output schema, by

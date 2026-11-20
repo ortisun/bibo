@@ -188,7 +188,7 @@ fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
             "/git/refs",
             "pulls/{number}/merge",
         ] {
-            // The rules pull request (ports v1.3, ADR 0026) creates or moves one reference, the
+            // The rules pull request (ports v1.4, ADR 0026) creates or moves one reference, the
             // branch `factory/project-rules`, in `project_rules.rs`. Every reference path there is
             // built from the constant `RULES_BRANCH`; the test below holds it to that.
             if needle == "/git/refs"

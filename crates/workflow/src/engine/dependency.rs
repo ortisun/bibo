@@ -82,7 +82,7 @@ impl Engine {
     /// duties, RR-24: the requester is known here and nowhere else), and holds *now* the role of
     /// the designation the proof names, which must be one of `wanted`. Returns that role.
     ///
-    /// The requester is refused unless the solo mode lets them decide alone (ADR 0021): the proof
+    /// The requester is refused unless the solo mode lets them decide alone (ADR 0022): the proof
     /// carries the solo stamp, the engine finds the solo fact again in its own transaction, the
     /// confirmation word is the one `solo` expects and the minimum wait since the stage run asked
     /// has passed ([`EngineError::SoloRefused`] for the last two).

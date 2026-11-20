@@ -1,4 +1,4 @@
-# 0022: A rework count for each phase: specification, design, code and documentation
+# 0023: A rework count for each phase: specification, design, code and documentation
 
 - Status: **Proposed, pending the owner**. Built on the branch `fix/agent-report-channel` from real run 29 of scenario E1. No independent review has covered it.
 - Date: 2026-11-20

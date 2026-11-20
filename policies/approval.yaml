@@ -174,7 +174,7 @@ separation_of_duties:
   security_approver_must_differ_from_requester: true
 
 # -----------------------------------------------------------------------------
-# 2b. Solo mode (ADR 0021)
+# 2b. Solo mode (ADR 0022)
 # -----------------------------------------------------------------------------
 # The requester of a job may take an approval action on it alone when all of these hold at the
 # moment of the decision, and the engine checks them again when it commits:

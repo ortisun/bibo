@@ -11,7 +11,7 @@
 # parser rejects an unknown key with an error, so a typo here fails loudly. When the pin changes,
 # re-read the output of `cargo deny init` and re-run this file before merging.
 #
-# RULE FOR EXCEPTIONS. This file has none today. A future exception (an ignored advisory, a skipped
+# RULE FOR EXCEPTIONS. This file has one, RUSTSEC-2026-0543 in [advisories] ignore. An exception (an ignored advisory, a skipped
 # duplicate, a license exception) must carry a `reason` that names the crate and why the risk is
 # accepted, plus an expiry note in the form "review by YYYY-MM-DD", and it needs a human decision
 # (policies/approval.yaml, always_human). An exception without a date is a defect in review.
@@ -56,8 +56,11 @@ unsound = "all"
 # A yanked version is one its author withdrew, usually for a serious defect. Deny it.
 yanked = "deny"
 
-# Empty on purpose: no advisory is ignored. See the rule for exceptions at the top.
-ignore = []
+# One dated exception, decided by the owner on 2026-11-20 (ADR 0021). See the rule for exceptions at the
+# top. `.cargo/audit.toml` carries the same id so that the `rust-audit` step agrees with this one.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono 0.4 is unmaintained, not vulnerable. It is a mandatory dependency of rmcp 3.11.0 and of schemars 1.2 as rmcp enables it, and rmcp is the MCP SDK the owner approved for the troubleshooter (ADR 0021). No factory code calls chrono. Review by 2027-02-20, or as soon as an rmcp release drops chrono, whichever comes first." },
+]
 
 # --- Licenses -----------------------------------------------------------------------------------
 [licenses]

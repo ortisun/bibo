@@ -79,7 +79,7 @@ string_enum! {
         EscalationRequired = "G_ESCALATION_REQUIRED",
         /// The gate decision is PASS and is persisted, every acceptance criterion of the stage contract has a ledger entry, and every mandatory gate report is PASSED or NOT_APPLICABLE with a recorded reason. No gate report is BLOCKED.
         GatePassEvidenced = "G_GATE_PASS_EVIDENCED",
-        /// The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, the rework rounds used on the count of the target stage are below its cap of two, the failing set differs from the previous round, and budget remains. The specification (SPECIFICATION), the design (ARCHITECTURE and TASK_PLANNING), the code (IMPLEMENTATION) and the documentation (DOCUMENTING) each have their own count, so rounds on one never use the rounds of another (ADR 0022). After the second round on a count a human decides.
+        /// The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, the rework rounds used on the count of the target stage are below its cap of two, the failing set differs from the previous round, and budget remains. The specification (SPECIFICATION), the design (ARCHITECTURE and TASK_PLANNING), the code (IMPLEMENTATION) and the documentation (DOCUMENTING) each have their own count, so rounds on one never use the rounds of another (ADR 0023). After the second round on a count a human decides.
         ReworkAllowed = "G_REWORK_ALLOWED",
         /// The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate, or a finding that justifies the verdict has a defect class that only a person can decide (specification, or policy; see defect_routing).
         NeedsHumanVerdict = "G_NEEDS_HUMAN_VERDICT",

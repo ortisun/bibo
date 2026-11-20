@@ -107,7 +107,7 @@ impl Engine {
     /// `occurred_at` of the newest `stage_run.waiting_for_human` or `stage_run.blocked` event of
     /// the run. `Ok(None)` when the run is in another state, when `status` is neither of the two,
     /// or when the event is not readable (old events archived): a caller that measures a wait from
-    /// here then refuses (ADR 0021).
+    /// here then refuses (ADR 0022).
     ///
     /// # Errors
     /// [`EngineError::NotFound`] when the job does not exist for the tenant, and the store errors.

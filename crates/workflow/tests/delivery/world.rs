@@ -242,6 +242,8 @@ pub struct Scenario {
     /// The kind of independence the code review and the documentation review recorded, as the
     /// router said it (`same-family-other-model`, `other-provider`). `None` stores no record.
     pub review_independence: Option<&'static str>,
+    /// `.factory/repository.json` at the base: the project asks for Conventional Commits.
+    pub git_settings: Option<&'static str>,
 }
 
 /// A review verdict that is valid and is not a pass: the example of a review that asks for
@@ -286,6 +288,7 @@ impl Default for Scenario {
             documentation_outcome: "PASSED",
             documentation_review: ReviewBinding::Reports,
             review_independence: None,
+            git_settings: None,
         }
     }
 }
@@ -495,14 +498,14 @@ impl World {
     /// Puts the base commit on the remote and fetches it into the job's store, then makes one
     /// commit on top of it through a workspace, as the implementation stage does.
     pub async fn commits(&self) -> (CommitSha, CommitSha) {
-        self.remote.commit_on_branch(
-            &self.repo,
-            &self.base,
-            &[
-                ("README.md", "# Word count\n"),
-                ("src/lib.rs", "pub fn one() {}\n"),
-            ],
-        );
+        let mut files = vec![
+            ("README.md", "# Word count\n"),
+            ("src/lib.rs", "pub fn one() {}\n"),
+        ];
+        if let Some(settings) = self.scenario.git_settings {
+            files.push((".factory/repository.json", settings));
+        }
+        self.remote.commit_on_branch(&self.repo, &self.base, &files);
         let fetched = self
             .workspaces
             .fetch(

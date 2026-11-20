@@ -219,7 +219,7 @@ fn a_rework_or_repair_cap_above_two_does_not_build() {
 
 #[test]
 fn a_policy_without_a_rework_count_of_its_own_does_not_load() {
-    // Fail closed: a file written before ADR 0022 has no specification or design count, and it
+    // Fail closed: a file written before ADR 0023 has no specification or design count, and it
     // is refused rather than read as some default.
     for key in [
         "max_specification_rework_iterations",

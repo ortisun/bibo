@@ -1,4 +1,4 @@
-//! The facts of the solo mode about a repository, read from the store and the allowlist (ADR 0021).
+//! The facts of the solo mode about a repository, read from the store and the allowlist (ADR 0022).
 //!
 //! The policy turns two facts into the solo fact (`AuthorityPolicy::solo_fact`): whether the
 //! repository is marked `single_maintainer`, and how many active people may approve on it. This

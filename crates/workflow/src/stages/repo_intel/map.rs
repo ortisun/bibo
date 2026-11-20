@@ -133,6 +133,8 @@ const MAP: Shape = Shape::Object(&[
     ("excluded_paths", Shape::List(&EXCLUDED)),
     ("project_manifest", Shape::Optional(&MANIFEST)),
     ("project_rules", Shape::Optional(&RULES)),
+    ("base_branch", Shape::Optional(&Shape::Text)),
+    ("git_settings", Shape::Optional(&MANIFEST)),
     ("baseline", BASELINE),
     ("counts", COUNTS),
 ]);

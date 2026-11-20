@@ -15,6 +15,10 @@
 //! protection preflight can read classic branch protection. Only
 //! [`PermissionSet::protection_reader`] asks for it: no stage token, and nothing a sandbox sees,
 //! carries it.
+//!
+//! A troubleshooting run is not a job. Its one credential, [`PermissionSet::troubleshoot_issue`]
+//! (`issues: write`, `metadata: read`), is minted for the run and the configured issue repository
+//! only (ports v1.3, ADR 0021). No stage token changes because of it.
 
 use std::collections::BTreeMap;
 
@@ -128,7 +132,7 @@ impl PermissionSet {
         Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
     }
 
-    /// The credential of the project rules host (ports v1.3, ADR 0026): `contents: write` to write
+    /// The credential of the project rules host (ports v1.4, ADR 0026): `contents: write` to write
     /// the rules files on the branch `factory/project-rules`, `pull_requests: write` to open or
     /// update the draft pull request, and the `metadata: read` that every installation token
     /// carries, for one repository. It is minted for this purpose and independent of any stage:
@@ -141,6 +145,18 @@ impl PermissionSet {
             ("contents", Level::Write),
             ("pull_requests", Level::Write),
         ])
+    }
+
+    /// The credential of a troubleshooting run (ports v1.3, ADR 0021 Decision 7): `issues: write`
+    /// and `metadata: read`, for the one configured issue repository, and nothing else. It opens
+    /// the triage issues and comments on them. It is minted for a run, never for a job: no stage
+    /// can ask for it (`TokenClass::TroubleshootIssue` is refused for a job's scope), and the run's
+    /// tokens are kept and ended apart from every job's. Equal in content to
+    /// [`issue_status`](Self::issue_status) today; a separate name, so that the purpose is stated
+    /// and a change to one cannot widen the other.
+    #[must_use]
+    pub fn troubleshoot_issue() -> Self {
+        Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
     }
 
     /// True when the set holds the permission `name` at the level `level` or above.
@@ -483,6 +499,7 @@ mod tests {
         for set in [
             PermissionSet::comment(),
             PermissionSet::issue_status(),
+            PermissionSet::troubleshoot_issue(),
             PermissionSet::fetch(),
             PermissionSet::push(),
         ] {
@@ -505,6 +522,8 @@ mod tests {
             PermissionSet::fetch(),
             PermissionSet::push(),
             PermissionSet::protection_reader(),
+            PermissionSet::issue_status(),
+            PermissionSet::troubleshoot_issue(),
         ] {
             for (name, level) in set.entries() {
                 assert!(
@@ -523,6 +542,32 @@ mod tests {
                     "{name}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_troubleshoot_issue_set_is_issues_write_and_metadata_read_and_no_stage_holds_it() {
+        let set = PermissionSet::troubleshoot_issue();
+        assert_eq!(
+            set.entries(),
+            [("issues", Level::Write), ("metadata", Level::Read)]
+        );
+        assert!(!set.holds("contents", Level::Read));
+        assert!(!set.holds("pull_requests", Level::Read));
+        assert!(!set.holds("checks", Level::Read));
+        // A grant wider than the class is not that class.
+        assert!(set.contains_all_of(&map(&[("issues", "write"), ("metadata", "read")])));
+        assert!(!set.contains_all_of(&map(&[("contents", "read")])));
+        assert!(!set.contains_all_of(&map(&[("issues", "admin")])));
+        // Adding it changed no stage's set: each stage keeps the class it had.
+        for stage in StageKind::ALL.iter().copied() {
+            let expected = match stage {
+                StageKind::Intake => PermissionSet::issue_reader(),
+                StageKind::Delivery => PermissionSet::delivery_stage(),
+                StageKind::Approval => PermissionSet::approval_stage(),
+                _ => PermissionSet::read_stage(),
+            };
+            assert_eq!(PermissionSet::for_stage(stage), expected, "{stage:?}");
         }
     }
 

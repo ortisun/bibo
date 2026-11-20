@@ -543,7 +543,7 @@ fn table() -> Vec<(&'static str, Rule)> {
             "separation_of_duties.security_approver_must_differ_from_requester",
             on(),
         ),
-        // The solo mode (ADR 0021): a project may switch it off and lengthen a wait, never switch
+        // The solo mode (ADR 0022): a project may switch it off and lengthen a wait, never switch
         // it on or shorten a wait. The template must stay equal.
         ("solo_mode.enabled", off()),
         ("solo_mode.minimum_wait_minutes.*", AtLeast),

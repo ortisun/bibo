@@ -4,7 +4,7 @@
 - Date: 2026-10-27, revised 2026-10-29
 - Author: software_architect
 - Decisions behind this document: [ADR index](../adr/README.md)
-- Companion documents: [state machines](state-machine.md), [slice plan](slice-plan.md), [the project's rules for agents](project-rules.md), [capability packs](capability-packs.md) (proposed), [the project knowledge base](project-knowledge-base.md) (proposed), [process metrics and the improvement loop](process-metrics-and-improvement.md) (proposed), [ports v1.1](ports-v1.1.md), [ports v1.2](ports-v1.2.md), [ports v1.3](ports-v1.3.md), [contract schemas](../../schemas/README.md). The detailed threat model is written by the security specialist under `docs/security/` and is not duplicated here.
+- Companion documents: [state machines](state-machine.md), [slice plan](slice-plan.md), [the project's rules for agents](project-rules.md), [capability packs](capability-packs.md) (proposed), [the project knowledge base](project-knowledge-base.md) (proposed), [process metrics and the improvement loop](process-metrics-and-improvement.md) (proposed), [ports v1.1](ports-v1.1.md), [ports v1.2](ports-v1.2.md), [ports v1.4](ports-v1.4.md), [contract schemas](../../schemas/README.md). The detailed threat model is written by the security specialist under `docs/security/` and is not duplicated here.
 
 Diagrams are Mermaid, kept as text so they change in the same pull request as the code. Every diagram in this file is parsed by Mermaid's own parser in the check described at the end.
 
@@ -135,7 +135,7 @@ flowchart TB
   classDef test fill:#f3f3f3,stroke:#777,color:#222,stroke-dasharray: 4 3;
   classDef root fill:#f5e9f7,stroke:#7a2a8a,color:#2d0f33;
   subgraph roots["Ring 3: composition roots"]
-    apps["binaries: api, worker, cli, egress-sidecar"]
+    apps["binaries: api, worker, cli, egress-sidecar, mcp-postgres, troubleshooter"]
     composition["composition (library)"]
   end
   subgraph application["Ring 2: application"]
@@ -150,6 +150,8 @@ flowchart TB
     contracts
     egress
     observability
+    mcp_postgres
+    mcp_gateway
   end
   subgraph inner["Rings 0 and 1: pure core"]
     ports
@@ -180,6 +182,8 @@ flowchart TB
   egress --> domain
   egress --> ports
   observability --> domain
+  mcp_postgres --> domain
+  mcp_gateway --> domain
   testkit --> domain
   testkit --> ports
   workflow -. dev only .-> testkit
@@ -201,6 +205,8 @@ flowchart TB
   class contracts adapter;
   class egress adapter;
   class observability adapter;
+  class mcp_postgres adapter;
+  class mcp_gateway adapter;
   class testkit test;
   class apps root;
   class composition root;
@@ -222,11 +228,15 @@ flowchart TB
 | `egress` | `factory-egress` | 2 | adapter | domain, ports | testkit | 1 | The model broker and the egress relay. The broker holds the real provider keys, issues and revokes per-job tokens, forwards only allowed API paths, and meters usage against the job ceiling. The relay is the per-job sidecar: exact-host allowlist, rejection of private and metadata address ranges after resolution, pinned connections and a byte quota. Implements ModelBroker. |
 | `observability` | `factory-observability` | 2 | adapter | domain | none | 0 | Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming. |
 | `composition` | `factory-composition` | 3 | composition | domain, ports, workflow, spec_adapter, storage, runtime, sandbox, github, contracts, egress, observability | testkit | 1 | The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library). |
+| `mcp_postgres` | `factory-mcp_postgres` | 2 | adapter | domain | none | 3 | The read-only PostgreSQL MCP server (ADR 0021, decision 4): eight tools (pg_list_relations, pg_describe_relation, pg_query, pg_explain, pg_activity, pg_locks, pg_table_health, pg_factory_health) over one connection of a factory_observer login. Every call runs in BEGIN READ ONLY ... ROLLBACK with local timeouts; free SQL is wrapped as a subquery and sent with the extended protocol; rows, bytes and calls are capped; every string is redacted through an injected Redact seam. Depends on no other ring 2 crate; served in process by the troubleshooter's gateway and as apps/mcp-postgres. |
+| `mcp_gateway` | `factory-mcp_gateway` | 2 | adapter | domain | none | 3 | The troubleshooter's MCP gateway (ADR 0021, decision 3): one MCP server over Streamable HTTP, on a loopback address by default or on one bridge address with allow_non_loopback_listen (never an unspecified address, the run token always required), that the troubleshooter agent reaches as its only MCP server. Lists exactly the allowlisted tools of policies/troubleshooting.yaml that their upstream offers, refuses every other tool and reports upstream tools not on the allowlist (T-51); checks a random per-run bearer token; limits calls per run and per 10 seconds, the call deadline, result bytes (with a truncation marker) and the run wall clock; redacts every result through an injected Redact seam, with the upstream credentials and run tokens registered by exact value; records every call (call-N ids shared with the control-plane probe calls) as a typed run record and canonical JSON. Upstreams behind the Upstream trait: Streamable HTTP clients for Datadog and VictoriaMetrics with credentials from mode 0600 files, and an in-process adapter over any rmcp server. Depends on no other ring 2 crate; apps/troubleshooter wires mcp_postgres in. |
 | `testkit` | `factory-testkit` | 2 | test-support | domain, ports | none | 0 | Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeModelBroker, FakeChangeHost, FakeWorkspaceProvider, FakeJobRepo, FakeSpecificationProvider, ScriptedProcessRunner and FakeWebhookVerifier, with FakeRemote shared by the workspace and change host fakes. Every fake reports fidelity fake. Also the shared contract suites and the register that shows every check can fail. May appear only in dev-dependencies. |
 | `api` | `factory-api` | 3 | binary | all library crates it wires | none | 1 | HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints. |
 | `worker` | `factory-worker` | 3 | binary | all library crates it wires | none | 1 | Runs the engine loop in one process: claim, execute stage handlers, sweep leases and deadlines, supervise sandboxes, and host the model broker listener in Slice 1. Single concurrency in Slice 1. |
-| `cli` | `factory-cli` | 3 | binary | all library crates it wires | none | 1 | Operator command line and HTTP client of the API: health, submit, status, timeline, approve, reject, rework, answer, pause, resume, cancel, approve-dependency, approve-build-code, probe. Holds no database login: every command but probe goes to the API over HTTP, and probe runs the start-up checks that need no credential. |
+| `cli` | `factory-cli` | 3 | binary | all library crates it wires | none | 1 | Operator command line and HTTP client of the API: health, submit, status, timeline, approve, reject, rework, pause, resume, cancel, approve-dependency, approve-build-code, probe. Holds no database login: every command but probe goes to the API over HTTP, and probe runs the start-up checks that need no credential. |
 | `egress-sidecar` | `factory-egress-sidecar` | 3 | binary | all library crates it wires | none | 1 | The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential. |
+| `mcp-postgres` | `factory-mcp-postgres` | 3 | binary | all library crates it wires | none | 3 | Serves crates/mcp_postgres for an engineer's Claude Code: stdio by default, or Streamable HTTP on a loopback address behind a bearer token read from a mode 0600 file. Connection settings from a JSON file or the environment, the password from a file only. Refuses to serve with a login that is a superuser, bypasses row-level security, or belongs to a group other than factory_observer. Starts no process. |
+| `troubleshooter` | `factory-troubleshooter` | 3 | binary | all library crates it wires | none | 3 | The troubleshooter (ADR 0021): watches the factory itself. Runs the deterministic probes of policies/troubleshooting.yaml through its own MCP gateway (crates/mcp_gateway, with crates/mcp_postgres in process) and a direct HTTP health GET; when a probe trips past its cool-down or the sweep is due, and the day caps allow, runs the troubleshooter agent once in its sandbox with the broker it hosts; refuses a report that fails health-findings v1 or cites a call the gateway did not record as ok for the same tool; writes triage issues from the closed domain template through TriageIssueWriter, one per fingerprint, one seen-again comment a day, under the day cap. One instance is active at a time (a PostgreSQL advisory lock). Its rows are the four troubleshooting_* tables (migration 2026-11-20-003000). |
 <!-- GENERATED:end crate-table -->
 
 ### Dependency rules and their enforcement

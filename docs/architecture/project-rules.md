@@ -1,6 +1,6 @@
 # The project's rules for agents
 
-- Status: proposed on 2026-11-20, built on the branch `fix/agent-report-channel`. The decisions and the options weighed are in [ADR 0026](../adr/0026-project-rules-installed-by-pull-request.md). The port is specified in [ports v1.3](ports-v1.3.md).
+- Status: proposed on 2026-11-20, built on the branch `fix/agent-report-channel`. The decisions and the options weighed are in [ADR 0026](../adr/0026-project-rules-installed-by-pull-request.md). The port is specified in [ports v1.4](ports-v1.4.md).
 - Form: design. Read this first for what the factory does and why, the ADR for the options that lost, and the ports document for the exact signatures.
 
 ## Purpose
@@ -117,7 +117,7 @@ The pull request is a **draft**, like every pull request of the factory (ADR 001
 
 ## The credential
 
-The check uses a port of its own, `ProjectRulesHost` ([ports v1.3](ports-v1.3.md)), with a token of its own, minted for one repository: `contents: write`, `pull_requests: write` and the `metadata: read` every token carries (`PermissionSet::project_rules`). It is not a stage token, so no stage token is widened and the delivery token is not borrowed. The App already holds these two permissions for the delivery stage, so the App needs no new permission and the audit of the App's permissions is unchanged.
+The check uses a port of its own, `ProjectRulesHost` ([ports v1.4](ports-v1.4.md)), with a token of its own, minted for one repository: `contents: write`, `pull_requests: write` and the `metadata: read` every token carries (`PermissionSet::project_rules`). It is not a stage token, so no stage token is widened and the delivery token is not borrowed. The App already holds these two permissions for the delivery stage, so the App needs no new permission and the audit of the App's permissions is unchanged.
 
 The factory gains no right to write to the default branch:
 
@@ -161,7 +161,7 @@ The repository map records `project_rules` (path, digest, origin and the reason 
 
 ## Threats
 
-A person who can merge into the default branch can change `AGENTS.md`, and every agent of every later job reads it. That is prompt injection that persists (threat T-49 in the [threat model](../security/threat-model.md)). The controls:
+A person who can merge into the default branch can change `AGENTS.md`, and every agent of every later job reads it. That is prompt injection that persists (threat T-55 in the [threat model](../security/threat-model.md)). The controls:
 
 - **The owner's approval is the control of the content.** The file reaches agents only from the default branch, which the preflight requires to be protected by a reviewed pull request. The factory's own change arrives as a pull request a person must review and merge.
 - **The text is data, not instructions,** in the agents' prompts: quoted, delimited, redacted, and named as the project's conventions that never override the prompt.

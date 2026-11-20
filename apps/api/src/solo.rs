@@ -1,4 +1,4 @@
-//! The immediate refusal of the solo mode (ADR 0021).
+//! The immediate refusal of the solo mode (ADR 0022).
 //!
 //! A person who asked for a job and holds the designation a decision needs used to be told
 //! nothing when they approved their own request: the API answered `202`, and minutes later the

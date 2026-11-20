@@ -174,7 +174,7 @@ pub struct StageFields {
     pub digest: Option<String>,
     /// The number of a warning, counted from 1.
     pub index: Option<u32>,
-    /// The word of the confirmation phrase of the solo mode (ADR 0021): 16 lowercase hex digits,
+    /// The word of the confirmation phrase of the solo mode (ADR 0022): 16 lowercase hex digits,
     /// when the person typed a phrase. Never on `unblock`. Without it the subject is the six words
     /// it always was.
     pub confirm: Option<String>,
@@ -658,7 +658,7 @@ impl StageDecisions {
             author_association: None,
         };
         let now = self.deps.clock.now();
-        // The solo mode (ADR 0021): the facts of the repository now, turned into the solo fact by
+        // The solo mode (ADR 0022): the facts of the repository now, turned into the solo fact by
         // the one function of the policy that computes it. `unblock` is not an approval action,
         // so the fact changes nothing for it.
         let Ok(inputs) = self.deps.sources.solo_inputs(tenant, fields.job, now).await else {

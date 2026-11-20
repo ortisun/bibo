@@ -26,6 +26,11 @@
 //!   place the stream shows the skill invocation and its arguments, and the stage's argument check
 //!   fails closed without it. The reader of the stream skips that event: it is the factory's own
 //!   prompt, not output of the agent.
+//! * **Troubleshooter** (ADR 0021). A request with `FlagSet::Troubleshooting` must carry an
+//!   `McpGateway`, and no other request may. Its tools are the gateway's tools and nothing else
+//!   (`argv`), and the launcher line also reads the gateway's run token from its file into the
+//!   variable the MCP configuration names, so the token is in no argument, no container variable
+//!   and no log.
 //! * **Failures.** `is_error` and `terminal_reason` decide, never `subtype` and never the exit code.
 
 pub mod argv;
@@ -45,8 +50,8 @@ use factory_ports::sandbox::SandboxSession;
 
 use crate::attest::{Attestor, Claim, rejected_note};
 use crate::command::{
-    BuildEnv, EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, OAUTH_TOKEN_LAUNCHER,
-    ToolCommand, ToolEnv, broker_origin,
+    BuildEnv, EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, MCP_TOKEN_LAUNCHER,
+    OAUTH_AND_MCP_TOKEN_LAUNCHER, OAUTH_TOKEN_LAUNCHER, ToolCommand, ToolEnv, broker_origin,
 };
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
@@ -99,7 +104,7 @@ pub struct ClaudeCodeConfig {
     /// How the job token reaches the tool. The composition root sets it from
     /// `credentials.model_providers.mode` of the security policy.
     pub credential: argv::ClaudeCredential,
-    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0023). The
+    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0024). The
     /// composition root sets it from the sandbox layout.
     pub build: BuildEnv,
 }
@@ -262,6 +267,13 @@ impl ClaudeCodeRuntime {
                 return early(never_started(), None);
             }
         };
+        // Only the troubleshooter reaches an MCP gateway, and it always does (ADR 0021).
+        if (req.flag_set == FlagSet::Troubleshooting) != req.mcp_gateway.is_some() {
+            tracing::warn!(
+                "the flag set and the MCP gateway of the request disagree; the tool was not started"
+            );
+            return early(never_started(), None);
+        }
         let caps = match self.capabilities_for(session).await {
             Ok(caps) => caps,
             Err(ProbeError::UnsupportedVersion { found }) => {
@@ -308,7 +320,14 @@ impl ClaudeCodeRuntime {
                 .saturating_add(1)
                 .min(self.config.max_turns_cap),
             max_budget_usd: req.limits.max_cost_usd.as_f64(),
-            tools: argv::tools_for(&req.tools, req.flag_set),
+            tools: argv::tools_for(
+                &req.tools,
+                req.flag_set,
+                req.mcp_gateway
+                    .as_ref()
+                    .map_or(&[][..], |gateway| gateway.tools.as_slice()),
+            ),
+            mcp_url: req.mcp_gateway.as_ref().map(|gateway| gateway.url.as_str()),
         };
         let args = match argv::build(&plan, &target) {
             Ok(args) => args,
@@ -345,7 +364,7 @@ impl ClaudeCodeRuntime {
         let Ok(env) = env else {
             return early(never_started(), version);
         };
-        let (program, args) = launch(&self.config, args);
+        let (program, args) = launch(&self.config, args, req.mcp_gateway.is_some());
         let soft = u32::try_from(req.limits.max_wall_time_seconds.get())
             .unwrap_or(u32::MAX)
             .max(1);
@@ -393,22 +412,25 @@ impl ClaudeCodeRuntime {
     }
 }
 
-/// The program and arguments that start the tool. In subscription mode the tool is started by the
-/// fixed launcher line, which sets its OAuth token from the job token file: `/bin/sh -c <line>
-/// <tool> <args>`, where the tool and its arguments are positional parameters of the line.
-fn launch(config: &ClaudeCodeConfig, args: Vec<String>) -> (String, Vec<String>) {
-    match config.credential {
-        argv::ClaudeCredential::ApiKeyHelper => (config.binary.clone(), args),
-        argv::ClaudeCredential::OauthToken => {
-            let mut wrapped = vec![
-                "-c".to_owned(),
-                OAUTH_TOKEN_LAUNCHER.to_owned(),
-                config.binary.clone(),
-            ];
-            wrapped.extend(args);
-            (LAUNCHER_SHELL.to_owned(), wrapped)
-        }
-    }
+/// The program and arguments that start the tool. In subscription mode, or for the troubleshooter,
+/// the tool is started by a fixed launcher line, which reads the token files into the tool's own
+/// environment: `/bin/sh -c <line> <tool> <args>`, where the tool and its arguments are positional
+/// parameters of the line.
+#[must_use]
+pub fn launch(
+    config: &ClaudeCodeConfig,
+    args: Vec<String>,
+    gateway: bool,
+) -> (String, Vec<String>) {
+    let line = match (config.credential, gateway) {
+        (argv::ClaudeCredential::ApiKeyHelper, false) => return (config.binary.clone(), args),
+        (argv::ClaudeCredential::OauthToken, false) => OAUTH_TOKEN_LAUNCHER,
+        (argv::ClaudeCredential::ApiKeyHelper, true) => MCP_TOKEN_LAUNCHER,
+        (argv::ClaudeCredential::OauthToken, true) => OAUTH_AND_MCP_TOKEN_LAUNCHER,
+    };
+    let mut wrapped = vec!["-c".to_owned(), line.to_owned(), config.binary.clone()];
+    wrapped.extend(args);
+    (LAUNCHER_SHELL.to_owned(), wrapped)
 }
 
 /// The error for a run whose tool never started. The closed set has no variant for a refused

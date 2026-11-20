@@ -221,7 +221,7 @@ async fn negative_nt_tool_06_the_tools_environment_is_the_adapters_list_and_noth
         "the home directory is the run's fresh one: {dump}"
     );
     // The agent's shell inherits the build variables, so its `cargo test` writes in `/out`, not in
-    // the workspace (ADR 0023, real run 32 of scenario E1).
+    // the workspace (ADR 0024, real run 32 of scenario E1).
     assert!(
         dump.lines().any(|l| l == "CARGO_TARGET_DIR=/out/target"),
         "the build goes to the output directory: {dump}"
@@ -454,7 +454,7 @@ async fn negative_nt_tool_06_hostile_request_values_never_become_environment_nam
             assert!(known.contains(&name), "{name}");
             assert!(!value.contains("evil"), "{pair}");
         }
-        // The build variables are the adapter's too (ADR 0023): a `cargo` the agent starts writes
+        // The build variables are the adapter's too (ADR 0024): a `cargo` the agent starts writes
         // its target directory in the output directory, never in the workspace the ingestion
         // audit walks, and it is offline.
         let env = &tool_run.argv[2..end];

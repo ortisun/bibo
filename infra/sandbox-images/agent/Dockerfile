@@ -75,7 +75,7 @@ COPY --from=rootfs / /
 # PATH is the only environment variable the image sets. The runtime adapter starts each tool with
 # `env -i` and its own closed list (crates/runtime/src/command.rs, EnvName): HOME, PATH, the
 # broker address, and the cargo variables (CARGO_TARGET_DIR=/out/target, CARGO_HOME in the run's
-# home, CARGO_NET_OFFLINE=true, TMPDIR=/out; ADR 0023), so nothing set here or on the container
+# home, CARGO_NET_OFFLINE=true, TMPDIR=/out; ADR 0024), so nothing set here or on the container
 # reaches the tool. No hook, MCP server, settings file or skill is baked in: the home directory is
 # empty and the supervisor mounts a tmpfs over it.
 ENV PATH=/opt/rust/bin:/opt/codex/codex-path:/opt/codex/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

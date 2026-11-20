@@ -11,7 +11,8 @@ use factory_domain::vocabulary::RiskTier;
 
 use super::approval::ApprovalPolicy;
 use super::common::{GlobText, RegexText};
-use super::security::SecurityPolicy;
+use super::security::{NetworkAccess, SecurityPolicy};
+use factory_domain::policy::egress::MCP_GATEWAY_ENTRY;
 
 /// What kind of rule a [`Problem`] breaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,8 +325,12 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
     );
 
     // References.
-    let sandbox_profiles: BTreeSet<&str> = ["agent", "fetch_deps", "verify"].into_iter().collect();
-    let egress_profiles: BTreeSet<&str> = ["agent", "fetch_deps", "none"].into_iter().collect();
+    let sandbox_profiles: BTreeSet<&str> = ["agent", "fetch_deps", "verify", "troubleshooter"]
+        .into_iter()
+        .collect();
+    let egress_profiles: BTreeSet<&str> = ["agent", "fetch_deps", "none", "troubleshooter"]
+        .into_iter()
+        .collect();
     let checks: BTreeSet<&str> = policy
         .gate_integrity
         .semantic_checks
@@ -388,6 +393,7 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
         ("fetch_deps", &policy.sandbox.profiles.fetch_deps),
         ("agent", &policy.sandbox.profiles.agent),
         ("verify", &policy.sandbox.profiles.verify),
+        ("troubleshooter", &policy.sandbox.profiles.troubleshooter),
     ] {
         found.defined(
             &format!("sandbox.profiles.{name}.egress_profile"),
@@ -395,6 +401,23 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
             &egress_profiles,
             "egress profile",
         );
+        // ADR 0021: the MCP gateway is reachable from the troubleshooter profile and from no
+        // other, so its network and its egress profile belong to that profile alone.
+        let troubleshooter = name == "troubleshooter";
+        if troubleshooter != (profile.egress_profile == "troubleshooter") {
+            found.add(
+                format!("sandbox.profiles.{name}.egress_profile"),
+                ProblemKind::Constraint,
+                "the troubleshooter sandbox profile uses the troubleshooter egress profile, and no other sandbox profile may (ADR 0021)",
+            );
+        }
+        if troubleshooter != (profile.network == NetworkAccess::ModelBrokerAndMcpGateway) {
+            found.add(
+                format!("sandbox.profiles.{name}.network"),
+                ProblemKind::Constraint,
+                "model_broker_and_mcp_gateway is the troubleshooter profile's network, and no other profile may have it (ADR 0021)",
+            );
+        }
     }
 
     // Egress entries carry a review date and a usable port.
@@ -403,9 +426,20 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
         ("fetch_deps", &policy.egress.profiles.fetch_deps.allow),
         ("agent", &policy.egress.profiles.agent.allow),
         ("none", &policy.egress.profiles.none.allow),
+        (
+            "troubleshooter",
+            &policy.egress.profiles.troubleshooter.allow,
+        ),
     ] {
         for (i, entry) in allow.iter().enumerate() {
             let at = format!("egress.profiles.{profile}.allow[{i}]");
+            if entry.id == MCP_GATEWAY_ENTRY && profile != "troubleshooter" {
+                found.add(
+                    format!("{at}.id"),
+                    ProblemKind::Constraint,
+                    "the MCP gateway may be reached from the troubleshooter profile only (ADR 0021, Decision 5); widening egress needs a person and a security review",
+                );
+            }
             if !egress_ids.insert(entry.id.as_str()) {
                 found.add(
                     format!("{at}.id"),

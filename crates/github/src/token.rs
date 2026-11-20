@@ -15,6 +15,11 @@
 //! * **Revocation.** `DELETE /installation/token` with the token itself, for every live token of
 //!   the job, at job end. A job that has ended can never mint again. A revocation that failed is
 //!   kept and retried by the next call or by the sweep.
+//! * **Runs are not jobs** (ports v1.3). A troubleshooting run holds one class of token,
+//!   [`TokenClass::TroubleshootIssue`], kept under the run and never under a job. A job's scope that
+//!   asks for that class is refused, and a run can ask for no other class. The sweeps of jobs do not
+//!   touch a run's tokens; the run ends them ([`TokenMinter::revoke_run`]), and GitHub expires them
+//!   within the hour in any case.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -23,11 +28,13 @@ use std::time::Duration;
 
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::redaction::{Redactor, Registered, SecretHandle};
+use factory_domain::troubleshooting::TroubleshootingRunId;
 use factory_domain::values::Timestamp;
 use factory_ports::clock::Clock;
 use factory_ports::githost::{AppId, GitHostError, GitScope};
 use factory_ports::paths::RepoRef;
 use factory_ports::store::InstallationId;
+use factory_ports::triage_issue::RunScope;
 use serde_json::{Value, json};
 
 use crate::core::{HttpCore, error_for};
@@ -59,9 +66,64 @@ pub(crate) enum TokenClass {
     /// depend on the stage in the scope, and no other call uses it.
     ProtectionRead,
     /// `contents: write`, `pull_requests: write` and `metadata: read`, for the rules pull request
-    /// ([`PermissionSet::project_rules`], ports v1.3). It does not depend on the stage in the
+    /// ([`PermissionSet::project_rules`], ports v1.4). It does not depend on the stage in the
     /// scope.
     ProjectRules,
+    /// `issues: write` and `metadata: read` for a troubleshooting run
+    /// ([`PermissionSet::troubleshoot_issue`]). Minted only for a [`RunScope`], never for a job.
+    TroubleshootIssue,
+}
+
+/// Whom a token is kept for: a job, or a troubleshooting run. The two never share a token.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Holder {
+    /// A job, and every credential class of a stage.
+    Job(JobId),
+    /// A troubleshooting run, and its one class.
+    Run(TroubleshootingRunId),
+}
+
+impl Holder {
+    /// The job, for a job's holder. The sweeps of jobs see only these.
+    fn job(&self) -> Option<JobId> {
+        match self {
+            Holder::Job(job) => Some(*job),
+            Holder::Run(_) => None,
+        }
+    }
+}
+
+/// Who asks for a token: a job's scope and the class the call needs, or a run's scope.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Caller<'a> {
+    /// A job's call.
+    Job(&'a GitScope, TokenClass),
+    /// A troubleshooting run's call.
+    Run(&'a RunScope),
+}
+
+impl Caller<'_> {
+    /// The tenant of the call.
+    pub(crate) fn tenant(&self) -> TenantId {
+        match self {
+            Caller::Job(scope, _) => scope.tenant,
+            Caller::Run(scope) => scope.tenant,
+        }
+    }
+
+    fn holder(&self) -> Holder {
+        match self {
+            Caller::Job(scope, _) => Holder::Job(scope.job),
+            Caller::Run(scope) => Holder::Run(scope.run.clone()),
+        }
+    }
+
+    fn repo(&self) -> &RepoRef {
+        match self {
+            Caller::Job(scope, _) => &scope.repo,
+            Caller::Run(scope) => &scope.repo,
+        }
+    }
 }
 
 /// Where the factory's tenants' installations are. The adapter does not discover them: a tenant
@@ -140,11 +202,11 @@ impl fmt::Debug for Live {
 
 #[derive(Default)]
 struct State {
-    live: HashMap<JobId, Vec<Live>>,
-    ended: HashSet<JobId>,
-    ended_order: VecDeque<JobId>,
+    live: HashMap<Holder, Vec<Live>>,
+    ended: HashSet<Holder>,
+    ended_order: VecDeque<Holder>,
     /// Tokens whose revocation failed. They are retried.
-    leftovers: Vec<(JobId, Live)>,
+    leftovers: Vec<(Holder, Live)>,
 }
 
 /// What the App says about itself.
@@ -210,9 +272,10 @@ impl TokenMinter {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// True when the job's tokens were revoked. Such a job gets no credential and no call.
-    pub(crate) fn job_has_ended(&self, job: JobId) -> bool {
-        self.state().ended.contains(&job)
+    /// True when the holder's tokens were revoked for good. Such a job or run gets no credential
+    /// and no call.
+    fn has_ended(&self, holder: &Holder) -> bool {
+        self.state().ended.contains(holder)
     }
 
     fn permissions_for(scope: &GitScope, class: TokenClass) -> Result<PermissionSet, GitHostError> {
@@ -233,47 +296,62 @@ impl TokenMinter {
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
             TokenClass::ProtectionRead => Ok(PermissionSet::protection_reader()),
             TokenClass::ProjectRules => Ok(PermissionSet::project_rules()),
+            // A troubleshooting run's class is never minted for a job, whatever its stage.
+            TokenClass::TroubleshootIssue => Err(GitHostError::Forbidden),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),
             // The write credential is never minted for a stage that may not write.
             TokenClass::Push => Err(GitHostError::Forbidden),
         }
     }
 
-    /// A token for the scope, minted if there is none that is still good.
+    /// A token for a job's scope, minted if there is none that is still good.
     pub(crate) async fn token_for(
         &self,
         scope: &GitScope,
         class: TokenClass,
     ) -> Result<Bearer, GitHostError> {
-        if self.job_has_ended(scope.job) {
+        self.token_as(Caller::Job(scope, class)).await
+    }
+
+    /// A token for the caller: the class it needs for a job, the run's one class for a run.
+    pub(crate) async fn token_as(&self, caller: Caller<'_>) -> Result<Bearer, GitHostError> {
+        let (class, permissions) = match caller {
+            Caller::Job(scope, class) => (class, Self::permissions_for(scope, class)?),
+            Caller::Run(_) => (
+                TokenClass::TroubleshootIssue,
+                PermissionSet::troubleshoot_issue(),
+            ),
+        };
+        let holder = caller.holder();
+        let repo = caller.repo();
+        if self.has_ended(&holder) {
             return Err(GitHostError::Unauthorized);
         }
-        let permissions = Self::permissions_for(scope, class)?;
         let key = TokenKey {
             class,
-            repo: scope.repo.clone(),
+            repo: repo.clone(),
             permissions: permissions.entries(),
         };
-        if let Some(found) = self.usable(scope.job, &key) {
+        if let Some(found) = self.usable(&holder, &key) {
             return Ok(found);
         }
         let _gate = self.gate.lock().await;
-        // Another call may have minted while this one waited, or the job may have ended.
-        if self.job_has_ended(scope.job) {
+        // Another call may have minted while this one waited, or the holder may have ended.
+        if self.has_ended(&holder) {
             return Err(GitHostError::Unauthorized);
         }
-        if let Some(found) = self.usable(scope.job, &key) {
+        if let Some(found) = self.usable(&holder, &key) {
             return Ok(found);
         }
         let installation = self
             .directory
-            .installation_for(scope.tenant, &scope.repo)
+            .installation_for(caller.tenant(), repo)
             .ok_or(GitHostError::NotFound)?;
-        let first_for_job = !self.state().live.contains_key(&scope.job);
-        if first_for_job {
+        let first_for_holder = !self.state().live.contains_key(&holder);
+        if first_for_holder {
             self.check_the_app().await?;
         }
-        let (bearer, expires_at) = self.mint(installation, &scope.repo, &permissions).await?;
+        let (bearer, expires_at) = self.mint(installation, repo, &permissions).await?;
         // A token the redactor does not know is a token a sink could carry. Fail closed: end it.
         let Ok(Registered::Added(handle)) = self
             .redactor
@@ -289,7 +367,7 @@ impl TokenMinter {
             expires_at,
             handle,
         };
-        match self.store(scope.job, live) {
+        match self.store(holder, live) {
             // The replaced token is still valid on GitHub's side until it expires: end it now.
             Ok(Some(old)) => {
                 let _ = self.revoke_one(old).await;
@@ -306,12 +384,12 @@ impl TokenMinter {
 
     /// Keeps a fresh token for the job, in one step with the check that the job has not ended.
     /// Returns the token it replaced, or the token itself when the job is over.
-    fn store(&self, job: JobId, live: Live) -> Result<Option<Live>, Box<Live>> {
+    fn store(&self, holder: Holder, live: Live) -> Result<Option<Live>, Box<Live>> {
         let mut state = self.state();
-        if state.ended.contains(&job) {
+        if state.ended.contains(&holder) {
             return Err(Box::new(live));
         }
-        let tokens = state.live.entry(job).or_default();
+        let tokens = state.live.entry(holder).or_default();
         let old = tokens
             .iter()
             .position(|t| t.key == live.key)
@@ -320,22 +398,23 @@ impl TokenMinter {
         Ok(old)
     }
 
-    fn usable(&self, job: JobId, key: &TokenKey) -> Option<Bearer> {
+    fn usable(&self, holder: &Holder, key: &TokenKey) -> Option<Bearer> {
         let horizon = self.clock.now().checked_add(self.refresh_margin)?;
         let state = self.state();
         state
             .live
-            .get(&job)?
+            .get(holder)?
             .iter()
             .find(|t| &t.key == key && t.expires_at > horizon)
             .map(|t| t.bearer.clone())
     }
 
     /// Drops a token the server refused (a 401), so the next call mints a new one.
-    pub(crate) async fn discard(&self, job: JobId, bearer: &Bearer) {
+    pub(crate) async fn discard(&self, caller: Caller<'_>, bearer: &Bearer) {
+        let holder = caller.holder();
         let dropped = {
             let mut state = self.state();
-            state.live.get_mut(&job).and_then(|tokens| {
+            state.live.get_mut(&holder).and_then(|tokens| {
                 tokens
                     .iter()
                     .position(|t| &t.bearer == bearer)
@@ -494,10 +573,20 @@ impl TokenMinter {
     /// Ends a job: no further token for it, and every token it holds is revoked. Idempotent. A
     /// revocation that fails is kept for the next call and the call reports `Unavailable`.
     pub(crate) async fn revoke_job(&self, job: JobId) -> Result<(), GitHostError> {
+        self.revoke_holder(Holder::Job(job)).await
+    }
+
+    /// Ends a troubleshooting run: no further token for it, and the tokens it holds are revoked.
+    /// Idempotent, like [`revoke_job`](Self::revoke_job).
+    pub(crate) async fn revoke_run(&self, run: &TroubleshootingRunId) -> Result<(), GitHostError> {
+        self.revoke_holder(Holder::Run(run.clone())).await
+    }
+
+    async fn revoke_holder(&self, job: Holder) -> Result<(), GitHostError> {
         let (tokens, mut retries) = {
             let mut state = self.state();
-            if state.ended.insert(job) {
-                state.ended_order.push_back(job);
+            if state.ended.insert(job.clone()) {
+                state.ended_order.push_back(job.clone());
                 while state.ended_order.len() > ENDED_JOBS_REMEMBERED {
                     if let Some(oldest) = state.ended_order.pop_front() {
                         state.ended.remove(&oldest);
@@ -518,7 +607,7 @@ impl TokenMinter {
         let mut failed = Vec::new();
         for live in retries {
             if let Err(live) = self.revoke_one(live).await {
-                failed.push((job, *live));
+                failed.push((job.clone(), *live));
             }
         }
         if failed.is_empty() {
@@ -533,6 +622,7 @@ impl TokenMinter {
     /// is for a job that is over, and refuses every later call. A revocation that fails is kept
     /// for the next pass. Returns how many tokens were revoked.
     async fn release_job(&self, job: JobId) -> usize {
+        let job = Holder::Job(job);
         let (tokens, retries) = {
             let mut state = self.state();
             let tokens = state.live.remove(&job).unwrap_or_default();
@@ -547,7 +637,7 @@ impl TokenMinter {
         let mut failed = Vec::new();
         for live in all {
             if let Err(live) = self.revoke_one(live).await {
-                failed.push((job, *live));
+                failed.push((job.clone(), *live));
             }
         }
         let released = total - failed.len();
@@ -571,9 +661,9 @@ impl TokenMinter {
             state
                 .live
                 .keys()
-                .chain(state.leftovers.iter().map(|(job, _)| job))
+                .chain(state.leftovers.iter().map(|(holder, _)| holder))
+                .filter_map(Holder::job)
                 .filter(|job| idle.contains(job))
-                .copied()
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect()
@@ -607,9 +697,9 @@ impl TokenMinter {
             state
                 .live
                 .keys()
-                .chain(state.leftovers.iter().map(|(job, _)| job))
+                .chain(state.leftovers.iter().map(|(holder, _)| holder))
+                .filter_map(Holder::job)
                 .filter(|job| !open.contains(job))
-                .copied()
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect()
@@ -630,6 +720,7 @@ impl TokenMinter {
     }
 
     fn live_count(&self, job: JobId) -> usize {
+        let job = Holder::Job(job);
         let state = self.state();
         state.live.get(&job).map_or(0, Vec::len)
             + state.leftovers.iter().filter(|(j, _)| *j == job).count()
@@ -666,6 +757,45 @@ fn string_map(value: &Value) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_job_stage_can_ask_for_the_troubleshooting_class() {
+        use factory_domain::vocabulary::StageKind;
+        for stage in StageKind::ALL.iter().copied() {
+            let scope = GitScope {
+                tenant: TenantId::from_uuid(factory_ports::clock::Uuid::from_u128(1)),
+                job: JobId::from_uuid(factory_ports::clock::Uuid::from_u128(2)),
+                stage,
+                repo: RepoRef::parse("example-org/fixture").unwrap(),
+            };
+            assert_eq!(
+                TokenMinter::permissions_for(&scope, TokenClass::TroubleshootIssue),
+                Err(GitHostError::Forbidden),
+                "{stage:?}"
+            );
+            // And no class a stage can ask for is the run's set under another name, except the
+            // classes that are `issues: write` by design for a job (comment, status), which are
+            // kept under the job and never under a run.
+            assert_ne!(
+                TokenMinter::permissions_for(&scope, TokenClass::Stage),
+                Ok(PermissionSet::troubleshoot_issue()),
+                "{stage:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_and_a_job_never_share_a_holder() {
+        let run = TroubleshootingRunId::parse("run-1").unwrap();
+        let job = JobId::from_uuid(factory_ports::clock::Uuid::from_u128(2));
+        assert_ne!(Holder::Run(run.clone()), Holder::Job(job));
+        assert_eq!(
+            Holder::Run(run).job(),
+            None,
+            "the sweeps of jobs never see a run"
+        );
+        assert_eq!(Holder::Job(job).job(), Some(job));
+    }
 
     #[test]
     fn a_bearer_and_a_live_token_print_nothing_of_the_token() {

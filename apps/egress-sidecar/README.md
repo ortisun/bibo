@@ -5,13 +5,14 @@ The per-job relay of `docs/security/sandbox-policy.md` section 5.2. It holds no 
 ## Command line
 
 ```text
-factory-egress-sidecar --mode broker  --listen ADDR:PORT --upstream IP:PORT [--max-bytes N] [--job ID]
+factory-egress-sidecar --mode broker  --listen ADDR:PORT --upstream IP:PORT [--second-listen ADDR:PORT --second-upstream IP:PORT] [--max-bytes N] [--job ID]
 factory-egress-sidecar --mode connect --listen ADDR:PORT --allow HOST:PORT ... [--max-bytes N] [--job ID]
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--mode broker` | The `agent` profile. Every connection is relayed to `--upstream`, an IP address and port (a name is refused: nothing is resolved). The sandbox reaches the broker through this and nothing else. |
+| `--second-listen`, `--second-upstream` | Broker mode only, both or neither, and off unless given. The `troubleshooter` profile (ADR 0021 Decision 5): a second listener whose every connection is relayed to one more fixed IP address and port, the MCP gateway. Like the first relay it reads nothing, resolves nothing and has no host list; it shares the byte quota and the connection limit. Its port must be 1024 or higher and differ from `--listen`, and its upstream may not be either listener. |
 | `--mode connect` | The `fetch_deps` profile. A `CONNECT` proxy: each `--allow` is one exact host and port. |
 | `--listen` | Where to listen. The port must be 1024 or higher. |
 | `--max-bytes` | Bytes the job may move through the relay, both directions together. Default 2 GiB (`egress.proxy_rules.max_bytes_per_job`). After that, connections are refused and a running transfer is cut at the cap. |

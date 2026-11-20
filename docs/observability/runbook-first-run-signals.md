@@ -24,6 +24,8 @@ Two rules for reading it.
 | Logs | Standard error of each process, one JSON object per line | Filter with `jq` on `level`, `target` and `fields.message`. A line written inside a job starts with `correlation_id`. |
 | Audit records | The `audit_events` table in PostgreSQL | Not telemetry. Named where a signal below has no span or metric. |
 
+The troubleshooter ([guide](../guides/troubleshooter.md), ADR 0021) is designed to watch several of these signals for you: its probes check for leases past expiry, stage runs past their deadline, spend near the day ceiling and a queue that never drains, and a tripped probe ends as an issue for a person to triage. It is not built yet, so on a first run you still read the signals yourself. For your own read-only questions to the factory database, the guide also says how to point Claude Code at the PostgreSQL MCP server.
+
 ## At a glance
 
 | Signal | Span | Metric | Log | Audit | Missing |

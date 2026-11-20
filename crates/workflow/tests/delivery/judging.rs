@@ -278,7 +278,7 @@ fn negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_co
 
 #[test]
 fn the_requester_approves_a_low_risk_change_only_in_the_solo_mode() {
-    // `approver_may_equal_requester_when_low_risk: false` (ADR 0021): outside the solo mode the
+    // `approver_may_equal_requester_when_low_risk: false` (ADR 0022): outside the solo mode the
     // requester is refused, and with the solo fact they approve, with no wait and no phrase.
     let mut setup = Setup::new();
     let cmd = command(Verb::Approve, REQUESTER, &setup.request);

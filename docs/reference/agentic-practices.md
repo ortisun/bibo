@@ -24,7 +24,7 @@ A practice moves up only with evidence: a passed evaluation suite or a measured 
 | Orchestrator and workers | Adopted | The planner writes a task plan and builders each take one task. The orchestrator is code, not a model. |
 | Routing to a specialist by the content of the task | Adopted | The composer of ADR 0027 picks pack agents by touched paths, task kind and risk tier. |
 | Parallel independent reviewers | Adopted | Reviewers of a pack run beside the code reviewer and never see the builder's summary. |
-| Evaluator and optimizer loop with a hard limit | Adopted | Rework rounds are counted for each phase and capped at two (ADR 0022). Gates give pass or fail results, not opinions. |
+| Evaluator and optimizer loop with a hard limit | Adopted | Rework rounds are counted for each phase and capped at two (ADR 0023). Gates give pass or fail results, not opinions. |
 | A critic on a different model from the author | Adopted | The model routing policy forbids the architect's model for the critic. |
 | Minimum sufficient team | Adopted | A specialist runs only when its trigger matches. More agents cost more and do not mean better work. |
 | Free delegation between agents | Hold | The delegation depth is zero. An agent that starts agents is hard to bound and to audit. |

@@ -76,7 +76,7 @@ pub struct Context<'a> {
     pub tenant: &'a TenantId,
     /// The comment as it is now, for the channel `GithubComment`.
     pub comment: Option<&'a Comment>,
-    /// The solo fact of the job's repository, now (ADR 0021).
+    /// The solo fact of the job's repository, now (ADR 0022).
     pub solo: SoloFact,
     /// When the approval stage run last moved to `WAITING_FOR_HUMAN`: the start of the solo
     /// mode's wait for a high or critical pull request. `None` when it is not known, which
@@ -377,7 +377,7 @@ fn approve(
 }
 
 /// The wait and the phrase of a high or critical pull request that the requester approves alone
-/// (ADR 0021). The low and medium tiers, and an approval by someone else, need neither. The phrase
+/// (ADR 0022). The low and medium tiers, and an approval by someone else, need neither. The phrase
 /// is checked before the wait.
 fn solo_wait_and_phrase(
     cmd: &ApprovalCommand,

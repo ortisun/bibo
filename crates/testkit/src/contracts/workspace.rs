@@ -1084,7 +1084,7 @@ async fn a_second_workspace_can_start_at_a_commit_the_first_made(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Later rounds: the protected base (ADR 0024)
+// Later rounds: the protected base (ADR 0025)
 // ---------------------------------------------------------------------------------------------
 
 /// The request of a later round of job `n`: an agent workspace at `base` whose protected base is

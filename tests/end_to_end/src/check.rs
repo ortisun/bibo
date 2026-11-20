@@ -89,7 +89,7 @@ pub struct Env {
     pub stages: Vec<StageSpec>,
     /// The readability catalog that the gate uses.
     pub catalog: Arc<Catalog>,
-    /// Whether `policies/approval.yaml` switches the solo mode on (`solo_mode.enabled`, ADR 0021):
+    /// Whether `policies/approval.yaml` switches the solo mode on (`solo_mode.enabled`, ADR 0022):
     /// the owner who works alone approves their own request, and the engine checks the conditions
     /// of the mode, its wait and its phrase at each decision.
     pub solo_mode: bool,

@@ -227,7 +227,7 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "408": { "$ref": "#/components/responses/RequestTimeout" },
-          "409": { "description": "The request conflicts with a recorded one (Error), or the solo mode refuses the requester's own decision at once with its reason (DecisionRefused, ADR 0021).", "content": { "application/json": { "schema": { "oneOf": [ { "$ref": "#/components/schemas/Error" }, { "$ref": "#/components/schemas/DecisionRefused" } ] } } } },
+          "409": { "description": "The request conflicts with a recorded one (Error), or the solo mode refuses the requester's own decision at once with its reason (DecisionRefused, ADR 0022).", "content": { "application/json": { "schema": { "oneOf": [ { "$ref": "#/components/schemas/Error" }, { "$ref": "#/components/schemas/DecisionRefused" } ] } } } },
           "413": { "$ref": "#/components/responses/PayloadTooLarge" },
           "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
           "429": { "$ref": "#/components/responses/RateLimited" },
@@ -679,14 +679,14 @@
           "path": { "type": "string", "maxLength": 180, "description": "The path in the repository of a file of build code the change adds, as the evidence of the blocked validation stage run lists it. Required for approve-project-build-code, and refused for every other verb." },
           "answer": { "type": "string", "maxLength": 900, "description": "The answer to the questions of a waiting stage run: 1 to 900 bytes of text, kept whole (a longer text is refused, never cut), one line Q-001: ... per question. Required for answer, and refused for every other verb." },
           "digest": { "type": "string", "description": "The start of the SHA-256 of the content of that file in the head commit: 12 to 64 lower case hexadecimal digits, with or without sha256:. Required for approve-project-build-code, and refused for every other verb. A script that was edited after the person read it has another hash and is not covered." },
-          "confirm": { "type": "string", "maxLength": 200, "description": "The confirmation phrase of the solo mode (ADR 0021), I confirm the solo approval of <target>, for approve, approve-dependency, approve-build-code, approve-project-build-code and ack-translation-warning, and refused for every other verb. The requester who approves alone needs it for a high or critical pull request and for every decision on a dependency, on build code and on a translation warning. Compared without regard to the ends, runs of spaces and ASCII capitals; only a 16-digit hash of it is recorded." }
+          "confirm": { "type": "string", "maxLength": 200, "description": "The confirmation phrase of the solo mode (ADR 0022), I confirm the solo approval of <target>, for approve, approve-dependency, approve-build-code, approve-project-build-code and ack-translation-warning, and refused for every other verb. The requester who approves alone needs it for a high or critical pull request and for every decision on a dependency, on build code and on a translation warning. Compared without regard to the ends, runs of spaces and ASCII capitals; only a 16-digit hash of it is recorded." }
         }
       },
       "DecisionRefused": {
         "type": "object",
         "required": ["error"],
         "additionalProperties": false,
-        "description": "The solo mode refused the requester's own decision at once (ADR 0021). Only the requester who holds the designation the decision needs gets this answer; anybody else gets what they got before.",
+        "description": "The solo mode refused the requester's own decision at once (ADR 0022). Only the requester who holds the designation the decision needs gets this answer; anybody else gets what they got before.",
         "properties": {
           "error": { "type": "string", "enum": ["ineligible_approver", "confirmation_missing"] },
           "reason": { "type": "string", "enum": ["solo_mode_disabled", "not_single_maintainer", "more_than_one_approver", "designation_missing"], "description": "Why the solo mode does not apply. Only with ineligible_approver: the first of these that holds." },

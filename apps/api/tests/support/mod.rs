@@ -155,7 +155,7 @@ pub struct RealSeed {
     pub owner_login: String,
     /// A person other than the owner who approves, as their allowlist entry names them: the
     /// numeric GitHub id and the login. `None` when the owner is the only person, who then
-    /// approves alone in the solo mode (ADR 0021).
+    /// approves alone in the solo mode (ADR 0022).
     pub approver: Option<(u64, String)>,
     /// The text of the owner's allowlist file.
     pub allowlist_text: String,
@@ -511,7 +511,7 @@ async fn seed_tenant(db: &TestDb, position: usize, base: u64) -> Tenant {
 
 /// Tenant A of a real run. The owner is the requester, the operator and the security approver, and
 /// attested and enabled the repository: a single-maintainer repository (finding REG-6). The
-/// approver is the owner, who approves their own request in the solo mode (ADR 0021): the
+/// approver is the owner, who approves their own request in the solo mode (ADR 0022): the
 /// repository is marked `single_maintainer` and, with the owner's one allowlist entry
 /// `[requester, approver, operator]`, the owner is its only approving person. When the allowlist
 /// names a second person who holds `approver`, that person is the approver, there are two

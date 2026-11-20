@@ -12,6 +12,7 @@ use factory_ports::clock::Clock;
 use factory_ports::githost::{
     AppId, BypassAttestation, GitHostError, GitScope, IssueSource, PreflightVerdict, WorkflowRule,
 };
+use factory_ports::paths::RepoRef;
 
 use crate::changes::GithubChangeHost;
 use crate::client::{Client, PageLimits};
@@ -23,6 +24,7 @@ use crate::project_rules::GithubProjectRules;
 use crate::status::GithubIssueStatus;
 use crate::text::{Outbound, OutboundPolicy};
 use crate::token::{InstallationDirectory, MinterSettings, TokenMinter};
+use crate::triage::GithubTriageIssues;
 use crate::wire::{ApiBase, Transport};
 
 /// A token with less than this left of its hour is replaced before use.
@@ -159,9 +161,23 @@ impl GithubAdapter {
         )
     }
 
+    /// The troubleshooter's triage issue writer (ports v1.3), bound to `issue_repository`, the
+    /// `troubleshooting.issue_repository` of the configuration. It works under a run's scope with a
+    /// token of its own (`issues: write`, `metadata: read`) and refuses any other repository.
+    #[must_use]
+    pub fn triage_issue_writer(&self, issue_repository: RepoRef) -> GithubTriageIssues {
+        GithubTriageIssues::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.outbound),
+            Arc::clone(&self.sleeper),
+            Arc::clone(&self.clock),
+            issue_repository,
+        )
+    }
+
     /// The project rules host: the draft pull request that installs or updates the project's
     /// rules for agents, with a token of its own that holds `contents: write` and
-    /// `pull_requests: write` for one repository (ports v1.3, ADR 0026).
+    /// `pull_requests: write` for one repository (ports v1.4, ADR 0026).
     #[must_use]
     pub fn project_rules_host(&self) -> GithubProjectRules {
         GithubProjectRules::new(

@@ -39,7 +39,7 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
    scripts/install.sh --checkout ../my-project --repo my-org/my-project
    ```
 
-   With `--repo` the run stops first, changing nothing, if the repository variable `FACTORY_BOT_LOGIN` is not set (step 6 says why); add `--allow-missing-bot-login` if the factory's GitHub App does not exist yet. Otherwise it first installs any of the factory's own tools that is missing, at its pinned version, and then it installs the EGM plugin if it is missing, for each of Claude Code and Codex that you have (`--agent` chooses). It adds an entry for GitHub's MCP server to `.mcp.json` for Claude Code and to `.codex/config.toml` for Codex. It copies the issue forms, the Action and its helper files into `.github/`, and creates the fifteen labels. It also looks for a GitHub Projects board: it uses the one linked to the repository, or the one you name with `--project OWNER/NUMBER`, and writes how the stages map onto it to `.github/project-board.json`. Pass `--create-project OWNER` to make a board, or `--no-board` to go without. The [board guide](project-board.md) says how it adapts to a board that already exists. If the project already has Spec Kit (a `.specify/` folder), the `speckit` step makes it cover Claude Code and Codex alike: it adds whichever integration is missing with `specify integration install claude` or `codex` (offline, never `--force`), and it checks that every Spec Kit skill is the file the factory pins, because the worker refuses one that is not. A project with no `.specify/` is left alone, and `--no-speckit` skips the step. It does not commit, push or start a job. A file you changed is reported as `DRIFT` and kept. Add `--update` to replace it.
+   With `--repo` the run stops first, changing nothing, if the repository variable `FACTORY_BOT_LOGIN` is not set (step 6 says why); add `--allow-missing-bot-login` if the factory's GitHub App does not exist yet. Otherwise it first installs any of the factory's own tools that is missing, at its pinned version, and then it installs the EGM plugin if it is missing, for each of Claude Code and Codex that you have (`--agent` chooses). It adds an entry for GitHub's MCP server to `.mcp.json` for Claude Code and to `.codex/config.toml` for Codex. It copies the issue forms, the Action and its helper files into `.github/`, and creates the fifteen labels. It also looks for a GitHub Projects board: it uses the one linked to the repository, or the one you name with `--project OWNER/NUMBER`, and writes how the stages map onto it to `.github/project-board.json`. Pass `--create-project OWNER` to make a board, or `--no-board` to go without. The [board guide](project-board.md) says how it adapts to a board that already exists. If the project already has Spec Kit (a `.specify/` folder), the `speckit` step makes it cover Claude Code and Codex alike: it adds whichever integration is missing with `specify integration install claude` or `codex` (offline, never `--force`), and it checks that every Spec Kit skill is the file the factory pins, because the worker refuses one that is not. A project with no `.specify/` is left alone, and `--no-speckit` skips the step. It sets up the git policy: Conventional Commits and gitflow (see [The git policy](#the-git-policy-conventional-commits-and-gitflow)). Without `--repo`, it finds the repository from the git remote. It does not commit, push or start a job. A file you changed is reported as `DRIFT` and kept. Add `--update` to replace it.
 
 3. **Start a new session** of Claude Code or Codex in the project, so the EGM skills load. In Codex, trust the project when it asks: Codex reads `.codex/config.toml` only for a project you trust.
 
@@ -136,6 +136,49 @@ scripts/setup-tools.sh
 - **A tool at another version** is left where it is. With `--check` it is `DRIFT`. Without `--check` the pinned version is installed into `.tools/bin` beside it, and a note says which copy your own `PATH` finds first.
 - **A machine that only designs.** Pass `--no-tools` to `scripts/install.sh` to skip the step.
 
+## The git policy: Conventional Commits and gitflow
+
+Every project the factory serves writes its commits as [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) and branches with gitflow. The installer sets this up with `--checkout`, in three steps, and `--no-git-policy` skips them.
+
+**`settings`.** The installer records the project's settings in `.factory/repository.json`: the GitHub repository, the GitHub Projects board (or none), the gitflow closing mode, and the allowed commit types. You do not have to name the repository or the board. It takes each value from a flag, then from the file, then from what it can infer:
+
+| Value | Flag | Inferred from |
+|---|---|---|
+| Repository | `--repo OWNER/NAME` | The remote `origin`, or the one remote that points at GitHub. A remote with an SSH host alias is resolved with `gh repo view`. Two remotes that name different repositories are not guessed between. |
+| Board | `--project OWNER/NUMBER`, `--create-project OWNER`, `--no-board` | `.github/project-board.json`, or the one open board linked to the repository. Two linked boards are not guessed between. |
+| Closing mode | `--gitflow-mode develop` or `release` | The merges of `feature/` and `bugfix/` branches: merged pull requests (through `gh`) and the merge commits git wrote. Three or more such merges, of which at least four in five went the same way, decide it. |
+
+An inferred repository counts as `--repo`, so the GitHub steps (labels, board, review rule) run for it. What cannot be inferred is asked on the terminal, with the inferred guess as the default: a new project has no history, so you answer three questions. A folder that is not a git repository is offered `git init -b main` first. Without a terminal (or with `--non-interactive`, or with `--check`) nothing is asked: the step prints `NEEDS settings` and the flag that gives each missing value. A flag that disagrees with the file stops the run before anything changes (`BLOCKED settings`): edit the file or pass the value it records.
+
+The two closing modes:
+
+| Mode | `feature/` and `bugfix/` close into | `release/` closes into | `hotfix/` closes into |
+|---|---|---|---|
+| `develop` | `develop` | `main` and `develop` | `main`, `develop` or a `release/` branch |
+| `release` | the open `release/` branch | `main` and `develop` | `main`, `develop` or a `release/` branch |
+
+In both modes nobody commits on `main` or `develop` directly: work reaches them by merging a branch. The factory's own branches (`factory/job-...`) are feature branches. You can edit `.factory/repository.json` by hand: the commit types and scopes, the header limit (100 characters by default), the branch prefixes, and `additional_flows` for branches such as `dependabot/`. A later run keeps your edits.
+
+**`git-hooks`.** The installer copies three hooks into `.github/githooks/` and turns them on in your clone with `git config core.hooksPath .github/githooks`. Git does not turn hooks on by itself, so each person who clones the project runs that command once.
+
+- `commit-msg` refuses a message that is not a Conventional Commits header (`type(scope): description`), with a blank second line.
+- `pre-commit` refuses a commit on `main` or `develop`, and a commit on a branch whose name is not a gitflow name. The first commit of a new repository and the commit of a merge are allowed.
+- `pre-push` refuses a branch whose name is not a gitflow name, and commits the remote does not have yet whose messages break the rules. The first commit of a repository is not checked.
+
+Each hook runs `.github/scripts/git_policy.py`. When `.factory/repository.json` is missing, the hook asks for the settings on the terminal and writes the file. Without a terminal, for example in an editor's commit button, it stops the commit and says to run `python3 .github/scripts/git_policy.py configure` in a terminal. If your clone already runs hooks from elsewhere (`core.hooksPath` set to `.husky`, or hooks in `.git/hooks` such as git-lfs's), the installer leaves them alone and prints `NEEDS git-hooks`. Call `git_policy.py hook commit-msg`, `hook pre-commit` and `hook pre-push` from your own hooks instead.
+
+A person can skip a hook with `--no-verify`. The pull request check cannot be skipped: `.github/workflows/git-policy.yml` checks the head and base branches, the pull request title (the commit of a squash merge) and every commit of the pull request. It reads the policy and the settings from the base branch, so a pull request cannot change the rules it is judged by. Make it a required status check of `main` and `develop`.
+
+**`gitflow`.** If `develop` does not exist, the installer creates it from `main` in your clone. It never pushes, so it asks you to run `git push -u origin develop`. A repository with no commit yet gets `NEEDS gitflow`: make the first commit on `main` (for example `chore: set up the factory`) and run the installer again. The installer also says when the default branch on GitHub is not `develop`.
+
+**What the factory does with the settings.** The engine reads `.factory/repository.json` at the tip of the protected default branch, when a job's repository is mapped (`factory_domain::policy::git_conventions` holds the rules, the same as `git_policy.py`'s):
+
+- The job starts from the integration branch and opens its pull request there: `develop` in `develop` mode, and the one open `release/` branch in `release` mode. The repository map records it as `base_branch`. In `release` mode a job is blocked (`policy_unresolvable`) while no release branch is open, or more than one: the factory does not guess. A `develop` that is not on the remote blocks the job too. The factory finds the release branches with `git ls-remote`, with the same read credential it fetches with.
+- Each commit the factory makes, and the pull request title, is a Conventional Commits header. The type follows the work: the request kind the intake classifier found (`feature` is `feat`, `bugfix` is `fix`), and the kind of each task of the plan (tests are `test`, documentation is `docs`, configuration is `chore`). The specification commits are `docs(spec)`. A type or scope the project does not allow is not used, and the header is cut at a space to fit the limit.
+- Settings that are there and not valid block the job. A project without the file keeps the earlier behavior: the default branch, and plain titles.
+
+Keep the file the same on the default branch and on `develop`: the factory reads the default branch's copy. The readability rule `title-type-tag` warns about titles that start with a type tag. It never blocks a pull request; to silence it in the factory's reports, add it to `documentation.disabled_readability_rules` in `.factory/project.yaml`.
+
 ## A single-maintainer repository
 
 A project owner who works alone holds every designation and is the only person who can attest a map or enable a repository. The strict rule would lock that owner out of their own project, so there is one explicit exception, and it is written down where it is made.
@@ -163,7 +206,8 @@ Do not enable the repository until its owner has done the five steps in [the tar
 ## What the installer does not do
 
 - It does not run the bootstrap. The bootstrap asks you first and spends model tokens on every directory.
-- It does not write to the GitHub repository except the labels, and the board when you ask for one with `--create-project`. It does both only when you pass `--repo`.
+- It does not write to the GitHub repository except the labels, and the board when you ask for one with `--create-project`. It does both only when you pass `--repo`, or when `--checkout` finds the repository (see [The git policy](#the-git-policy-conventional-commits-and-gitflow)).
+- It does not push. A `develop` branch it creates stays in your clone until you push it.
 - It does not install the factory's engine, database or worker. See the [local deployment guide](../operations/local-deployment.md).
 - It does not prove the map is good. It proves that every directory with code has a contract file.
 - It does not write `.factory/project.yaml`, the project manifest that the validation stage reads its gate commands from. Without that file on the default branch the build and test gates of every job are BLOCKED. A person writes it: see [Prepare a repository](prepare-a-repository.md).

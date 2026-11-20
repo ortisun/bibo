@@ -87,7 +87,7 @@ pub struct CodexConfig {
     pub transcript_cap_bytes: u64,
     /// The skills the specification stage may see. `None` makes that stage unavailable.
     pub spec_skills: Option<Vec<String>>,
-    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0023). The
+    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0024). The
     /// composition root sets it from the sandbox layout.
     pub build: BuildEnv,
 }
@@ -241,7 +241,7 @@ impl CodexRuntime {
         flag_set: FlagSet,
     ) -> bool {
         let allowed: Vec<String> = match flag_set {
-            FlagSet::Standard => Vec::new(),
+            FlagSet::Standard | FlagSet::Troubleshooting => Vec::new(),
             FlagSet::Specification => {
                 let mut names = self.config.spec_skills.clone().unwrap_or_default();
                 names.sort();
@@ -289,6 +289,12 @@ impl CodexRuntime {
                 return early(never_started(), None);
             }
         };
+        // The troubleshooter runs on Claude Code only (ADR 0021): this adapter has no MCP
+        // gateway support, so it refuses the flag set and any gateway before it probes.
+        if req.flag_set == FlagSet::Troubleshooting || req.mcp_gateway.is_some() {
+            tracing::warn!("Codex does not run the troubleshooter; the tool was not started");
+            return early(never_started(), None);
+        }
         let caps = match self.capabilities_for(session).await {
             Ok(caps) => caps,
             Err(ProbeError::UnsupportedVersion { found }) => {

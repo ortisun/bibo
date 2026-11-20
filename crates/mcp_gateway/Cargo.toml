@@ -1,0 +1,66 @@
+[package]
+name = "factory-mcp_gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The troubleshooter's MCP gateway (ADR 0021, decision 3), a ring 2 adapter. It may depend on
+# `domain` and nothing else in the workspace (docs/architecture/crate-dependency-rules.json): the
+# typed troubleshooting policy, the redactor behind the `Redact` seam and the SHA-256 digest come
+# from there. It does not depend on `mcp_postgres`: the troubleshooter app hands that server in as
+# an in-process upstream.
+
+[lints]
+workspace = true
+
+[dependencies]
+factory-domain.workspace = true
+
+# Server side: the gateway's own Streamable HTTP server. Client side: the Streamable HTTP client
+# over reqwest for Datadog and VictoriaMetrics, and the in-memory client for an in-process server.
+# Not `transport-io` (DEP-05, see the root manifest). `reqwest-tls-no-provider` gives reqwest
+# rustls without choosing a crypto provider; the gateway hands it a rustls configuration built on
+# ring and the Mozilla roots, the TLS stack the GitHub adapter and the broker already use.
+rmcp = { workspace = true, features = [
+    "server",
+    "client",
+    "transport-streamable-http-server",
+    "transport-streamable-http-client-reqwest",
+    "reqwest-tls-no-provider",
+] }
+# The release already in Cargo.lock, with rustls and no provider: `tls_backend_preconfigured`.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0.11"
+# The operating system's random source for the 256-bit run token, as in the broker.
+ring = "0.17.14"
+base64 = { version = "0.22.1", default-features = false, features = ["std"] }
+
+# The HTTP server under the Streamable HTTP service and the run token check. The same version and
+# features as apps/api and apps/mcp-postgres.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+# RFC 8785 canonical JSON for the argument digest and the run record, as the ledger does.
+serde_jcs = "0.2.0"
+thiserror = "2.0.21"
+# The cancellation token rmcp's Streamable HTTP server takes, to end every session at shutdown.
+# The release rmcp already resolves.
+tokio-util = { version = "0.7.20", default-features = false }
+
+# `rt` to spawn the server and the in-process upstreams, `sync` for the run table, `time` for the
+# deadline and the run clock, `net` for the loopback listener, `io-util` for the in-memory pipe.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync", "time", "net", "io-util"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "net", "io-util", "macros", "test-util"] }
+rmcp = { workspace = true, features = [
+    "server",
+    "client",
+    "macros",
+    "transport-streamable-http-server",
+    "transport-streamable-http-client-reqwest",
+    "reqwest-tls-no-provider",
+] }

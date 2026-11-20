@@ -62,7 +62,7 @@ pub enum EngineError {
     /// The store failed in a way the engine cannot repair.
     #[error("the store failed: {0}")]
     Store(StoreError),
-    /// The requester decided alone in the solo mode (ADR 0021) and the wait or the phrase that
+    /// The requester decided alone in the solo mode (ADR 0022) and the wait or the phrase that
     /// mode asks for is not there. Audited like a refusal of authority.
     #[error("the solo mode refused the decision: {0}")]
     SoloRefused(SoloRefusal),

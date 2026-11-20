@@ -358,7 +358,7 @@ impl SandboxProvider for Recorder {
         let at = match spec.profile {
             SandboxProfile::FetchDeps => Where::Fetch,
             SandboxProfile::Verify => Where::Verify,
-            SandboxProfile::Agent => Where::Elsewhere,
+            SandboxProfile::Agent | SandboxProfile::Troubleshooter => Where::Elsewhere,
         };
         let network = spec.network != NetworkAttachment::None;
         lock(&self.created).push(Created {

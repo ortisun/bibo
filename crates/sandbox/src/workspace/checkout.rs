@@ -125,7 +125,7 @@ pub(super) async fn create(
         return Err(WorkspaceError::UnknownCommit);
     }
     // The protected base must be readable and on the base's own history, or nothing is judged
-    // against it: fail closed (ADR 0024).
+    // against it: fail closed (ADR 0025).
     let protected = match &req.protected_base {
         Some(commit) if commit != &req.base => {
             if !commit_exists(shared, &job_dirs, commit, cancel).await?

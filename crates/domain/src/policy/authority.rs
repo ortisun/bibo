@@ -1181,7 +1181,7 @@ impl AuthorityPolicy {
     }
 
     /// The number of distinct approvals a tier needs. In the solo mode it is one at every tier:
-    /// the fact holds only where exactly one person may approve (ADR 0021).
+    /// the fact holds only where exactly one person may approve (ADR 0022).
     #[must_use]
     pub fn required_approvals(&self, tier: RiskTier, solo: SoloFact) -> u32 {
         self.tiers

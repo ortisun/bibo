@@ -20,6 +20,7 @@
 //! | [`patterns`] | The regular expressions the schemas declare, which the types compile |
 //! | [`policy`] | The typed policy documents and the pure rules that apply them |
 //! | [`project_rules`] | The rules for agents the factory installs in a project: the template, its rendering and the decision to propose it (ADR 0026) |
+//! | [`troubleshooting`] | A troubleshooter finding, its fingerprint, the triage labels and the issue rendered from a closed template (ADR 0021) |
 //!
 //! # How the code is kept equal to the documents
 //!
@@ -49,6 +50,7 @@ pub mod project_rules;
 pub mod redaction;
 pub mod scope;
 pub mod state;
+pub mod troubleshooting;
 pub mod values;
 pub mod vocabulary;
 

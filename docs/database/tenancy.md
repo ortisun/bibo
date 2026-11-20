@@ -11,7 +11,7 @@ Two layers keep tenants apart, and each catches a fault the other misses. The **
 
 ## The roles
 
-Five groups, none of which can log in. The deployment creates one or more **logins** as members of them.
+Six groups, none of which can log in. The deployment creates one or more **logins** as members of them.
 
 | Group | Used for | What it can do | Who may be a member |
 |---|---|---|---|
@@ -20,6 +20,7 @@ Five groups, none of which can log in. The deployment creates one or more **logi
 | `factory_system` | The engine's cross-tenant loops: claim, sweep, relay | Read the columns those queries need on `stage_runs`, `jobs`, `attempts`; lock `stage_runs` and `attempts`; read the outbox and mark events published. No insert, no delete, no status change. See [the system scope](#the-system-scope) | One login, used by `Store::begin_system` in the `workflow` crate |
 | `factory_resolver` | The two lookups before a tenant is known | Execute `resolve_token` and `resolve_installation`. No table access | The API login only |
 | `factory_lookup` | Owns the two lookup functions | Read the columns they use, through policies of its own | Nobody. The migration role holds it for a moment to hand the functions over |
+| `factory_observer` | The troubleshooter and `apps/mcp-postgres` (ADR 0021, migration `2026-11-20-002900`): read-only, across tenants | `SELECT` on the operational columns listed in [observer-columns.txt](observer-columns.txt), through one `observer_read` policy (`FOR SELECT ... USING (true)`) per table; member of `pg_read_all_stats`. No write, no `EXECUTE` grant, no request text, payload, token digest or identity of a person | The troubleshooter login only (`factory_troubleshooter`, made by [observer-login.sql](observer-login.sql)), which must belong to no other group |
 
 What the suite checks about the roles (`rls`, section 1, and the shell part):
 
@@ -50,7 +51,7 @@ CREATE POLICY tenant_isolation ON <table> AS PERMISSIVE FOR ALL TO factory_app
 - **`FORCE` binds the table owner.** The policy names `factory_app` only, so the owner sees no row and can write none (measured with an owner that is not a superuser: 2 rows without `FORCE`, 0 with it). A superuser bypasses everything, whatever is set.
 - **`tenants`** has no `tenant_id`. It has `ENABLE` without `FORCE`, and `tenant_self`: a tenant session reads its own row only. It is not forced because onboarding a tenant is an `INSERT` by the owner, and the owner has no policy to work under. The application role has `SELECT` on it and nothing else.
 - **Four reference tables** (the three state machine tables and the Diesel version table) hold no tenant data and have no policy. `factory_app` can read them.
-- **The suite closes the list.** The set of policies in the database must equal a list written in the suite (`expected_policies`): 29 policies today. An extra policy, a missing one, a policy for `PUBLIC` or a restrictive one fails it.
+- **The suite closes the list.** The set of policies in the database must equal a list written in the suite (`expected_policies`): 44 policies today (29, plus the 15 `observer_read` policies of migration `2026-11-20-002900`). An extra policy, a missing one, a policy for `PUBLIC` or a restrictive one fails it.
 
 What a tenant-1 session gets, from the `rls` suite (all 17 tables, each attempt in a subtransaction that is rolled back, with a control that shows the attempt would have worked for tenant 2):
 

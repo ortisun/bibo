@@ -3,7 +3,7 @@
 - Status: **Decided by the owner (the delivery by pull request), proposed for the rest**. Built on the branch `fix/agent-report-channel`. No independent review has covered it.
 - Date: 2026-11-20
 - Deciders: the owner chose a file in the project, delivered by a pull request the owner approves, over "only in the agents' prompts" and over "both". The engineer chose the rest, recorded below, for the owner to confirm.
-- Adds: ports v1.3, the `ProjectRulesHost` port ([ports v1.3](../architecture/ports-v1.3.md)). Related: [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md) decision 7 (the factory never marks a pull request ready), [ADR 0016](0016-design-phase-onboarding-and-issue-workflow.md) (onboarding), [ADR 0017](0017-ports-v1-2-issue-status-writer.md) (a port with a credential of its own), the design in [project-rules.md](../architecture/project-rules.md).
+- Adds: ports v1.4, the `ProjectRulesHost` port ([ports v1.4](../architecture/ports-v1.4.md); it was v1.3 until develop's troubleshooter took that number in the merge of 2026-11-20). Related: [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md) decision 7 (the factory never marks a pull request ready), [ADR 0016](0016-design-phase-onboarding-and-issue-workflow.md) (onboarding), [ADR 0017](0017-ports-v1-2-issue-status-writer.md) (a port with a credential of its own), the design in [project-rules.md](../architecture/project-rules.md).
 
 ## Context and problem statement
 
@@ -68,7 +68,7 @@ Nothing new is needed. `AGENTS.md` is in the group `agent_instruction_files` of 
 
 ## 7. Threats
 
-A changed `AGENTS.md` in the default branch steers every later agent (prompt injection that persists). The control is the owner's review of what is merged, which the preflight requires; the delimiting of the text in the prompt; and that no text can grant anything. This is threat T-49 in the threat model.
+A changed `AGENTS.md` in the default branch steers every later agent (prompt injection that persists). The control is the owner's review of what is merged, which the preflight requires; the delimiting of the text in the prompt; and that no text can grant anything. This is threat T-55 in the threat model.
 
 ## Consequences
 

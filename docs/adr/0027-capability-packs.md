@@ -140,7 +140,7 @@ Chosen: **option 2**, with the patterns the factory adopts recorded and dated in
 
 ## Dependencies
 
-- **The MCP gateway** exists only on `origin/fix/agent-report-channel` (merged there from `feat/troubleshooter-agent`). The local branch `fix/agent-report-channel` and that origin branch have diverged (22 local commits, 63 on origin on 2026-11-20). The two branches also both use the number **0021** for different records (the solo approval mode here, the troubleshooter there); one must be renumbered when they meet. Building Decision 6 needs that merge first.
+- **The MCP gateway** exists only on `origin/fix/agent-report-channel` (merged there from `feat/troubleshooter-agent`). The local branch `fix/agent-report-channel` and that origin branch have diverged (22 local commits, 63 on origin on 2026-11-20). The two branches also both used the number **0021** for different records (the solo approval mode here, the troubleshooter there). Revision 2026-11-20: `develop`, which holds the troubleshooter and the gateway, was merged into this branch; the troubleshooter kept 0021 and the solo approval mode became 0022. Building Decision 6 no longer waits for that merge.
 
 ## Decisions the owner confirmed on 2026-11-20
 

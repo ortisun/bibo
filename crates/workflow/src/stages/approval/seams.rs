@@ -10,7 +10,7 @@ use super::request::ApprovalRequest;
 use crate::handlers::RunIdentity;
 use crate::stages::delivery::SeamError;
 
-/// The facts of the solo mode about a job's repository, read now (ADR 0021): whether it is marked
+/// The facts of the solo mode about a job's repository, read now (ADR 0022): whether it is marked
 /// `single_maintainer` and how many active people may approve on it. The policy turns them into
 /// the solo fact (`AuthorityPolicy::solo_fact`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

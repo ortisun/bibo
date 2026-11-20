@@ -150,7 +150,7 @@ pub fn a9(ev: &RunEvidence, env: &Env) -> Verdict {
         .collect();
     // A job has two gates a person decides: the specification draft and the pull request. Each
     // leaves a granted record. Every one of them must be a person, other than the requester unless
-    // the solo mode is on (ADR 0021): then the engine granted the requester's approval only with
+    // the solo mode is on (ADR 0022): then the engine granted the requester's approval only with
     // the solo fact, and with the wait and the phrase where the tier asks for them. The last one is
     // the approval of the pull request, whose judgment the ledger must hold under the APPROVAL run.
     for record in &approvals {

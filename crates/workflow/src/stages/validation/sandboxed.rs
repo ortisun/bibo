@@ -218,6 +218,7 @@ pub async fn in_sandbox(
             caches: sandbox.caches.clone(),
         },
         job_token: None,
+        mcp_token: None,
         env: sandbox.env.clone(),
         hardening: sandbox.hardening.clone(),
     };

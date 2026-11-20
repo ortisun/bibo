@@ -25,6 +25,7 @@
 //! | [`risk`] | The risk tier of a change, computed from facts and never from an agent's claim | [`risk::RiskAssessment`] |
 //! | [`budget`] | Budget and rework checks against the ceilings, which a project can only lower | [`budget::BudgetVerdict`] |
 //! | [`issue_workflow`] | Which `factory:` label shows which job state, and whether a name may be written as a status label | [`issue_workflow::StatusLabel`] |
+//! | [`git_conventions`] | A project's Conventional Commits and gitflow settings: the branch the factory works from, and its commit headers | [`git_conventions::GitConventions`] |
 //! | [`tighten`] | Whether a project policy only tightens the central one, and the merged policy | [`tighten::TightenReport`] |
 //!
 //! [`PolicyEngine`] builds all of them from one pair of documents, except [`tighten`], which
@@ -53,6 +54,7 @@ pub mod common;
 pub mod decision;
 pub mod dependency;
 pub mod egress;
+pub mod git_conventions;
 pub mod issue_workflow;
 pub mod paths;
 pub mod risk;
@@ -61,6 +63,7 @@ pub mod security;
 pub mod solo;
 pub mod tighten;
 pub mod tools;
+pub mod troubleshooting;
 
 mod engine;
 
@@ -128,11 +131,19 @@ pub enum SandboxProfileKind {
     Verify,
     /// The dependency fetch: allowlisted registries, scripts disabled.
     FetchDeps,
+    /// The troubleshooter's agent run: no repository, the model broker and the MCP gateway only
+    /// (ADR 0021).
+    Troubleshooter,
 }
 
 impl SandboxProfileKind {
     /// Every profile.
-    pub const ALL: [SandboxProfileKind; 3] = [Self::Agent, Self::Verify, Self::FetchDeps];
+    pub const ALL: [SandboxProfileKind; 4] = [
+        Self::Agent,
+        Self::Verify,
+        Self::FetchDeps,
+        Self::Troubleshooter,
+    ];
 
     /// The spelling the policy files use.
     #[must_use]
@@ -141,6 +152,7 @@ impl SandboxProfileKind {
             Self::Agent => "agent",
             Self::Verify => "verify",
             Self::FetchDeps => "fetch_deps",
+            Self::Troubleshooter => "troubleshooter",
         }
     }
 

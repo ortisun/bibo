@@ -1,4 +1,4 @@
-# 0023: An agent's build writes in the output directory, never in the workspace
+# 0024: An agent's build writes in the output directory, never in the workspace
 
 - Status: **Proposed, pending the owner**. Built on the branch `fix/agent-report-channel` from real run 32 of scenario E1. No independent review has covered it.
 - Date: 2026-11-20

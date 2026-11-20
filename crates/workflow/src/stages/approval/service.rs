@@ -283,7 +283,7 @@ impl ApprovalService {
             _ => None,
         };
 
-        // The solo mode (ADR 0021): the facts of the repository now, and when the stage run
+        // The solo mode (ADR 0022): the facts of the repository now, and when the stage run
         // started to wait, the start of the wait of a high or critical pull request.
         let solo_inputs = d.approvals.solo_inputs(cmd.tenant, cmd.job, now).await?;
         let solo = d
@@ -561,7 +561,7 @@ impl ApprovalService {
                 auth.allowlist_version(),
                 cmd.channel,
                 // Said from the proof's stamp, never from the equality of ids: a refused approval
-                // of the requester never carries it (ADR 0021).
+                // of the requester never carries it (ADR 0022).
                 if auth.solo_stamp() {
                     "; basis=solo (approved by the requester, solo mode)"
                 } else {

@@ -53,6 +53,11 @@
 #   * Every independence rule names two roles, and for every model its author
 #     role may use, at least one model its reviewer role may use differs from it
 #     in the way the rule says.
+#   * An operations role (section 6) has no stage and no route, and is not also
+#     a pipeline role. It follows the rules of a role above, its run ceiling is
+#     at or under its manifest's limits and its own day ceiling, its day
+#     ceiling is at or under `budgets.hard_ceilings.per_org_day` of
+#     policies/security.yaml, and no project may add one or raise its ceilings.
 # =============================================================================
 
 schema_version: 1
@@ -261,3 +266,34 @@ independence:
 job:
   max_micro_usd: 10000000             # PENDING CONFIRMATION ($10.00)
   max_tokens: 1500000                 # PENDING CONFIRMATION
+
+# -----------------------------------------------------------------------------
+# 6. Operations roles
+# -----------------------------------------------------------------------------
+# Roles of agents that run outside the pipeline, in no job and no stage (ADR
+# 0021). They have no route: a run starts with `start_with` and moves to
+# `escalate_to` after `escalate_after_failed_repairs` failed repairs. Their
+# spend is never charged to a job; it is held to `per_run` for one run and to
+# `per_day` for all the runs of one UTC day together.
+#
+# The troubleshooter (ADR 0021, Decision 2). Claude only: Codex cannot be
+# brokered in subscription mode (ADR 0020), so gpt-6.1-sol is not allowed.
+#   per_run   0.75 dollars and 150000 tokens, under the manifest's 2 dollars and
+#             200000 tokens. A Sonnet run was measured at 0.12 to 0.25 dollars,
+#             so this is three times the worst measured run; an Opus run costs
+#             twice as much per token and still fits most investigations.
+#   per_day   3 dollars at list price. policies/troubleshooting.yaml allows at
+#             most 8 agent runs a day; 8 Sonnet runs at the measured worst case
+#             are 2 dollars, which leaves room for one or two escalations. Past
+#             3 dollars the day's runs stop and probes keep running without
+#             the model, so a flood costs at most 3 dollars a day (T-53 in ADR
+#             0021). The owner may raise it after the first weeks of use.
+operations_roles:
+  - role: troubleshooter
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_run: { max_micro_usd: 750000, max_tokens: 150000 }                      # PENDING CONFIRMATION ($0.75)
+    per_request: { max_input_tokens: 100000, max_output_tokens: 8000 }           # PENDING CONFIRMATION
+    per_day: { max_micro_usd: 3000000 }                                          # PENDING CONFIRMATION ($3.00 a day)

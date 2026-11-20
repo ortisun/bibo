@@ -644,7 +644,7 @@ impl InMemoryStore {
     }
 
     /// Marks a repository `single_maintainer` or not, as its registration does (the solo mode,
-    /// ADR 0021, reads the mark).
+    /// ADR 0022, reads the mark).
     pub fn set_single_maintainer(&self, repository: RepositoryId, value: bool) {
         let mut g = lock(&self.inner);
         if let Some(row) = g.committed.repositories.get_mut(&repository) {

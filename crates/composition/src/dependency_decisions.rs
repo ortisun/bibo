@@ -132,7 +132,7 @@ pub struct DependencyFields {
     /// The start of the checksum, 12 to 64 lower case hexadecimal digits, when the person wrote
     /// one.
     pub checksum: Option<String>,
-    /// The word of the confirmation phrase of the solo mode (ADR 0021): 16 lowercase hex digits,
+    /// The word of the confirmation phrase of the solo mode (ADR 0022): 16 lowercase hex digits,
     /// the `ConfirmationWord` of the phrase the person typed, when they typed one. Without it the
     /// subject is the six words it always was.
     pub confirm: Option<String>,
@@ -549,7 +549,7 @@ impl DependencyDecisions {
             author_association: None,
         };
         let now = self.deps.clock.now();
-        // The solo mode (ADR 0021): the facts of the repository now, turned into the solo fact by
+        // The solo mode (ADR 0022): the facts of the repository now, turned into the solo fact by
         // the one function of the policy that computes it.
         let Ok(inputs) = self.deps.sources.solo_inputs(tenant, fields.job, now).await else {
             return Verdict::Later;

@@ -1,4 +1,4 @@
-//! Opening the pull request that installs the project's rules for agents (ports v1.3, ADR 0026).
+//! Opening the pull request that installs the project's rules for agents (ports v1.4, ADR 0026).
 //!
 //! When a project is onboarded, and when a new release of the factory changes its rules, the
 //! factory proposes `AGENTS.md` (and the index files of `docs/` the project lacks) as a **draft**
@@ -17,7 +17,7 @@
 //! # The contract
 //!
 //! The preconditions, postconditions, errors, idempotency and cancellation are in
-//! `docs/architecture/ports-v1.3.md`, section 3. In short: only [`RULES_BRANCH`] is ever written,
+//! `docs/architecture/ports-v1.4.md`, section 3. In short: only [`RULES_BRANCH`] is ever written,
 //! a pull request is a draft and is never merged or marked ready, only pull requests of the
 //! factory's own App count, and the version marker at the end of the body is added by the adapter
 //! after its text checks.
@@ -148,7 +148,7 @@ pub struct RulesProposal {
 /// this port authorizes nothing. The title and the body come from a closed template.
 ///
 /// # Postconditions
-/// See `docs/architecture/ports-v1.3.md`, section 3. No call writes to any branch but
+/// See `docs/architecture/ports-v1.4.md`, section 3. No call writes to any branch but
 /// [`RULES_BRANCH`], no call merges, and no call marks a pull request ready.
 ///
 /// # Errors

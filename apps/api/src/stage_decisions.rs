@@ -186,7 +186,7 @@ pub(crate) async fn decide(
         }
         found_job = Some((job, repository));
     }
-    // The solo mode (ADR 0021): the requester's own decision on build code or on a translation
+    // The solo mode (ADR 0022): the requester's own decision on build code or on a translation
     // warning is refused at once, with the reason, when the mode does not apply or the phrase is
     // missing. `unblock` is not an approval and keeps its rule.
     let mut explained = None;

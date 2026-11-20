@@ -427,7 +427,7 @@ pub fn listed_people(text: &str) -> Vec<ListedPerson> {
     people
 }
 
-/// Whether `policies/approval.yaml` switches the solo mode on (`solo_mode.enabled`, ADR 0021):
+/// Whether `policies/approval.yaml` switches the solo mode on (`solo_mode.enabled`, ADR 0022):
 /// the one person who may approve approves their own request, and the engine checks the
 /// conditions of the mode at each decision. A file that cannot be read says no.
 #[must_use]
@@ -490,7 +490,7 @@ fn allowlist(host: &Host<'_>, found: &mut Vec<String>) {
             ));
         }
     }
-    // The owner works alone: one person may hold both when the solo mode is on (ADR 0021).
+    // The owner works alone: one person may hold both when the solo mode is on (ADR 0022).
     // Otherwise an approver who is not a requester is needed.
     let only_self = !approvers.is_empty()
         && approvers.iter().all(|approver| {

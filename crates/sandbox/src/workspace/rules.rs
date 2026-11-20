@@ -81,7 +81,7 @@ fn is_gitmodules(path: &RepoPath) -> bool {
 ///
 /// `facts` is the difference from the workspace's base commit: it says which paths this attempt
 /// changed. `protected` is the difference from the job's protected base to the same head tree,
-/// when the workspace starts from a later commit of the job (ADR 0024). For a path this attempt
+/// when the workspace starts from a later commit of the job (ADR 0025). For a path this attempt
 /// changed:
 ///
 /// * `deny_write` refuses the change, judged on `facts` (absolute);

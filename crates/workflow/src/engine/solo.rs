@@ -1,4 +1,4 @@
-//! The engine's own check of a decision the requester took alone in the solo mode (ADR 0021).
+//! The engine's own check of a decision the requester took alone in the solo mode (ADR 0022).
 //!
 //! The policy engine grants the exception and stamps its proof; the engine does not take the
 //! stamp as the whole truth. When it commits, it reads the facts again in its own transaction:

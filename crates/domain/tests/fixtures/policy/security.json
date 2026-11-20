@@ -781,6 +781,37 @@
       },
       "none": {
         "allow": []
+      },
+      "troubleshooter": {
+        "allow": [
+          {
+            "host": "model-broker.sandbox.internal",
+            "id": "troubleshooter_model_broker",
+            "justification": "credential-injecting model API relay, as for the agent profile",
+            "methods": [
+              "POST"
+            ],
+            "ports": [
+              8443
+            ],
+            "review_by": "2027-01-31",
+            "terminates_tls": true
+          },
+          {
+            "host": "mcp-gateway.sandbox.internal",
+            "id": "mcp_gateway",
+            "justification": "the troubleshooter's MCP gateway (Streamable HTTP) through the sidecar's second fixed relay; the gateway holds every upstream credential and allows a fixed list of read tools (ADR 0021)",
+            "methods": [
+              "POST",
+              "GET",
+              "DELETE"
+            ],
+            "ports": [
+              8444
+            ],
+            "review_by": "2027-01-31"
+          }
+        ]
       }
     },
     "proxy_rules": {
@@ -1736,6 +1767,28 @@
           "scope": "dependency_directories_only"
         }
       },
+      "troubleshooter": {
+        "egress_profile": "troubleshooter",
+        "limits": {
+          "cpus": 1.0,
+          "max_file_mb": 64,
+          "memory_mb": 2048,
+          "memory_swap_mb": 2048,
+          "nofile": 1024,
+          "pids": 128,
+          "tmpfs_mb": 256,
+          "wall_clock_s": 1800,
+          "workspace_disk_mb": 64
+        },
+        "network": "model_broker_and_mcp_gateway",
+        "purpose": "The troubleshooter's agent run. No repository and no built-in tool. Reaches only the model broker and the MCP gateway.",
+        "secrets": "broker_job_token_and_mcp_run_token",
+        "tmpfs_exec": false,
+        "workspace": {
+          "mode": "ro",
+          "scope": "empty"
+        }
+      },
       "verify": {
         "egress_profile": "none",
         "gate_definitions_from": "base_commit_or_central",
@@ -2581,6 +2634,426 @@
         "risk": "low",
         "roles": [
           "*"
+        ]
+      },
+      {
+        "description": "Searches Datadog logs. Gateway tool; upstream `search_datadog_logs` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.search_logs",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Aggregates Datadog logs. Gateway tool; upstream `analyze_datadog_logs` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.analyze_logs",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads one Datadog trace. Gateway tool; upstream `get_datadog_trace` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.get_trace",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Searches Datadog spans. Gateway tool; upstream `search_datadog_spans` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.search_spans",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Aggregates Datadog spans. Gateway tool; upstream `aggregate_spans` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.aggregate_spans",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads a Datadog metric series. Gateway tool; upstream `get_datadog_metric` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.get_metric",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads the tags and metadata of a Datadog metric. Gateway tool; upstream `get_datadog_metric_context` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.get_metric_context",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists Datadog metrics by name. Gateway tool; upstream `search_datadog_metrics` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.search_metrics",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Searches Datadog monitors and their states. Gateway tool; upstream `search_datadog_monitors` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.search_monitors",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Searches Datadog incidents. Gateway tool; upstream `search_datadog_incidents` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.search_incidents",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads one Datadog incident. Gateway tool; upstream `get_datadog_incident` of datadog.",
+        "human_gate": "none",
+        "id": "mcp.datadog.get_incident",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Runs an instant PromQL or MetricsQL query. Gateway tool; upstream `query` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.query",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Runs a range PromQL or MetricsQL query. Gateway tool; upstream `query_range` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.query_range",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists label names. Gateway tool; upstream `labels` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.labels",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists the values of one label. Gateway tool; upstream `label_values` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.label_values",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists metric names. Gateway tool; upstream `metrics` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.metrics",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads the metadata of metrics. Gateway tool; upstream `metrics_metadata` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.metrics_metadata",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists the alerts of the alerting rules. Gateway tool; upstream `alerts` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.alerts",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists the queries VictoriaMetrics is running. Gateway tool; upstream `active_queries` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.active_queries",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Explains how a query is parsed. Gateway tool; upstream `explain_query` of victoriametrics.",
+        "human_gate": "none",
+        "id": "mcp.victoriametrics.explain_query",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Lists the tables and views the observer role can read. Gateway tool; upstream `pg_list_relations` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.list_relations",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Describes the readable columns of one relation. Gateway tool; upstream `pg_describe_relation` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.describe_relation",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Runs one read-only query, boxed as a subquery in a read-only transaction. Gateway tool; upstream `pg_query` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.query",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "medium",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Explains a query without running it (no ANALYZE). Gateway tool; upstream `pg_explain` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.explain",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads sessions, waits and the oldest transaction. Gateway tool; upstream `pg_activity` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.activity",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads blocked and blocking sessions. Gateway tool; upstream `pg_locks` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.locks",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Reads dead tuples, vacuum and analyze times and sequential scans. Gateway tool; upstream `pg_table_health` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.table_health",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
+        ]
+      },
+      {
+        "description": "Runs the fixed factory health checks over the observer columns. Gateway tool; upstream `pg_factory_health` of postgres.",
+        "human_gate": "none",
+        "id": "mcp.postgres.factory_health",
+        "limits": {
+          "max_calls_per_task": 60,
+          "max_result_bytes": 65536,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "low",
+        "roles": [
+          "troubleshooter"
         ]
       }
     ],

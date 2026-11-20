@@ -285,7 +285,7 @@ pub fn job_budget_micro_usd(budget: &BudgetPolicy) -> u64 {
 
 /// Sets the limits of `config` that the budget policy decides, in place of the constants the
 /// engine starts with: the ceiling of a job ([`job_budget_micro_usd`]), the rework cap of each
-/// count (ADR 0022) and the repair cap (ADR 0010). Each cap is at most the engine's default
+/// count (ADR 0023) and the repair cap (ADR 0010). Each cap is at most the engine's default
 /// (`BudgetPolicy` refuses a policy above it and clamps), so the policy can only lower one.
 pub fn apply_budget_policy(config: &mut EngineConfig, budget: &BudgetPolicy) {
     config.job_budget_micro_usd = job_budget_micro_usd(budget);
@@ -881,7 +881,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     // the event it stored and holds these back, whatever facts a caller hands an override.
     let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone())
         .with_non_overridable_blocks(non_overridable_blocks(&policies))
-        // The solo mode (ADR 0021): the engine checks the policy's rules again at commit.
+        // The solo mode (ADR 0022): the engine checks the policy's rules again at commit.
         .with_solo(policies.engine.authority.solo_rules());
     config.claim_batch = 1;
     apply_budget_policy(&mut config, &policies.engine.budget);

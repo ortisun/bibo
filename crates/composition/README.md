@@ -57,7 +57,7 @@ needed from this crate, and what it added:
 * `PolicySpecs::verify_sandbox` and `fetch_sandbox`, the fixed part of the sandboxes the validation and documentation review
   stages carry in their own configuration, with the environment the pinned image needs (`CARGO_TARGET_DIR`, `CARGO_HOME`,
   `CARGO_NET_OFFLINE`, `TMPDIR`).
-* `sandbox_specs::agent_build_env`, the build variables of the Claude Code and Codex runs (ADR 0023): the same target and
+* `sandbox_specs::agent_build_env`, the build variables of the Claude Code and Codex runs (ADR 0024): the same target and
   temporary directories as the `verify` sandbox, offline, with the cargo home in each run's own home.
 * `YamlManifests` as the `ManifestReader` of the validation stage.
 * The indexing wrappers (`IndexingSandbox`, `IndexingWorkspaces`) around the sandbox and the workspaces, and the loop noting the
@@ -136,6 +136,7 @@ sandbox:
   labels: {}                                # more Docker labels; a test run adds its own
   remote: { https_host: github.com }        # or { directory: /abs/path } outside production
   sidecar_command: []                       # the egress sidecar's arguments
+  gateway_upstream: null                    # troubleshooter only: the MCP gateway as the sidecar sees it
   # docker_host: unix:///var/run/docker.sock   # where the Docker daemon is (the client runs with an empty environment)
   # docker_config: /home/factory/.docker       # the client's configuration directory; absolute, must exist
   # allow_remote_docker: false                 # true allows a tcp:// host off the loopback interface; production refuses it

@@ -165,7 +165,7 @@ pub struct DecisionFields {
     /// subject, so the word covers the text too, and the hook applies the text only if it has
     /// this hash.
     pub answer: Option<String>,
-    /// For `approve`, the word of the confirmation phrase of the solo mode (ADR 0021): 16
+    /// For `approve`, the word of the confirmation phrase of the solo mode (ADR 0022): 16
     /// lowercase hex digits, when the person typed a phrase. Written last, so a subject without
     /// it is byte for byte the text it always was.
     pub confirm: Option<String>,
@@ -353,7 +353,7 @@ pub enum Reason {
     /// Any other refusal of the approval service.
     Refused,
     /// The solo mode asks for a minimum wait that has not passed, or whose start is not known
-    /// (ADR 0021).
+    /// (ADR 0022).
     SoloDelay,
     /// The solo mode asks for the confirmation phrase, and the request carries none or another.
     ConfirmationMissing,
@@ -1179,7 +1179,7 @@ impl ClaimWork {
     }
 
     /// Lets the one person who approves on a `single_maintainer` repository approve the
-    /// specification of their own request (the solo mode, ADR 0021). The hook asks the policy for
+    /// specification of their own request (the solo mode, ADR 0022). The hook asks the policy for
     /// the proof of `freeze_specification` with the solo fact, and hands it to the engine, which
     /// checks the fact again. Without it the requester's approval is refused, as it was before.
     #[must_use]
@@ -1893,7 +1893,7 @@ impl ClaimWork {
     }
 
     /// The policy's proof for the freezing of a specification by the requester of the job, in the
-    /// solo mode (ADR 0021). `Ok(None)` when the person is not the requester (the engine checks
+    /// solo mode (ADR 0022). `Ok(None)` when the person is not the requester (the engine checks
     /// their role as before) or when the hook has no policy (the engine then refuses the
     /// requester). The facts are those of the approval of a pull request but for the change: a
     /// specification has no pull request and no risk tier yet, so it is the low tier, which asks
@@ -2281,7 +2281,7 @@ async fn warnings_decided(
 }
 
 /// The reason for a refusal of the approval service. Authority is never explained, with one
-/// exception: `ineligible_approver` names the solo mode (ADR 0021). Whoever reaches the approval
+/// exception: `ineligible_approver` names the solo mode (ADR 0022). Whoever reaches the approval
 /// stage's judge has passed step 5 of the hook ("May they, now, on this repository?"): they are on
 /// the allowlist with the role, so the reason does not tell who is on the list.
 fn refusal_reason(code: &str) -> Reason {

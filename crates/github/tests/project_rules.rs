@@ -1,4 +1,4 @@
-//! The project rules host of the GitHub adapter (ports v1.3, ADR 0026) against the fake GitHub
+//! The project rules host of the GitHub adapter (ports v1.4, ADR 0026) against the fake GitHub
 //! server of the test kit: the whole shared contract suite, then what only the adapter can show
 //! (the token it asks for, the branches it writes, the one `PUT`, the text it sends).
 //!

@@ -1,0 +1,66 @@
+# Optional overlay: also send traces, metrics and the factory's logs to Datadog (ADR 0021,
+# decision 8). The default stack in compose.yaml is unchanged and needs no account. Use this file
+# only together with it:
+#
+#   FACTORY_DD_SITE=datadoghq.eu \
+#   FACTORY_DD_API_KEY_FILE=$HOME/.config/factory/datadog-api-key \
+#   docker compose -f infra/otel/compose.yaml -f infra/otel/compose.datadog.yaml up -d --wait
+#
+# Variables (none of them holds a secret):
+#
+#   FACTORY_DD_SITE               REQUIRED. The Datadog site of the account, such as datadoghq.com
+#                                 (US1), datadoghq.eu (EU1) or us5.datadoghq.com. No default, so data
+#                                 is never sent to a region nobody chose.
+#   FACTORY_DD_API_KEY_FILE       REQUIRED. Path of a file (mode 0600) that holds the Datadog API key on
+#                                 one line. Compose mounts it at /run/secrets/dd_api_key. The key is
+#                                 never a value in this file, in an argument or in an environment
+#                                 variable.
+#   FACTORY_DD_HOSTNAME           The host name Datadog shows. Default factory-local.
+#   FACTORY_DOCKER_CONTAINERS_DIR Where Docker keeps the json-file logs of containers. Default
+#                                 /var/lib/docker/containers, which is right for Docker Engine on Linux
+#                                 and for Docker Desktop (the path inside its virtual machine).
+#
+# What changes against compose.yaml, for the collector only:
+#   * the image is the same contrib release, 0.162.0, pinned by digest instead of by tag;
+#   * the collector also reads collector.datadog.yaml, which adds the `datadog` exporter to the
+#     traces and metrics pipelines and a logs pipeline from the containers' json-file logs;
+#   * the container runs with a read-only root file system, no capabilities and no new privileges.
+#
+# The digest is the multi-platform index of otel/opentelemetry-collector-contrib:0.162.0, read with
+# "docker buildx imagetools inspect" on 2026-11-20 (linux/386, amd64, arm64, arm/v7, ppc64le, riscv64, s390x).
+# It is the version compose.yaml uses by tag; change both together, with a run of validate.sh.
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    command:
+      - "--config=/etc/otelcol/collector.yaml"
+      - "--config=/etc/otelcol/collector.datadog.yaml"
+    environment:
+      DD_SITE: ${FACTORY_DD_SITE:?Set FACTORY_DD_SITE to the Datadog site of the account, such as datadoghq.com or datadoghq.eu}
+      DD_HOSTNAME: ${FACTORY_DD_HOSTNAME:-factory-local}
+    secrets:
+      - dd_api_key
+    volumes:
+      - ./collector.datadog.yaml:/etc/otelcol/collector.datadog.yaml:ro
+      # Read-only. Every container's json-file log is in here, PostgreSQL's included; the receiver
+      # keeps only the factory's own JSON lines (collector.datadog.yaml explains the filter).
+      - ${FACTORY_DOCKER_CONTAINERS_DIR:-/var/lib/docker/containers}:/var/lib/docker/containers:ro
+    # Docker writes the log files as root with mode 0640, so the image's own user (10001) cannot read
+    # them. The collector runs as root with every capability dropped: it can read the files root owns
+    # and nothing that another user owns, and it cannot gain a capability back.
+    user: "0:0"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    mem_limit: 512m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  dd_api_key:
+    file: ${FACTORY_DD_API_KEY_FILE:?Set FACTORY_DD_API_KEY_FILE to the path of the file (mode 0600) that holds the Datadog API key}

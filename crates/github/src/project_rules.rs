@@ -1,5 +1,5 @@
 //! The project rules host: the draft pull request that installs or updates the project's rules
-//! for agents in `AGENTS.md` (ports v1.3, ADR 0026).
+//! for agents in `AGENTS.md` (ports v1.4, ADR 0026).
 //!
 //! # What this code does and does not do
 //!

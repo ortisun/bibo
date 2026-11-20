@@ -47,6 +47,9 @@ A span must carry every attribute in its "required" column when it ends. Require
 | `factory.agent` | `factory.correlation_id`, `factory.job_id`, `factory.attempt_id`, `factory.agent_id`, `factory.outcome` | One agent invocation inside an attempt. |
 | `factory.tool_call` | `factory.correlation_id`, `factory.job_id`, `factory.attempt_id`, `factory.tool_name`, `factory.outcome` | One tool call made by an agent. |
 | `factory.gate` | `factory.correlation_id`, `factory.job_id`, `factory.stage_run_id`, `factory.gate_id`, `factory.outcome` | One gate evaluation inside a stage run. |
+| `factory.troubleshooting_run` | `factory.troubleshooting_run_id`, `factory.trigger`, `factory.result` | One run of the troubleshooter, outside every job: the probes that tripped, the agent run and the issue decisions. |
+| `factory.probe` | `factory.troubleshooting_run_id`, `factory.probe_id`, `factory.result` | One deterministic probe of the troubleshooter. |
+| `factory.triage_issue` | `factory.troubleshooting_run_id`, `factory.issue_action` | One decision of the troubleshooter about the triage issue of a finding. |
 <!-- /table:spans -->
 
 ## 4. Attributes
@@ -77,6 +80,11 @@ An attribute is a key and a value on a span. Only the keys in this table are exp
 | `factory.tokens_output` | int | unbounded | `factory.agent` | Output tokens the broker metered for this invocation. |
 | `factory.cost_usd` | double | unbounded | `factory.agent` | Cost in United States dollars the broker metered for this invocation. |
 | `error.type` | string | bounded | `factory.job`, `factory.stage_run`, `factory.attempt`, `factory.agent`, `factory.tool_call`, `factory.gate` | The standard error.type key. A short error kind, never a message. |
+| `factory.troubleshooting_run_id` | string | unbounded | `factory.troubleshooting_run`, `factory.probe`, `factory.triage_issue` | The troubleshooting run. A run is not a job. |
+| `factory.trigger` | string | bounded | `factory.troubleshooting_run` | Why the troubleshooting run started: probe or sweep. |
+| `factory.result` | string | bounded | `factory.troubleshooting_run`, `factory.probe` | How a troubleshooting run or a probe ended, such as healthy, evidence_mismatch, tripped or no_data. |
+| `factory.probe_id` | string | bounded | `factory.probe` | The probe id from the troubleshooting policy. |
+| `factory.issue_action` | string | bounded | `factory.triage_issue` | What the troubleshooter did about a finding: opened, commented, unchanged, deferred or dry_run. |
 <!-- /table:attributes -->
 
 ### Event attributes
@@ -129,6 +137,10 @@ Metrics are for questions about the whole system over time: how deep is the queu
 | `factory_retries_total` | counter | {retry} | `stage` | Retries scheduled after a retryable attempt failure, by stage kind. |
 | `factory_spend_usd_total` | counter | {USD} | `provider`, `stage` | Model spend in United States dollars as metered by the broker, by provider and stage kind. |
 | `factory_redactions_total` | counter | {redaction} | `kind` | Values the attribute guard redacted, truncated or dropped before a span left the process, by kind. |
+| `factory_troubleshooting_runs_total` | counter | {run} | `trigger`, `result` | Troubleshooting runs that ended, by trigger and result. |
+| `factory_probe_results_total` | counter | {probe_result} | `probe`, `result` | Results of the troubleshooter's probes, by probe and result. |
+| `factory_gateway_calls_total` | counter | {call} | `upstream`, `result` | Calls of the troubleshooter's MCP gateway, probes and agent together, by upstream and result. |
+| `factory_triage_issues_total` | counter | {issue} | `action` | The troubleshooter's decisions about triage issues, by action. |
 <!-- /table:metrics -->
 
 `factory_redactions_total` was added in the telemetry gap fix (gap OBS-10) at the lead's approval; architect confirmation pending. Its one label, `kind`, takes the fixed words `redacted`, `truncated` and `dropped`, and no other value. It is raised where the guard raises its own counts (`GuardStats`), and only the kind is passed to it: never the matched text, the pattern id, the key or the value, so no customer value can become a label. `dropped` also counts the values the guard replaced because the scrubber failed (`GuardSnapshot::scrub_failures`), since the original is not passed on in either case. The metric covers the span guard only. The log writer's own redactions are not counted yet.
@@ -171,6 +183,11 @@ A metric event is not a log line and not a span event. The log layer and the spa
 | `provider` | 8 | The model provider the broker reports, such as anthropic. |
 | `queue` | 4 | The name of a work queue, such as ready_stage_runs. |
 | `kind` | 4 | What the attribute guard did to a value: redacted, truncated or dropped. |
+| `trigger` | 4 | Why a troubleshooting run started: probe or sweep. |
+| `result` | 16 | How a troubleshooting run, a probe or a gateway call ended, in the troubleshooter's closed words. |
+| `probe` | 32 | The probe id from the troubleshooting policy. |
+| `upstream` | 4 | The upstream of the MCP gateway: datadog, victoriametrics or postgres. |
+| `action` | 8 | What the troubleshooter did about a finding: opened, commented, unchanged, deferred or dry_run. |
 <!-- /table:labels -->
 
 "Max values" is the size of the closed set the label draws from, with some room to grow. It is not a count of values in use today.
@@ -268,6 +285,8 @@ How it behaves:
 
 [`infra/otel/`](../../infra/otel/README.md) holds a collector configuration, a Docker Compose file that starts the collector, VictoriaMetrics and Jaeger on the loopback address, and a script that checks the configuration with the pinned collector image. Its README says what was verified and when.
 
+An optional overlay, `compose.datadog.yaml`, also sends traces and metrics to Datadog and adds the factory's logs, read from Docker's json-file logs (section 13).
+
 For the first end-to-end run, the [runbook of first-run signals](runbook-first-run-signals.md) says which span, metric and log line to look at for a stuck lease, a stage over its deadline, a gate blocked by the environment, a job over budget and a redaction hit, and which of those signals no code records yet.
 
 ## 11. Dependencies
@@ -321,3 +340,14 @@ The crate depends on one workspace crate, `factory-domain`, which the dependency
 - **No OTLP logs.** Logs go to standard error. The policy names `otel_log_records` as a sink, and the pipeline would need the `opentelemetry-appender-tracing` crate, which is not on the allow list.
 - **No alert rules or dashboards.** This page fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.
 - **The sample is a sample.** The `emit_sample` example in the crate sends fake identifiers to a collector, with a redactor that has no pattern.
+
+## 13. What the troubleshooter reads
+
+The troubleshooter ([ADR 0021](../adr/0021-troubleshooter-agent-and-mcp-sources.md), [guide](../guides/troubleshooter.md)) reads the factory's signals through its MCP gateway and never changes them. It depends on the names of this page, so a change to a name here is a change to it too.
+
+- **Metrics, from VictoriaMetrics.** Its PromQL probes in `policies/troubleshooting.yaml` read `factory_stage_runs_total` by `outcome`, `factory_gate_failures_total`, `factory_queue_depth` with `queue="ready_stage_runs"`, `factory_retries_total` and `factory_spend_usd_total`, under the exact names of the metrics table. A test of the policy (`every_probe_metric_is_a_metric_of_the_conventions` in `crates/contracts/tests/troubleshooting_policy.rs`) fails when a probe names a metric that the table does not list. The agent may query any metric of the table through the `vm_*` tools.
+- **Traces, by the derived trace id.** A job's trace id is the 32 lowercase hex characters of its job id (section 3, ADR 0013), so the agent finds a job's trace from a job id it read in the database or in a log line, without a search. The derived root span is never exported, so a backend shows the job's stretches under a missing parent. Traces are readable by the troubleshooter only through Datadog: the gateway has no Jaeger upstream.
+- **Logs, only through the Datadog overlay.** The factory writes logs to standard error and exports none (section 7). The overlay of `infra/otel` reads Docker's json-file logs, keeps a line only when it is a JSON object whose `target` starts with `factory_`, and sends it to Datadog with the line as a structured body: `correlation_id` when the line was written inside a job, `level`, `target` and the `fields` of the allowlist. Without the overlay, the troubleshooter reads no log at all. A process that does not run in a container with the json-file driver, such as a program started by hand, is not read.
+- **The database, through its own role.** Operational columns of the factory's tables, read by the `factory_observer` role ([`apps/mcp-postgres`](../../apps/mcp-postgres/README.md)); not telemetry, named here because the probes join it with the metrics.
+
+Everything the troubleshooter reads was written by programs and people it does not trust, so the agent treats it as data and never as instructions (threat T-49).

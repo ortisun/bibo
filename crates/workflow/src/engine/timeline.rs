@@ -121,7 +121,7 @@ pub(crate) struct RunRecord {
     pub(crate) wait_reason: Option<String>,
     /// When the run last moved to `BLOCKED` (transitions S11 and S21): the `occurred_at` of the
     /// newest `stage_run.blocked` event. The milestone of the solo mode's wait for a decision on a
-    /// dependency or on build code (ADR 0021). `None` when no such event is readable.
+    /// dependency or on build code (ADR 0022). `None` when no such event is readable.
     pub(crate) blocked_at: Option<Timestamp>,
     /// When the run last moved to `WAITING_FOR_HUMAN` (transitions S07, S10 and S22): the
     /// `occurred_at` of the newest `stage_run.waiting_for_human` event. The milestone of the solo
@@ -301,7 +301,7 @@ pub(crate) fn window_of(attempts: &[AttemptRecord], answers: &[AnswerRecord]) ->
 /// targeted: walking the stages in pipeline order, the rounds that targeted a stage are the runs
 /// it has with a predecessor, less the rounds of earlier targets that also replaced it. The count
 /// it is charged to is `ReworkTrack::for_target`. Nothing about the count is stored with a run, so
-/// a job created before a change to that rule (ADR 0022 split the specification and the design
+/// a job created before a change to that rule (ADR 0023 split the specification and the design
 /// off the code count) is counted under the rule in force, the same as a new job: its rounds are
 /// all still counted, each on the count its target now belongs to.
 ///

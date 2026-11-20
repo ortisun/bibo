@@ -1,0 +1,7 @@
+# cargo audit configuration, read by the `rust-audit` step of scripts/ci.sh.
+# Every id here must also be in the [advisories] ignore list of deny.toml, with the same reason and
+# review date, so the two steps never disagree. Each exception is a person's decision.
+[advisories]
+# chrono 0.4 is unmaintained, not vulnerable; a mandatory dependency of rmcp 3.11.0 (ADR 0021).
+# Decided by the owner on 2026-11-20. Review by 2027-02-20, or when an rmcp release drops chrono.
+ignore = ["RUSTSEC-2026-0543"]

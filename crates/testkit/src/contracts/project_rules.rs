@@ -1,4 +1,4 @@
-//! The contract suite for `ProjectRulesHost` (ports v1.3, ADR 0026): a proposal is one draft pull
+//! The contract suite for `ProjectRulesHost` (ports v1.4, ADR 0026): a proposal is one draft pull
 //! request from `factory/project-rules` and the default branch is never written; proposing again
 //! opens no second one; an open proposal is updated on top and a person's commit on it is kept; a
 //! new proposal after a closed one starts from the default branch; only the factory's own pull

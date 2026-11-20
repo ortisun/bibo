@@ -59,7 +59,7 @@ fn text<'a>(value: &'a Value, key: &str) -> Cow<'a, str> {
     printable(value.get(key).and_then(Value::as_str).unwrap_or("unknown"))
 }
 
-/// The lines of a refusal of the solo mode (ADR 0021), or `None` for any other answer. Every
+/// The lines of a refusal of the solo mode (ADR 0022), or `None` for any other answer. Every
 /// field of the body goes through [`printable`].
 fn solo_refusal(status: u16, code: &str, body: &Value) -> Option<String> {
     match code {

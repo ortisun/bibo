@@ -170,7 +170,7 @@ pub struct Settings {
     pub owner: Owner,
     /// A person other than the owner who approves, when the allowlist names one: an entry of the
     /// owner's tenant with the designation `approver` and another GitHub id. Optional: without it
-    /// the owner approves alone in the solo mode (ADR 0021), because the real tenant's repository
+    /// the owner approves alone in the solo mode (ADR 0022), because the real tenant's repository
     /// is seeded `single_maintainer` and the owner is then its one approving person. With it there
     /// are two approving people, the solo mode does not apply, and this person approves.
     pub approver: Option<Owner>,
@@ -188,7 +188,7 @@ fn mode_of(path: &Path) -> Option<u32> {
 
 /// The owner of the run: the allowlist entry that holds both `requester` and `approver` (they
 /// work alone; the solo mode of `policies/approval.yaml` lets them approve their own request on the
-/// `single_maintainer` repository the run seeds, ADR 0021), or the first requester.
+/// `single_maintainer` repository the run seeds, ADR 0022), or the first requester.
 pub fn owner_in(text: &str) -> Option<Owner> {
     let entries = entries_in(text);
     let chosen = entries
@@ -1144,7 +1144,7 @@ async fn ask_the_owner(
                 Ok(request) => {
                     let evidence = rig.ledger_head(job, StageKind::Approval, run.id).await;
                     // The owner approves alone when nobody else decides (the solo mode, ADR
-                    // 0021): a high or critical pull request needs the phrase and the wait.
+                    // 0022): a high or critical pull request needs the phrase and the wait.
                     let solo = decider_file == token_file;
                     let (confirm, wait) = match SoloWait::for_pull_request(request.tier) {
                         Some(which) if solo => {
@@ -1571,7 +1571,7 @@ pub async fn scenario() {
     let token_file = out.join("owner-api-token");
     live::write_private(&token_file, &owner_token);
     // The person who approves: the second approver when the allowlist names one, otherwise the
-    // owner, alone, in the solo mode (ADR 0021).
+    // owner, alone, in the solo mode (ADR 0022).
     let decider_file = match &settings.approver {
         Some(person) => {
             let file = out.join("approver-api-token");
@@ -1585,7 +1585,7 @@ pub async fn scenario() {
         }
         None => {
             tell(&format!(
-                "You approve this run alone, in the solo mode (ADR 0021): the repository is seeded \
+                "You approve this run alone, in the solo mode (ADR 0022): the repository is seeded \
                  single_maintainer and your allowlist entry is the only one that holds `approver`, so \
                  the factory lets you approve your own request. The approval of the specification \
                  and of a low or medium pull request needs no wait and no phrase; a high or critical \

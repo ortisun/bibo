@@ -183,6 +183,67 @@ async fn remote_tip(
     }
 }
 
+/// The branches the remote has under `prefix`, sorted. `ls-remote` reads the remote and fetches
+/// nothing. A name that is not a [`BranchName`] is left out.
+pub(super) async fn list_remote_branches(
+    shared: &Shared,
+    job: JobId,
+    target: &FetchTarget,
+    prefix: &str,
+    cancel: &dyn CancelSignal,
+) -> Result<Vec<BranchName>, WorkspaceError> {
+    if cancel.is_cancelled() {
+        return Err(WorkspaceError::Cancelled);
+    }
+    // The prefix goes into a pattern: only a branch-name prefix ending in `/` is accepted.
+    let stem = prefix.strip_suffix('/').ok_or(WorkspaceError::Git {
+        operation: GitOperation::Fetch,
+        exit: None,
+    })?;
+    if BranchName::new(stem).is_err()
+        || !stem.starts_with(|c: char| c.is_ascii_alphanumeric())
+        || stem.contains(['*', '?', '['])
+    {
+        return Err(WorkspaceError::Git {
+            operation: GitOperation::Fetch,
+            exit: None,
+        });
+    }
+    let dirs = shared.job_dirs(job);
+    ensure_store(shared, &dirs, cancel).await?;
+    let url = shared.settings.remote.url(&target.repo);
+    let env = credential(shared, target.credential.expose());
+    let pattern = format!("refs/heads/{prefix}*");
+    let mut inv = Invocation::new(
+        &dirs.store,
+        &dirs.dir,
+        &["ls-remote", "--heads", "--", &url, &pattern],
+    )
+    .over_network();
+    inv.env.extend(env.iter().cloned());
+    let out = shared.git.run(GitOperation::Fetch, inv, cancel).await?;
+    if out.exit_code != Some(0) {
+        if looks_unauthorized(&out.stderr) {
+            return Err(WorkspaceError::Unauthorized);
+        }
+        return Err(WorkspaceError::Git {
+            operation: GitOperation::Fetch,
+            exit: out.exit_code,
+        });
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut names: Vec<BranchName> = text
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|(_, reference)| reference.strip_prefix("refs/heads/"))
+        .filter(|name| name.starts_with(prefix))
+        .filter_map(|name| BranchName::new(name).ok())
+        .collect();
+    names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    names.dedup();
+    Ok(names)
+}
+
 /// Fetches one branch into the job's store.
 pub(super) async fn fetch_branch(
     shared: &Shared,

@@ -49,7 +49,7 @@ fn the_stage_list_comes_from_the_state_machine_file_and_is_not_counted_in_code()
 }
 
 /// The owner works alone: with the solo mode on (`policies/approval.yaml`, `solo_mode.enabled`,
-/// ADR 0021), an honest run in which the requester approves their own request holds A9, whatever
+/// ADR 0022), an honest run in which the requester approves their own request holds A9, whatever
 /// the tier, because the engine grants that approval only with the solo fact. With the mode off
 /// the same approval does not hold A9.
 #[test]

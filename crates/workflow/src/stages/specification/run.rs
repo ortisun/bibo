@@ -430,7 +430,7 @@ async fn run_skill(
                 base: work.head.clone(),
                 // The writer changes only its own feature directory, which no `append_only` or
                 // `additions_only` rule covers, and a revision may start from a frozen
-                // specification's commit; the round's base stays the protected one (ADR 0024).
+                // specification's commit; the round's base stays the protected one (ADR 0025).
                 protected_base: None,
                 rules: h.config.path_rules.clone(),
                 purpose: WorkspacePurpose::Agent,
@@ -569,6 +569,7 @@ async fn run_skill_in(
         limits: manifest.resource_limits.clone(),
         model: route.model,
         flag_set: route.flag_set,
+        mcp_gateway: None,
     };
     let request = SpecRequest {
         job: identity.job,
@@ -735,14 +736,22 @@ async fn run_skill_in(
                 return Ok(Step::Stopped);
             }
             if !change.is_empty() {
+                let conventions = crate::conventions::load(ctx, &work.head).await?;
+                let subject = format!("write the specification: {step_name} step");
+                let body = "Committed by the factory after the change was audited.";
+                let message = crate::conventions::message_or(
+                    conventions.as_ref(),
+                    "docs",
+                    Some("spec"),
+                    &subject,
+                    body,
+                    format!("Write the specification: {step_name} step\n\n{body}\n"),
+                );
                 let commit = workspace
                     .commit(
                         &change,
                         CommitRequest {
-                            message: format!(
-                                "Write the specification: {} step\n\nCommitted by the factory after the change was audited.\n",
-                                step_name
-                            ),
+                            message,
                             author_name: h.config.identity.name.clone(),
                             author_email: h.config.identity.email.clone(),
                         },
@@ -1108,6 +1117,7 @@ async fn review_in(
         model: route.model,
         // The reviewer never sees the skills.
         flag_set: factory_ports::agent::FlagSet::Standard,
+        mcp_gateway: None,
     };
     let report = ports.runtime.run(&mut *session, request, ctx.cancel).await;
     work.tally.usage = work.tally.usage.saturating_add(report.usage);

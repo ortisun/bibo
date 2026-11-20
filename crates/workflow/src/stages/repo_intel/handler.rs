@@ -17,13 +17,16 @@ use async_trait::async_trait;
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::contracts::{ArtifactRef, ProjectManifest, StageContract};
 use factory_domain::ids::GateReportId;
+use factory_domain::policy::git_conventions::{
+    ClosingMode, GitConventions, MAX_SETTINGS_BYTES, SETTINGS_PATH,
+};
 use factory_domain::policy::{PolicyEngine, SandboxProfileKind};
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::githost::{ChangeHost, GitHostError, GitScope};
-use factory_ports::paths::{CommitSha, PathMode, PathRules, RepoGlob, RepoPath};
+use factory_ports::paths::{BranchName, CommitSha, PathMode, PathRules, RepoGlob, RepoPath};
 use factory_ports::sandbox::{ExecArgv, ExecRequest, SandboxError, TeardownReason};
 use factory_ports::workspace::{
     JobRepo, ReadView, WorkspaceError, WorkspacePurpose, WorkspaceRequest,
@@ -398,13 +401,71 @@ impl StageHandler for RepoIntelHandler {
             .fetch(identity.job, &credential, &target.branch, ctx.cancel)
             .await
             .map_err(workspace_error)?;
-        let commit = fetched.commit;
-        let commit_text = commit.as_str().to_owned();
         let repo = ports
             .workspaces
             .repo(identity.job)
             .await
             .map_err(workspace_error)?;
+
+        // The project's git conventions, read at the tip of the protected default branch. With
+        // them, the job works from the integration branch of the project's gitflow and opens its
+        // pull request there; without them, from the default branch, as before.
+        let settings = read_git_settings(&*repo, &fetched.commit).await?;
+        let mut base_branch = target.branch.clone();
+        let mut commit = fetched.commit.clone();
+        if let Some((conventions, _)) = &settings {
+            let mut remote_branches = Vec::new();
+            if conventions.closing_mode == ClosingMode::Release {
+                for prefix in conventions.prefixes_of("release") {
+                    let found = ports
+                        .workspaces
+                        .list_branches(identity.job, &credential, prefix, ctx.cancel)
+                        .await
+                        .map_err(workspace_error)?;
+                    remote_branches.extend(found.iter().map(|b| b.as_str().to_owned()));
+                }
+            }
+            let chosen = conventions
+                .integration_branch(&remote_branches)
+                .map_err(|refusal| {
+                    tracing::warn!("the job has no branch to work from: {refusal}");
+                    StageError::Blocked(BlockedCode::PolicyUnresolvable)
+                })?;
+            let chosen = BranchName::new(&chosen)
+                .map_err(|_| StageError::Blocked(BlockedCode::PolicyUnresolvable))?;
+            if chosen != target.branch {
+                commit = ports
+                    .workspaces
+                    .fetch(identity.job, &credential, &chosen, ctx.cancel)
+                    .await
+                    .map_err(|error| match error {
+                        // The settings name a branch the remote does not have (develop not pushed).
+                        WorkspaceError::UnknownCommit => {
+                            tracing::warn!(
+                                "the integration branch {} is not on the remote",
+                                chosen.as_str()
+                            );
+                            StageError::Blocked(BlockedCode::PolicyUnresolvable)
+                        }
+                        other => workspace_error(other),
+                    })?
+                    .commit;
+            }
+            base_branch = chosen;
+        }
+        // The map cites the settings at the base commit only, so it records them only when the base
+        // holds the same file as the default branch that decided the base.
+        let settings_at_base = match &settings {
+            Some((_, (_, sha))) if commit != fetched.commit => read_git_settings(&*repo, &commit)
+                .await
+                .ok()
+                .flatten()
+                .filter(|(_, (_, there))| there == sha)
+                .map(|(_, cited)| cited),
+            Some((_, cited)) => Some(cited.clone()),
+            None => None,
+        };
+        let commit_text = commit.as_str().to_owned();
 
         // What the model may see, and what the policy hides. A hidden path is listed by name and
         // never read.
@@ -682,6 +743,20 @@ impl StageHandler for RepoIntelHandler {
                 fields.insert("fallback".into(), json!(why.code()));
             }
             object.insert("project_rules".into(), rules);
+            object.insert("base_branch".into(), json!(base_branch.as_str()));
+            if let Some((text, sha)) = &settings_at_base {
+                object.insert(
+                    "git_settings".into(),
+                    json!({
+                        "path": SETTINGS_PATH,
+                        "sha256": sha,
+                        "evidence": evidence(
+                            &Place { path: SETTINGS_PATH.to_owned(), start: 1, end: u32::try_from(text.lines().count().max(1)).unwrap_or(1) },
+                            &commit_text,
+                        ),
+                    }),
+                );
+            }
         }
         // The map must have the shape of its schema before anything is stored.
         map::validate(&repository_map).map_err(|_| StageError::InvalidOutput)?;
@@ -1169,4 +1244,31 @@ fn ctx_note(ran: &mut Vec<Value>, argv: &[String], result: &factory_ports::sandb
         "stdout": stdout,
         "stderr": stderr,
     }));
+}
+
+/// The project's git settings at `commit`, with their text and hash: `None` when the project has
+/// no `.factory/repository.json`. Settings that are there and wrong block the job: a project that
+/// declares its conventions is not worked on as if it had none.
+async fn read_git_settings(
+    repo: &dyn JobRepo,
+    commit: &CommitSha,
+) -> Result<Option<(GitConventions, (String, Sha256Digest))>, StageError> {
+    let path = RepoPath::new(SETTINGS_PATH).map_err(|_| StageError::Internal)?;
+    let bytes = match repo
+        .read_file_at(commit, &path, MAX_SETTINGS_BYTES, ReadView::Agent)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(WorkspaceError::PathNotFound(_)) => return Ok(None),
+        Err(WorkspaceError::TooLarge) => {
+            return Err(StageError::Blocked(BlockedCode::PolicyUnresolvable));
+        }
+        Err(other) => return Err(workspace_error(other)),
+    };
+    let conventions = GitConventions::parse(&bytes).map_err(|rejected| {
+        tracing::warn!("{rejected}");
+        StageError::Blocked(BlockedCode::PolicyUnresolvable)
+    })?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(Some((conventions, (text, Sha256Digest::of(&bytes)))))
 }

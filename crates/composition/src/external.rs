@@ -376,7 +376,10 @@ pub fn github_adapter_over(
 // The runtimes
 // ---------------------------------------------------------------------------------------------
 
-fn claude_config(
+/// The configuration of Claude Code from the deployment's `runtimes.claude_code` section, with the
+/// credential of the mode. Public so that the troubleshooter builds its runtime the same way.
+#[must_use]
+pub fn claude_config(
     tool: Option<&RuntimeToolConfig>,
     skills: Option<SkillBundle>,
     mode: ProviderCredentialMode,
@@ -396,6 +399,25 @@ fn claude_config(
     }
     config.spec_skills = skills;
     config
+}
+
+/// Claude Code for one tenant, for a binary that runs agents for one tenant only (the
+/// troubleshooter, ADR 0021): the deployment's `runtimes.claude_code` section, the mode's
+/// credential, and the tenant's artifact scope for its transcripts.
+#[must_use]
+pub fn claude_runtime_for(
+    tool: Option<&RuntimeToolConfig>,
+    mode: ProviderCredentialMode,
+    artifacts: Arc<dyn ArtifactStore>,
+    redactor: Arc<Redactor>,
+    attestation: Arc<dyn TurnAttestation>,
+    tenant: TenantId,
+) -> Arc<dyn AgentRuntime> {
+    Arc::new(ClaudeCodeRuntime::new(
+        claude_config(tool, None, mode),
+        RunIo::new(artifacts, TenantScope::new(tenant), redactor),
+        attestation,
+    ))
 }
 
 /// How the job token reaches Claude Code in a mode: as its OAuth token on the owner's subscription,

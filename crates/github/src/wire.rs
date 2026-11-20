@@ -25,7 +25,7 @@ pub enum Method {
     /// duplicate of a status comment (ports v1.2).
     Delete,
     /// `PUT` to a file of the contents API (`/repos/{owner}/{repo}/contents/{path}`) and to
-    /// nothing else, for the rules pull request (ports v1.3, ADR 0026). The client refuses it for
+    /// nothing else, for the rules pull request (ports v1.4, ADR 0026). The client refuses it for
     /// any other path before it asks for a token ([`is_contents_path`]), so this method cannot
     /// reach the merge endpoint, which is also a `PUT`.
     PutContents,

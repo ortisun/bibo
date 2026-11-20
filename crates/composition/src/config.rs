@@ -234,6 +234,11 @@ pub struct SandboxConfig {
     /// real sidecar refuses, so a deployment that runs agents must set them.
     #[serde(default)]
     pub sidecar_command: Vec<String>,
+    /// The MCP gateway's address as the sidecar sees it, `IP:PORT` (ADR 0021, Decision 5). Only a
+    /// `troubleshooter` sandbox's sidecar gets the second fixed relay to it; every other sidecar
+    /// is started with `sidecar_command` alone. Absent means no troubleshooter sandbox can start.
+    #[serde(default)]
+    pub gateway_upstream: Option<std::net::SocketAddr>,
     /// Where the Docker daemon is, as `DOCKER_HOST` would say: `unix:///<absolute socket path>` or
     /// `tcp://<host>:<port>`. None means the client's own default socket. The `docker` client of
     /// the worker runs with an empty environment, so this key is the only way to name a daemon that

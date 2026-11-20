@@ -161,7 +161,7 @@ fn aut_8_no_gate_reports_is_not_a_conclusion_that_passes_a_required_check() {
 
 /// The adapter has no way to merge or to mark a pull request ready: `Method` has one PUT,
 /// `PutContents`, which the client and the transport refuse for any path but a file of the
-/// contents API (ports v1.3, ADR 0026), and no source file of the crate names a merge or ready
+/// contents API (ports v1.4, ADR 0026), and no source file of the crate names a merge or ready
 /// endpoint, a GraphQL mutation or auto-merge. `project_rules.rs` is the only user of that PUT.
 #[test]
 fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {

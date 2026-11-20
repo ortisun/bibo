@@ -447,3 +447,44 @@ async fn a_builder_that_fails_is_classified_like_every_other_agent() {
         assert_eq!(rig.ledger.statuses(run)[0].1, TaskNodeStatus::Failed);
     }
 }
+
+/// The settings `.factory/repository.json` of a project that asked for Conventional Commits.
+const GIT_SETTINGS: &str = r#"{"schema":"factory-repository-settings/1","repository":{"owner":"example-org","name":"fixture"},"project_board":null,"commits":{"convention":"conventional-commits","types":["build","chore","ci","docs","feat","fix","perf","refactor","revert","style","test"],"scopes":[],"require_scope":false,"header_max_length":100},"gitflow":{"closing_mode":"develop","main_branch":"main","develop_branch":"develop","prefixes":{"feature":["feature/","factory/"],"bugfix":["bugfix/"],"release":["release/"],"hotfix":["hotfix/"],"support":["support/"]},"additional_flows":[]}}"#;
+
+/// A project with git settings gets Conventional Commits headers, typed by the kind of each task;
+/// a project without them keeps the plain titles.
+#[tokio::test]
+async fn commit_messages_follow_the_projects_git_conventions() {
+    let mut files = crate::rig::base_files();
+    files.push((
+        ".factory/repository.json".to_owned(),
+        GIT_SETTINGS.to_owned(),
+    ));
+    let rig = Rig::build(crate::rig::Options {
+        files,
+        ..crate::rig::Options::default()
+    })
+    .await;
+    rig.run_until_implementation().await;
+    rig.builder_does_the_plan();
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        rig.events_of("commit.header:"),
+        [
+            "commit.header:feat: Print counts as JSON when the flag is given",
+            "commit.header:test: Show a clear error when the input file cannot be read",
+            "commit.header:docs: Document the JSON option and its key order",
+        ]
+    );
+
+    let plain = Rig::new().await;
+    plain.run_until_implementation().await;
+    plain.builder_does_the_plan();
+    let (_, outcome) = plain.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        plain.events_of("commit.header:")[0],
+        "commit.header:Print counts as JSON when the flag is given"
+    );
+}

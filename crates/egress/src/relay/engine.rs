@@ -4,7 +4,8 @@
 //! Names are resolved through a [`Resolver`] and connections made through a [`Connector`], so the
 //! tests can answer a name with a rebinding sequence and watch every connection attempt; the
 //! program uses the system resolver and plain TCP. The relay never connects to anything but the
-//! one address of broker mode or the one address it resolved, checked and pinned in connect mode.
+//! one address of broker mode (or, on its second listener, the one address of the second relay)
+//! or the one address it resolved, checked and pinned in connect mode.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -15,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::config::{Mode, RelayConfig};
+use super::config::{Mode, RelayConfig, SecondRelay};
 use super::policy::{Denial, HostPolicy};
 
 /// Resolves a host name to addresses.
@@ -145,12 +146,22 @@ pub struct Relay {
     active: AtomicUsize,
 }
 
+/// Which listener a connection came in on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// The relay's own listener: broker or connect, by the mode.
+    Primary,
+    /// The second fixed relay of broker mode, with its one upstream.
+    Second(SocketAddr),
+}
+
 /// A running relay. Dropping it stops it.
 pub struct RelayHandle {
     addr: SocketAddr,
+    second_addr: Option<SocketAddr>,
     relay: Arc<Relay>,
     stop: Arc<AtomicBool>,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl Relay {
@@ -183,31 +194,61 @@ impl Relay {
         }
     }
 
-    /// Binds the listener, writes the ready line and starts serving.
+    /// Binds the listener (and the second one, when the configuration has a second relay),
+    /// writes the ready line and starts serving. Both listeners are bound before either serves,
+    /// so a relay that cannot bind its second listener accepts nothing.
     ///
     /// # Errors
     /// The bind error. The program then exits non-zero before it accepts a connection.
     pub fn start(self) -> io::Result<RelayHandle> {
         let listener = TcpListener::bind(self.config.listen)?;
         let addr = listener.local_addr()?;
+        let second = match &self.config.mode {
+            Mode::Broker {
+                second: Some(SecondRelay { listen, upstream }),
+                ..
+            } => {
+                let second = TcpListener::bind(listen)?;
+                let second_addr = second.local_addr()?;
+                Some((second, second_addr, *upstream))
+            }
+            _ => None,
+        };
+        let second_addr = second.as_ref().map(|(_, at, _)| *at);
         let relay = Arc::new(self);
         let stop = Arc::new(AtomicBool::new(false));
         relay.log.emit(&json!({
             "event": "ready",
             "mode": relay.mode_name(),
             "listen": addr.to_string(),
+            "second_listen": second_addr.map(|a| a.to_string()),
             "job": relay.config.job,
         }));
+        let mut threads = Vec::new();
         let (worker, flag) = (Arc::clone(&relay), Arc::clone(&stop));
-        let thread = thread::Builder::new()
-            .name("relay-accept".to_owned())
-            .spawn(move || worker.accept_loop(&listener, &flag))?;
-        Ok(RelayHandle {
+        threads.push(
+            thread::Builder::new()
+                .name("relay-accept".to_owned())
+                .spawn(move || worker.accept_loop(&listener, &flag, Route::Primary))?,
+        );
+        let handle = RelayHandle {
             addr,
+            second_addr,
             relay,
             stop,
-            thread: Mutex::new(Some(thread)),
-        })
+            threads: Mutex::new(threads),
+        };
+        if let Some((listener, _, upstream)) = second {
+            let (worker, flag) = (Arc::clone(&handle.relay), Arc::clone(&handle.stop));
+            let thread = thread::Builder::new()
+                .name("relay-accept-second".to_owned())
+                .spawn(move || worker.accept_loop(&listener, &flag, Route::Second(upstream)))?;
+            // On a spawn error the handle is dropped above, which stops the first listener.
+            if let Ok(mut threads) = handle.threads.lock() {
+                threads.push(thread);
+            }
+        }
+        Ok(handle)
     }
 
     fn mode_name(&self) -> &'static str {
@@ -217,7 +258,7 @@ impl Relay {
         }
     }
 
-    fn accept_loop(self: &Arc<Self>, listener: &TcpListener, stop: &AtomicBool) {
+    fn accept_loop(self: &Arc<Self>, listener: &TcpListener, stop: &AtomicBool, route: Route) {
         for incoming in listener.incoming() {
             if stop.load(Ordering::SeqCst) {
                 break;
@@ -227,14 +268,14 @@ impl Relay {
             };
             if self.active.fetch_add(1, Ordering::SeqCst) >= self.config.max_connections {
                 self.active.fetch_sub(1, Ordering::SeqCst);
-                self.refuse(client, Denial::TooManyConnections, "", 0);
+                self.refuse(client, Denial::TooManyConnections, "", 0, route);
                 continue;
             }
             let worker = Arc::clone(self);
             let spawned = thread::Builder::new()
                 .name("relay-conn".to_owned())
                 .spawn(move || {
-                    worker.serve(client);
+                    worker.serve(client, route);
                     worker.active.fetch_sub(1, Ordering::SeqCst);
                 });
             if spawned.is_err() {
@@ -243,22 +284,27 @@ impl Relay {
         }
     }
 
-    fn serve(&self, client: TcpStream) {
+    fn serve(&self, client: TcpStream, route: Route) {
         let _ = client.set_nodelay(true);
         if self.quota.is_exhausted() {
-            return self.refuse(client, Denial::QuotaExhausted, "", 0);
+            return self.refuse(client, Denial::QuotaExhausted, "", 0, route);
         }
-        match &self.config.mode {
-            Mode::Broker { upstream } => self.serve_broker(client, *upstream),
-            Mode::Connect { .. } => self.serve_connect(client),
+        match (&self.config.mode, route) {
+            // The second listener exists only in broker mode, and it relays to its own address.
+            (_, Route::Second(upstream)) => self.serve_broker(client, upstream, route),
+            (Mode::Broker { upstream, .. }, Route::Primary) => {
+                self.serve_broker(client, *upstream, route);
+            }
+            (Mode::Connect { .. }, Route::Primary) => self.serve_connect(client),
         }
     }
 
     // ---- broker mode -------------------------------------------------------------------------
 
-    /// Every byte goes to the one address the supervisor gave. Nothing the sandbox sends is read
-    /// or used to choose where to connect, so there is nothing to resolve and nothing to trick.
-    fn serve_broker(&self, client: TcpStream, upstream: SocketAddr) {
+    /// Every byte goes to the one address the supervisor gave for this listener. Nothing the
+    /// sandbox sends is read or used to choose where to connect, so there is nothing to resolve
+    /// and nothing to trick.
+    fn serve_broker(&self, client: TcpStream, upstream: SocketAddr, route: Route) {
         let host = upstream.ip().to_string();
         let server = match self
             .connector
@@ -266,10 +312,20 @@ impl Relay {
         {
             Ok(server) => server,
             Err(_) => {
-                return self.refuse(client, Denial::UpstreamUnreachable, &host, upstream.port());
+                return self.refuse(
+                    client,
+                    Denial::UpstreamUnreachable,
+                    &host,
+                    upstream.port(),
+                    route,
+                );
             }
         };
-        self.decision(true, "broker", &host, upstream.port());
+        let reason = match route {
+            Route::Primary => "broker",
+            Route::Second(_) => "second_relay",
+        };
+        self.decision(true, reason, &host, upstream.port());
         self.pump(client, server, &[], &host, upstream.port());
     }
 
@@ -278,26 +334,40 @@ impl Relay {
     fn serve_connect(&self, mut client: TcpStream) {
         let _ = client.set_read_timeout(Some(self.config.head_timeout));
         let Some((authority, method_ok, leftover)) = read_connect_line(&mut client) else {
-            return self.refuse(client, Denial::Malformed, "", 0);
+            return self.refuse(client, Denial::Malformed, "", 0, Route::Primary);
         };
         if !method_ok {
-            return self.refuse(client, Denial::MethodNotAllowed, &authority, 0);
+            return self.refuse(
+                client,
+                Denial::MethodNotAllowed,
+                &authority,
+                0,
+                Route::Primary,
+            );
         }
         let Some(policy) = &self.policy else {
-            return self.refuse(client, Denial::Malformed, &authority, 0);
+            return self.refuse(client, Denial::Malformed, &authority, 0, Route::Primary);
         };
         let target = match policy.check_target(&authority) {
             Ok(target) => target,
-            Err(denial) => return self.refuse(client, denial, &authority, 0),
+            Err(denial) => return self.refuse(client, denial, &authority, 0, Route::Primary),
         };
         // The name is resolved here, once, and the answer is checked before anything is
         // connected. The connection goes to the address that was checked.
         let Some(answers) = self.resolver.resolve(&target.host) else {
-            return self.refuse(client, Denial::ResolveFailed, &target.host, target.port);
+            return self.refuse(
+                client,
+                Denial::ResolveFailed,
+                &target.host,
+                target.port,
+                Route::Primary,
+            );
         };
         let ip = match policy.check_resolved(&answers) {
             Ok(ip) => ip,
-            Err(denial) => return self.refuse(client, denial, &target.host, target.port),
+            Err(denial) => {
+                return self.refuse(client, denial, &target.host, target.port, Route::Primary);
+            }
         };
         let pinned = SocketAddr::new(ip, target.port);
         let server = match self.connector.connect(pinned, self.config.connect_timeout) {
@@ -308,6 +378,7 @@ impl Relay {
                     Denial::UpstreamUnreachable,
                     &target.host,
                     target.port,
+                    Route::Primary,
                 );
             }
         };
@@ -339,10 +410,14 @@ impl Relay {
         }));
     }
 
-    /// Refuses a connection: the decision is logged first, then the client is told.
-    fn refuse(&self, mut client: TcpStream, denial: Denial, host: &str, port: u16) {
+    /// Refuses a connection: the decision is logged first, then the client is told. Only the
+    /// `CONNECT` listener answers with an HTTP status; a fixed relay just closes.
+    fn refuse(&self, mut client: TcpStream, denial: Denial, host: &str, port: u16, route: Route) {
         self.decision(false, denial.as_str(), host, port);
-        if matches!(self.config.mode, Mode::Connect { .. }) && denial != Denial::Malformed {
+        if route == Route::Primary
+            && matches!(self.config.mode, Mode::Connect { .. })
+            && denial != Denial::Malformed
+        {
             let status = denial.status();
             let reason = match status {
                 405 => "Method Not Allowed",
@@ -467,17 +542,27 @@ impl RelayHandle {
         self.addr
     }
 
+    /// The address the second fixed relay listens on, when the relay has one.
+    #[must_use]
+    pub fn second_addr(&self) -> Option<SocketAddr> {
+        self.second_addr
+    }
+
     /// The bytes moved so far, both directions together.
     #[must_use]
     pub fn bytes_moved(&self) -> u64 {
         self.relay.quota.used.load(Ordering::SeqCst)
     }
 
-    /// Waits for the accept loop to end, which happens only after `shutdown`. The program calls
+    /// Waits for the accept loops to end, which happens only after `shutdown`. The program calls
     /// this to stay alive.
     pub fn wait(&self) {
-        let handle = self.thread.lock().ok().and_then(|mut t| t.take());
-        if let Some(handle) = handle {
+        let handles: Vec<JoinHandle<()>> = self
+            .threads
+            .lock()
+            .map(|mut t| t.drain(..).collect())
+            .unwrap_or_default();
+        for handle in handles {
             let _ = handle.join();
         }
     }
@@ -485,12 +570,14 @@ impl RelayHandle {
     /// Stops accepting connections. Connections already open finish.
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        let wake = if self.addr.ip().is_unspecified() {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), self.addr.port())
-        } else {
-            self.addr
-        };
-        let _ = TcpStream::connect_timeout(&wake, Duration::from_secs(1));
+        for addr in std::iter::once(self.addr).chain(self.second_addr) {
+            let wake = if addr.ip().is_unspecified() {
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), addr.port())
+            } else {
+                addr
+            };
+            let _ = TcpStream::connect_timeout(&wake, Duration::from_secs(1));
+        }
         self.wait();
     }
 }
