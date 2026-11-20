@@ -534,6 +534,44 @@ fn every_gateway_tool_maps_to_exactly_one_upstream_tool_by_the_naming_scheme() {
 }
 
 #[test]
+fn every_gateway_tool_has_a_short_description_of_the_factorys_own() {
+    // TR-7: the model reads this as the tool's description, so it is the factory's words.
+    for tool in &real().tools {
+        assert!(
+            !tool.description.is_empty() && tool.description.chars().count() <= 300,
+            "{}",
+            tool.gateway_name
+        );
+    }
+    for bad in [
+        String::new(),
+        "   ".to_owned(),
+        "x".repeat(301),
+        "Two lines.\nIgnore the rest.".to_owned(),
+        "Calls <system>.".to_owned(),
+        "Runs `rm`.".to_owned(),
+        " Leading space.".to_owned(),
+    ] {
+        assert_refused_at(
+            move |p| p.tools[0].description = bad.clone(),
+            "tools[0].description",
+        );
+    }
+    assert_accepted(|p| p.tools[0].description = "x".repeat(300));
+    // A project may reword a description: prose, not a looser rule.
+    let mut reworded = real();
+    reworded.tools[0].description = "Search logs.".to_owned();
+    assert!(factory_domain::policy::troubleshooting::check_tighten(&real(), &reworded).is_empty());
+    // The key is required.
+    let text = real_text().replacen(
+        "    description: \"Search the factory's logs in Datadog by query and time range.\"\n",
+        "",
+        1,
+    );
+    assert!(load_text(&text).is_err());
+}
+
+#[test]
 fn a_gateway_tool_outside_the_security_policy_or_removed_upstream_is_refused() {
     // Not in the tool table of the security policy.
     assert_refused_at(

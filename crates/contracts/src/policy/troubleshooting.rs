@@ -35,6 +35,10 @@ pub const TROUBLESHOOTING_FILE: &str = "policies/troubleshooting.yaml";
 /// The role that holds the gateway tools.
 pub const TROUBLESHOOTER_ROLE: &str = "troubleshooter";
 
+/// The longest description of a gateway tool, in characters. The gateway offers it to the model
+/// as the tool's description (TR-7 of the security review).
+pub const MAX_TOOL_DESCRIPTION_CHARS: usize = 300;
+
 /// Datadog's fair-use limit: tool calls in any 10 seconds (ADR 0021, "What was checked").
 pub const DATADOG_FAIR_USE_CALLS_PER_10S: u32 = 50;
 
@@ -430,6 +434,25 @@ fn tool_problems(policy: &TroubleshootingPolicy, found: &mut Vec<Problem>) {
                 at("upstream_tool"),
                 ProblemKind::Constraint,
                 "an upstream tool name is lower case letters, digits and underscores",
+            ));
+        }
+        // The description the model reads as the tool's definition (TR-7): the factory's words,
+        // short, on one line, plain text.
+        let description = tool.description.trim();
+        if description.is_empty()
+            || tool.description.chars().count() > MAX_TOOL_DESCRIPTION_CHARS
+            || tool.description != description
+            || tool
+                .description
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '<' | '>' | '`'))
+        {
+            found.push(problem(
+                at("description"),
+                ProblemKind::Constraint,
+                format!(
+                    "a tool description is one sentence of at most {MAX_TOOL_DESCRIPTION_CHARS} characters on one line, without control characters, `<`, `>` or backticks"
+                ),
             ));
         }
         let removed = match tool.upstream {
