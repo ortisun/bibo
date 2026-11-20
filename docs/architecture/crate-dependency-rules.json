@@ -621,6 +621,7 @@
         {
           "package": "tokio",
           "allowed": [
+            "fs",
             "io-util",
             "macros",
             "net",
@@ -632,7 +633,7 @@
             "test-util",
             "time"
           ],
-          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. signal is enabled by apps/worker so that SIGTERM and SIGINT drain the loop instead of abandoning a lease; it adds no crate to Cargo.lock and workflow has no path to it. A new feature (fs, full) appearing in this set needs an architect-reviewed change here."
+          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. signal is enabled by apps/worker so that SIGTERM and SIGINT drain the loop instead of abandoning a lease; it adds no crate to Cargo.lock and workflow has no path to it. fs resolves since ADR 0021: rmcp's Streamable HTTP client over reqwest (crates/mcp_gateway) depends on reqwest with its stream feature, which enables tokio/fs, and cannot be removed while that client is in the workspace graph. As for net and process, the guard is the DEP-05 ban on tokio::fs paths in the clippy.toml of every inner crate. Decided with ADR 0021, pending architect confirmation. A new feature (full, or any other) appearing in this set needs an architect-reviewed change here."
         }
       ]
     },
