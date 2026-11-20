@@ -302,4 +302,23 @@ fn a_new_specification_states_what_can_be_observed_and_adds_no_scope() {
         "{}",
         text.as_str()
     );
+    // The twenty-fifth real run: the writer widened a rule of the new option to behaviour the
+    // request keeps, and the reviewer then found that it could change today's output.
+    for op in [SpecOperation::Specify, SpecOperation::Clarify] {
+        let sources = match op {
+            SpecOperation::Clarify => Sources {
+                feedback: Some(&path("inputs/review-feedback.md")),
+                ..Sources::default()
+            },
+            _ => Sources::default(),
+        };
+        let text = FixedInstruction::build(op, &feature(), &path("inputs/request.md"), &sources)
+            .expect("an instruction");
+        assert!(
+            text.as_str()
+                .contains("stays exactly as in the previous release, and never restate it"),
+            "{op:?}: {}",
+            text.as_str()
+        );
+    }
 }

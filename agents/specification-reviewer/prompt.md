@@ -1,6 +1,6 @@
 # Specification reviewer prompt
 
-Prompt version: 1.3.0
+Prompt version: 1.4.0
 Agent: specification-reviewer
 
 ## Role and boundaries
@@ -411,6 +411,8 @@ The schema `review-findings`, version 1, exactly as the factory checks it:
 ## Evidence required
 
 Every finding says what is wrong, why it matters and what a correct version would state. Check at least these points. Every requirement is testable and unambiguous. Every user story has a priority and a scenario. No requirement names a technology. The specification covers the request and adds nothing the request did not ask for. Risks, constraints and the scope boundary are stated. No placeholder or open clarification marker remains. The writer ticked the checklist items, and a tick is not evidence: verify each ticked item against the text yourself.
+
+When the request keeps a behaviour as it is today, a requirement that says it stays exactly as in the previous release is complete: do not ask the specification to restate that behaviour or to define it for other inputs. A gap you find in what the new feature does is a gap of the new feature only, and its correct version applies only where the new feature is used. A correct version you propose must never change a behaviour the request keeps.
 
 Report each fault once, at the line of the specification that holds it. Make no finding about a tick or about a checklist file: the factory reads no tick, and a checklist item closes only when you pass the specification.
 
