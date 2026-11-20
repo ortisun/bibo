@@ -23,8 +23,8 @@ use factory_domain::ids::{AttemptId, JobId};
 use factory_domain::policy::security::{ProfileLimits, SecurityPolicy};
 use factory_ports::agent::JobTokenRef;
 use factory_ports::sandbox::{
-    FixedEnv, Hardening, JobTokenMount, NetworkAttachment, SandboxLimits, SandboxMounts,
-    SandboxPolicy, SandboxProfile, SandboxSpec,
+    FixedEnv, Hardening, JobTokenMount, McpRunTokenSecret, McpTokenMount, NetworkAttachment,
+    SandboxLimits, SandboxMounts, SandboxPolicy, SandboxProfile, SandboxSpec,
 };
 use factory_ports::workspace::WorkspaceMounts;
 use factory_sandbox::container::images::ImageCatalog;
@@ -88,7 +88,7 @@ pub fn built_program(name: &str) -> String {
 /// sandbox's. The `fetch_deps` sandbox is the one that may reach the registry.
 fn profile_env(profile: SandboxProfile) -> Vec<(String, String)> {
     let pairs: &[(&str, &str)] = match profile {
-        SandboxProfile::Agent => &[],
+        SandboxProfile::Agent | SandboxProfile::Troubleshooter => &[],
         SandboxProfile::Verify => &[
             ("CARGO_TARGET_DIR", TARGET_DIR),
             ("CARGO_HOME", "/home/agent/.cargo"),
@@ -116,6 +116,23 @@ pub const SIDECAR_ALIAS: &str = "egress";
 /// The port the egress sidecar listens on inside the job network: the one in the arguments of
 /// `sandbox.sidecar_command` (`--listen 0.0.0.0:8443`) that a deployment that runs agents sets.
 pub const SIDECAR_PORT: u16 = 8443;
+
+/// The port of the sidecar's second fixed relay, to the MCP gateway, inside the job network of a
+/// `troubleshooter` sandbox (ADR 0021, Decision 5). The supervisor adds `--second-listen` on this
+/// port, and `--second-upstream` with the gateway's address from `sandbox.gateway_upstream`, to
+/// the sidecar of that profile alone.
+pub const SIDECAR_GATEWAY_PORT: u16 = 8444;
+
+/// Where the troubleshooter in its sandbox reaches the MCP gateway: the second relay of the sidecar
+/// of its job network, by the sidecar's alias, over plain HTTP, at the gateway's `/mcp` path. The
+/// sidecar relays the bytes and reads none, so this is the only address the tool can be given.
+#[must_use]
+pub fn gateway_endpoint() -> factory_domain::values::Uri {
+    factory_domain::values::Uri::parse(&format!(
+        "http://{SIDECAR_ALIAS}:{SIDECAR_GATEWAY_PORT}/mcp"
+    ))
+    .expect("the alias and the port make a URI")
+}
 
 /// Where an agent in the sandbox reaches the model broker: the sidecar of its job network, by its
 /// alias, over plain HTTP. The sidecar relays the bytes to the broker (`--mode broker`) and
@@ -169,6 +186,7 @@ pub fn sandbox_policy_from(
         fetch_deps_max: limits_of(&profiles.fetch_deps.limits)?,
         agent_max: limits_of(&profiles.agent.limits)?,
         verify_max: limits_of(&profiles.verify.limits)?,
+        troubleshooter_max: limits_of(&profiles.troubleshooter.limits)?,
     })
 }
 
@@ -205,13 +223,19 @@ impl PolicySpecs {
         attempt: AttemptId,
         mounts: WorkspaceMounts,
         token: Option<JobTokenRef>,
+        mcp_token: Option<McpRunTokenSecret>,
     ) -> Result<SandboxSpec, SeamError> {
         let profiles = &self.policy.sandbox.profiles;
         let limits = match profile {
             SandboxProfile::Agent => &profiles.agent.limits,
             SandboxProfile::FetchDeps => &profiles.fetch_deps.limits,
             SandboxProfile::Verify => &profiles.verify.limits,
+            SandboxProfile::Troubleshooter => &profiles.troubleshooter.limits,
         };
+        // Only the troubleshooter holds the gateway's run token, and it always does.
+        if (profile == SandboxProfile::Troubleshooter) != mcp_token.is_some() {
+            return Err(SeamError::Unavailable);
+        }
         let image = self
             .catalog
             .reference_for(profile)
@@ -229,7 +253,7 @@ impl PolicySpecs {
                 },
                 None,
             ),
-            SandboxProfile::Agent => {
+            SandboxProfile::Agent | SandboxProfile::Troubleshooter => {
                 let token = token.ok_or(SeamError::Unavailable)?;
                 let secret = self
                     .broker
@@ -255,6 +279,7 @@ impl PolicySpecs {
                 caches: Vec::new(),
             },
             job_token,
+            mcp_token: mcp_token.map(|secret| McpTokenMount { secret }),
             env: FixedEnv::new(profile_env(profile)).map_err(|_| SeamError::Unavailable)?,
             hardening: Hardening::strict(ready.uid, ready.gid),
         })
@@ -282,6 +307,7 @@ impl PolicySpecs {
             SandboxProfile::Agent => &profiles.agent.limits,
             SandboxProfile::FetchDeps => &profiles.fetch_deps.limits,
             SandboxProfile::Verify => &profiles.verify.limits,
+            SandboxProfile::Troubleshooter => &profiles.troubleshooter.limits,
         };
         let image = self
             .catalog
@@ -346,6 +372,36 @@ impl PolicySpecs {
         })
     }
 
+    /// The sandbox of one troubleshooter run (ADR 0021): the agent image and hardening under the
+    /// `troubleshooter` limits, an empty workspace mounted read-only, the broker job token and the
+    /// MCP gateway's run token. Its sidecar gets the second relay from the provider's
+    /// configuration. The run has no job of its own in the pipeline; `job` and `attempt` are the
+    /// identifiers the troubleshooter gives its run, used for the sandbox's names and labels.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the catalog has no agent image, the policy limits do not
+    /// fit, or the broker does not hold the job token.
+    pub fn troubleshooter_spec(
+        &self,
+        job: JobId,
+        attempt: AttemptId,
+        token: JobTokenRef,
+        mcp_token: McpRunTokenSecret,
+    ) -> Result<SandboxSpec, SeamError> {
+        let mut mounts = self.scratch(attempt);
+        mounts.workspace_read_only = true;
+        let spec = self.build(
+            SandboxProfile::Troubleshooter,
+            job,
+            attempt,
+            mounts.clone(),
+            Some(token),
+            Some(mcp_token),
+        )?;
+        self.make_scratch(attempt, &mounts);
+        Ok(spec)
+    }
+
     /// An empty workspace for an attempt whose stage reads no repository.
     fn scratch(&self, attempt: AttemptId) -> WorkspaceMounts {
         let root = self.scratch_root.join(attempt.to_string());
@@ -396,6 +452,7 @@ impl AgentSandboxSpecs for PolicySpecs {
             attempt,
             mounts.clone(),
             Some(token),
+            None,
         )?;
         self.make_scratch(attempt, &mounts);
         Ok(spec)
@@ -409,7 +466,7 @@ impl VerifySandboxSpecs for PolicySpecs {
         attempt: AttemptId,
         mounts: WorkspaceMounts,
     ) -> Result<SandboxSpec, SeamError> {
-        self.build(SandboxProfile::Verify, job, attempt, mounts, None)
+        self.build(SandboxProfile::Verify, job, attempt, mounts, None, None)
     }
 }
 
@@ -428,7 +485,14 @@ impl WorkspaceAgentSpecs for PolicySpecs {
         // tree is then the job of the workspace purpose and of the tool grants, not of the mount.
         // README, "Cross-stage mismatches".
         let _ = access;
-        self.build(SandboxProfile::Agent, job, attempt, mounts, Some(token))
+        self.build(
+            SandboxProfile::Agent,
+            job,
+            attempt,
+            mounts,
+            Some(token),
+            None,
+        )
     }
 }
 
@@ -622,5 +686,82 @@ mod tests {
         };
         let refusal = specs.agent_spec(ids.job(), ids.attempt(), unknown);
         assert_eq!(refusal.unwrap_err(), SeamError::Unavailable);
+    }
+
+    #[test]
+    fn the_gateway_address_names_the_second_relay_of_the_sidecar() {
+        let url = gateway_endpoint();
+        assert_eq!(url.as_str(), "http://egress:8444/mcp");
+        assert_ne!(SIDECAR_GATEWAY_PORT, SIDECAR_PORT);
+    }
+
+    /// ADR 0021: the troubleshooter's sandbox is the agent image under its own limits, with no
+    /// repository (an empty read-only workspace), both token files and the policy check passed.
+    #[tokio::test]
+    async fn a_troubleshooter_spec_has_no_repository_two_tokens_and_passes_the_policy_check() {
+        use factory_ports::agent::{CostMicroUsd, JobTokenRequest, ModelBroker as _};
+        // A normalized absolute path: the policy check refuses one with `..` in it.
+        let dir = repository_root()
+            .canonicalize()
+            .expect("the repository root")
+            .join("target/sandbox-specs-troubleshooter")
+            .join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        let policy = Arc::new(repository_security_policy());
+        let derived = sandbox_policy_from(&policy, true).expect("limits fit");
+        let redactor = Arc::new(crate::redaction::redactor_from_policy(&policy).expect("builds"));
+        let registering = Arc::new(RegisteringBroker::new(unreachable_broker(), redactor));
+        let specs = PolicySpecs::new(policy, catalog(), Arc::clone(&registering), dir.clone());
+        let ids = factory_testkit::fixtures::Ids::new();
+        let token = registering
+            .issue(JobTokenRequest {
+                tenant: ids.tenant(),
+                job: ids.job(),
+                stage: factory_domain::vocabulary::StageKind::Intake,
+                cost_ceiling: CostMicroUsd(1_000),
+                allowed_models: vec![factory_ports::agent::ModelSelection {
+                    runtime: factory_ports::agent::RuntimeId::new("fake").expect("a runtime"),
+                    model: factory_domain::values::NonEmptyString::parse("fake-model")
+                        .expect("a model"),
+                }],
+                ttl: Duration::from_secs(60),
+                per_request: None,
+            })
+            .await
+            .expect("a token");
+        // Built at run time so that no secret-shaped literal sits in the source.
+        let gateway = McpRunTokenSecret::new(format!("{}-{}", "spec", "gateway-token"));
+        let attempt = ids.attempt();
+        let spec = specs
+            .troubleshooter_spec(
+                ids.job(),
+                attempt,
+                JobTokenRef { id: token.id },
+                gateway.clone(),
+            )
+            .expect("a troubleshooter spec");
+        assert_eq!(spec.profile, SandboxProfile::Troubleshooter);
+        assert!(spec.mounts.workspace.workspace_read_only);
+        assert!(spec.mounts.workspace.protected_overlays.is_empty());
+        assert!(spec.job_token.is_some());
+        assert_eq!(spec.mcp_token.as_ref().map(|m| &m.secret), Some(&gateway));
+        assert_eq!(
+            Some(&spec.image),
+            catalog().reference_for(SandboxProfile::Agent),
+            "the agent image"
+        );
+        assert_eq!(spec.limits, derived.troubleshooter_max);
+        let checked = spec.validate(&derived);
+        assert!(checked.is_ok(), "{checked:?}");
+        let entries = std::fs::read_dir(dir.join(attempt.to_string()).join("work"))
+            .expect("the empty workspace exists")
+            .map(|e| e.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [std::ffi::OsString::from(".git")],
+            "only the mask's file"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

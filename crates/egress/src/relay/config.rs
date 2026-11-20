@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! factory-egress-sidecar --mode broker  --listen 0.0.0.0:8443 --upstream 172.17.0.1:9443 \
+//!                        [--second-listen 0.0.0.0:8444 --second-upstream 172.17.0.1:9444] \
 //!                        [--max-bytes N] [--job ID] [--max-connections N]
 //! factory-egress-sidecar --mode connect --listen 0.0.0.0:3128 --allow index.crates.io:443 \
 //!                        --allow static.crates.io:443 [--max-bytes N] [--job ID]
@@ -29,6 +30,8 @@ pub enum Mode {
     Broker {
         /// The broker's address.
         upstream: SocketAddr,
+        /// The second fixed relay, when the supervisor asked for one. Off unless configured.
+        second: Option<SecondRelay>,
     },
     /// The `fetch_deps` profile: a `CONNECT` proxy for an exact-host allowlist. Names are
     /// resolved here, checked and pinned.
@@ -36,6 +39,19 @@ pub enum Mode {
         /// The hosts and ports that may be reached.
         allow: Vec<HostRule>,
     },
+}
+
+/// The one optional second relay of broker mode (ADR 0021, Decision 5): a second listener whose
+/// every connection goes to one more fixed address, the troubleshooter's MCP gateway. Like the
+/// first relay it reads nothing the sandbox sends, resolves no name, and shares the job's byte
+/// quota and connection limit. There is no host list and no `CONNECT`; the address is pinned by
+/// the supervisor and cannot be changed by the sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecondRelay {
+    /// Where the second listener listens.
+    pub listen: SocketAddr,
+    /// The one address it relays to.
+    pub upstream: SocketAddr,
 }
 
 /// Everything the relay is started with.
@@ -99,6 +115,15 @@ fn parse_num<T: std::str::FromStr>(text: &str) -> Result<T, ConfigError> {
     text.parse().map_err(|_| ConfigError::BadValue)
 }
 
+/// An address a fixed relay may be pointed at: a real port, a unicast address that names one
+/// host, and not the listener itself.
+fn is_fixed_upstream(upstream: SocketAddr, listen: SocketAddr) -> bool {
+    upstream.port() != 0
+        && !upstream.ip().is_unspecified()
+        && !upstream.ip().is_multicast()
+        && upstream != listen
+}
+
 impl RelayConfig {
     /// Reads the command line, without the program name.
     ///
@@ -108,6 +133,8 @@ impl RelayConfig {
         let mut mode = None;
         let mut listen = None;
         let mut upstream = None;
+        let mut second_listen = None;
+        let mut second_upstream = None;
         let mut max_bytes = None;
         let mut max_connections = None;
         let mut job = None;
@@ -127,6 +154,8 @@ impl RelayConfig {
                 "--mode" => once(&mut mode, value()?)?,
                 "--listen" => once(&mut listen, value()?)?,
                 "--upstream" => once(&mut upstream, value()?)?,
+                "--second-listen" => once(&mut second_listen, value()?)?,
+                "--second-upstream" => once(&mut second_upstream, value()?)?,
                 "--max-bytes" => once(&mut max_bytes, value()?)?,
                 "--max-connections" => once(&mut max_connections, value()?)?,
                 "--job" => once(&mut job, value()?)?,
@@ -155,17 +184,36 @@ impl RelayConfig {
                     .ok_or(ConfigError::MissingRequired)?
                     .parse()
                     .map_err(|_| ConfigError::BadValue)?;
-                if upstream.port() == 0
-                    || upstream.ip().is_unspecified()
-                    || upstream.ip().is_multicast()
-                    || upstream == listen
-                {
+                if !is_fixed_upstream(upstream, listen) {
                     return Err(ConfigError::BadValue);
                 }
-                Mode::Broker { upstream }
+                let second = match (second_listen, second_upstream) {
+                    (None, None) => None,
+                    (Some(second_listen), Some(second_upstream)) => {
+                        let second_listen: SocketAddr =
+                            second_listen.parse().map_err(|_| ConfigError::BadValue)?;
+                        let second_upstream: SocketAddr =
+                            second_upstream.parse().map_err(|_| ConfigError::BadValue)?;
+                        // Its own port of 1024 or higher, not the first listener's, and an
+                        // upstream that is neither listener.
+                        if second_listen.port() < 1024
+                            || second_listen.port() == listen.port()
+                            || !is_fixed_upstream(second_upstream, second_listen)
+                            || second_upstream == listen
+                        {
+                            return Err(ConfigError::BadValue);
+                        }
+                        Some(SecondRelay {
+                            listen: second_listen,
+                            upstream: second_upstream,
+                        })
+                    }
+                    _ => return Err(ConfigError::MissingRequired),
+                };
+                Mode::Broker { upstream, second }
             }
             "connect" => {
-                if upstream.is_some() {
+                if upstream.is_some() || second_listen.is_some() || second_upstream.is_some() {
                     return Err(ConfigError::WrongMode);
                 }
                 if allow.is_empty() {
@@ -260,12 +308,69 @@ mod tests {
         assert_eq!(
             config.mode,
             Mode::Broker {
-                upstream: "172.17.0.1:9443".parse().expect("address")
+                upstream: "172.17.0.1:9443".parse().expect("address"),
+                second: None,
             }
         );
         assert_eq!(config.max_bytes, 1000);
         assert_eq!(config.job.as_deref(), Some("job-1"));
         assert_eq!(config.max_connections, 64);
+    }
+
+    #[test]
+    fn a_broker_command_line_with_a_second_relay_is_read() {
+        let config = RelayConfig::from_args(&args(
+            "--mode broker --listen 0.0.0.0:8443 --upstream 172.17.0.1:9443 --second-listen 0.0.0.0:8444 --second-upstream 172.17.0.1:9444",
+        ))
+        .expect("a config");
+        assert_eq!(
+            config.mode,
+            Mode::Broker {
+                upstream: "172.17.0.1:9443".parse().expect("address"),
+                second: Some(SecondRelay {
+                    listen: "0.0.0.0:8444".parse().expect("address"),
+                    upstream: "172.17.0.1:9444".parse().expect("address"),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn the_second_relay_is_one_fixed_address_and_only_in_broker_mode() {
+        let base = "--mode broker --listen 0.0.0.0:8443 --upstream 172.17.0.1:9443";
+        let bad = [
+            // Half a second relay.
+            format!("{base} --second-listen 0.0.0.0:8444"),
+            format!("{base} --second-upstream 172.17.0.1:9444"),
+            // A name, a host list or a range instead of one address.
+            format!("{base} --second-listen 0.0.0.0:8444 --second-upstream gateway:9444"),
+            format!(
+                "{base} --second-listen 0.0.0.0:8444 --second-upstream 172.17.0.1:9444,10.0.0.1:1"
+            ),
+            format!("{base} --second-listen 0.0.0.0:8444 --second-upstream 10.0.0.0/8"),
+            // Twice, or a second upstream next to the first.
+            format!(
+                "{base} --second-listen 0.0.0.0:8444 --second-upstream 172.17.0.1:9444 --second-upstream 172.17.0.1:9445"
+            ),
+            // Nothing to relay to, or a loop to a listener.
+            format!("{base} --second-listen 0.0.0.0:8444 --second-upstream 0.0.0.0:9444"),
+            format!("{base} --second-listen 0.0.0.0:8444 --second-upstream 172.17.0.1:0"),
+            format!("{base} --second-listen 0.0.0.0:8444 --second-upstream 224.0.0.1:9444"),
+            format!("{base} --second-listen 0.0.0.0:8444 --second-upstream 0.0.0.0:8443"),
+            format!("{base} --second-listen 127.0.0.1:8444 --second-upstream 127.0.0.1:8444"),
+            // A privileged port, or the first listener's port.
+            format!("{base} --second-listen 0.0.0.0:80 --second-upstream 172.17.0.1:9444"),
+            format!("{base} --second-listen 0.0.0.0:8443 --second-upstream 172.17.0.1:9444"),
+            // Connect mode has no second relay.
+            "--mode connect --listen 0.0.0.0:3128 --allow a.test:443 --second-listen 0.0.0.0:8444 --second-upstream 172.17.0.1:9444".to_owned(),
+            "--mode connect --listen 0.0.0.0:3128 --allow a.test:443 --second-listen 0.0.0.0:8444".to_owned(),
+        ];
+        for text in &bad {
+            assert!(
+                RelayConfig::from_args(&args(text)).is_err(),
+                "should be refused: {text:?}"
+            );
+        }
     }
 
     #[test]

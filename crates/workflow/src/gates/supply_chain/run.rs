@@ -303,6 +303,7 @@ pub fn fetch_spec(
             caches: sandbox.caches.clone(),
         },
         job_token: None,
+        mcp_token: None,
         env: sandbox.env.clone(),
         hardening: sandbox.hardening.clone(),
     }
@@ -329,6 +330,7 @@ pub fn verify_spec(
             caches: sandbox.caches.clone(),
         },
         job_token: None,
+        mcp_token: None,
         env: sandbox.env.clone(),
         hardening: sandbox.hardening.clone(),
     }

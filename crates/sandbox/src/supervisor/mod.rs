@@ -98,6 +98,10 @@ pub struct ProviderConfig {
     pub owner_labels: Vec<(String, String)>,
     /// Arguments for the egress sidecar's program.
     pub sidecar_command: Vec<String>,
+    /// The second fixed relay of the sidecar, to the MCP gateway (ADR 0021). Added to the
+    /// command of a `troubleshooter` sandbox's sidecar and of no other; a troubleshooter sandbox
+    /// is refused without it.
+    pub gateway_relay: Option<crate::container::args::GatewayRelay>,
     /// How control commands are run.
     pub docker: DockerSettings,
     /// How the watchdog polls.

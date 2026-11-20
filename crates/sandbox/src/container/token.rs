@@ -8,6 +8,7 @@
 //! <root>/                 mode 0700
 //!   <suffix>/             mode 0700, one per sandbox, named like the sandbox's Docker objects
 //!     job-token           mode 0400, owned by the sandbox user, the secret and nothing else
+//!     mcp-token           troubleshooter only (ADR 0021): the MCP gateway's run token, the same way
 //! ```
 //!
 //! The file is bind-mounted read-only at [`factory_ports::sandbox::JOB_TOKEN_TARGET`]. On a Linux
@@ -27,9 +28,13 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use factory_ports::agent::JobTokenSecret;
+use factory_ports::sandbox::McpRunTokenSecret;
 
 /// The name of the file inside a sandbox's directory.
 pub const TOKEN_FILE_NAME: &str = "job-token";
+
+/// The name of the MCP gateway's run token file, beside the job token (troubleshooter only).
+pub const MCP_TOKEN_FILE_NAME: &str = "mcp-token";
 
 /// Where token files live.
 #[derive(Debug, Clone)]
@@ -101,26 +106,54 @@ impl TokenStore {
         let mut leaf = fs::DirBuilder::new();
         leaf.mode(0o700);
         leaf.create(&directory)?;
-        let outcome = self.fill(&directory, secret, uid, gid);
+        let outcome = Self::fill(&directory, TOKEN_FILE_NAME, secret.expose(), uid, gid);
         if outcome.is_err() {
             let _ = fs::remove_dir_all(&directory);
         }
         outcome
     }
 
-    fn fill(
+    /// Writes the MCP gateway's run token beside the job token of the sandbox named by `suffix`,
+    /// the same way: created new, 0400 before a byte is written, handed to `uid:gid` when allowed.
+    /// The directory must already exist ([`Self::write`] made it), and [`Self::remove`] removes
+    /// both files with it.
+    ///
+    /// # Errors
+    /// The I/O error. A file that was created is removed before the error returns.
+    pub fn write_mcp(
         &self,
-        directory: &Path,
-        secret: &JobTokenSecret,
+        suffix: &str,
+        secret: &McpRunTokenSecret,
         uid: u32,
         gid: u32,
     ) -> io::Result<TokenFile> {
-        let path = directory.join(TOKEN_FILE_NAME);
+        if suffix.is_empty() || suffix.contains(['/', '\\', '\0']) || suffix.starts_with('.') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a token directory name is a plain name",
+            ));
+        }
+        let directory = self.directory(suffix);
+        let outcome = Self::fill(&directory, MCP_TOKEN_FILE_NAME, secret.expose(), uid, gid);
+        if outcome.is_err() {
+            let _ = fs::remove_file(directory.join(MCP_TOKEN_FILE_NAME));
+        }
+        outcome
+    }
+
+    fn fill(
+        directory: &Path,
+        name: &str,
+        secret: &str,
+        uid: u32,
+        gid: u32,
+    ) -> io::Result<TokenFile> {
+        let path = directory.join(name);
         let mut file = fs::File::create_new(&path)?;
         // The directory is 0700, so nobody else can reach the file between these two calls, and
         // no byte has been written yet.
         file.set_permissions(fs::Permissions::from_mode(0o400))?;
-        file.write_all(secret.expose().as_bytes())?;
+        file.write_all(secret.as_bytes())?;
         file.flush()?;
         drop(file);
         let ownership_applied = std::os::unix::fs::chown(&path, Some(uid), Some(gid)).is_ok();
@@ -197,6 +230,33 @@ mod tests {
             fs::read_to_string(file.path()).expect("read"),
             secret.expose()
         );
+    }
+
+    #[test]
+    fn the_gateway_token_sits_beside_the_job_token_and_goes_with_it() {
+        let scratch = Scratch::new("mcp");
+        let store = TokenStore::new(scratch.0.join("tokens"));
+        // Built at run time so that no secret-shaped literal sits in the source.
+        let gateway = McpRunTokenSecret::new(format!("{}-{}", "unit", "gateway-value"));
+        // There is no directory before the job token is written.
+        assert!(store.write_mcp("job-m", &gateway, 10_001, 10_001).is_err());
+        let job = store
+            .write("job-m", &secret(), 10_001, 10_001)
+            .expect("write");
+        let file = store
+            .write_mcp("job-m", &gateway, 10_001, 10_001)
+            .expect("write the gateway token");
+        assert_eq!(file.path().parent(), job.path().parent());
+        assert_eq!(mode(file.path()), 0o400);
+        assert_eq!(
+            fs::read_to_string(file.path()).expect("read"),
+            gateway.expose()
+        );
+        // A second write is refused: the file is created new.
+        assert!(store.write_mcp("job-m", &gateway, 10_001, 10_001).is_err());
+        store.remove("job-m").expect("remove");
+        assert!(!file.path().exists());
+        assert!(store.write_mcp("../x", &gateway, 10_001, 10_001).is_err());
     }
 
     #[test]

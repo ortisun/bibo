@@ -25,7 +25,7 @@ use crate::clock::CancelSignal;
 use crate::paths::RepoPath;
 use crate::workspace::WorkspaceMounts;
 
-/// The three kinds of sandbox (ADR 0003). Each has its own network and its own limits.
+/// The kinds of sandbox (ADR 0003, ADR 0021). Each has its own network and its own limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SandboxProfile {
     /// Downloads dependencies through a relay to named registries. Runs no repository code.
@@ -34,6 +34,10 @@ pub enum SandboxProfile {
     Agent,
     /// Runs the trusted gates with no network, in a fresh container.
     Verify,
+    /// Runs the troubleshooter's agent (ADR 0021): the agent image and hardening, no repository
+    /// (an empty workspace, read-only), the job token and the MCP gateway's run token, and a
+    /// sidecar that relays to the broker and, through its second fixed relay, to the gateway.
+    Troubleshooter,
 }
 
 impl SandboxProfile {
@@ -44,6 +48,7 @@ impl SandboxProfile {
             Self::FetchDeps => "fetch_deps",
             Self::Agent => "agent",
             Self::Verify => "verify",
+            Self::Troubleshooter => "troubleshooter",
         }
     }
 }
@@ -91,6 +96,11 @@ impl ImageDigest {
 /// The sandbox adapter writes the secret to a tmpfs it controls, mode 0400, and removes the file
 /// when the sandbox is torn down, whatever the reason.
 pub const JOB_TOKEN_TARGET: &str = "/run/factory/job-token";
+
+/// Where the run token of the MCP gateway is mounted inside a `troubleshooter` container:
+/// read-only, at this fixed path, written and removed by the sandbox adapter exactly like the job
+/// token (ADR 0021). Only the runtime's launcher line reads it.
+pub const MCP_TOKEN_TARGET: &str = "/run/factory/mcp-token";
 
 /// Where the checkout is mounted inside the container.
 pub const WORKSPACE_TARGET: &str = "/workspace";
@@ -165,6 +175,40 @@ pub struct SandboxMounts {
 pub struct JobTokenMount {
     /// The token's secret. Never shown in `Debug` output.
     pub secret: JobTokenSecret,
+}
+
+/// The run token of the troubleshooter's MCP gateway, as the secret itself (ADR 0021). The sandbox
+/// adapter handles it exactly like the job token: a 0400 file on a tmpfs it controls, mounted
+/// read-only at [`MCP_TOKEN_TARGET`], registered with the redactor, removed at teardown. Its text
+/// never appears in `Debug` output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct McpRunTokenSecret(String);
+
+impl McpRunTokenSecret {
+    /// Wraps a secret the gateway issued for one run.
+    #[must_use]
+    pub fn new(secret: String) -> Self {
+        Self(secret)
+    }
+
+    /// The secret text. Write it to the token file and nowhere else.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for McpRunTokenSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("McpRunTokenSecret(<redacted>)")
+    }
+}
+
+/// The MCP gateway's run token for a `troubleshooter` sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpTokenMount {
+    /// The token's secret. Never shown in `Debug` output.
+    pub secret: McpRunTokenSecret,
 }
 
 /// How the container reaches the network. A host or shared network cannot be written.
@@ -365,6 +409,8 @@ pub struct SandboxPolicy {
     pub agent_max: SandboxLimits,
     /// The largest limits for the `verify` profile.
     pub verify_max: SandboxLimits,
+    /// The largest limits for the `troubleshooter` profile.
+    pub troubleshooter_max: SandboxLimits,
 }
 
 impl SandboxPolicy {
@@ -375,6 +421,7 @@ impl SandboxPolicy {
             SandboxProfile::FetchDeps => &self.fetch_deps_max,
             SandboxProfile::Agent => &self.agent_max,
             SandboxProfile::Verify => &self.verify_max,
+            SandboxProfile::Troubleshooter => &self.troubleshooter_max,
         }
     }
 }
@@ -396,8 +443,10 @@ pub struct SandboxSpec {
     pub network: NetworkAttachment,
     /// The mounts. Typed; nothing else can be mounted.
     pub mounts: SandboxMounts,
-    /// The job token. `agent` profile only.
+    /// The job token. `agent` and `troubleshooter` profiles only.
     pub job_token: Option<JobTokenMount>,
+    /// The MCP gateway's run token. `troubleshooter` profile only, and required there.
+    pub mcp_token: Option<McpTokenMount>,
     /// The environment, set by the supervisor from a fixed list.
     pub env: FixedEnv,
     /// The security settings to build the container with.
@@ -560,6 +609,13 @@ impl SandboxSpec {
                 source: None,
             });
         }
+        if self.mcp_token.is_some() {
+            mounts.push(ExpectedMount {
+                target: MCP_TOKEN_TARGET.to_owned(),
+                read_only: true,
+                source: None,
+            });
+        }
         mounts
     }
 
@@ -668,9 +724,16 @@ impl SandboxSpec {
         let read_only_fits = match self.profile {
             SandboxProfile::Verify => workspace.workspace_read_only,
             SandboxProfile::Agent | SandboxProfile::FetchDeps => !workspace.workspace_read_only,
+            // No repository: an empty workspace, read-only, with nothing laid over it.
+            SandboxProfile::Troubleshooter => {
+                workspace.workspace_read_only && workspace.protected_overlays.is_empty()
+            }
         };
         if !read_only_fits {
             rules.push(SandboxRule::WorkspaceAccessMismatch);
+        }
+        if self.profile == SandboxProfile::Troubleshooter && !self.mounts.caches.is_empty() {
+            rules.push(SandboxRule::CacheMisuse);
         }
         let mut seen = std::collections::BTreeSet::new();
         let mut misuse = false;
@@ -702,16 +765,24 @@ impl SandboxSpec {
             (self.profile, &self.network),
             (SandboxProfile::Verify, NetworkAttachment::None)
                 | (
-                    SandboxProfile::FetchDeps | SandboxProfile::Agent,
+                    SandboxProfile::FetchDeps
+                        | SandboxProfile::Agent
+                        | SandboxProfile::Troubleshooter,
                     NetworkAttachment::JobInternal { .. }
                 )
         );
         if !network_fits {
             rules.push(SandboxRule::NetworkNotAllowedForProfile);
         }
-        let token_fits = (self.profile == SandboxProfile::Agent) == self.job_token.is_some();
-        if !token_fits {
+        let runs_an_agent = matches!(
+            self.profile,
+            SandboxProfile::Agent | SandboxProfile::Troubleshooter
+        );
+        if runs_an_agent != self.job_token.is_some() {
             rules.push(SandboxRule::JobTokenMisplaced);
+        }
+        if (self.profile == SandboxProfile::Troubleshooter) != self.mcp_token.is_some() {
+            rules.push(SandboxRule::McpTokenMisplaced);
         }
     }
 
@@ -926,8 +997,11 @@ pub enum SandboxRule {
     EnvNameNotAllowed(String),
     /// The network does not suit the profile.
     NetworkNotAllowedForProfile,
-    /// A job token is present outside the agent profile, or missing from it.
+    /// A job token is present outside the agent and troubleshooter profiles, or missing from them.
     JobTokenMisplaced,
+    /// The MCP gateway's run token is present outside the troubleshooter profile, or missing
+    /// from it.
+    McpTokenMisplaced,
     /// A limit is above the policy maximum for the profile.
     LimitAboveMaximum(&'static str),
     /// `.git` is not masked.
@@ -940,9 +1014,10 @@ pub enum SandboxRule {
     AppArmorUnavailableNotPermitted,
     /// A host path is not absolute and normalized.
     HostPathNotNormalized(&'static str),
-    /// The workspace is writable in `verify`, or read-only elsewhere.
+    /// The workspace is writable in `verify` or `troubleshooter`, read-only elsewhere, or has
+    /// protected overlays in `troubleshooter`, which has no repository.
     WorkspaceAccessMismatch,
-    /// A cache is writable outside `fetch_deps`, or listed twice.
+    /// A cache is writable outside `fetch_deps`, listed twice, or mounted in `troubleshooter`.
     CacheMisuse,
 }
 
@@ -1191,6 +1266,14 @@ mod tests {
             fetch_deps_max: limits(1),
             agent_max: limits(2),
             verify_max: limits(4),
+            troubleshooter_max: limits(1),
+        }
+    }
+
+    fn mcp_token_mount() -> McpTokenMount {
+        // Built at run time so that no secret-shaped literal sits in the source.
+        McpTokenMount {
+            secret: McpRunTokenSecret::new(format!("{}-{}", "test", "gateway-value")),
         }
     }
 
@@ -1202,6 +1285,7 @@ mod tests {
     }
 
     fn spec(profile: SandboxProfile) -> SandboxSpec {
+        let troubleshooter = profile == SandboxProfile::Troubleshooter;
         let (network, job_token) = match profile {
             SandboxProfile::Verify => (NetworkAttachment::None, None),
             SandboxProfile::FetchDeps => (
@@ -1210,7 +1294,7 @@ mod tests {
                 },
                 None,
             ),
-            SandboxProfile::Agent => (
+            SandboxProfile::Agent | SandboxProfile::Troubleshooter => (
                 NetworkAttachment::JobInternal {
                     sidecar: "sidecar-1".to_owned(),
                 },
@@ -1227,14 +1311,19 @@ mod tests {
             mounts: SandboxMounts {
                 workspace: WorkspaceMounts {
                     workspace: PathBuf::from("/jobs/1/worktree"),
-                    workspace_read_only: profile == SandboxProfile::Verify,
+                    workspace_read_only: profile == SandboxProfile::Verify || troubleshooter,
                     out: PathBuf::from("/jobs/1/out"),
-                    protected_overlays: vec![RepoPath::new(".github").unwrap()],
+                    protected_overlays: if troubleshooter {
+                        Vec::new()
+                    } else {
+                        vec![RepoPath::new(".github").unwrap()]
+                    },
                     git_masked: true,
                 },
                 caches: Vec::new(),
             },
             job_token,
+            mcp_token: troubleshooter.then(mcp_token_mount),
             env: FixedEnv::new(vec![("HOME".to_owned(), "/home/sandbox".to_owned())]).unwrap(),
             hardening: Hardening::strict(10_001, 10_001),
         }
@@ -1416,6 +1505,62 @@ mod tests {
         let mut token_extra = spec(SandboxProfile::Verify);
         token_extra.job_token = Some(token_mount());
         assert!(rules_of(&token_extra).contains(&SandboxRule::JobTokenMisplaced));
+    }
+
+    /// ADR 0021: only the troubleshooter holds the gateway's run token, it always does, and it
+    /// has no repository: an empty read-only workspace with nothing laid over it and no cache.
+    #[test]
+    fn the_troubleshooter_alone_holds_the_gateway_token_and_mounts_no_repository() {
+        let ok = spec(SandboxProfile::Troubleshooter);
+        assert_eq!(ok.validate(&policy()), Ok(()));
+        let mounts = ok.expected_mounts();
+        let token = mounts
+            .iter()
+            .find(|m| m.target == MCP_TOKEN_TARGET)
+            .expect("the gateway token file");
+        assert!(token.read_only);
+        assert!(mounts.iter().any(|m| m.target == JOB_TOKEN_TARGET));
+
+        let mut missing = spec(SandboxProfile::Troubleshooter);
+        missing.mcp_token = None;
+        assert!(rules_of(&missing).contains(&SandboxRule::McpTokenMisplaced));
+        for profile in [
+            SandboxProfile::Agent,
+            SandboxProfile::Verify,
+            SandboxProfile::FetchDeps,
+        ] {
+            let mut extra = spec(profile);
+            extra.mcp_token = Some(mcp_token_mount());
+            assert!(
+                rules_of(&extra).contains(&SandboxRule::McpTokenMisplaced),
+                "{profile:?}"
+            );
+            assert!(
+                !spec(profile)
+                    .expected_mounts()
+                    .iter()
+                    .any(|m| m.target == MCP_TOKEN_TARGET)
+            );
+        }
+        let mut no_job_token = spec(SandboxProfile::Troubleshooter);
+        no_job_token.job_token = None;
+        assert!(rules_of(&no_job_token).contains(&SandboxRule::JobTokenMisplaced));
+        let mut offline = spec(SandboxProfile::Troubleshooter);
+        offline.network = NetworkAttachment::None;
+        assert!(rules_of(&offline).contains(&SandboxRule::NetworkNotAllowedForProfile));
+        let mut writable = spec(SandboxProfile::Troubleshooter);
+        writable.mounts.workspace.workspace_read_only = false;
+        assert!(rules_of(&writable).contains(&SandboxRule::WorkspaceAccessMismatch));
+        let mut overlaid = spec(SandboxProfile::Troubleshooter);
+        overlaid.mounts.workspace.protected_overlays = vec![RepoPath::new(".github").unwrap()];
+        assert!(rules_of(&overlaid).contains(&SandboxRule::WorkspaceAccessMismatch));
+        let mut cached = spec(SandboxProfile::Troubleshooter);
+        cached.mounts.caches = vec![CacheMount {
+            name: CacheName(Slug::parse("cargo").unwrap()),
+            writable: false,
+        }];
+        assert!(rules_of(&cached).contains(&SandboxRule::CacheMisuse));
+        assert!(!format!("{:?}", ok.mcp_token).contains("gateway-value"));
     }
 
     #[test]

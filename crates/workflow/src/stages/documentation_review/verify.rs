@@ -154,6 +154,7 @@ pub async fn observe_all(
             caches: io.sandbox.caches.clone(),
         },
         job_token: None,
+        mcp_token: None,
         env: io.sandbox.env.clone(),
         hardening: io.sandbox.hardening.clone(),
     };

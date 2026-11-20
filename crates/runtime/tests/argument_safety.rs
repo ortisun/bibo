@@ -39,7 +39,8 @@ fn claude_args(flag_set: FlagSet, granted: &[AllowedTool]) -> Vec<String> {
             model: "claude-sonnet-5-5",
             max_turns: 7,
             max_budget_usd: 2.5,
-            tools: claude_argv::tools_for(granted, flag_set),
+            tools: claude_argv::tools_for(granted, flag_set, &[]),
+            mcp_url: None,
         },
         &verified(),
     )
@@ -199,6 +200,7 @@ fn argument_safety_tools_follow_the_granted_access_and_nothing_more() {
     let all = claude_argv::tools_for(
         &[tool("read"), tool("write"), tool("execute_sandboxed")],
         FlagSet::Standard,
+        &[],
     );
     assert_eq!(
         all,
@@ -239,6 +241,7 @@ fn argument_safety_the_model_is_always_explicit_and_cannot_carry_a_second_argume
                 max_turns: 3,
                 max_budget_usd: 1.0,
                 tools: Vec::new(),
+                mcp_url: None,
             },
             &verified(),
         );
@@ -556,6 +559,7 @@ fn argument_safety_the_api_key_mode_keeps_its_helper_and_the_subscription_mode_d
         max_turns: 3,
         max_budget_usd: 1.0,
         tools: Vec::new(),
+        mcp_url: None,
     };
     let helper = claude_argv::build(
         &plan(claude_argv::ClaudeCredential::ApiKeyHelper),
@@ -606,5 +610,297 @@ async fn argument_safety_a_broker_address_with_more_than_an_origin_is_refused() 
             "{bad}"
         );
         assert!(watch.tool_run().is_none(), "{bad}");
+    }
+}
+
+// ---- the troubleshooter (ADR 0021, Decision 6) ------------------------------------------------
+
+fn gateway_tools() -> Vec<factory_ports::agent::McpToolName> {
+    ["vm_query", "pg_activity"]
+        .iter()
+        .map(|n| factory_ports::agent::McpToolName::new(n).expect("a gateway tool name"))
+        .collect()
+}
+
+const GATEWAY_URL: &str = "http://egress:8444/mcp";
+
+fn troubleshooting_plan(
+    credential: claude_argv::ClaudeCredential,
+    tools: Vec<ClaudeTool>,
+    mcp_url: Option<&str>,
+) -> claude_argv::Plan<'_> {
+    claude_argv::Plan {
+        credential,
+        flag_set: FlagSet::Troubleshooting,
+        model: "claude-sonnet-5-5",
+        max_turns: 7,
+        max_budget_usd: 2.5,
+        tools,
+        mcp_url,
+    }
+}
+
+fn troubleshooting_request(h: &Harness) -> factory_ports::agent::AgentRunRequest {
+    let mut req = request(
+        h,
+        "claude-code-cli",
+        "claude-sonnet-5-5",
+        "http://egress:8080",
+    );
+    req.flag_set = FlagSet::Troubleshooting;
+    req.tools = Vec::new();
+    req.mcp_gateway = Some(factory_ports::agent::McpGateway {
+        url: factory_domain::values::Uri::parse(GATEWAY_URL).expect("a URI"),
+        tools: gateway_tools(),
+    });
+    req
+}
+
+#[test]
+fn argument_safety_troubleshooting_gets_the_gateway_tools_only_and_no_bypass() {
+    let tools = claude_argv::tools_for(&[], FlagSet::Troubleshooting, &gateway_tools());
+    let args = claude_argv::build(
+        &troubleshooting_plan(
+            claude_argv::ClaudeCredential::OauthToken,
+            tools,
+            Some(GATEWAY_URL),
+        ),
+        &verified(),
+    )
+    .expect("arguments");
+    let allowed: Vec<&str> = Flag::ALL.iter().map(|f| f.name()).collect();
+    for arg in &args {
+        assert!(
+            allowed.contains(&flag_name(arg)),
+            "{arg} is not allow-listed"
+        );
+    }
+    for expected in [
+        "--tools=",
+        "--strict-mcp-config",
+        "--setting-sources=user",
+        "--disable-slash-commands",
+        "--permission-mode=dontAsk",
+        "--allowedTools=mcp__factory__pg_activity,mcp__factory__vm_query",
+    ] {
+        assert!(args.iter().any(|a| a == expected), "{expected} in {args:?}");
+    }
+    assert!(
+        !args.iter().any(|a| a == "--dangerously-skip-permissions"),
+        "the troubleshooter's permission mode is dontAsk, never the bypass"
+    );
+    let config = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--mcp-config="))
+        .expect("--mcp-config");
+    let config: serde_json::Value = serde_json::from_str(config).expect("json");
+    let servers = config["mcpServers"].as_object().expect("servers");
+    assert_eq!(servers.len(), 1, "one MCP server and no other");
+    assert_eq!(servers["factory"]["url"], GATEWAY_URL);
+    assert_eq!(
+        servers["factory"]["headers"]["Authorization"],
+        "Bearer ${FACTORY_MCP_TOKEN}"
+    );
+}
+
+#[test]
+fn argument_safety_troubleshooting_refuses_a_tool_that_is_not_a_gateway_tool() {
+    for granted in [
+        vec![tool("read")],
+        vec![tool("write")],
+        vec![tool("execute_sandboxed")],
+    ] {
+        let tools = claude_argv::tools_for(&granted, FlagSet::Troubleshooting, &gateway_tools());
+        assert!(tools.iter().any(ClaudeTool::is_built_in));
+        let refused = claude_argv::build(
+            &troubleshooting_plan(
+                claude_argv::ClaudeCredential::ApiKeyHelper,
+                tools,
+                Some(GATEWAY_URL),
+            ),
+            &verified(),
+        );
+        assert_eq!(refused, Err(claude_argv::ArgvRefused::ToolNotAllowed));
+    }
+    for built_in in ClaudeTool::ALL {
+        let mut tools = vec![built_in];
+        tools.extend(gateway_tools().into_iter().map(ClaudeTool::Mcp));
+        let refused = claude_argv::build(
+            &troubleshooting_plan(
+                claude_argv::ClaudeCredential::ApiKeyHelper,
+                tools,
+                Some(GATEWAY_URL),
+            ),
+            &verified(),
+        );
+        assert_eq!(refused, Err(claude_argv::ArgvRefused::ToolNotAllowed));
+    }
+    // A troubleshooter with no gateway tool has nothing to do: refused, not run empty.
+    let refused = claude_argv::build(
+        &troubleshooting_plan(
+            claude_argv::ClaudeCredential::ApiKeyHelper,
+            Vec::new(),
+            Some(GATEWAY_URL),
+        ),
+        &verified(),
+    );
+    assert_eq!(refused, Err(claude_argv::ArgvRefused::ToolNotAllowed));
+    // Without a gateway address the flag set is refused, and a bad address too.
+    let gateway: Vec<ClaudeTool> = gateway_tools().into_iter().map(ClaudeTool::Mcp).collect();
+    let refused = claude_argv::build(
+        &troubleshooting_plan(
+            claude_argv::ClaudeCredential::ApiKeyHelper,
+            gateway.clone(),
+            None,
+        ),
+        &verified(),
+    );
+    assert_eq!(refused, Err(claude_argv::ArgvRefused::GatewayMismatch));
+    let refused = claude_argv::build(
+        &troubleshooting_plan(
+            claude_argv::ClaudeCredential::ApiKeyHelper,
+            gateway,
+            Some("http://egress:8444/mcp?token=x"),
+        ),
+        &verified(),
+    );
+    assert_eq!(refused, Err(claude_argv::ArgvRefused::BadGatewayUrl));
+}
+
+#[test]
+fn argument_safety_other_flag_sets_refuse_a_gateway_and_its_tools() {
+    for flag_set in [FlagSet::Standard, FlagSet::Specification] {
+        let plan = |tools, mcp_url| claude_argv::Plan {
+            credential: claude_argv::ClaudeCredential::ApiKeyHelper,
+            flag_set,
+            model: "claude-sonnet-5-5",
+            max_turns: 3,
+            max_budget_usd: 1.0,
+            tools,
+            mcp_url,
+        };
+        let refused = claude_argv::build(&plan(Vec::new(), Some(GATEWAY_URL)), &verified());
+        assert_eq!(refused, Err(claude_argv::ArgvRefused::GatewayMismatch));
+        let gateway: Vec<ClaudeTool> = gateway_tools().into_iter().map(ClaudeTool::Mcp).collect();
+        let refused = claude_argv::build(&plan(gateway, None), &verified());
+        assert_eq!(refused, Err(claude_argv::ArgvRefused::ToolNotAllowed));
+        // And the flags of the troubleshooter never reach them.
+        let args = claude_args(flag_set, &[tool("read")]);
+        for name in ["--mcp-config", "--allowedTools", "--permission-mode"] {
+            assert!(
+                !args.iter().any(|a| flag_name(a) == name),
+                "{name} for {flag_set:?}"
+            );
+        }
+        assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+    }
+}
+
+#[tokio::test]
+async fn argument_safety_a_request_whose_flag_set_and_gateway_disagree_never_starts_the_tool() {
+    let h = Harness::new();
+    // A pipeline stage with a gateway.
+    let mut with_gateway = troubleshooting_request(&h);
+    with_gateway.flag_set = FlagSet::Standard;
+    // The troubleshooter without one.
+    let mut without_gateway = troubleshooting_request(&h);
+    without_gateway.mcp_gateway = None;
+    // The troubleshooter with a built-in tool granted.
+    let mut with_read = troubleshooting_request(&h);
+    with_read.tools = vec![tool("read")];
+    for req in [with_gateway, without_gateway, with_read] {
+        let mut s = ScriptedSession::new(&h, Tool::Claude, Step::exits(0, ""));
+        let watch = s.watch();
+        let runtime =
+            ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone(), h.attestation());
+        let report = runtime.run(&mut s, req, &NeverCancelled).await;
+        assert!(watch.tool_run().is_none(), "the tool was started");
+        assert!(matches!(
+            report.outcome,
+            Err(AgentRunError::ProcessFailed(_))
+        ));
+    }
+    // Codex never runs the troubleshooter.
+    let mut s = ScriptedSession::new(&h, Tool::Codex, Step::exits(0, ""));
+    let watch = s.watch();
+    let mut req = troubleshooting_request(&h);
+    req.model.runtime = factory_ports::agent::RuntimeId::new("codex-cli").expect("an id");
+    let codex = CodexRuntime::new(CodexConfig::default(), h.io.clone(), h.attestation());
+    let report = codex.run(&mut s, req, &NeverCancelled).await;
+    assert!(watch.tool_run().is_none(), "Codex was started");
+    assert!(matches!(
+        report.outcome,
+        Err(AgentRunError::ProcessFailed(_))
+    ));
+}
+
+/// The gateway's run token is a file the launcher line reads inside the sandbox. Neither its value
+/// nor a variable carrying it is in the recorded command line, in either credential mode.
+#[tokio::test]
+async fn argument_safety_the_gateway_token_never_appears_in_the_argv_or_the_recorded_command() {
+    use factory_ports::sandbox::MCP_TOKEN_TARGET;
+    use factory_runtime::command::{
+        LAUNCHER_SHELL, MCP_TOKEN_LAUNCHER, MCP_TOKEN_VARIABLE, OAUTH_AND_MCP_TOKEN_LAUNCHER,
+    };
+    // Stands in for the token the sandbox mounts; the runtime is never given it.
+    let token = support::runtime_secret("mcp-run-token");
+    for (credential, line) in [
+        (
+            claude_argv::ClaudeCredential::ApiKeyHelper,
+            MCP_TOKEN_LAUNCHER,
+        ),
+        (
+            claude_argv::ClaudeCredential::OauthToken,
+            OAUTH_AND_MCP_TOKEN_LAUNCHER,
+        ),
+    ] {
+        let h = Harness::new();
+        h.register_secret("mcp-run-token", &token);
+        let mut s = ScriptedSession::new(&h, Tool::Claude, Step::exits(0, ""));
+        let watch = s.watch();
+        let config = ClaudeCodeConfig {
+            credential,
+            ..ClaudeCodeConfig::default()
+        };
+        let runtime = ClaudeCodeRuntime::new(config.clone(), h.io.clone(), h.attestation());
+        let _ = runtime
+            .run(&mut s, troubleshooting_request(&h), &NeverCancelled)
+            .await;
+        let run = watch.tool_run().expect("the tool ran");
+        let argv = &run.argv;
+        let shell = argv
+            .iter()
+            .position(|a| a == LAUNCHER_SHELL)
+            .expect("the launcher");
+        assert_eq!(argv[shell + 1], "-c");
+        assert_eq!(argv[shell + 2], line);
+        assert_eq!(argv[shell + 3], config.binary);
+        assert!(line.contains(MCP_TOKEN_TARGET));
+        assert!(line.contains(MCP_TOKEN_VARIABLE));
+        // No variable of the clean environment carries the token.
+        let end = argv
+            .iter()
+            .position(|a| a == "/usr/bin/timeout")
+            .expect("the soft deadline wrapper");
+        for pair in &argv[2..end] {
+            assert!(!pair.starts_with(MCP_TOKEN_VARIABLE), "{pair}");
+        }
+        let flags = &argv[shell + 4..];
+        assert!(!flags.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(flags.iter().any(|a| a == "--strict-mcp-config"));
+        for seen in watch.seen() {
+            let text = seen.argv.join(" ");
+            assert!(!text.contains(&token), "the token value is in a command");
+            if let Some(stdin) = &seen.stdin {
+                assert!(!String::from_utf8_lossy(stdin).contains(&token));
+            }
+            // The only bearer the command line names is the variable reference.
+            for (at, _) in text.match_indices("Bearer ") {
+                assert!(
+                    text[at + "Bearer ".len()..].starts_with("${FACTORY_MCP_TOKEN}"),
+                    "a bearer value is in a command: {text}"
+                );
+            }
+        }
     }
 }

@@ -128,6 +128,11 @@ pub enum FlagSet {
     Standard,
     /// The specification stage: the Spec Kit skills must resolve, so skills stay enabled.
     Specification,
+    /// The troubleshooter (ADR 0021, Decision 6). Not a stage of the pipeline: no stage maps to
+    /// it. No built-in tool at all; the only tools are those of the MCP gateway named by the
+    /// request's [`McpGateway`], and a run with this set and no gateway, or a gateway with any
+    /// other set, is refused before the tool starts.
+    Troubleshooting,
 }
 
 impl FlagSet {
@@ -139,6 +144,65 @@ impl FlagSet {
             _ => Self::Standard,
         }
     }
+}
+
+/// The name of one tool of the factory's MCP gateway, as the gateway lists it (`vm_query`,
+/// `pg_activity`). Lower-case ASCII letters, digits and `_`, starting with a letter, at most 64
+/// characters: `^[a-z][a-z0-9_]{0,63}$`. Claude Code sees it as `mcp__factory__<name>`, so a name
+/// cannot hold a space, a comma, a parenthesis or a flag.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct McpToolName(String);
+
+/// A text was not a gateway tool name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "a gateway tool name is a lower-case letter followed by at most 63 lower-case letters, digits or `_`"
+)]
+pub struct BadMcpToolName;
+
+impl McpToolName {
+    /// Checks and wraps a gateway tool name.
+    ///
+    /// # Errors
+    /// [`BadMcpToolName`] unless the name matches `^[a-z][a-z0-9_]{0,63}$`.
+    pub fn new(name: &str) -> Result<Self, BadMcpToolName> {
+        let mut bytes = name.bytes();
+        let first_ok = bytes.next().is_some_and(|b| b.is_ascii_lowercase());
+        let rest_ok = bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if first_ok && rest_ok && name.len() <= 64 {
+            Ok(Self(name.to_owned()))
+        } else {
+            Err(BadMcpToolName)
+        }
+    }
+
+    /// The name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for McpToolName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The MCP gateway a troubleshooting run reaches (ADR 0021, Decisions 3, 5 and 6). Only a request
+/// with [`FlagSet::Troubleshooting`] may carry one.
+///
+/// It holds no credential. The run's bearer token is a file the sandbox mounts read-only at
+/// [`crate::sandbox::MCP_TOKEN_TARGET`], read inside the sandbox by the runtime's launcher line,
+/// so it is never in an argument, a container variable or a log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpGateway {
+    /// The gateway as the sandbox reaches it: the second relay of the egress sidecar, such as
+    /// `http://egress:8444/mcp`. Plain HTTP to the sidecar, which relays the bytes.
+    pub url: Uri,
+    /// The gateway tools the run may call. Not empty, no repeat. The gateway refuses any other
+    /// tool too; this list is the runtime's own allowlist.
+    pub tools: Vec<McpToolName>,
 }
 
 /// What kind of untrusted text a part of the prompt is.
@@ -325,6 +389,9 @@ pub struct AgentRunRequest {
     pub model: ModelSelection,
     /// The flag set for the stage.
     pub flag_set: FlagSet,
+    /// The MCP gateway, for [`FlagSet::Troubleshooting`] only. `None` for every stage of the
+    /// pipeline; an adapter refuses a request where this and the flag set disagree.
+    pub mcp_gateway: Option<McpGateway>,
 }
 
 /// The final output of a run, **as bytes**. Nothing has parsed it. The engine hands the bytes to
@@ -856,6 +923,43 @@ mod tests {
                 FlagSet::Standard
             };
             assert_eq!(FlagSet::for_stage(*stage), expected, "{stage}");
+            assert_ne!(
+                FlagSet::for_stage(*stage),
+                FlagSet::Troubleshooting,
+                "no stage of the pipeline runs as the troubleshooter"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gateway_tool_name_is_a_plain_lower_case_word() {
+        for good in [
+            "a",
+            "vm_query",
+            "pg_activity",
+            "datadog_get_logs2",
+            &"a".repeat(64),
+        ] {
+            assert_eq!(
+                McpToolName::new(good).map(|n| n.as_str().to_owned()),
+                Ok(good.to_owned())
+            );
+        }
+        for bad in [
+            "",
+            "_query",
+            "9query",
+            "Query",
+            "vm-query",
+            "vm query",
+            "vm,query",
+            "vm__query(x)",
+            "--tools",
+            "vm\nquery",
+            "véquery",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(McpToolName::new(bad), Err(BadMcpToolName), "{bad:?}");
         }
     }
 

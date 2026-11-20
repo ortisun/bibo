@@ -134,6 +134,7 @@ sandbox:
   labels: {}                                # more Docker labels; a test run adds its own
   remote: { https_host: github.com }        # or { directory: /abs/path } outside production
   sidecar_command: []                       # the egress sidecar's arguments
+  gateway_upstream: null                    # troubleshooter only: the MCP gateway as the sidecar sees it
   # docker_host: unix:///var/run/docker.sock   # where the Docker daemon is (the client runs with an empty environment)
   # docker_config: /home/factory/.docker       # the client's configuration directory; absolute, must exist
   # allow_remote_docker: false                 # true allows a tcp:// host off the loopback interface; production refuses it
