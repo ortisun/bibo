@@ -924,6 +924,42 @@ impl LiveRig {
             .map(|draft| draft.commit.as_str().to_owned())
     }
 
+    /// The questions the specification stage asked when it kept its draft, as `(id, question)`:
+    /// the `questions` of the evidence it kept with the draft. Empty when it asked none or kept no
+    /// draft.
+    pub async fn spec_questions(
+        &self,
+        job: JobId,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> Vec<(String, String)> {
+        use factory_workflow::stages::specification::SpecDrafts as _;
+        let identity = self
+            .identity(job, stage_run, StageKind::Specification)
+            .await;
+        let Some(draft) = self
+            .spec_drafts
+            .load(&identity)
+            .await
+            .expect("the draft is readable")
+        else {
+            return Vec::new();
+        };
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&draft.evidence).unwrap_or(serde_json::Value::Null);
+        evidence
+            .get("questions")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|pair| {
+                Some((
+                    pair.get(0)?.as_str()?.to_owned(),
+                    pair.get(1)?.as_str()?.to_owned(),
+                ))
+            })
+            .collect()
+    }
+
     /// Why a stage run waits for a person: the reason code of the newest transition the store
     /// holds for it, such as `reviewer-needs-a-person`.
     pub async fn wait_reason(

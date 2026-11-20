@@ -1016,6 +1016,33 @@ fn cli() -> String {
     var(CLI).unwrap_or_else(|| "factory-cli".to_owned())
 }
 
+/// The lines that tell the owner how to answer the questions a waiting specification asked, with
+/// the exact command (one `Q-00N: <answer>` per question; `--` lets the text hold words such as
+/// `--json`), then the questions. Empty when the stage asked none.
+pub fn answer_lines(
+    cli: &str,
+    opts: &str,
+    job: &str,
+    run: &str,
+    questions: &[(String, String)],
+) -> String {
+    if questions.is_empty() {
+        return String::new();
+    }
+    let template: Vec<String> = questions
+        .iter()
+        .map(|(id, _)| format!("{id}: <answer>"))
+        .collect();
+    let mut text = format!(
+        "\nAnswer it:   {cli} answer {opts} {job} {run} -- {}\n             The questions:",
+        template.join(" ")
+    );
+    for (id, question) in questions {
+        text.push_str(&format!("\n               {id}: {question}"));
+    }
+    text
+}
+
 /// What a person is asked to do while a stage run waits, with the exact command.
 async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, view: &JobView) {
     let Some(run) = view
@@ -1033,6 +1060,8 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
     let text = match run.kind {
         StageKind::Specification => {
             let evidence = rig.ledger_head(job, StageKind::Specification, run.id).await;
+            let questions = rig.spec_questions(job, run.id).await;
+            let answer = answer_lines(&cli, &opts, &job_id, &run_id, &questions);
             let Some(head) = rig.spec_draft_commit(job, run.id).await else {
                 let reason = rig
                     .wait_reason(job, run.id)
@@ -1042,7 +1071,7 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                     "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).\n\
                      See why:        {cli} status {opts} --gates {job_id}\n\
                      Send it back:   {cli} rework {opts} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
-                     Or reject:      {cli} reject {opts} {job_id} {run_id} \"<why>\""
+                     Or reject:      {cli} reject {opts} {job_id} {run_id} \"<why>\"{answer}"
                 ));
                 return;
             };
@@ -1050,7 +1079,7 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
                 "WAITING FOR YOU: the specification draft of job {job_id} waits for your decision.\n\
                  Read it:     {cli} show-draft {opts} {job_id}\n\
                  Approve it:  {cli} approve {opts} {job_id} {run_id} head={head} evidence={} \"The specification says what the issue asked for.\"\n\
-                 Or reject:   {cli} reject {opts} {job_id} {run_id} \"<why>\"",
+                 Or reject:   {cli} reject {opts} {job_id} {run_id} \"<why>\"{answer}",
                 evidence.as_str()
             )
         }

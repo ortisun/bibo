@@ -4,7 +4,9 @@
 //! * `GET /v1/jobs/{job_id}/specification-draft` gives the commit that holds the draft, the head of
 //!   the ledger and the facts of the approval window, so that a person can write `head=` and
 //!   `evidence=` of an `approve` for what they read and not for what someone told them. The commit
-//!   is the one the worker compares with (`StoreSpecDrafts`, the seam the hook reads).
+//!   is the one the worker compares with (`StoreSpecDrafts`, the seam the hook reads). It also lists
+//!   the questions the stage asked when it kept that draft (from the evidence the stage kept with
+//!   it), so a person can see what to `answer`.
 //! * `GET /v1/jobs/{job_id}/gate-reports` lists every gate report the engine wrote into the ledger
 //!   of the job, with the gate, the outcome, the block code and the hash of the report.
 //! * `GET /v1/jobs/{job_id}/artifacts/{sha256}` downloads one stored document of the job.
@@ -28,6 +30,7 @@
 
 use factory_composition::specs::{DRAFT_ROLE_PREFIX, StoreSpecDrafts};
 use factory_domain::contracts::evidence_ledger_entry::Evidence;
+use factory_domain::contracts::specification_contract::QuestionId;
 use factory_domain::contracts::{Contract as _, GateReport};
 use factory_domain::ids::{JobId, StageRunId};
 use factory_domain::state::StageRunStatus;
@@ -43,6 +46,12 @@ use crate::answers::{Answer, ApiError, Download, Reply};
 use crate::auth::{Caller, require_repository};
 use crate::jobs::parse_id;
 use crate::state::ApiState;
+
+/// The most questions the draft read lists.
+pub const MAX_QUESTIONS: usize = 50;
+
+/// The most bytes of one question the draft read gives.
+pub const MAX_QUESTION_BYTES: usize = 2000;
 
 /// The largest document a download serves, in bytes.
 pub const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024;
@@ -88,6 +97,33 @@ fn draft_number(role: &str) -> Option<u32> {
         return None;
     }
     digits.parse().ok()
+}
+
+/// The questions in the evidence the stage kept with its draft (`questions: [["Q-001", "..."]]`),
+/// as `{"id", "question"}`. The text is untrusted: a pair whose id is not a question id is left out,
+/// a question is cut at [`MAX_QUESTION_BYTES`] and the list at [`MAX_QUESTIONS`]. Evidence that is
+/// not JSON, or holds no questions, gives none.
+fn questions_of(evidence: &[u8]) -> Vec<Value> {
+    let Ok(value) = serde_json::from_slice::<Value>(evidence) else {
+        return Vec::new();
+    };
+    value
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|pair| {
+            let id = pair.get(0)?.as_str()?;
+            let question = pair.get(1)?.as_str()?;
+            QuestionId::parse(id).ok()?;
+            let mut end = question.len().min(MAX_QUESTION_BYTES);
+            while !question.is_char_boundary(end) {
+                end -= 1;
+            }
+            Some(json!({"id": id, "question": &question[..end]}))
+        })
+        .take(MAX_QUESTIONS)
+        .collect()
 }
 
 /// `GET /v1/jobs/{job_id}/specification-draft`.
@@ -172,6 +208,10 @@ pub async fn specification_draft(
         None => None,
     };
     let window_hours = state.policies.approval.approval_binding.expires_after_hours;
+    let questions = draft
+        .as_ref()
+        .map(|record| questions_of(&record.evidence))
+        .unwrap_or_default();
     Ok(Reply::ok(json!({
         "job_id": job_id.as_text(),
         "stage_run_id": run.id.as_text(),
@@ -197,6 +237,8 @@ pub async fn specification_draft(
             "head": draft.as_ref().map(|record| record.commit.as_str().to_owned()),
             "evidence": head.as_ref().map(|head| head.hash.as_str().to_owned()),
         },
+        "questions": questions,
+        "answerable": run.status == StageRunStatus::WaitingForHuman,
     })))
 }
 
@@ -442,6 +484,34 @@ mod tests {
         ] {
             assert!(draft_query(Some(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_questions_of_a_draft_are_read_from_its_evidence_and_bounded() {
+        let evidence = json!({
+            "questions": [
+                ["Q-001", "Should the --help text add a line for --json?"],
+                ["not-an-id", "left out"],
+                ["Q-002"],
+                ["Q-003", "é".repeat(MAX_QUESTION_BYTES)],
+            ],
+        });
+        let questions = questions_of(&serde_json::to_vec(&evidence).expect("bytes"));
+        assert_eq!(questions.len(), 2);
+        assert_eq!(
+            questions[0],
+            json!({"id": "Q-001", "question": "Should the --help text add a line for --json?"})
+        );
+        let long = questions[1]["question"].as_str().expect("text");
+        assert!(long.len() <= MAX_QUESTION_BYTES && long.starts_with('é'));
+        assert!(questions_of(b"not json").is_empty());
+        assert!(questions_of(b"{}").is_empty());
+        let many: Vec<Value> = (1..=80)
+            .map(|n| json!([format!("Q-{n:03}"), "why?"]))
+            .collect();
+        let questions =
+            questions_of(&serde_json::to_vec(&json!({"questions": many})).expect("bytes"));
+        assert_eq!(questions.len(), MAX_QUESTIONS);
     }
 
     #[test]

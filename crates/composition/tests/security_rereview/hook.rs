@@ -171,6 +171,7 @@ impl Rig {
             head: None,
             evidence: None,
             target: None,
+            answer: None,
         };
         let subject = self.keys.signed_subject(&Signing {
             tenant: self.tenant,
@@ -350,6 +351,7 @@ async fn rr_21_junk_records_do_not_starve_a_signed_request() {
         head: None,
         evidence: None,
         target: None,
+        answer: None,
     }
     .subject();
     for _ in 0..(DECISIONS_PER_PASS + 10) {
@@ -472,6 +474,7 @@ async fn rr_21_junk_is_marked_within_its_own_budget_and_in_a_few_passes() {
         head: None,
         evidence: None,
         target: None,
+        answer: None,
     }
     .subject();
     // The junk comes first this time, and the signed pause after all of it.

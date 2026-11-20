@@ -43,7 +43,7 @@ flowchart LR
   models[[Model providers - BLOCKED]]
   person -- labels an issue --> github
   github -- signed webhook --> api
-  person -- approve, reject, rework --> cli
+  person -- approve, reject, rework, answer --> cli
   cli --> api
   api -- records jobs and decisions --> db
   worker -- claims work, applies decisions --> db

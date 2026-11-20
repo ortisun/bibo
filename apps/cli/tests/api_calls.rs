@@ -626,6 +626,126 @@ fn status_with_gates_prints_the_job_and_then_the_gate_reports() {
 }
 
 #[test]
+fn answer_names_the_stage_run_and_sends_the_text_one_question_to_a_line() {
+    let api = fake(vec![(
+        202,
+        r#"{"decision_id":"d-9","status":"recorded","applied":false}"#,
+    )]);
+    let file = token_file(0o600);
+    let ran = cli_with(&words(&format!(
+        "answer --api http://{} --token-file {} --key k-9 {JOB} {RUN} -- Q-001: yes, add a line for --json Q-002: no",
+        api.addr,
+        file.display()
+    )));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Decision d-9 is recorded"), "{}", ran.out);
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(sent.starts_with(&format!("POST /v1/jobs/{JOB}/decisions ")));
+    assert!(
+        sent.to_lowercase().contains("idempotency-key: k-9"),
+        "{sent}"
+    );
+    for part in [
+        r#""verb":"answer""#,
+        &format!(r#""stage_run_id":"{RUN}""#),
+        r#""answer":"Q-001: yes, add a line for --json\nQ-002: no""#,
+    ] {
+        assert!(sent.contains(part), "{part} in {sent}");
+    }
+    // An answer carries no reason, head, evidence or target: the words after the ids are the text.
+    for absent in [r#""reason""#, r#""head""#, r#""target""#] {
+        assert!(!sent.contains(absent), "{absent} in {sent}");
+    }
+
+    // One argument may hold the lines itself.
+    let api = fake(vec![(
+        202,
+        r#"{"decision_id":"d-10","status":"recorded","applied":false}"#,
+    )]);
+    let mut args = words(&format!(
+        "answer --api http://{} --token-file {} {JOB} {RUN}",
+        api.addr,
+        file.display()
+    ));
+    args.push("Q-001: yes\nQ-002: no".to_owned());
+    let ran = cli_with(&args);
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(
+        sent.contains(r#""answer":"Q-001: yes\nQ-002: no""#),
+        "{sent}"
+    );
+
+    // What is not an answer stops here, before any request.
+    let long = "x".repeat(901);
+    for line in [
+        format!("answer {JOB} {RUN}"),
+        format!("answer {JOB} Q-001: yes"),
+        format!("answer not-a-uuid {RUN} Q-001: yes"),
+        format!("answer {JOB} {long}"),
+        format!("answer {JOB} {RUN} {long}"),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}");
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}
+
+#[test]
+fn a_refused_answer_exits_2_and_says_so() {
+    let api = fake(vec![(403, r#"{"error":"forbidden"}"#)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "answer --api http://{} --token-file {} {JOB} {RUN} Q-001: yes",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Refused, "{}", ran.err);
+}
+
+#[test]
+fn show_draft_lists_the_questions_and_the_command_that_answers_them() {
+    let escape = r"\u001b[2J";
+    let body = format!(
+        r#"{{"job_id":"{JOB}","stage_run_id":"{RUN}","status":"WAITING_FOR_HUMAN","run_number":1,
+        "draft":{{"number":1,"commit":"{}","feature_directory":"specs/x","artifact_sha256":"sha256:dddd","saved_at":"2026-10-29T10:00:00Z"}},
+        "ledger_head":{{"sequence":7,"hash":"sha256:eeee"}},
+        "approval":{{"window_hours":72,"approvable":true,"head":"{}","evidence":"sha256:eeee"}},
+        "questions":[{{"id":"Q-001","question":"Should the --help text add a line for --json?{escape}"}},{{"id":"Q-002","question":"Exit code on error?"}}],
+        "answerable":true}}"#,
+        "a".repeat(40),
+        "a".repeat(40)
+    );
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let api = fake(vec![(200, body)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "show-draft --api http://{} --token-file {} {JOB}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    for part in [
+        "The stage asked 2 question(s):",
+        "Q-001: Should the --help text add a line for --json?",
+        "Q-002: Exit code on error?",
+        &format!(
+            "factory-cli answer --api URL --token-file FILE {JOB} {RUN} -- Q-001: <answer> Q-002: <answer>"
+        ),
+    ] {
+        assert!(ran.out.contains(part), "{part} in {}", ran.out);
+    }
+    assert!(
+        !ran.out.contains('\u{1b}'),
+        "an escape reached the terminal"
+    );
+}
+
+#[test]
 fn show_draft_prints_the_values_an_approval_needs_and_nothing_a_server_can_inject() {
     let escape = r"\u001b[2J";
     let body = format!(

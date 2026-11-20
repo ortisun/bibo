@@ -17,7 +17,7 @@ use factory_composition::decision_signing::{DecisionKeys, Signing};
 use factory_composition::decisions::{
     APPLIED, AllowlistAuthority, ApprovalSubmitter, AuditMarkers, ClaimWork, ClaimWorkDeps,
     DECISIONS_PER_PASS, DecisionAuthority, DecisionFields, DecisionMarkers, MAX_TRIES, Marked,
-    Pending, REJECTED, REQUESTED, Reason, Unreadable,
+    Pending, REJECTED, REQUESTED, Reason, Unreadable, answer_digest,
 };
 use factory_composition::delivery::StoreApprovalSources;
 use factory_composition::seams::FileAllowlist;
@@ -28,7 +28,7 @@ use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus};
 use factory_domain::values::{Slug, Timestamp};
-use factory_domain::vocabulary::Fidelity;
+use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, NewAuditEvent, NewPrincipal, OutboxSeq,
@@ -36,7 +36,7 @@ use factory_ports::store::{
 };
 use factory_workflow::engine::Engine;
 use factory_workflow::stages::approval::{ApprovalCommand, Outcome, ServiceError, Verb};
-use support::engine::PgWorld;
+use support::engine::{PgWorld, Step};
 use support::pg_world;
 
 const REQUESTER: u64 = 1001;
@@ -325,6 +325,7 @@ impl Rig {
             head: None,
             evidence: None,
             target: target.map(str::to_owned),
+            answer: None,
         };
         let mut tx = self
             .world
@@ -917,6 +918,7 @@ async fn r2_a_subject_that_is_not_the_canonical_text_is_rejected_and_nothing_mov
         head: None,
         evidence: None,
         target: None,
+        answer: None,
     };
     let canonical = cancel.subject();
     let id = job.as_text();
@@ -999,6 +1001,7 @@ async fn r2_the_columns_and_the_actor_must_agree_with_the_subject() {
         head: None,
         evidence: None,
         target: None,
+        answer: None,
     };
     // The subject names one job and the column another. Each record carries the API's word, so the
     // columns are what is wrong with it.
@@ -1057,6 +1060,7 @@ fn fields_of(verb: Verb, job: JobId) -> DecisionFields {
         head: None,
         evidence: None,
         target: None,
+        answer: None,
     }
 }
 
@@ -1245,6 +1249,7 @@ async fn r3_a_request_for_a_job_of_another_tenant_is_rejected_and_that_job_does_
         head: None,
         evidence: None,
         target: None,
+        answer: None,
     };
     // The record lives in our tenant; it can name the job only in its text, because the column is a
     // foreign key into our own jobs. It carries the API's word, so it is the job that is wrong.
@@ -1752,5 +1757,286 @@ async fn rr_28_the_hook_asks_with_the_github_id_of_the_jobs_repository() {
         rig.status(other).await,
         JobStatus::Active,
         "the name alone decides nothing"
+    );
+}
+
+// ------------------------------------------------------------------------------------------
+// `answer`: a person answers the questions of a stage run that waits
+// ------------------------------------------------------------------------------------------
+
+impl Rig {
+    /// An active job whose specification stage has asked a person: the stages before it passed, and
+    /// its run waits. The script answers the question on the next attempt.
+    async fn asking(&self) -> (JobId, StageRunId) {
+        self.world
+            .script(StageKind::Specification)
+            .queue([Step::NeedsHuman, Step::Succeed]);
+        let job = self.active().await;
+        for _ in 0..10 {
+            let view = self
+                .engine
+                .job_view(self.tenant, job)
+                .await
+                .expect("a view");
+            if let Some(run) = view.newest(StageKind::Specification)
+                && run.status == StageRunStatus::WaitingForHuman
+            {
+                return (job, run.id);
+            }
+            let claimed = self
+                .engine
+                .claim_next(&PgWorld::worker("worker-answer"))
+                .await
+                .expect("claim");
+            for attempt in claimed.started {
+                self.engine
+                    .run_attempt(&attempt)
+                    .await
+                    .expect("the attempt runs");
+            }
+        }
+        panic!("the specification stage never asked");
+    }
+
+    async fn run_status(&self, job: JobId, run: StageRunId) -> StageRunStatus {
+        let view = self
+            .engine
+            .job_view(self.tenant, job)
+            .await
+            .expect("a view");
+        view.stage_runs
+            .iter()
+            .find(|found| found.id == run)
+            .expect("the run")
+            .status
+    }
+
+    /// Writes the record that `POST /v1/jobs/{id}/decisions` writes for `answer`: the hash of the
+    /// text in the subject, the text in the reason. `stored` is the text the reason holds, which a
+    /// test may make differ from the text that was hashed.
+    async fn answer_request(
+        &self,
+        by: PrincipalId,
+        job: JobId,
+        run: StageRunId,
+        hashed: &str,
+        stored: &str,
+    ) -> AuditEventId {
+        let fields = DecisionFields {
+            verb: Verb::Answer,
+            job,
+            stage_run: Some(run),
+            head: None,
+            evidence: None,
+            target: None,
+            answer: Some(answer_digest(hashed)),
+        };
+        let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
+        let mut tx = self
+            .world
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let correlation = tx.get_job(job).await.expect("a job").value.correlation_id;
+        tx.record_audit(NewAuditEvent {
+            id,
+            actor: AuditActor::Human(by),
+            action: AuditAction::new(REQUESTED).expect("an action"),
+            subject: self.signed(id, by, &fields),
+            decision: AuditDecision::Record,
+            reason: format!("requested: {stored}"),
+            policy_hash: self.policies.hash.clone(),
+            job: Some(job),
+            stage_run: Some(run),
+            correlation_id: correlation,
+        })
+        .await
+        .expect("the request is recorded");
+        tx.commit().await.expect("commit");
+        id
+    }
+
+    /// The roles of the links of a stage run.
+    async fn link_roles(&self, run: StageRunId) -> Vec<String> {
+        let mut tx = self
+            .world
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let links = tx.list_stage_run_artifacts(run).await.expect("links");
+        let _ = tx.rollback().await;
+        links
+            .into_iter()
+            .map(|link| link.role.as_str().to_owned())
+            .collect()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_to_a_waiting_specification_sends_it_back_to_ready_with_the_answer_linked() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    let text = "Q-001: yes, add a line for --json\nQ-002: no";
+    let answer = rig.answer_request(rig.operator, job, run, text, text).await;
+    rig.hook().pass(rig.tenant).await;
+
+    assert_eq!(rig.run_status(job, run).await, StageRunStatus::Ready);
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+    assert_eq!(
+        rig.reason_of(job, APPLIED).await.as_deref(),
+        Some("The answer was recorded. The stage runs again with it.")
+    );
+    let roles = rig.link_roles(run).await;
+    assert!(
+        roles.iter().any(|role| role.starts_with("human-answer-")),
+        "the answer is an input of the run: {roles:?}"
+    );
+    let effects = rig.effects_of(job, answer).await;
+    assert!(effects >= 1, "the engine moved the run for this command");
+
+    // A repeat of the same command is a duplicate to the engine, and changes nothing.
+    let repeat = rig
+        .engine
+        .decide(
+            &factory_workflow::commands::Actor {
+                tenant: rig.tenant,
+                principal: rig.operator,
+                command: CausationId::from_uuid(answer.as_uuid()),
+            },
+            factory_workflow::commands::Subject {
+                job,
+                stage_run: run,
+            },
+            factory_workflow::commands::Decision::Answer {
+                text: text.to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await;
+    assert!(
+        matches!(
+            repeat,
+            Err(factory_workflow::engine::EngineError::Duplicate)
+        ),
+        "{repeat:?}"
+    );
+    // Another pass, and a worker that starts from nothing, change nothing either.
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+    assert_eq!(rig.effects_of(job, answer).await, effects);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_whose_marker_was_lost_is_marked_applied_and_not_applied_twice() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    let answer = rig
+        .answer_request(rig.operator, job, run, "Q-001: yes", "Q-001: yes")
+        .await;
+    rig.hook_with(rig.real_authority(), Arc::new(StopsBeforeTheMarker))
+        .pass(rig.tenant)
+        .await;
+    assert_eq!(rig.run_status(job, run).await, StageRunStatus::Ready);
+    assert_eq!(rig.trail(job).await, [REQUESTED]);
+    let effects = rig.effects_of(job, answer).await;
+
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+    assert_eq!(
+        rig.reason_of(job, APPLIED).await.as_deref(),
+        Some("The engine had applied this decision already.")
+    );
+    assert_eq!(rig.effects_of(job, answer).await, effects);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_to_a_run_that_does_not_wait_is_refused_as_out_of_place() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    // The first answer is applied and the run is `READY`: a second answer finds nothing waiting.
+    rig.answer_request(rig.operator, job, run, "Q-001: yes", "Q-001: yes")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.run_status(job, run).await, StageRunStatus::Ready);
+    let late = rig
+        .answer_request(rig.operator, job, run, "Q-001: no", "Q-001: no")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(
+        rig.trail(job).await,
+        [REQUESTED, APPLIED, REQUESTED, REJECTED]
+    );
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::WrongState.text())
+    );
+    assert_eq!(rig.effects_of(job, late).await, 0);
+    assert_eq!(rig.run_status(job, run).await, StageRunStatus::Ready);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_requester_who_did_not_ask_for_the_job_may_not_answer_and_nothing_moves() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    // The stranger holds `requester` on the allowlist, which the action table names, but is not
+    // the requester of this job: the engine refuses.
+    let answer = rig
+        .answer_request(rig.stranger, job, run, "Q-001: yes", "Q-001: yes")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::NotAuthorized.text())
+    );
+    assert_eq!(rig.effects_of(job, answer).await, 0);
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_whose_text_is_not_the_one_signed_is_rejected_and_nothing_moves() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    let answer = rig
+        .answer_request(rig.operator, job, run, "Q-001: yes", "Q-001: no")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::Malformed.text())
+    );
+    assert_eq!(rig.effects_of(job, answer).await, 0);
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_person_without_a_designation_of_the_answer_row_is_refused_before_the_engine() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    // An entry with a designation the row does not name.
+    rig.write_allowlist(&[
+        (REQUESTER, "requester-one", "requester"),
+        (OPERATOR, "operator-one", "security_approver"),
+    ]);
+    rig.answer_request(rig.operator, job, run, "Q-001: yes", "Q-001: yes")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::NotAuthorized.text())
+    );
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
     );
 }

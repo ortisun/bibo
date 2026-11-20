@@ -1,5 +1,5 @@
-//! Decisions of people: approve, reject, request rework, pause, resume, cancel, and the two
-//! decisions on a new dependency (`approve-dependency`, `approve-build-code`).
+//! Decisions of people: approve, reject, request rework, pause, resume, cancel, answer, and the
+//! two decisions on a new dependency (`approve-dependency`, `approve-build-code`).
 //!
 //! The API is the front door for a decision, and the engine is the judge. This module does the
 //! part that belongs to the front door and nothing the engine decides:
@@ -8,7 +8,8 @@
 //!    allowlist by the numeric GitHub id of that principal, and the action table of
 //!    `policies/approval.yaml` names the designation each verb needs (`approve_pr` and
 //!    `reject_or_request_rework` need an approver; `pause_or_resume_job` and `cancel_job` an
-//!    operator). A login string is never read. A caller without the role gets a 403 with no
+//!    operator; `answer_question` the requester, an operator, an approver or an organization
+//!    administrator, the designations the engine lets answer). A login string is never read. A caller without the role gets a 403 with no
 //!    reason, and the attempt is audited.
 //! 2. **What.** The words are read by the same pure grammar every channel uses
 //!    (`factory_composition::commands`), so `merge`, `deploy`, `ready` and `undraft` are unknown
@@ -33,6 +34,17 @@
 //! writes the audit record `decision.applied` or `decision.rejected` for the same job, which
 //! `GET /v1/jobs/{id}/timeline` shows.
 //!
+//! # The answer to a waiting stage run
+//!
+//! `answer` names the stage run that waits (`stage_run_id`) and carries the text in the field
+//! `answer`, 1 to [`MAX_ANSWER_BYTES`] bytes of untrusted text, which may hold several lines
+//! `Q-001: ...`; no other word means anything to it. The text is stored whole as the reason of the
+//! record (it is never cut: a longer text is refused), and its SHA-256 is a word of the signed
+//! subject (`answer=`), so the keyed word covers the text and the worker applies it only if it has
+//! that hash. The worker gives it to the engine as `Decision::Answer`, which never raises a budget
+//! ceiling from here. The engine also checks that a person who answers as a requester asked for the
+//! job, which the allowlist cannot say.
+//!
 //! # The two verbs of a dependency decision
 //!
 //! `approve-dependency` and `approve-build-code` name a package (`package`, `version` and, to tell
@@ -47,12 +59,12 @@
 //! other verbs.
 
 use axum::http::{HeaderMap, StatusCode};
-use factory_composition::commands::{CommandError, ParsedDecision, parse_form};
+use factory_composition::commands::{CommandError, MAX_ANSWER_BYTES, ParsedDecision, parse_form};
 use factory_composition::decision_signing::{
     DependencySigning, DependencySubject, Signing, SubjectKind, read_dependency_subject,
     read_subject,
 };
-use factory_composition::decisions::DecisionFields;
+use factory_composition::decisions::{DecisionFields, answer_digest};
 use factory_composition::dependency_decisions::{
     DependencyFields, REQUESTED as DEPENDENCY_REQUESTED,
 };
@@ -109,16 +121,22 @@ pub(crate) struct DecisionBody {
     pub(crate) digest: Option<String>,
     #[serde(default)]
     pub(crate) warning: Option<u32>,
+    #[serde(default)]
+    pub(crate) answer: Option<String>,
 }
 
 /// The longest slice of a reason the audit record keeps, in bytes.
 const REASON_KEPT: usize = 900;
+
+// An answer is kept whole: the longest one fits in what the record keeps.
+const _: () = assert!(MAX_ANSWER_BYTES <= REASON_KEPT);
 
 fn field_of(error: &CommandError) -> &'static str {
     match error {
         CommandError::UnknownVerb(_) | CommandError::NoVerb => "verb",
         CommandError::BadValue(field) | CommandError::Repeated(field) => field,
         CommandError::Reason => "reason",
+        CommandError::Answer | CommandError::NotInComments(_) => "answer",
         CommandError::Missing(..) => "body",
     }
 }
@@ -203,6 +221,25 @@ pub async fn decide(
             return Err(ApiError::BadRequest(field));
         }
     }
+    // An answer is its text and the stage run; the other verbs take no answer.
+    let answering = parsed.verb == Verb::Answer.as_str();
+    if answering {
+        for (field, present) in [
+            ("head", parsed.head.is_some()),
+            ("evidence", parsed.evidence.is_some()),
+            ("target", parsed.target.is_some()),
+            ("reason", parsed.reason.is_some()),
+        ] {
+            if present {
+                return Err(ApiError::BadRequest(field));
+            }
+        }
+        if parsed.answer.as_ref().is_none_or(|text| !clean_text(text)) {
+            return Err(ApiError::BadRequest("answer"));
+        }
+    } else if parsed.answer.is_some() {
+        return Err(ApiError::BadRequest("answer"));
+    }
     for (field, value) in [
         ("verb", Some(&parsed.verb)),
         ("head", parsed.head.as_ref()),
@@ -223,6 +260,7 @@ pub async fn decide(
         ("evidence", &parsed.evidence),
         ("target", &parsed.target),
         ("reason", &parsed.reason),
+        ("answer", &parsed.answer),
     ] {
         if let Some(text) = value {
             fields.push((name, text));
@@ -241,7 +279,7 @@ pub async fn decide(
             return Err(ApiError::BadRequest("evidence"));
         }
         Verb::Rework if decision.target.is_none() => return Err(ApiError::BadRequest("target")),
-        Verb::Approve | Verb::Reject | Verb::Rework if stage_run.is_none() => {
+        Verb::Approve | Verb::Reject | Verb::Rework | Verb::Answer if stage_run.is_none() => {
             return Err(ApiError::BadRequest("stage_run_id"));
         }
         _ => {}
@@ -310,6 +348,7 @@ pub async fn decide(
         head: decision.head.as_ref().map(|h| h.as_str().to_owned()),
         evidence: decision.evidence.as_ref().map(|e| e.as_str().to_owned()),
         target: decision.target.map(|t| t.as_str().to_owned()),
+        answer: (decision.verb == Verb::Answer).then(|| answer_digest(&decision.reason)),
     };
     if !allowed {
         return refuse(state, caller, tx, fields.subject(), correlation_id).await;
@@ -404,6 +443,7 @@ async fn decide_dependency(
         ("path", parsed.path.is_some()),
         ("digest", parsed.digest.is_some()),
         ("warning", parsed.warning.is_some()),
+        ("answer", parsed.answer.is_some()),
     ] {
         if present {
             return Err(ApiError::BadRequest(field));

@@ -80,7 +80,7 @@ fn held_later_lines_and_later_words_do_not_add_a_second_command() {
     assert!(parsed.reason.contains("head="));
 }
 
-/// The factory takes six verbs. Merge, ready, undraft, deploy and their lookalikes are unknown.
+/// The factory takes seven verbs. Merge, ready, undraft, deploy and their lookalikes are unknown.
 #[test]
 fn held_no_verb_merges_marks_ready_or_deploys() {
     for verb in [

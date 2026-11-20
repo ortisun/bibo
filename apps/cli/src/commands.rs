@@ -31,6 +31,7 @@ usage: factory-cli <command> [options]
   approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
+  answer   --api URL --token-file FILE [--key K] JOB STAGE_RUN text...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
   unblock  --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   ack-translation-warning  --api URL --token-file FILE [--key K] JOB STAGE_RUN WARNING reason...
@@ -45,6 +46,9 @@ usage: factory-cli <command> [options]
   repository change       --api URL --token-file FILE REQUEST
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
 
+An answer may hold one line per question: a word Q-001: starts a new line, so
+`answer ... JOB STAGE_RUN Q-001: yes Q-002: no` answers two questions; show-draft lists them.
+Put -- before words that start with -- (everything after -- is text, not an option).
 The address may also be set in FACTORY_API_URL. The token is read from a file, never from an argument
 or the environment. Exit codes: 0 done, 1 not understood, 2 refused, 3 blocked, 4 unreachable.
 ";
@@ -434,7 +438,7 @@ fn decide(
             return Exit::Failed;
         }
     };
-    let needs_stage_run = matches!(verb, "approve" | "reject" | "rework");
+    let needs_stage_run = matches!(verb, "approve" | "reject" | "rework" | "answer");
     let words = &parsed.positional;
     let wanted = if needs_stage_run { 2 } else { 1 };
     if words.len() < wanted || !is_uuid(&words[0]) || (needs_stage_run && !is_uuid(&words[1])) {
@@ -466,7 +470,12 @@ fn decide(
         ctx.complain(why);
         return Exit::Failed;
     }
-    let mut body = json!({"verb": decision.verb.as_str(), "reason": decision.reason});
+    // An answer is its text: the API takes it in its own field, and no reason.
+    let mut body = if decision.verb.as_str() == "answer" {
+        json!({"verb": decision.verb.as_str(), "answer": decision.reason})
+    } else {
+        json!({"verb": decision.verb.as_str(), "reason": decision.reason})
+    };
     if needs_stage_run {
         body["stage_run_id"] = json!(words[1]);
     }
@@ -1239,7 +1248,7 @@ pub fn run(
         "show-draft" => show_draft(rest, env, &mut ctx),
         "artifact" => artifact(rest, env, &mut ctx),
         "timeline" => read_job(rest, env, &mut ctx, "/timeline", render::timeline),
-        verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel") => {
+        verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel" | "answer") => {
             decide(verb, rest, env, &mut ctx)
         }
         "repository" => repository(rest, env, &mut ctx),
@@ -1297,6 +1306,37 @@ mod tests {
             "zzzzzzzz-7c4d-4e5f-8a6b-1c2d3e4f5a6b",
         ] {
             assert!(!is_uuid(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_usage_names_answer_and_how_its_lines_are_split() {
+        assert!(
+            USAGE.contains(
+                "  answer   --api URL --token-file FILE [--key K] JOB STAGE_RUN text...\n"
+            )
+        );
+        assert!(USAGE.contains("Q-001: starts a new line"));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(&["help".to_owned()], &|_| None, &mut out, &mut err),
+            Exit::Ok
+        );
+        assert!(String::from_utf8_lossy(&out).contains("  answer   --api URL"));
+    }
+
+    #[test]
+    fn an_answer_without_its_ids_or_its_text_is_not_sent() {
+        let job = "0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6b";
+        for line in [
+            "answer".to_owned(),
+            format!("answer {job}"),
+            format!("answer {job} {job}"),
+            format!("answer {job} not-a-run Q-001: yes"),
+        ] {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let exit = run(&words(&line), &|_| None, &mut out, &mut err);
+            assert_eq!(exit, Exit::Failed, "{line}");
         }
     }
 

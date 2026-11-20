@@ -57,6 +57,7 @@ fn given(body: &DecisionBody) -> Vec<&'static str> {
         ("path", body.path.is_some()),
         ("digest", body.digest.is_some()),
         ("warning", body.warning.is_some()),
+        ("answer", body.answer.is_some()),
     ]
     .into_iter()
     .filter_map(|(name, set)| set.then_some(name))
@@ -276,6 +277,7 @@ mod tests {
             (r#""path":"build.rs""#, "path"),
             (r#""digest":"abababababab""#, "digest"),
             (r#""warning":1"#, "warning"),
+            (r#""answer":"Q-001: yes""#, "answer"),
         ] {
             let parsed = body(&format!(r#"{{"verb":"unblock",{extra}}}"#));
             let stray = given(&parsed)

@@ -43,7 +43,9 @@ pub mod seams;
 pub mod service;
 pub mod warnings;
 
-pub use command::{ApprovalCommand, CommentEvidence, Seen, Sender, Verb, VerbParse, parse_verb};
+pub use command::{
+    ANSWER_ACTION, ApprovalCommand, CommentEvidence, Seen, Sender, Verb, VerbParse, parse_verb,
+};
 pub use contract::{GATE, REQUEST};
 pub use handler::{ApprovalConfig, ApprovalHandler, ApprovalHandlerDeps};
 pub use judge::{Accepted, Context, Live, NotACommand, Refusal, judge};

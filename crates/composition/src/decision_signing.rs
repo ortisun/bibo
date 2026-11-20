@@ -22,12 +22,16 @@
 //! verb=<verb> job=<job id> run=<run id or none> head=<head or none> evidence=<digest or none> target=<stage or none>
 //! ```
 //!
+//! An `answer` has a seventh word at the end of that line, `answer=<sha256 of the text>`; no other
+//! verb has it, so their subjects are the text they always were.
+//!
 //! So it covers the tenant, the job, the stage run, the verb, the person, the event id and the time
-//! of the request, and also the head, the evidence digest and the rework target the person named.
+//! of the request, and also the head, the evidence digest and the rework target the person named,
+//! and the text of an answer through its hash.
 //! A row copied with another event id, for another job or verb or person, in another tenant, or with
 //! any word changed, has the wrong word.
 //!
-//! The subject of the row is the six words of [`DecisionFields::subject`] followed by `at=` and
+//! The subject of the row is the words of [`DecisionFields::subject`] followed by `at=` and
 //! `mac=`. The hook accepts a row only after it has recomputed the word with each key it holds and
 //! compared in constant time. A row with no word, or the wrong one, is rejected with the fixed code
 //! `not_signed`, and nothing else about it is read.
@@ -694,7 +698,7 @@ impl DecisionKeys {
         )
     }
 
-    /// The subject of a signed request: the six words, the time, the word.
+    /// The subject of a signed request: the words, the time, the word.
     #[must_use]
     pub fn signed_subject(&self, signing: &Signing<'_>) -> String {
         format!(
@@ -1049,16 +1053,16 @@ fn make_if_missing(path: &Path) -> Result<(), KeyError> {
 /// What the subject of a `decision.requested` row holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubjectKind {
-    /// The six words, `at=` and `mac=`.
+    /// The words, `at=` and `mac=`.
     Signed {
-        /// The six words.
+        /// The words.
         fields: DecisionFields,
         /// The time the API wrote.
         requested_at: String,
         /// The word, as written. It is not known to be well formed.
         word: String,
     },
-    /// The six words alone: a row nobody signed.
+    /// The words alone: a row nobody signed.
     Unsigned(DecisionFields),
 }
 
@@ -1250,6 +1254,7 @@ mod tests {
             head: Some("a".repeat(40)),
             evidence: Some(format!("sha256:{}", "b".repeat(64))),
             target: None,
+            answer: None,
         }
     }
 

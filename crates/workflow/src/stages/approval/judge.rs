@@ -90,6 +90,9 @@ pub enum NotACommand {
     CommentEdited,
     /// The body is not the body the parser read.
     CommentChanged,
+    /// The verb is not a decision of the approval stage: `answer` answers the questions of a stage
+    /// run that waits, and the worker gives it to the engine directly.
+    NotAnApprovalDecision,
 }
 
 /// Why a decision is refused. The set is closed.
@@ -209,6 +212,9 @@ fn comment_checks(cmd: &ApprovalCommand, cx: &Context<'_>) -> Result<(), NotACom
 /// # Errors
 /// The [`Refusal`] for the first check that fails.
 pub fn judge(cmd: &ApprovalCommand, cx: &Context<'_>) -> Result<Accepted, Refusal> {
+    if cmd.verb == Verb::Answer {
+        return Err(Refusal::NotACommand(NotACommand::NotAnApprovalDecision));
+    }
     comment_checks(cmd, cx).map_err(Refusal::NotACommand)?;
 
     let Some(sender_id) = GithubUserId::new(cmd.sender.id) else {
@@ -275,6 +281,8 @@ pub fn judge(cmd: &ApprovalCommand, cx: &Context<'_>) -> Result<Accepted, Refusa
             authorization,
             binding: None,
         }),
+        // Refused before anything else is read, above.
+        Verb::Answer => Err(Refusal::NotACommand(NotACommand::NotAnApprovalDecision)),
     }
 }
 

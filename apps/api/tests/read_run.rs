@@ -84,6 +84,10 @@ async fn the_evidence_a_person_reads_before_deciding() {
     assert_eq!(body["approval"]["window_hours"], 72);
     assert_eq!(body["approval"]["head"], commit);
     assert_eq!(body["approval"]["evidence"], head.as_str());
+    // The run waits, so it takes an answer; the questions the stage asked are listed (this scripted
+    // stage asks for an approval and has no question).
+    assert_eq!(body["answerable"], true);
+    assert!(body["questions"].is_array(), "{body}");
     let draft_hash = body["draft"]["artifact_sha256"]
         .as_str()
         .expect("the hash of the draft document")

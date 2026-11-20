@@ -14,7 +14,7 @@ The last case has the reason `independent-reviewer-unavailable`. Since the owner
 
 ## Before you begin
 
-- You hold the designation that the verb needs: `approver` for `approve`, `reject` and `rework`, and `operator` for `pause`, `resume` and `cancel`. A designation comes from the protected allowlist. A GitHub role never grants one.
+- You hold the designation that the verb needs: `approver` for `approve`, `reject` and `rework`, `operator` for `pause`, `resume` and `cancel`, and for `answer` any of `requester` (of that job), `operator`, `approver` or `org_admin`. A designation comes from the protected allowlist. A GitHub role never grants one.
 - You have a token file that only you can read.
 - A worker is running for the tenant. The worker applies each decision. Without it a decision stays recorded and unapplied. See `worker.tenants` in the [configuration reference](../reference/configuration.md).
 
@@ -53,6 +53,14 @@ To approve the pull request, give the head commit you read and the ledger hash f
 ```bash no-run reason="needs a running API, a token and a real job"
 factory-cli approve --api "$FACTORY_API_URL" --token-file approver.token JOB STAGE_RUN head=HEAD_COMMIT evidence=sha256:LEDGER_HASH Read the diff and the evidence.
 ```
+
+When the specification stage asked questions (the reason `clarification-needed`), `show-draft` lists them, for example `Q-001: Should the --help text add a line for --json?`, and prints the command that answers them. Give one line `Q-001: ...` per question; a word `Q-001:` starts a new line, and `--` lets the text hold words that start with `--`:
+
+```bash no-run reason="needs a running API, a token and a real job"
+factory-cli answer --api "$FACTORY_API_URL" --token-file approver.token JOB STAGE_RUN -- Q-001: yes, add a line for --json Q-002: exit code 2
+```
+
+The stage runs again with the answer and asks again, or keeps a draft for you to approve. An answer has at most 900 bytes.
 
 To refuse, or to send the work back to a stage:
 
