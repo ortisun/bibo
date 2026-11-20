@@ -1,6 +1,6 @@
 # Agent definitions
 
-This directory holds the agents the factory runs in Slice 1: for each one a manifest, a versioned prompt, the schemas of what it receives and returns, and a few conformance fixtures. The capability profiles are in [`../profiles`](../profiles). `FileAgentRegistry` in [the contracts crate](../crates/contracts/src/registry.rs) loads both directories and refuses a prompt whose hash differs from its manifest.
+This directory holds the agents the factory runs: the nine pipeline agents of Slice 1 and one operations agent. For each one it has a manifest, a versioned prompt, the schemas of what it receives and returns, and a few conformance fixtures. The capability profiles are in [`../profiles`](../profiles). `FileAgentRegistry` in [the contracts crate](../crates/contracts/src/registry.rs) loads both directories and refuses a prompt whose hash differs from its manifest.
 
 ## Layout
 
@@ -15,9 +15,11 @@ agents/
 profiles/<profile-id>/profile.json
 ```
 
-## The nine agents
+## The agents
 
 Placements are the sandbox only. No agent can merge, push, deploy, change a policy or a gate file, or start another agent.
+
+The first nine are pipeline agents: each runs in one stage of a job. The troubleshooter is an operations agent ([ADR 0021](../docs/adr/0021-troubleshooter-agent-and-mcp-sources.md)). It runs outside the pipeline, in no job and no stage, started by its own program when a probe trips or the daily sweep comes due, and it watches the factory itself.
 
 | Agent | Role | Stage | Tools | Returns |
 |---|---|---|---|---|
@@ -30,14 +32,17 @@ Placements are the sandbox only. No agent can merge, push, deploy, change a poli
 | `code-reviewer` | `code_reviewer` | review | read | `review-findings` |
 | `documentation-writer` | `technical_writer` | documenting | read, write README, changelog and `docs/` Markdown | `documentation-report` |
 | `documentation-reviewer` | `documentation_reviewer` | documentation review | read | `review-findings` |
+| `troubleshooter` | `troubleshooter` | none: an operations agent | the read-only gateway tools (`mcp.datadog.*`, `mcp.victoriametrics.*`, `mcp.postgres.*`) and the result channel; no file, command or GitHub tool | `health-findings` |
 
 Tool names are the ids in the tool table of [`policies/security.yaml`](../policies/security.yaml). The manifest declares what an agent may hold, and the policy engine still decides what a stage grants. `report.submit` is declared with `read` access because it writes no workspace file. It names the output channel of the policy, not a tool an agent can call: see "How a report is returned" below. The Spec Kit skills (`speckit.*`) appear only in the specification writer, because every other stage runs with skills off ([the spike](../docs/spikes/agent-runtime.md), section 4.6).
+
+An operations agent follows every rule above that does not depend on a stage, and a few of its own, which `agent_defs/checks.rs` tests: it holds only gateway tools (`mcp.*`) and `report.submit`, it has no file access and no skill, and its network is the allow list `["mcp_gateway"]`, the one fixed relay of its sidecar to the MCP gateway (ADR 0021, Decision 5). Every other agent's network is `none`, and no pipeline agent may hold a gateway tool. A gateway tool's entry in the policy names no sandbox profile, because it runs in the gateway of the control plane, and no role but an operations role. `policies/troubleshooting.yaml` maps each gateway tool id to the name the agent sees (`mcp.victoriametrics.query` is `vm_query`, offered to Claude Code as `mcp__factory__vm_query`) and to one upstream tool.
 
 Each agent lists `recommended_models` with a cheaper starting model and a larger model to escalate to after two failed repairs. Both tools default to the most expensive model, so the manifests name the models explicitly. Only models named in the recorded runs are used.
 
 ## How a prompt is built
 
-Every prompt has the same sections in the same order: role and boundaries, how to treat untrusted data, input contract, output contract, evidence required, stop conditions, when information is missing, untrusted data, and end of data. The second section is one fixed text, identical in all nine prompts.
+Every prompt has the same sections in the same order: role and boundaries, how to treat untrusted data, input contract, output contract, evidence required, stop conditions, when information is missing, untrusted data, and end of data. The second section is one fixed text, identical in every prompt.
 
 The data goes in last. Under "Untrusted data" the prompt has one line `{{input.<name>}}` for each input of its table, and nothing else. Whoever assembles the prompt replaces each of those lines with a block:
 
@@ -49,6 +54,8 @@ The data goes in last. Under "Untrusted data" the prompt has one line `{{input.<
 ```
 
 Every line of data starts with `> `, so no line of data can look like a delimiter. Line breaks of every kind become line breaks, and hidden or direction-control characters are removed. The reference renderer in `crates/contracts/tests/agent_defs/render.rs` states these rules, and the real assembly (`s1-prompt-assembly`) has to keep them.
+
+The troubleshooter's inputs are built by code, not written by people, so its input schema types each input as a JSON value instead of a string. The troubleshooter validates the whole input document against that schema and renders each input as JSON inside its block, under the same rules.
 
 Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history.
 
@@ -64,7 +71,7 @@ No part of this has met a real model. Whether the models follow the rule often e
 
 ## Adding or changing an agent
 
-1. Write the test that should fail first. Put the agent in `SLICE_1_AGENTS` and `OUTPUT_SCHEMA_OF` in `crates/contracts/tests/agent_defs/mod.rs` and in `STAGE_OF_ROLE` in `agent_defs/checks.rs`.
+1. Write the test that should fail first. Put a pipeline agent in `SLICE_1_AGENTS` and `OUTPUT_SCHEMA_OF` in `crates/contracts/tests/agent_defs/mod.rs` and in `STAGE_OF_ROLE` in `agent_defs/checks.rs`. Put an operations agent in `OPERATIONS_AGENTS` and `OUTPUT_SCHEMA_OF`, and its role in `OPERATIONS_ROLES` instead of `STAGE_OF_ROLE`.
 2. Write the input and output schemas in `agents/schemas/`. The input schema lists exactly the inputs of the prompt table.
 3. Write `prompt.md` with the sections above. Copy the fixed instruction from an existing prompt, and give each input a class from `untrusted_content.classes` in the security policy.
 4. Write `manifest.json`. Give the agent the fewest tools and the narrowest paths that its work needs, and check the tool and role against the policy's tool table.

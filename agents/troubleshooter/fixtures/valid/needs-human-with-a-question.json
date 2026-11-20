@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "status": "needs_human",
+  "summary": "A Datadog monitor on the factory API is alerting, but the API answers its health route and no factory metric is out of range.",
+  "findings": [],
+  "unavailable_sources": [],
+  "human_question": "Is the alerting monitor on the factory API expected to alert during the maintenance announced for today?",
+  "ignored_instructions": []
+}

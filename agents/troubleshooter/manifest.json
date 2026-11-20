@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "id": "troubleshooter",
+  "version": "1.0.0",
+  "title": "Troubleshooter",
+  "description": "Investigates the health of the factory itself (its API, worker, database and telemetry) when a probe trips or the daily sweep comes due, and reports findings for a person to triage. It is an operations agent outside the pipeline: it runs in no job and no stage. It reads Datadog, VictoriaMetrics and the factory database through the read-only tools of the MCP gateway, has no file, command or GitHub access, never proposes or makes a change, and returns its answer through the result channel only.",
+  "role": "troubleshooter",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "report.submit",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.search_logs",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.analyze_logs",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.get_trace",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.search_spans",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.aggregate_spans",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.get_metric",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.get_metric_context",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.search_metrics",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.search_monitors",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.search_incidents",
+      "access": "read"
+    },
+    {
+      "name": "mcp.datadog.get_incident",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.query",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.query_range",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.labels",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.label_values",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.metrics",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.metrics_metadata",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.alerts",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.active_queries",
+      "access": "read"
+    },
+    {
+      "name": "mcp.victoriametrics.explain_query",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.list_relations",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.describe_relation",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.query",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.explain",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.activity",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.locks",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.table_health",
+      "access": "read"
+    },
+    {
+      "name": "mcp.postgres.factory_health",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "gateway-call-record"
+  ],
+  "inputs_schema": {
+    "name": "troubleshooter-input",
+    "version": 1,
+    "sha256": "sha256:4a7c99dd9febdc856f3868f89a7355c0ec869b1451c50c6dc6e38ee8cef72c48"
+  },
+  "outputs_schema": {
+    "name": "health-findings",
+    "version": 1,
+    "sha256": "sha256:539f4a57aef53ca484a2eae1a7a8ab3a742f742934206784505e54f410cbaec2"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 900,
+    "max_tokens": 200000,
+    "max_cost_usd": 2,
+    "max_tool_calls": 60,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [],
+      "write": []
+    },
+    "network": "allowlist",
+    "network_allowlist": [
+      "mcp_gateway"
+    ],
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "An investigation of a few tripped probes is a bounded read-only task, and the starting model is enough. ADR 0021 measured 0.12 to 0.25 US dollars a run on this model."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use only after two bounded repairs by the starting model have failed the output check, and never as the first attempt. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "Listed like the other agents, but not a runtime of the troubleshooter: Codex cannot be brokered in subscription mode (ADR 0020), ADR 0021 does not build it, and the routing policy does not give this model to the role."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "troubleshooter-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/troubleshooter/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:349d4812013eab1f387748c035429cb93104ae21ef4a5a66d660883d5a6ebc5d"
+  }
+}

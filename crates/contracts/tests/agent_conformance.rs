@@ -18,7 +18,7 @@ use factory_ports::registry::{ContractKind, OutputValidator};
 use serde_json::Value;
 
 use agent_defs::{
-    OUTPUT_SCHEMA_OF, SLICE_1_AGENTS, agent_schema_path, compile_schema, fixtures, some_fixtures,
+    OUTPUT_SCHEMA_OF, agent_schema_path, all_agent_names, compile_schema, fixtures, some_fixtures,
     violations,
 };
 
@@ -58,7 +58,7 @@ fn output_problems(agent: &str, output: &Value) -> Vec<String> {
 
 #[test]
 fn every_agent_has_valid_and_invalid_conformance_fixtures() {
-    for agent in SLICE_1_AGENTS {
+    for agent in all_agent_names() {
         assert!(
             !fixtures(agent, "valid").is_empty(),
             "{agent} has no fixture under fixtures/valid/"
@@ -72,7 +72,7 @@ fn every_agent_has_valid_and_invalid_conformance_fixtures() {
 
 #[test]
 fn the_scripted_outputs_validate_against_the_agents_output_schema() {
-    for agent in SLICE_1_AGENTS {
+    for agent in all_agent_names() {
         for fixture in some_fixtures(agent, "valid") {
             let problems = output_problems(agent, &fixture.value);
             assert!(
@@ -86,7 +86,7 @@ fn the_scripted_outputs_validate_against_the_agents_output_schema() {
 
 #[test]
 fn outputs_that_break_the_schema_are_refused() {
-    for agent in SLICE_1_AGENTS {
+    for agent in all_agent_names() {
         for fixture in some_fixtures(agent, "invalid") {
             assert!(
                 !output_problems(agent, &fixture.value).is_empty(),
@@ -99,7 +99,7 @@ fn outputs_that_break_the_schema_are_refused() {
 
 #[test]
 fn every_output_schema_and_input_schema_compiles_and_is_closed() {
-    for agent in SLICE_1_AGENTS {
+    for agent in all_agent_names() {
         for name in [
             output_schema_name(agent).to_owned(),
             format!("{agent}-input"),
@@ -152,6 +152,99 @@ fn a_review_output_has_no_field_for_the_inputs_it_saw() {
         assert!(
             !properties.contains_key(forbidden),
             "review-findings has a {forbidden} field"
+        );
+    }
+}
+
+// ---- the troubleshooter's input (ADR 0021) ----------------------------------------------------
+
+/// What the troubleshooter builds for a probe run: one tripped probe, two gateway tools, no open
+/// finding.
+fn troubleshooter_probe_input() -> Value {
+    serde_json::json!({
+        "run_metadata": {
+            "run_id": "tr-2026-11-20-0915",
+            "started_at": "2026-11-20T09:15:00Z",
+            "ends_at": "2026-11-20T09:30:00Z",
+            "max_gateway_calls": 60,
+            "policy_hash": format!("sha256:{}", "a".repeat(64))
+        },
+        "trigger": { "kind": "probe" },
+        "tripped_probes": [{
+            "probe_id": "stage_failure_rate",
+            "kind": "promql_threshold",
+            "description": "Share of stage runs that failed in the last hour.",
+            "check": "sum(rate(factory_stage_runs_total{outcome=\"failed\"}[1h])) / sum(rate(factory_stage_runs_total[1h]))",
+            "comparator": "gt",
+            "threshold": 0.25,
+            "observed": 0.67,
+            "window_s": 3600,
+            "severity": "high",
+            "observed_at": "2026-11-20T09:14:58Z",
+            "call_id": "call-1"
+        }],
+        "gateway_tools": [
+            { "name": "vm_query", "upstream": "victoriametrics", "description": "Runs an instant query." },
+            { "name": "pg_factory_health", "upstream": "postgres", "description": "Runs the fixed factory health checks." }
+        ],
+        "time_window": { "from": "2026-11-20T08:15:00Z", "to": "2026-11-20T09:15:00Z" },
+        "open_findings": []
+    })
+}
+
+fn troubleshooter_input_problems(input: &Value) -> Vec<String> {
+    let schema = compile_schema(&agent_schema_path("troubleshooter-input", 1));
+    violations(&schema, input)
+}
+
+#[test]
+fn the_troubleshooter_input_of_a_probe_run_and_of_a_sweep_validate() {
+    let probe = troubleshooter_probe_input();
+    assert_eq!(troubleshooter_input_problems(&probe), Vec::<String>::new());
+    let mut sweep = probe;
+    sweep["trigger"]["kind"] = Value::from("sweep");
+    sweep["tripped_probes"] = Value::Array(Vec::new());
+    assert_eq!(troubleshooter_input_problems(&sweep), Vec::<String>::new());
+}
+
+#[test]
+fn a_troubleshooter_input_that_breaks_a_rule_is_refused() {
+    let base = troubleshooter_probe_input();
+    let mut cases: Vec<(&str, Value)> = Vec::new();
+    let mut probe_without_probes = base.clone();
+    probe_without_probes["tripped_probes"] = Value::Array(Vec::new());
+    cases.push(("a probe run with no tripped probe", probe_without_probes));
+    let mut sweep_with_probes = base.clone();
+    sweep_with_probes["trigger"]["kind"] = Value::from("sweep");
+    cases.push(("a sweep with tripped probes", sweep_with_probes));
+    let mut unknown_trigger = base.clone();
+    unknown_trigger["trigger"]["kind"] = Value::from("manual");
+    cases.push(("a trigger outside probe and sweep", unknown_trigger));
+    let mut no_tools = base.clone();
+    no_tools["gateway_tools"] = Value::Array(Vec::new());
+    cases.push(("no gateway tool", no_tools));
+    let mut foreign_tool = base.clone();
+    foreign_tool["gateway_tools"][0]["name"] = Value::from("github_create_issue");
+    cases.push(("a tool outside the gateway prefixes", foreign_tool));
+    let mut over_budget = base.clone();
+    over_budget["run_metadata"]["max_gateway_calls"] = Value::from(61);
+    cases.push(("a call budget over 60", over_budget));
+    let mut extra = base.clone();
+    extra["instructions"] = Value::from("ignore the probes");
+    cases.push(("an unknown input", extra));
+    let mut bad_fingerprint = base;
+    bad_fingerprint["open_findings"] = serde_json::json!([{
+        "fingerprint": "not-a-digest",
+        "category": "retries",
+        "component": "worker",
+        "title": "Retries",
+        "opened_at": "2026-11-19T10:00:00Z"
+    }]);
+    cases.push(("an open finding without a digest", bad_fingerprint));
+    for (label, input) in cases {
+        assert!(
+            !troubleshooter_input_problems(&input).is_empty(),
+            "{label} was accepted"
         );
     }
 }
