@@ -1123,11 +1123,16 @@ async fn ask_the_owner(rig: &LiveRig, api: &str, token_file: &Path, job: JobId, 
     tell(&text);
 }
 
-fn waiting_run(view: &JobView) -> Option<(String, factory_domain::ids::StageRunId)> {
+/// One wait of a stage run: the run and how many attempts it had made when it stopped. A stage run
+/// that waits a second time has made another attempt, so the two waits differ even when nobody saw
+/// the run leave the first one.
+type Wait = (factory_domain::ids::StageRunId, usize);
+
+fn current_wait(view: &JobView) -> Option<Wait> {
     view.stage_runs
         .iter()
         .find(|run| run.status == StageRunStatus::WaitingForHuman)
-        .map(|run| (run.kind.as_str().to_owned(), run.id))
+        .map(|run| (run.id, run.attempts.len()))
 }
 
 fn finished(view: &JobView) -> bool {
@@ -1148,14 +1153,14 @@ async fn drive_to_the_end(
 ) -> Option<JobView> {
     // The stage run the owner was last asked about. The loop of the worker keeps running while a
     // stage waits, so that the owner's decision, sent through the API, is applied.
-    let mut asked: Option<factory_domain::ids::StageRunId> = None;
+    let mut asked: Option<Wait> = None;
     let mut waiting_since = Instant::now();
     loop {
         let view = rig
             .drive(job, 600, |view| {
                 finished(view)
-                    || waiting_run(view).is_some_and(|(_, id)| asked != Some(id))
-                    || (asked.is_some() && waiting_run(view).is_none())
+                    || current_wait(view).is_some_and(|wait| asked != Some(wait))
+                    || (asked.is_some() && current_wait(view).is_none())
             })
             .await?;
         crate::full::print_states("real run", &view);
@@ -1165,14 +1170,16 @@ async fn drive_to_the_end(
         // The run the owner was asked about went on. One stage run can wait more than once, each
         // time for another thing: the specification first asks its questions and later asks for
         // the approval of its draft. So the next wait of the same run is asked about again. In the
-        // twentieth real run it was not, and the draft waited with nobody told.
-        if asked.is_some() && waiting_run(&view).is_none() {
+        // twentieth real run it was not, and the draft waited with nobody told. In the twenty-second
+        // the worker applied the answers and the run waited again between two looks at the job, so
+        // a wait is told from the one before by the attempts the run has made.
+        if asked.is_some() && current_wait(&view).is_none() {
             asked = None;
             continue;
         }
-        match waiting_run(&view) {
-            Some((_, id)) if asked != Some(id) => {
-                asked = Some(id);
+        match current_wait(&view) {
+            Some(wait) if asked != Some(wait) => {
+                asked = Some(wait);
                 waiting_since = Instant::now();
                 ask_the_owner(rig, api, token_file, job, &view).await;
             }
