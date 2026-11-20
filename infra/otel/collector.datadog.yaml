@@ -1,0 +1,102 @@
+# Datadog additions to collector.yaml (ADR 0021, decision 8). Used only by the overlay
+# compose.datadog.yaml, which starts the collector with both files:
+#
+#   --config=/etc/otelcol/collector.yaml --config=/etc/otelcol/collector.datadog.yaml
+#
+# The collector merges the two files. Maps are merged key by key and a list in this file replaces
+# the list of the same key in collector.yaml. So the `exporters` lists of the traces and metrics
+# pipelines below are the whole lists: VictoriaMetrics and Jaeger keep receiving what they received
+# before, and Datadog receives the same data as well.
+#
+# Nothing secret is in this file. The API key is read from the Docker secret file
+# /run/secrets/dd_api_key when the collector starts, and the site comes from the environment
+# variable DD_SITE (compose.datadog.yaml sets both). Written for the contrib distribution 0.162.0;
+# validate.sh checks the merged configuration with the image that compose.datadog.yaml pins.
+
+receivers:
+  # The factory's processes write JSON lines on standard error (docs/observability/conventions.md,
+  # section 7). Docker's json-file driver stores each line wrapped in its own JSON object:
+  #   {"log":"<the factory line>\n","stream":"stderr","time":"<RFC 3339 time>"}
+  # This receiver reads those files, unwraps the factory line and keeps it only when it is a JSON
+  # object whose `target` starts with `factory_` (the module path of every factory crate). Lines of
+  # PostgreSQL, of the telemetry stack and of any other container are dropped here, before any
+  # exporter sees them. Agent sandboxes and their sidecars run with `--log-driver none`
+  # (crates/sandbox/src/container/args.rs), so no agent output is in these files.
+  file_log/docker:
+    include: [/var/lib/docker/containers/*/*-json.log]
+    # Only lines written after the collector started. Without a storage extension the receiver
+    # keeps no position across restarts, and `beginning` would send old lines again each time.
+    start_at: end
+    include_file_name: false
+    include_file_path: false
+    # A factory log line is short. A longer line is cut, so one bad writer cannot fill memory.
+    max_log_size: 64KiB
+    operators:
+      # 1. Unwrap Docker's object.
+      - type: json_parser
+        id: docker_wrapper
+        parse_from: body
+        parse_to: attributes
+        on_error: drop_quiet
+      # 2. Keep JSON objects only.
+      - type: filter
+        id: json_lines_only
+        expr: 'attributes.log == nil or not (attributes.log matches "^\\{")'
+      # 3. Parse the factory line into the body.
+      - type: json_parser
+        id: factory_line
+        parse_from: attributes.log
+        parse_to: body
+        on_error: drop_quiet
+      # 4. Keep the factory's own lines only.
+      - type: filter
+        id: factory_targets_only
+        expr: 'body.target == nil or not (body.target matches "^factory_")'
+      - type: severity_parser
+        parse_from: body.level
+        on_error: send_quiet
+      - type: time_parser
+        parse_from: body.timestamp
+        layout_type: gotime
+        layout: "2006-01-02T15:04:05.999999999Z07:00"
+        on_error: send_quiet
+      # The raw copy and Docker's own fields are not needed once the line is parsed.
+      - type: remove
+        field: attributes.log
+      - type: remove
+        field: attributes.time
+        on_error: send_quiet
+      # The service name Datadog files the line under. When the factory service's json-file logging
+      # names the label com.docker.compose.service (`logging.options.labels`), Docker adds it to
+      # every line under `attrs` and the name is `factory-<service>`. Otherwise it is
+      # `factory-process`, so a Datadog query on `service:factory-*` still finds it.
+      - type: add
+        if: 'attributes.attrs != nil and attributes.attrs["com.docker.compose.service"] != nil'
+        field: resource["service.name"]
+        value: 'EXPR("factory-" + attributes.attrs["com.docker.compose.service"])'
+      - type: add
+        if: 'resource["service.name"] == nil'
+        field: resource["service.name"]
+        value: factory-process
+
+exporters:
+  datadog:
+    api:
+      site: ${env:DD_SITE}
+      # The file provider reads the Docker secret when the collector starts. The value is never
+      # written in a file of this repository, an argument or an environment variable.
+      key: ${file:/run/secrets/dd_api_key}
+      # Stop at start-up when Datadog refuses the key, instead of dropping data for hours.
+      fail_on_invalid_key: true
+    hostname: ${env:DD_HOSTNAME}
+
+service:
+  pipelines:
+    traces:
+      exporters: [otlp_grpc/jaeger, datadog, debug]
+    metrics:
+      exporters: [otlp_http/victoriametrics, datadog, debug]
+    logs:
+      receivers: [file_log/docker]
+      processors: [memory_limiter, batch]
+      exporters: [datadog]

@@ -574,11 +574,16 @@ suite_migrations() {
 # a single-maintainer repository with none are the siblings: they must be left alone.
 repair_check() {
   local db="$1" cfg="$2" out="$WORK/repair.out" got
-  if ! diesel_run "$db" --config-file "$cfg" migration revert >"$out" 2>&1; then
-    not_ok "repair: reverting the newest migration failed"
-    cat "$out" >&2
-    return 1
-  fi
+  # Revert every migration newer than 002800, then 002800 itself. `migration run` below applies them all again.
+  while :; do
+    got="$(psql_scalar "$db" -c "SELECT max(version) FROM __diesel_schema_migrations")"
+    if ! diesel_run "$db" --config-file "$cfg" migration revert >"$out" 2>&1; then
+      not_ok "repair: reverting migration $got failed"
+      cat "$out" >&2
+      return 1
+    fi
+    [ "$got" \> "20261103002800" ] || break
+  done
   if ! psql_db "$db" -f "$TESTS/00_helpers.sql" \
         -c "SELECT dbtest.mk_tenant(1)" \
         -c "INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1004), 'human', 7104, 'person-two')" \

@@ -61,6 +61,29 @@ pub const OAUTH_TOKEN_LAUNCHER: &str = concat!(
     "export CLAUDE_CODE_OAUTH_TOKEN; exec \"$0\" \"$@\""
 );
 
+/// The variable the troubleshooter's MCP configuration names for its bearer token
+/// (`Authorization: Bearer ${FACTORY_MCP_TOKEN}`, ADR 0021). Claude Code expands it when it reads
+/// the configuration (observed with 2.1.329, 2026-11-20). It is set only by the launcher lines
+/// below, inside the sandbox, from the token file; it is never one of the [`EnvName`]s.
+pub const MCP_TOKEN_VARIABLE: &str = "FACTORY_MCP_TOKEN";
+
+/// The launcher line of a troubleshooting run in API-key mode: it reads the gateway's run token
+/// file into [`MCP_TOKEN_VARIABLE`] and replaces itself with the tool, like
+/// [`OAUTH_TOKEN_LAUNCHER`]. The troubleshooter has no shell tool, so no command it could run would
+/// see the variable.
+pub const MCP_TOKEN_LAUNCHER: &str = concat!(
+    "FACTORY_MCP_TOKEN=\"$(/usr/bin/cat /run/factory/mcp-token)\" || exit 126; ",
+    "export FACTORY_MCP_TOKEN; exec \"$0\" \"$@\""
+);
+
+/// The launcher line of a troubleshooting run in subscription mode: both token files, each read
+/// into its own variable, then the tool.
+pub const OAUTH_AND_MCP_TOKEN_LAUNCHER: &str = concat!(
+    "CLAUDE_CODE_OAUTH_TOKEN=\"$(/usr/bin/cat /run/factory/job-token)\" || exit 126; ",
+    "FACTORY_MCP_TOKEN=\"$(/usr/bin/cat /run/factory/mcp-token)\" || exit 126; ",
+    "export CLAUDE_CODE_OAUTH_TOKEN FACTORY_MCP_TOKEN; exec \"$0\" \"$@\""
+);
+
 impl EnvName {
     /// Every name, in the order they are written.
     pub const ALL: [EnvName; 7] = [

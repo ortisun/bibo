@@ -18,6 +18,7 @@ use factory_ports::require_permitted;
 use factory_ports::sandbox::SandboxProvider;
 use factory_ports::spec::SpecificationProvider;
 use factory_ports::store::Store;
+use factory_ports::triage_issue::TriageIssueWriter;
 use factory_ports::workspace::WorkspaceProvider;
 use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::broker::FakeModelBroker;
@@ -30,6 +31,7 @@ use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::spec::FakeSpecificationProvider;
 use factory_testkit::store::InMemoryStore;
+use factory_testkit::triage_issue::FakeTriageIssues;
 use factory_testkit::webhook::FakeWebhookVerifier;
 use factory_testkit::workspace::FakeWorkspaceProvider;
 use factory_testkit::{agent::FakeAgentRuntime, fixtures};
@@ -95,6 +97,10 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
             IssueStatusWriter::fidelity(&FakeIssueStatusWriter::new()),
         ),
         (
+            "TriageIssueWriter",
+            TriageIssueWriter::fidelity(&FakeTriageIssues::new()),
+        ),
+        (
             "WebhookVerifier",
             WebhookVerifier::fidelity(&FakeWebhookVerifier::new()),
         ),
@@ -129,7 +135,7 @@ fn a_production_run_refuses_every_fake_and_a_test_run_accepts_it() {
     }
 }
 
-const PORT_SOURCES: [&str; 11] = [
+const PORT_SOURCES: [&str; 12] = [
     include_str!("../../ports/src/agent.rs"),
     include_str!("../../ports/src/artifact.rs"),
     include_str!("../../ports/src/clock.rs"),
@@ -140,6 +146,7 @@ const PORT_SOURCES: [&str; 11] = [
     include_str!("../../ports/src/sandbox.rs"),
     include_str!("../../ports/src/spec.rs"),
     include_str!("../../ports/src/store.rs"),
+    include_str!("../../ports/src/triage_issue.rs"),
     include_str!("../../ports/src/workspace.rs"),
 ];
 

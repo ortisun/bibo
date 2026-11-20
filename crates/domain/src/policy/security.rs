@@ -603,6 +603,9 @@ closed_set! {
         ProxiedAllowlist,
         /// Only to the model broker.
         ModelBrokerOnly,
+        /// To the model broker and the troubleshooter's MCP gateway, each through a fixed relay
+        /// of the sidecar (ADR 0021). The `troubleshooter` profile only.
+        ModelBrokerAndMcpGateway,
     }
 }
 
@@ -667,7 +670,7 @@ strict! {
 }
 
 strict! {
-    /// The three sandbox profiles.
+    /// The sandbox profiles.
     pub struct SandboxProfiles {
         /// Downloads dependencies.
         pub fetch_deps: SandboxProfile,
@@ -675,6 +678,8 @@ strict! {
         pub agent: SandboxProfile,
         /// Runs the trusted gates.
         pub verify: SandboxProfile,
+        /// Runs the troubleshooter (ADR 0021).
+        pub troubleshooter: SandboxProfile,
     }
 }
 
@@ -789,6 +794,8 @@ strict! {
         pub fetch_deps: EgressProfile,
         /// The agent.
         pub agent: EgressProfile,
+        /// The troubleshooter: the model broker and the MCP gateway (ADR 0021).
+        pub troubleshooter: EgressProfile,
     }
 }
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "status": "blocked",
+  "summary": "No source answered, so nothing could be investigated in this run.",
+  "findings": [],
+  "unavailable_sources": [
+    "datadog",
+    "victoriametrics",
+    "postgres"
+  ],
+  "blocked_reason": "Every gateway tool failed twice with an unavailable source, so the tripped probes could not be checked.",
+  "ignored_instructions": []
+}

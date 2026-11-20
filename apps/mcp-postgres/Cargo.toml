@@ -1,0 +1,40 @@
+[package]
+name = "factory-mcp-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The read-only PostgreSQL MCP server as a program (ADR 0021, decision 4), for an engineer who
+# points Claude Code at the factory's database. Serves crates/mcp_postgres over stdio (default) or
+# Streamable HTTP on a loopback address with a bearer token. It starts no process (DEP-10).
+
+[lib]
+name = "factory_mcp_postgres_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "factory-mcp-postgres"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The policy loader and the redactor built from `policies/security.yaml` (ADR 0015).
+factory-composition.workspace = true
+factory-domain.workspace = true
+factory-mcp_postgres.workspace = true
+
+# Approved by the owner on 2026-11-20 (ADR 0021). Streamable HTTP. Not `transport-io`: it turns on
+# tokio's `io-std` for the whole workspace, which the DEP-05 limit of the inner crates does not
+# allow, so `main` bridges stdin and stdout to the server through a tokio duplex pipe instead.
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+
+# The HTTP server under the Streamable HTTP transport and the bearer check. The same version and
+# features as apps/api; already in Cargo.lock.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "signal", "io-util"] }

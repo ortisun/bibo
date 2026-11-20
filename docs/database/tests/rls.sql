@@ -215,6 +215,14 @@ BEGIN
     VALUES (tn, dbtest.u(t * 1000 + 961), job, run, 'approve', dbtest.u(t * 1000 + 2), 7000 + t, 'approver',
             dbtest.sha('allowlist'), dbtest.sha('policy'), 'Reviewed the evidence.', 'cli', now() + interval '72 hours',
             repeat('a', 40), repeat('b', 40), repeat('c', 40), dbtest.sha('manifest'), 1);
+  -- The troubleshooter's own tables (migration 2026-11-20-003000, ADR 0021).
+  INSERT INTO troubleshooting_runs (tenant_id, id, trigger, started_at, datadog_enabled)
+    VALUES (tn, 'run-' || t, 'probe', now(), false);
+  INSERT INTO troubleshooting_probe_state (tenant_id, probe_id, last_outcome, last_checked_at)
+    VALUES (tn, 'probe-' || t, 'ok', now());
+  INSERT INTO troubleshooting_issues (tenant_id, fingerprint, category, component, title, repository, issue_number, opened_at)
+    VALUES (tn, dbtest.sha('finding-' || t), 'retries', 'worker', 'Retries pile up', 'example-org/fixture', t, now());
+  INSERT INTO troubleshooting_daily_counters (tenant_id, day) VALUES (tn, current_date);
 END
 $$;
 
@@ -358,9 +366,9 @@ $$;
 
 DO $$
 BEGIN
-  PERFORM dbtest.expect_eq('the catalog found the 17 tenant-owned tables (a new one must be added to mk_everything and to the policy migration)',
-    (SELECT count(*) FROM dbtest.tenant_tables()), 17::bigint);
-  PERFORM dbtest.expect_eq('all 17 tenant-owned tables are isolated: a tenant-1 session cannot read, insert, update or delete tenant 2 rows, and a session with no tenant sees nothing',
+  PERFORM dbtest.expect_eq('the catalog found the 21 tenant-owned tables, the four of the troubleshooter included (a new one must be added to mk_everything and to the policy migration)',
+    (SELECT count(*) FROM dbtest.tenant_tables()), 21::bigint);
+  PERFORM dbtest.expect_eq('all 21 tenant-owned tables are isolated: a tenant-1 session cannot read, insert, update or delete tenant 2 rows, and a session with no tenant sees nothing',
     dbtest.all_table_problems(), '');
 END
 $$;
@@ -607,8 +615,19 @@ $$;
 -- (a trigger function runs as the caller, but a caller can put a temporary table or function first).
 DO $$
 BEGIN
-  PERFORM dbtest.expect_eq('the only SECURITY DEFINER functions in the product schema are the two lookups',
-    (SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prosecdef), 'resolve_installation,resolve_token');
+  PERFORM dbtest.expect_eq('the only SECURITY DEFINER functions in the product schema are the two lookups and the three observer reads',
+    (SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prosecdef),
+    'observer_activity,observer_lock_waits,observer_statements,resolve_installation,resolve_token');
+  -- The observer reads (migration 2026-11-20-003100) run as factory_observer_stats, a role with no member whose only
+  -- membership is pg_read_all_stats, and only factory_observer may call them.
+  PERFORM dbtest.expect_eq('the observer reads are owned by factory_observer_stats and executable by factory_observer alone',
+    (SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' ||
+                       (SELECT string_agg(CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee)::text END, '+' ORDER BY 1)
+                          FROM aclexplode(p.proacl) x WHERE x.privilege_type = 'EXECUTE' AND x.grantee <> p.proowner),
+                       ',' ORDER BY p.proname)
+       FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname LIKE 'observer\_%'),
+    'observer_activity:factory_observer_stats:factory_observer,observer_lock_waits:factory_observer_stats:factory_observer,'
+    'observer_normalize_query:factory_observer_stats:factory_observer,observer_statements:factory_observer_stats:factory_observer');
   PERFORM dbtest.expect_eq('every function in the product schema pins its search path',
     (SELECT coalesce(string_agg(proname, ',' ORDER BY proname), '') FROM pg_proc
       WHERE pronamespace = 'public'::regnamespace AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(proconfig, '{}')) c WHERE c LIKE 'search_path=%')), '');
@@ -783,6 +802,15 @@ INSERT INTO expected_policies VALUES
   ('attempts', 'system_lock', 'w', 'factory_system'),
   ('outbox', 'system_find', 'r', 'factory_system'),
   ('outbox', 'system_relay', 'w', 'factory_system');
+-- The troubleshooter's read-only group reads named columns across tenants (migration 2026-11-20-002900, ADR 0021).
+INSERT INTO expected_policies
+SELECT t, 'observer_read', 'r', 'factory_observer'
+  FROM unnest(ARRAY['tenants', 'repositories', 'principals', 'api_tokens', 'artifacts', 'webhook_deliveries', 'jobs',
+                    'stage_runs', 'attempts', 'task_nodes', 'ledger_entries', 'audit_events', 'outbox', 'inbox',
+                    'approvals',
+                    -- The troubleshooter's own tables (migration 2026-11-20-003000), so it can read its history.
+                    'troubleshooting_runs', 'troubleshooting_probe_state', 'troubleshooting_issues',
+                    'troubleshooting_daily_counters']) AS t;
 
 CREATE FUNCTION dbtest.policy_set() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' ||
@@ -796,7 +824,7 @@ BEGIN
   PERFORM dbtest.expect_eq('the policies in the database are exactly the policies on the list: no extra, none missing, none for PUBLIC, none restrictive',
     dbtest.policy_set(),
     (SELECT string_agg(tbl || '.' || policy || ' ' || cmd || ' ' || role, E'\n' ORDER BY tbl, policy) FROM expected_policies));
-  PERFORM dbtest.expect_eq('row-level security is enabled on exactly the 17 tenant-owned tables and tenants, and forced on the 17',
+  PERFORM dbtest.expect_eq('row-level security is enabled on exactly the 21 tenant-owned tables and tenants, and forced on the 21',
     (SELECT string_agg(relname || CASE WHEN relforcerowsecurity THEN '+force' ELSE '' END, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relrowsecurity),
     (SELECT string_agg(n, ',' ORDER BY sort_key) FROM (SELECT t || '+force' AS n, t AS sort_key FROM dbtest.tenant_tables() t UNION ALL SELECT 'tenants', 'tenants') x));
   PERFORM dbtest.expect_eq('the reference tables carry no policy and no row-level security, and the application role can only read them',

@@ -30,6 +30,7 @@
 //! | [`registry`] | `InMemoryAgentRegistry` | `contracts::registry` |
 //! | [`githost`] | `FakeChangeHost`, `FakeIssueSource` | `contracts::githost` |
 //! | [`issue_status`] | `FakeIssueStatusWriter` (one `factory: <state>` label and one status comment per issue; ports v1.2) | `contracts::issue_status` |
+//! | [`triage_issue`] | `FakeTriageIssues` (the troubleshooter's triage issues, found by a fingerprint marker; ports v1.3) | `contracts::triage_issue` |
 //! | [`webhook`] | `FakeWebhookVerifier` (a real HMAC-SHA256, fixed test secrets) | `contracts::webhook` |
 //! | [`process`] | `ScriptedProcessRunner` (starts nothing) | `contracts::process` |
 //! | [`spec`] | `FakeSpecificationProvider` | none yet: Spec Kit is driven only by `spec_adapter` |
@@ -64,5 +65,6 @@ pub mod router;
 pub mod sandbox;
 pub mod spec;
 pub mod store;
+pub mod triage_issue;
 pub mod webhook;
 pub mod workspace;

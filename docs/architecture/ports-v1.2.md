@@ -167,3 +167,64 @@ Audit actions: `issue_status.written` (a success; the subject is `job <id> versi
 - The worker process. The wiring compiles and the step is tested with an in-memory store, a decorated fake writer and a fake clock. No worker was started against a database and a GitHub App.
 - The Action that reverts a `factory:` label written by anyone but the App.
 - An independent security review.
+
+## Ports v1.3: the troubleshooter's triage issue writer
+
+- Status: proposed on 2026-11-20, **pending the review ADR 0016 asks for a port change**. The decision is [ADR 0021](../adr/0021-troubleshooter-agent-and-mcp-sources.md), Decision 7; this section is the revision record, in the form of v1.2 above, and no new ADR is written for it.
+- What this does not change: every port of v1.2 and its contract. `GitScope`, `StatusScope` and every stage's permission set are unchanged. No existing call site changed.
+- Verified against: the fake GitHub server of the test kit (FX-GH, which gained two routes) and an in-memory fake. **Not verified against the real GitHub.**
+
+### What changes, and where
+
+| Item | Where | Notes |
+|---|---|---|
+| `TriageIssueWriter`, `RunScope`, `OpenedIssue`, `SeenAgainPost` | `crates/ports/src/triage_issue.rs` (new) | The port. Four operations. |
+| `Finding`, `FindingFingerprint`, `TriageLabels`, `check_triage_label_name`, `TroubleshootingRunId`; `issue::render_issue`, `issue::render_seen_again`, `TriageIssue`, `SeenAgainComment` | `crates/domain/src/troubleshooting/` (new) | The typed finding, the fingerprint, the labels and the renderer. Pure. |
+| `GithubTriageIssues`, `GithubAdapter::triage_issue_writer`, `PermissionSet::troubleshoot_issue`, `TokenClass::TroubleshootIssue` | `crates/github/src/triage.rs` (new), `permissions.rs`, `token.rs`, `client.rs`, `adapter.rs` | The adapter and its credential. The minter keeps tokens per holder (a job or a run) instead of per job. |
+| `FakeTriageIssues`, the contract suite, `GET` and `POST /repos/{owner}/{repo}/issues` on FX-GH | `crates/testkit/src/triage_issue.rs`, `contracts/triage_issue.rs`, `fx/github/routes.rs` | The fake and the suite. |
+| A note on the token class | `policies/security.yaml`, `credentials.github_app.installation_token` | A comment; no field and no App permission changes. |
+
+### The port
+
+```rust
+/// A run is not a job: no stage, and a credential of its own.
+pub struct RunScope {
+    pub tenant: TenantId,
+    pub run: TroubleshootingRunId,
+    pub repo: RepoRef, // troubleshooting.issue_repository; the adapter refuses any other
+}
+
+#[async_trait]
+pub trait TriageIssueWriter: Send + Sync {
+    fn fidelity(&self) -> Fidelity;
+    async fn find_open_issue(&self, scope: &RunScope, fingerprint: &FindingFingerprint)
+        -> Result<Option<IssueRef>, GitHostError>;
+    async fn open_issue(&self, scope: &RunScope, issue: &TriageIssue)
+        -> Result<OpenedIssue, GitHostError>;           // Opened | AlreadyOpen
+    async fn post_seen_again(&self, scope: &RunScope, issue: &IssueRef, comment: &SeenAgainComment)
+        -> Result<SeenAgainPost, GitHostError>;         // Posted | AlreadyThere
+    async fn revoke_run_tokens(&self, run: &TroubleshootingRunId) -> Result<(), GitHostError>;
+}
+```
+
+Rules of the operations:
+
+- **The scope.** A parallel `RunScope`, not a variant of `GitScope`, as v1.2 did with `StatusScope`. ADR 0021 says "`GitScope` gains a run scope"; a variant would have changed the type every `ChangeHost` and `IssueSource` call takes, and every call site with it, for a credential that none of them may use. A parallel type changes none of them and makes the wrong call a type error.
+- **Find.** The open issues that carry `troubleshooter` are listed (`GET /repos/{owner}/{repo}/issues?state=open&labels=troubleshooter&sort=created&direction=asc`, pages of 100, at most 10 pages); pull requests and issues not opened by the App's bot account are left out; the fingerprint is read from the body only, from a line that is exactly `<!-- troubleshooter-fingerprint: sha256:<hex> -->`. Several matches: the lowest number. Not found in a listing cut short at the cap: `Unavailable`. The search API is not used.
+- **Open** looks first and answers `AlreadyOpen` when an issue of the fingerprint is open, so a retry after a lost answer opens nothing new. A closed issue is not reopened; the caller names it in the new issue (`Investigation::earlier_closed_issue`).
+- **Seen again** posts unless the App's comment with the same key (`<!-- troubleshooter-seen-again: run=<id> sha256:<hex> -->`) is there.
+- **Caps are the caller's.** The day's counts (`max_new_per_day`, `max_comments_per_issue_per_day`) live in the troubleshooter's store; the port takes an action already decided.
+- **Text.** Only the renderer of `factory_domain::troubleshooting::issue` makes a `TriageIssue` or a `SeenAgainComment` (private fields). Every agent-written field is cut to its cap, put on one line, stripped of control, bidirectional, zero-width and tag characters, defanged (`<` `>` `@` `#` `://` `www.` and the marker word) and shown in a code span whose delimiter is longer than any backtick run in it. The adapter checks the rendered text and the agent's raw words for secrets and does not run the Markdown cleaner of `text.rs` over the body, because that cleaner does not know code spans.
+
+### The credential
+
+`PermissionSet::troubleshoot_issue()` is `issues: write` and `metadata: read`, for the configured issue repository only. The minter keeps it under a `Holder::Run`, never under a job: a job's scope that asks for `TokenClass::TroubleshootIssue` is `Forbidden` for every stage, a run can ask for no other class, a scope that names another repository is `Forbidden` before any request, and the sweeps of jobs (`sweep_orphans`, `release_idle_after`) do not touch a run's tokens. `revoke_run_tokens` ends the run; a later call for it is `Unauthorized`. The App's own permissions do not change (`issues: write` is already required).
+
+### The fake and the contract suite
+
+`FakeTriageIssues` reports `fake`. The suite `contracts::triage_issue` has nine checks and the fake has eleven deliberate defects; `contract_register` requires each check to be named by a defect. The GitHub adapter passes the same nine checks against FX-GH, plus tests of the request, the marker among several open issues with a spoof in a comment, a listing cut short, another repository, and the separation of the run's token from a job's.
+
+### What is not verified
+
+- Everything against the real GitHub: the label filter of the issue listing and its letter case, that the listing carries pull requests marked `pull_request`, what `POST .../issues` does with a label that does not exist (the installer must create `troubleshooter` and `troubleshooter: triage`), the bot login of an App's issue, how GitHub renders the code spans and the defanged text.
+- The troubleshooter's own use of the port (its store of daily counts, the choice between open, comment and nothing): that is the application's, not built here.

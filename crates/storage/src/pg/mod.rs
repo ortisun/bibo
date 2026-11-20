@@ -23,6 +23,7 @@ mod stage_runs;
 mod store;
 mod system;
 mod task_nodes;
+pub mod troubleshooting;
 mod tx;
 
 pub use config::{DatabaseUrl, PgStoreConfig, PoolSettings, TenantLogin};

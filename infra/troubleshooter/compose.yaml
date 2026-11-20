@@ -1,0 +1,110 @@
+# The VictoriaMetrics MCP server that the troubleshooter's gateway reaches as its `vm_*` upstream
+# (ADR 0021, decision 3). It reads the VictoriaMetrics of the local telemetry stack (infra/otel) and
+# answers MCP over Streamable HTTP on /mcp, guarded by a bearer token.
+#
+#   docker compose -f infra/otel/compose.yaml up -d --wait          # first: VictoriaMetrics
+#   FACTORY_VM_MCP_TOKEN_FILE=$HOME/.config/factory/vm-mcp.token \
+#   docker compose -f infra/troubleshooter/compose.yaml up -d --wait
+#
+# Variables (none of them holds a secret):
+#
+#   FACTORY_VM_MCP_TOKEN_FILE  REQUIRED. Path of a file that holds the bearer token on one line, at
+#                              least 32 characters. Compose mounts it at /run/secrets/vm_mcp_token.
+#                              The gateway reads the same file. README.md says how to make it.
+#   FACTORY_VM_MCP_PORT        Host port, on 127.0.0.1 only. Default 8809.
+#   FACTORY_OTEL_NETWORK       The network of the infra/otel stack, where VictoriaMetrics answers
+#                              as `victoriametrics`. Default factory-otel_default (project
+#                              factory-otel, default network).
+#   FACTORY_VM_MCP_UID, FACTORY_VM_MCP_GID
+#                              The user the server runs as. Default 1000:1000, the image's `mcp`
+#                              user. On Linux the token file must be readable by this user.
+#
+# The image is the official one, v1.21.0 (released 2026-11-12), pinned by the digest of its
+# multi-platform index (linux/amd64, linux/arm64), read with "docker buildx imagetools inspect" on
+# 2026-11-20. The release is eight days old on that date, younger than the two weeks the other
+# pins of this repository wait; ADR 0021 names this release, and a person reviews the pin.
+
+name: factory-troubleshooter
+
+services:
+  mcp-victoriametrics:
+    image: ghcr.io/victoriametrics/mcp-victoriametrics:v1.21.0@sha256:c03d2a0160871d0870cf082c39c04046fb7951b3cd9ac459f4e1daebc1599e44
+    # The server takes its token only from the environment variable MCP_AUTH_TOKEN; it has no file
+    # variant. The shell of the image reads the Docker secret into that variable of the server
+    # process alone, so the token is never in this file, in `docker inspect` or in an argument.
+    # A missing, empty or short token stops the container with exit code 2.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        MCP_AUTH_TOKEN="$$(cat /run/secrets/vm_mcp_token 2>/dev/null)";
+        if [ "$${#MCP_AUTH_TOKEN}" -lt 32 ]; then
+        echo "mcp-victoriametrics: /run/secrets/vm_mcp_token is missing, empty or shorter than 32 characters" >&2;
+        exit 2; fi;
+        export MCP_AUTH_TOKEN;
+        exec /usr/local/bin/mcp-victoriametrics
+    environment:
+      MCP_SERVER_MODE: http
+      # Inside the container. The port is published on the host's loopback address only (below).
+      MCP_LISTEN_ADDR: 0.0.0.0:8080
+      VM_INSTANCE_ENTRYPOINT: http://victoriametrics:8428
+      VM_INSTANCE_TYPE: single
+      # Exactly `upstreams.victoriametrics.disabled_tools` of policies/troubleshooting.yaml: the
+      # server's own default list plus metric_statistics and documentation. The gateway's allowlist
+      # is the first layer; this is the second. Change both together.
+      #
+      # Measured on 2026-11-20 with this image: with `documentation` enabled the server builds a
+      # search index of the VictoriaMetrics documentation at start (about 20 seconds of three CPUs,
+      # about 705 MiB held for as long as it runs). The gateway never offers that tool, so it is
+      # disabled, and the server starts at once and holds about 18 MiB.
+      MCP_DISABLED_TOOLS: export,flags,metric_relabel_debug,downsampling_filters_debug,retention_filters_debug,test_rules,metric_statistics,documentation
+      # MCP resources (documentation pages) are not tools, and the gateway passes tools only.
+      MCP_DISABLE_RESOURCES: "true"
+      # The largest VictoriaMetrics answer one tool reads: 256 KiB, four times the gateway's
+      # `max_result_bytes` (64 KiB), because the server reshapes the answer before the gateway cuts
+      # it. A larger answer is a tool error that tells the agent to narrow the query, instead of
+      # 16 MiB read and then thrown away.
+      MCP_MAX_RESPONSE_SIZE: "262144"
+      MCP_LOG_FORMAT: json
+      # Never `debug`: at that level the server logs request and result payloads.
+      MCP_LOG_LEVEL: info
+    secrets:
+      - vm_mcp_token
+    ports:
+      - "127.0.0.1:${FACTORY_VM_MCP_PORT:-8809}:8080"
+    networks:
+      - otel
+    healthcheck:
+      # A public path: it needs no token.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      # With `documentation` disabled the listener is up in about a second.
+      start_period: 20s
+    # ---- Hardening (the same stance as infra/compose and docs/security/sandbox-policy.md) ----
+    user: "${FACTORY_VM_MCP_UID:-1000}:${FACTORY_VM_MCP_GID:-1000}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    # About 18 MiB measured with `documentation` disabled; 128m leaves room for large answers
+    # (MCP_MAX_RESPONSE_SIZE) without letting the server grow unbounded.
+    mem_limit: 128m
+    pids_limit: 64
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  otel:
+    external: true
+    name: ${FACTORY_OTEL_NETWORK:-factory-otel_default}
+
+secrets:
+  vm_mcp_token:
+    file: ${FACTORY_VM_MCP_TOKEN_FILE:?Set FACTORY_VM_MCP_TOKEN_FILE to the path of the token file (README.md)}

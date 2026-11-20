@@ -63,6 +63,14 @@ pub mod name {
     pub const SPEND_USD_TOTAL: &str = "factory_spend_usd_total";
     /// Added in the telemetry gap fix (OBS-10); architect confirmation pending.
     pub const REDACTIONS_TOTAL: &str = "factory_redactions_total";
+    /// The troubleshooter's runs (ADR 0021).
+    pub const TROUBLESHOOTING_RUNS_TOTAL: &str = "factory_troubleshooting_runs_total";
+    /// The troubleshooter's probe results.
+    pub const PROBE_RESULTS_TOTAL: &str = "factory_probe_results_total";
+    /// The calls of the troubleshooter's MCP gateway.
+    pub const GATEWAY_CALLS_TOTAL: &str = "factory_gateway_calls_total";
+    /// The troubleshooter's decisions about triage issues.
+    pub const TRIAGE_ISSUES_TOTAL: &str = "factory_triage_issues_total";
 }
 
 /// Label names. A label is a single lower case word.
@@ -73,6 +81,11 @@ pub mod label {
     pub const PROVIDER: &str = "provider";
     pub const QUEUE: &str = "queue";
     pub const KIND: &str = "kind";
+    pub const TRIGGER: &str = "trigger";
+    pub const RESULT: &str = "result";
+    pub const PROBE: &str = "probe";
+    pub const UPSTREAM: &str = "upstream";
+    pub const ACTION: &str = "action";
 }
 
 /// What the attribute guard did to a value. This is the whole set of values of the label `kind` of
@@ -205,6 +218,31 @@ pub const LABELS: &[LabelSpec] = &[
         max_values: 4,
         meaning: "What the attribute guard did to a value: redacted, truncated or dropped.",
     },
+    LabelSpec {
+        name: label::TRIGGER,
+        max_values: 4,
+        meaning: "Why a troubleshooting run started: probe or sweep.",
+    },
+    LabelSpec {
+        name: label::RESULT,
+        max_values: 16,
+        meaning: "How a troubleshooting run, a probe or a gateway call ended, in the troubleshooter's closed words.",
+    },
+    LabelSpec {
+        name: label::PROBE,
+        max_values: 32,
+        meaning: "The probe id from the troubleshooting policy.",
+    },
+    LabelSpec {
+        name: label::UPSTREAM,
+        max_values: 4,
+        meaning: "The upstream of the MCP gateway: datadog, victoriametrics or postgres.",
+    },
+    LabelSpec {
+        name: label::ACTION,
+        max_values: 8,
+        meaning: "What the troubleshooter did about a finding: opened, commented, unchanged, deferred or dry_run.",
+    },
 ];
 
 /// Bucket bounds for stage durations, in seconds: from a quick deterministic stage to an hour.
@@ -275,6 +313,42 @@ pub const METRICS: &[MetricSpec] = &[
         max_label_sets: 4,
         buckets: &[],
         meaning: "Values the attribute guard redacted, truncated or dropped before a span left the process, by kind.",
+    },
+    MetricSpec {
+        name: name::TROUBLESHOOTING_RUNS_TOTAL,
+        kind: MetricKind::Counter,
+        unit: "{run}",
+        labels: &[label::TRIGGER, label::RESULT],
+        max_label_sets: 32,
+        buckets: &[],
+        meaning: "Troubleshooting runs that ended, by trigger and result.",
+    },
+    MetricSpec {
+        name: name::PROBE_RESULTS_TOTAL,
+        kind: MetricKind::Counter,
+        unit: "{probe_result}",
+        labels: &[label::PROBE, label::RESULT],
+        max_label_sets: 160,
+        buckets: &[],
+        meaning: "Results of the troubleshooter's probes, by probe and result.",
+    },
+    MetricSpec {
+        name: name::GATEWAY_CALLS_TOTAL,
+        kind: MetricKind::Counter,
+        unit: "{call}",
+        labels: &[label::UPSTREAM, label::RESULT],
+        max_label_sets: 64,
+        buckets: &[],
+        meaning: "Calls of the troubleshooter's MCP gateway, probes and agent together, by upstream and result.",
+    },
+    MetricSpec {
+        name: name::TRIAGE_ISSUES_TOTAL,
+        kind: MetricKind::Counter,
+        unit: "{issue}",
+        labels: &[label::ACTION],
+        max_label_sets: 8,
+        buckets: &[],
+        meaning: "The troubleshooter's decisions about triage issues, by action.",
     },
 ];
 
