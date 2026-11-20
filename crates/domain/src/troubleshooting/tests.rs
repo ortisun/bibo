@@ -439,6 +439,15 @@ fn an_issue_has_the_preface_the_labels_and_one_marker() {
             .ends_with(&issue.fingerprint().marker())
     );
     assert_safe(issue.body(), Some(issue.fingerprint()));
+    // An adapter that cleans the text before it adds the marker back gets the body without it.
+    assert!(issue.body().starts_with(issue.body_before_marker()));
+    assert!(!issue.body_before_marker().contains("<!--"));
+    assert!(issue.body_before_marker().ends_with("`\n"));
+    assert!(
+        issue
+            .agent_text()
+            .contains("Stage failures rose after the deploy")
+    );
 }
 
 #[test]
@@ -522,6 +531,8 @@ fn a_seen_again_comment_is_short_and_keyed_by_run_and_fingerprint() {
         "a comment carries no fingerprint marker"
     );
     assert_safe(comment.body(), None);
+    assert!(!comment.body_before_key().contains("<!--"));
+    assert!(comment.body().starts_with(comment.body_before_key()));
 }
 
 #[test]

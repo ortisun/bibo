@@ -96,6 +96,7 @@ pub struct TriageIssue {
     body: String,
     labels: TriageLabels,
     fingerprint: FindingFingerprint,
+    agent_text: String,
 }
 
 impl TriageIssue {
@@ -122,6 +123,29 @@ impl TriageIssue {
     pub fn fingerprint(&self) -> &FindingFingerprint {
         &self.fingerprint
     }
+
+    /// The body without the fingerprint marker line, for an adapter that cleans text (and drops
+    /// HTML comments) before it adds the marker back.
+    #[must_use]
+    pub fn body_before_marker(&self) -> &str {
+        before_last_line(&self.body)
+    }
+
+    /// The agent's own words as it wrote them, before they were cut and defanged, one field to a
+    /// line. Never shown: an adapter checks it for secrets, because defanging can hide a secret's
+    /// shape from a pattern (`user:pass@host` loses its `@`).
+    #[must_use]
+    pub fn agent_text(&self) -> &str {
+        &self.agent_text
+    }
+}
+
+/// The text before the last line (the hidden marker or key the renderer put there).
+fn before_last_line(text: &str) -> &str {
+    let trimmed = text.trim_end_matches('\n');
+    trimmed
+        .rfind('\n')
+        .map_or("", |at| trimmed.get(..at).unwrap_or_default())
 }
 
 /// A "seen again" comment. Private fields: only [`render_seen_again`] makes one.
@@ -129,6 +153,7 @@ impl TriageIssue {
 pub struct SeenAgainComment {
     body: String,
     key: String,
+    agent_text: String,
 }
 
 impl SeenAgainComment {
@@ -144,6 +169,18 @@ impl SeenAgainComment {
     pub fn key(&self) -> &str {
         &self.key
     }
+
+    /// The text without the key line.
+    #[must_use]
+    pub fn body_before_key(&self) -> &str {
+        before_last_line(&self.body)
+    }
+
+    /// The agent's own words as it wrote them. See [`TriageIssue::agent_text`].
+    #[must_use]
+    pub fn agent_text(&self) -> &str {
+        &self.agent_text
+    }
 }
 
 fn check(finding: &Finding, investigation: &Investigation<'_>) -> Result<(), RenderError> {
@@ -157,6 +194,14 @@ fn check(finding: &Finding, investigation: &Investigation<'_>) -> Result<(), Ren
         return Err(RenderError::Window);
     }
     Ok(())
+}
+
+/// Every agent-written field of a finding, one to a line, as written.
+fn agent_text(finding: &Finding) -> String {
+    let mut fields = vec![finding.title.as_str(), finding.hypothesis.as_str()];
+    fields.extend(finding.observations.iter().map(|o| o.observed.as_str()));
+    fields.extend(finding.next_checks.iter().map(String::as_str));
+    fields.join("\n")
 }
 
 fn joined_codes<'a>(items: impl Iterator<Item = &'a str>) -> String {
@@ -285,6 +330,7 @@ pub fn render_issue(
         body,
         labels: labels.clone(),
         fingerprint,
+        agent_text: agent_text(finding),
     })
 }
 
@@ -325,5 +371,9 @@ pub fn render_seen_again(
     if body.len() > MAX_SEEN_AGAIN_BYTES {
         return Err(RenderError::TooLong);
     }
-    Ok(SeenAgainComment { body, key })
+    Ok(SeenAgainComment {
+        body,
+        key,
+        agent_text: finding.title.clone(),
+    })
 }
