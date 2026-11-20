@@ -13,6 +13,12 @@
 //!   models its manifest recommends, and its ceilings are at or under the manifest's limits. The
 //!   manifests are read elsewhere (`FileAgentRegistry`), so the caller hands in the facts.
 //!
+//! The operations roles (ADR 0021) have no stage and no route. [`routing_problems`] holds them to
+//! the rules of a pipeline role that do not depend on a stage, refuses one that is also a pipeline
+//! role, and requires a day ceiling that one run fits under; [`security_problems_of`] holds that
+//! day ceiling to `budgets.hard_ceilings.per_org_day`; [`manifest_problems`] compares them with
+//! their manifests like any other role.
+//!
 //! No key and no secret is ever read or held here.
 
 use std::collections::BTreeSet;
@@ -385,6 +391,117 @@ pub fn routing_problems(policy: &ModelRoutingPolicy) -> Vec<Problem> {
             "a ceiling of zero stops every job; give the job a ceiling",
         ));
     }
+    found.extend(operations_problems(policy));
+    found
+}
+
+/// The rules of the operations roles: like a pipeline role's, without a stage or a route, plus a
+/// day ceiling that one run fits under.
+fn operations_problems(policy: &ModelRoutingPolicy) -> Vec<Problem> {
+    let mut found = Vec::new();
+    let mut names = BTreeSet::new();
+    for (i, role) in policy.operations_roles.iter().enumerate() {
+        let at = |field: &str| format!("operations_roles[{i}].{field}");
+        if !names.insert(role.role.as_str()) {
+            found.push(problem(
+                at("role"),
+                ProblemKind::DuplicateId,
+                format!("the operations role `{}` is listed twice", role.role),
+            ));
+        }
+        if policy.role(&role.role).is_some() {
+            found.push(problem(
+                at("role"),
+                ProblemKind::DuplicateId,
+                format!(
+                    "`{}` is a pipeline role in `roles`; a role is either a pipeline role with a stage or an operations role without one",
+                    role.role
+                ),
+            ));
+        }
+        if role.allowed_models.is_empty() {
+            found.push(problem(
+                at("allowed_models"),
+                ProblemKind::Constraint,
+                "a role needs at least one model, or it can never run",
+            ));
+        }
+        for model in &role.allowed_models {
+            if policy.model(model).is_none() {
+                found.push(problem(
+                    at("allowed_models"),
+                    ProblemKind::UnknownReference,
+                    format!("`{model}` is not in `models`"),
+                ));
+            }
+        }
+        for (field, name) in [
+            ("start_with", &role.start_with),
+            ("escalate_to", &role.escalate_to),
+        ] {
+            if !role.allowed_models.contains(name) {
+                found.push(problem(
+                    at(field),
+                    ProblemKind::UnknownReference,
+                    format!("`{name}` is not one of the models the role may use"),
+                ));
+            }
+        }
+        if let (Some(start), Some(larger)) = (
+            policy.model(&role.start_with),
+            policy.model(&role.escalate_to),
+        ) && larger.tier.rank() <= start.tier.rank()
+        {
+            found.push(problem(
+                at("escalate_to"),
+                ProblemKind::Constraint,
+                "the model to escalate to must be of a larger tier than the model to start with",
+            ));
+        }
+        if role.escalate_after_failed_repairs == 0 {
+            found.push(problem(
+                at("escalate_after_failed_repairs"),
+                ProblemKind::Constraint,
+                "a role does not escalate before it has failed a repair; use 1 or more",
+            ));
+        }
+        if role.per_run.max_micro_usd == 0 || role.per_run.max_tokens == 0 {
+            found.push(problem(
+                at("per_run"),
+                ProblemKind::Constraint,
+                "a ceiling of zero stops every run; give the run a ceiling",
+            ));
+        }
+        let caps = &role.per_request;
+        if caps.max_input_tokens == 0 || caps.max_output_tokens == 0 {
+            found.push(problem(
+                at("per_request"),
+                ProblemKind::Constraint,
+                "a cap of zero refuses every request; give the role a cap",
+            ));
+        }
+        if caps.max_output_tokens.saturating_add(caps.max_input_tokens) > role.per_run.max_tokens {
+            found.push(problem(
+                at("per_request"),
+                ProblemKind::Constraint,
+                "one request may not be larger than the run's ceiling of tokens",
+            ));
+        }
+        if role.per_day.max_micro_usd == 0 {
+            found.push(problem(
+                at("per_day"),
+                ProblemKind::Constraint,
+                "a day ceiling of zero stops every run; give the role a day ceiling",
+            ));
+        }
+        if role.per_run.max_micro_usd > role.per_day.max_micro_usd {
+            found.push(problem(
+                at("per_run.max_micro_usd"),
+                ProblemKind::Constraint,
+                "the ceiling of one run is above the role's day ceiling, so one run could spend more than the day allows",
+            ));
+        }
+    }
     found
 }
 
@@ -427,6 +544,40 @@ pub fn security_problems_of(
         if role.per_request.max_output_tokens > budgets.per_request_caps.max_output_tokens {
             found.push(problem(
                 format!("roles[{i}].per_request.max_output_tokens"),
+                ProblemKind::Constraint,
+                "the cap is above `budgets.per_request_caps.max_output_tokens` of the security policy",
+            ));
+        }
+    }
+    let hard_day = (budgets.hard_ceilings.per_org_day.max_usd * 1_000_000.0).floor();
+    for (i, role) in policy.operations_roles.iter().enumerate() {
+        let at = |field: &str| format!("operations_roles[{i}].{field}");
+        #[allow(clippy::cast_precision_loss)]
+        if (role.per_run.max_micro_usd as f64) > hard_task {
+            found.push(problem(
+                at("per_run.max_micro_usd"),
+                ProblemKind::Constraint,
+                "the ceiling of a run is above `budgets.hard_ceilings.per_task.max_usd` of the security policy",
+            ));
+        }
+        #[allow(clippy::cast_precision_loss)]
+        if (role.per_day.max_micro_usd as f64) > hard_day {
+            found.push(problem(
+                at("per_day.max_micro_usd"),
+                ProblemKind::Constraint,
+                "the day ceiling is above `budgets.hard_ceilings.per_org_day.max_usd` of the security policy",
+            ));
+        }
+        if role.per_request.max_input_tokens > budgets.per_request_caps.max_input_tokens {
+            found.push(problem(
+                at("per_request.max_input_tokens"),
+                ProblemKind::Constraint,
+                "the cap is above `budgets.per_request_caps.max_input_tokens` of the security policy",
+            ));
+        }
+        if role.per_request.max_output_tokens > budgets.per_request_caps.max_output_tokens {
+            found.push(problem(
+                at("per_request.max_output_tokens"),
                 ProblemKind::Constraint,
                 "the cap is above `budgets.per_request_caps.max_output_tokens` of the security policy",
             ));
@@ -504,8 +655,58 @@ pub fn manifest_problems(policy: &ModelRoutingPolicy, manifests: &[ManifestFacts
             ));
         }
     }
+    for (i, role) in policy.operations_roles.iter().enumerate() {
+        let at = |field: &str| format!("operations_roles[{i}].{field}");
+        let Some(manifest) = manifests.iter().find(|m| m.role == role.role) else {
+            found.push(problem(
+                at("role"),
+                ProblemKind::UnknownReference,
+                format!("no agent manifest has the role `{}`", role.role),
+            ));
+            continue;
+        };
+        for id in &role.allowed_models {
+            let runtime = policy.model(id).map(|m| m.runtime.as_str());
+            if !manifest
+                .recommended
+                .iter()
+                .any(|(r, m)| m == id && Some(r.as_str()) == runtime)
+            {
+                found.push(problem(
+                    at("allowed_models"),
+                    ProblemKind::Constraint,
+                    format!(
+                        "the manifest of `{}` does not recommend `{id}` on the runtime the policy gives it",
+                        role.role
+                    ),
+                ));
+            }
+        }
+        if role.per_run.max_tokens > manifest.max_tokens {
+            found.push(problem(
+                at("per_run.max_tokens"),
+                ProblemKind::Constraint,
+                format!(
+                    "the ceiling is above the {} tokens in the manifest of `{}`",
+                    manifest.max_tokens, role.role
+                ),
+            ));
+        }
+        #[allow(clippy::cast_precision_loss)]
+        if (role.per_run.max_micro_usd as f64) > (manifest.max_cost_usd * 1_000_000.0).floor() {
+            found.push(problem(
+                at("per_run.max_micro_usd"),
+                ProblemKind::Constraint,
+                format!(
+                    "the ceiling is above the {} dollars in the manifest of `{}`",
+                    manifest.max_cost_usd, role.role
+                ),
+            ));
+        }
+    }
     for manifest in manifests {
-        if policy.role(&manifest.role).is_none() {
+        if policy.role(&manifest.role).is_none() && policy.operations_role(&manifest.role).is_none()
+        {
             found.push(problem(
                 "roles",
                 ProblemKind::UnknownReference,
