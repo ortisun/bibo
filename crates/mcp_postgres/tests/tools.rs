@@ -269,17 +269,24 @@ async fn huge_results_are_capped_in_rows_and_bytes() {
         .expect("the query runs");
     assert!(text.len() <= 64 * 1024, "{} bytes", text.len());
     let value = json(&text);
-    assert_eq!(value["more_rows_than_limit"], Value::from(true));
+    // The rows pass the byte cap long before the row cap: reading stopped there.
+    assert_eq!(value["truncated"]["reading_stopped"], Value::from(true));
     let kept = value["returned_rows"].as_u64().expect("kept");
     let omitted = value["truncated"]["omitted_rows"]
         .as_u64()
         .expect("omitted");
-    assert_eq!(
-        kept + omitted,
-        200,
-        "the row cap is 200 whatever the caller asks"
-    );
+    assert!(kept + omitted < 200, "{kept} + {omitted}");
     assert!(value["truncated"]["omitted_bytes"].as_u64().expect("bytes") > 0);
+    // Small rows meet the row cap: 200 whatever the caller asks.
+    let many = json(
+        &inspector
+            .query("SELECT g FROM generate_series(1, 100000) g", Some(10_000))
+            .await
+            .expect("runs"),
+    );
+    assert_eq!(many["returned_rows"], Value::from(200));
+    assert_eq!(many["more_rows_than_limit"], Value::from(true));
+    assert!(many.get("truncated").is_none(), "{many}");
     let small = inspector
         .query("SELECT g FROM generate_series(1, 10) g", Some(3))
         .await
@@ -287,6 +294,68 @@ async fn huge_results_are_capped_in_rows_and_bytes() {
     let small = json(&small);
     assert_eq!(small["returned_rows"], Value::from(3));
     assert_eq!(small["more_rows_than_limit"], Value::from(true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_query_of_gigabytes_stops_at_the_byte_cap_without_reading_them() {
+    // TR-2: 201 rows (the row cap plus one) of 20 MB each, 4 GB in all, and a single row of
+    // 100 MB. Reading stops at the byte cap: the process receives a bounded number of bytes, not
+    // the result, and the call answers fast with a truncation marker.
+    let db = TestDb::fresh().await;
+    let login = db.observer().await;
+    let limits = Limits {
+        statement_timeout: Duration::from_secs(5),
+        ..Limits::default()
+    };
+    let inspector = db.inspector(&login, limits);
+    // Rows cut at the cap by the wrapper, and at most one fetch of them: 16 rows of the cap's
+    // size, four bytes a character at worst, plus the cap itself.
+    let bound = 16 * 4 * (limits.max_result_bytes as u64 + 1) + limits.max_result_bytes as u64;
+    for sql in [
+        "SELECT g, repeat('x', 20000000) AS pad FROM generate_series(1, 100000) g",
+        "SELECT repeat('y', 100000000) AS pad",
+    ] {
+        let before = inspector.bytes_read();
+        let started = Instant::now();
+        let text = inspector.query(sql, None).await.expect(sql);
+        let read = inspector.bytes_read() - before;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{sql}: {:?}",
+            started.elapsed()
+        );
+        assert!(read <= bound, "{sql}: {read} bytes read, bound {bound}");
+        assert!(
+            text.len() <= limits.max_result_bytes,
+            "{} bytes",
+            text.len()
+        );
+        let value = json(&text);
+        assert_eq!(
+            value["truncated"]["reading_stopped"],
+            Value::from(true),
+            "{sql}: {text:.400}"
+        );
+    }
+    // Many small rows past the byte cap stop the same way, after the cap and one fetch.
+    let before = inspector.bytes_read();
+    let text = inspector
+        .query(
+            "SELECT g, repeat('w', 3000) AS pad FROM generate_series(1, 100000) g",
+            None,
+        )
+        .await
+        .expect("small rows");
+    let read = inspector.bytes_read() - before;
+    assert!(read <= bound, "{read} bytes read");
+    let value = json(&text);
+    assert_eq!(value["truncated"]["reading_stopped"], Value::from(true));
+    assert!(value["returned_rows"].as_u64().expect("rows") > 10);
+    // The connection is fit for the next call.
+    inspector
+        .query("SELECT 1 AS one", None)
+        .await
+        .expect("next call");
 }
 
 #[tokio::test(flavor = "multi_thread")]
