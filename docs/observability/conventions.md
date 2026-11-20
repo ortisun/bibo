@@ -268,6 +268,8 @@ How it behaves:
 
 [`infra/otel/`](../../infra/otel/README.md) holds a collector configuration, a Docker Compose file that starts the collector, VictoriaMetrics and Jaeger on the loopback address, and a script that checks the configuration with the pinned collector image. Its README says what was verified and when.
 
+An optional overlay, `compose.datadog.yaml`, also sends traces and metrics to Datadog and adds the factory's logs, read from Docker's json-file logs (section 13).
+
 For the first end-to-end run, the [runbook of first-run signals](runbook-first-run-signals.md) says which span, metric and log line to look at for a stuck lease, a stage over its deadline, a gate blocked by the environment, a job over budget and a redaction hit, and which of those signals no code records yet.
 
 ## 11. Dependencies
@@ -321,3 +323,14 @@ The crate depends on one workspace crate, `factory-domain`, which the dependency
 - **No OTLP logs.** Logs go to standard error. The policy names `otel_log_records` as a sink, and the pipeline would need the `opentelemetry-appender-tracing` crate, which is not on the allow list.
 - **No alert rules or dashboards.** This page fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.
 - **The sample is a sample.** The `emit_sample` example in the crate sends fake identifiers to a collector, with a redactor that has no pattern.
+
+## 13. What the troubleshooter reads
+
+The troubleshooter ([ADR 0021](../adr/0021-troubleshooter-agent-and-mcp-sources.md), [guide](../guides/troubleshooter.md)) reads the factory's signals through its MCP gateway and never changes them. It depends on the names of this page, so a change to a name here is a change to it too.
+
+- **Metrics, from VictoriaMetrics.** Its PromQL probes in `policies/troubleshooting.yaml` read `factory_stage_runs_total` by `outcome`, `factory_gate_failures_total`, `factory_queue_depth` with `queue="ready_stage_runs"`, `factory_retries_total` and `factory_spend_usd_total`, under the exact names of the metrics table. A test of the policy (`every_probe_metric_is_a_metric_of_the_conventions` in `crates/contracts/tests/troubleshooting_policy.rs`) fails when a probe names a metric that the table does not list. The agent may query any metric of the table through the `vm_*` tools.
+- **Traces, by the derived trace id.** A job's trace id is the 32 lowercase hex characters of its job id (section 3, ADR 0013), so the agent finds a job's trace from a job id it read in the database or in a log line, without a search. The derived root span is never exported, so a backend shows the job's stretches under a missing parent. Traces are readable by the troubleshooter only through Datadog: the gateway has no Jaeger upstream.
+- **Logs, only through the Datadog overlay.** The factory writes logs to standard error and exports none (section 7). The overlay of `infra/otel` reads Docker's json-file logs, keeps a line only when it is a JSON object whose `target` starts with `factory_`, and sends it to Datadog with the line as a structured body: `correlation_id` when the line was written inside a job, `level`, `target` and the `fields` of the allowlist. Without the overlay, the troubleshooter reads no log at all. A process that does not run in a container with the json-file driver, such as a program started by hand, is not read.
+- **The database, through its own role.** Operational columns of the factory's tables, read by the `factory_observer` role ([`apps/mcp-postgres`](../../apps/mcp-postgres/README.md)); not telemetry, named here because the probes join it with the metrics.
+
+Everything the troubleshooter reads was written by programs and people it does not trust, so the agent treats it as data and never as instructions (threat T-49).
