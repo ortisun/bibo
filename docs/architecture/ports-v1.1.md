@@ -3504,6 +3504,15 @@ pub trait OutputValidator: Send + Sync {
 // field, a rework round had no way to tell the skill that feedback existed, and the skill was told
 // "No answers exist yet". A revision (`RevisionRequest`) is another thing: it makes a new version
 // of a frozen specification.
+//
+// Added on 2026-11-20, additive: `SpecRequest::resume: Option<ResumeRequest>`, where
+// `ResumeRequest { round: u8 }` and `round` counts from 1 how many times people have answered. It
+// is present when an earlier attempt of the same stage run stopped on questions, a person answered
+// them, and the operation goes on from the draft those questions are about. The stage then runs the
+// clarify skill on that draft and does not run the specify skill again: a specification written
+// again carries other questions under the same identifiers, and the answers would meet questions
+// they were never given to. A rework (`ReworkRequest`) is another thing: it starts from the draft
+// that was sent back.
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;

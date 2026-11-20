@@ -120,6 +120,18 @@ pub struct SpecRequest {
     pub revision: Option<RevisionRequest>,
     /// Present when the draft in the feature's directory was sent back and is being repaired.
     pub rework: Option<ReworkRequest>,
+    /// Present when the draft in the feature's directory stopped on questions, a person answered
+    /// them, and this operation goes on from that draft.
+    pub resume: Option<ResumeRequest>,
+}
+
+/// The draft an earlier attempt of the same stage run left when it stopped to ask a person. The
+/// operation applies the answers to that draft and does not write a new specification, so the
+/// answers meet the questions they were given to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeRequest {
+    /// How many times people have answered so far, from 1.
+    pub round: u8,
 }
 
 /// A specification the operation produced.

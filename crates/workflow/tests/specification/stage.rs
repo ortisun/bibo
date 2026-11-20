@@ -291,28 +291,47 @@ async fn clarification_questions_go_to_a_person_and_the_answer_reaches_the_next_
     assert_eq!(rig.events_of("provider.run:Checklist").len(), 0);
     assert_eq!(rig.runtime.runs("specification-reviewer"), 0);
 
-    // A person answers. The next run starts again with the answer, and the clarify skill gets it.
+    // A person answers. The next run goes on from the draft the question is about: the clarify
+    // skill applies the answer to it, and the specify skill does not write another specification.
+    // The defect this guards against, seen in the twenty-second real run: the specify skill ran
+    // again, left other markers under the same identifiers, and the run asked again before the
+    // clarify skill ever read the answers.
     answer(
         &rig,
         "Q-001: The keys are lines, words and characters, in that order.",
     )
     .await;
-    rig.writer_writes(vec![
-        write(&format!("{dir}/spec.md"), SPEC_TEXT),
-        write(
-            &format!("{dir}/checklists/requirements.md"),
-            REQUIREMENTS_MD,
-        ),
-    ]);
-    rig.writer_writes(vec![]);
+    rig.writer_writes(vec![write(&format!("{dir}/spec.md"), SPEC_TEXT)]);
     rig.writer_writes(vec![write(
         &format!("{dir}/checklists/requirements-quality.md"),
         QUALITY_MD,
     )]);
     rig.reviewer_answers(crate::rig::pass());
     assert_eq!(rig.run_next().await.1, AttemptOutcome::NeedsHuman);
+    assert_eq!(
+        rig.provider.requests_of(SpecOperation::Specify).len(),
+        1,
+        "the specification is written once"
+    );
     let clarify = rig.provider.requests_of(SpecOperation::Clarify);
     assert_eq!(clarify.len(), 1);
+    assert_eq!(
+        clarify[0].resume.map(|resume| resume.round),
+        Some(1),
+        "the clarify skill is told that it goes on from the draft"
+    );
+    // The skill reads the answer beside the question it was given to.
+    let answers = written_to(&rig, "inputs/answers.md");
+    let read = answers.last().expect("the answers are a file");
+    assert!(
+        read.contains("Q-001: which order do the keys use?"),
+        "{read}"
+    );
+    assert!(read.contains("Answer 1 from a person:"), "{read}");
+    assert!(
+        read.find("which order do the keys use?") < read.find("Answer 1 from a person:"),
+        "the questions come first"
+    );
     assert_eq!(clarify[0].answers.len(), 1);
     assert_eq!(clarify[0].answers[0].question.as_str(), "Q-001");
     assert!(
@@ -342,16 +361,11 @@ async fn the_loop_of_questions_stops_at_the_limit() {
     ]);
     assert_eq!(rig.run_next().await.1, AttemptOutcome::NeedsHuman);
     answer(&rig, "Q-001: Use the keys the example shows.").await;
-    // The writer still leaves a marker after the answer (specify, clarify and checklist).
-    for _ in 0..2 {
-        rig.writer_writes(vec![
-            write(&format!("{dir}/spec.md"), &marker),
-            write(
-                &format!("{dir}/checklists/requirements.md"),
-                REQUIREMENTS_MD,
-            ),
-        ]);
-    }
+    // The clarify skill still leaves a marker after the answer.
+    rig.writer_writes(vec![write(
+        &format!("{dir}/spec.md"),
+        &marker.replace("which keys?", "which keys, then?"),
+    )]);
     assert_eq!(rig.run_next().await.1, AttemptOutcome::NeedsHuman);
     let run = rig.run_of(StageKind::Specification).await;
     assert_eq!(

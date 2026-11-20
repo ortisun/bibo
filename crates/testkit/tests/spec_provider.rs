@@ -31,6 +31,7 @@ fn request(op: SpecOperation) -> SpecRequest {
         answers: Vec::new(),
         revision: None,
         rework: None,
+        resume: None,
     }
 }
 

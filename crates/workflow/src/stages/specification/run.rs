@@ -43,8 +43,8 @@ use factory_ports::paths::{CommitSha, RepoGlob, RepoPath};
 use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::{ExecArgv, ExecRequest, SandboxSession};
 use factory_ports::spec::{
-    FeatureDir, HumanAnswer, ParseReason, RevisionRequest, ReworkRequest, SpecContext, SpecError,
-    SpecFile, SpecFileSet, SpecOperation, SpecOutcome, SpecRequest,
+    FeatureDir, HumanAnswer, ParseReason, ResumeRequest, RevisionRequest, ReworkRequest,
+    SpecContext, SpecError, SpecFile, SpecFileSet, SpecOperation, SpecOutcome, SpecRequest,
 };
 use factory_ports::workspace::{
     CommitRequest, JobRepo, ReadView, Workspace, WorkspaceError, WorkspacePurpose, WorkspaceRequest,
@@ -320,6 +320,46 @@ async fn read_set(
     }))
 }
 
+/// The answers with the questions they were given to. A person answers by identifier
+/// (`Q-002: ...`), and an identifier alone says nothing to the skill that applies the answer.
+fn with_questions(answers: String, asked: Option<&DraftRecord>) -> String {
+    let questions = asked
+        .and_then(|record| serde_json::from_slice::<Value>(&record.evidence).ok())
+        .and_then(|value| Evidence::from_json(&value))
+        .map(|evidence| evidence.questions)
+        .unwrap_or_default();
+    if answers.is_empty() || questions.is_empty() {
+        return answers;
+    }
+    let mut text = String::from("The questions that were put to the people:\n");
+    for (id, question) in &questions {
+        let one_line = question.split_whitespace().collect::<Vec<_>>().join(" ");
+        text.push_str(&format!("{id}: {one_line}\n"));
+    }
+    text.push('\n');
+    text.push_str(&answers);
+    text
+}
+
+/// Says whether the commit holds the specification of the feature.
+async fn holds_draft(
+    repo: &dyn JobRepo,
+    commit: &CommitSha,
+    feature: &FeatureDir,
+    max_file_bytes: u64,
+) -> Result<bool, StageError> {
+    let draft = RepoPath::new(&format!("{}/spec.md", feature.as_str()))
+        .map_err(|_| StageError::Internal)?;
+    match repo
+        .read_file_at(commit, &draft, max_file_bytes, ReadView::Trusted)
+        .await
+    {
+        Ok(_) | Err(WorkspaceError::TooLarge) => Ok(true),
+        Err(WorkspaceError::PathNotFound(_)) => Ok(false),
+        Err(error) => Err(workspace_error(error)),
+    }
+}
+
 /// The feedback of a rework round that repairs the draft the gate sent back.
 struct Repair {
     /// The file the skill reads the feedback from.
@@ -339,6 +379,9 @@ struct Work<'a> {
     answered: Vec<HumanAnswer>,
     /// Present when this run repairs a draft that was sent back.
     repair: Option<Repair>,
+    /// Present when this run goes on from the draft that stopped on questions: how many times
+    /// people have answered, from 1.
+    resume: Option<u8>,
     manifest: AgentManifest,
     repo: Box<dyn JobRepo>,
     previous: Option<&'a PreviousSpec>,
@@ -484,6 +527,7 @@ async fn run_skill_in(
             feedback_file: repair.file.clone(),
             round: repair.round,
         }),
+        resume: work.resume.map(|round| ResumeRequest { round }),
     };
     let report = {
         let mut context = SpecContext {
@@ -1057,7 +1101,7 @@ pub(super) async fn execute(
 
     // 2. Where the run stands.
     let previous = h.history.previous(&identity).await.map_err(seam_error)?;
-    let kept = h.drafts.load(&identity).await.map_err(seam_error)?;
+    let record = h.drafts.load(&identity).await.map_err(seam_error)?;
     let rework = h.rework.of(&identity).await.map_err(seam_error)?;
     let (answers, waivers, answered) = answers_text(ctx).await?;
 
@@ -1068,8 +1112,14 @@ pub(super) async fn execute(
     let version = previous.as_ref().map_or(1, |p| {
         u32::try_from(p.contract.metadata.spec_version.get()).unwrap_or(1) + 1
     });
-    let kept = kept.filter(|record| !record.contract.is_empty());
-    let feature = match &kept {
+    // A record with a contract is a draft that waits for its approval. A record with none is a run
+    // that stopped on questions: its commit holds the specification the questions are about.
+    let (kept, asked_before) = match record {
+        Some(record) if !record.contract.is_empty() => (Some(record), None),
+        other => (None, other),
+    };
+    let answers = with_questions(answers, asked_before.as_ref());
+    let feature = match kept.as_ref().or(asked_before.as_ref()) {
         Some(record) => {
             FeatureDir::new(&record.feature_directory).map_err(|_| StageError::Internal)?
         }
@@ -1079,35 +1129,56 @@ pub(super) async fn execute(
     // the draft is in, and the clarify skill reads what the gates and the reviewer found. A run
     // that was sent back before it left a draft has nothing to repair and starts again.
     let repair = match &rework {
-        Some(context) if kept.is_none() => {
-            let draft = RepoPath::new(&format!("{}/spec.md", feature.as_str()))
-                .map_err(|_| StageError::Internal)?;
-            match repo
-                .read_file_at(
+        Some(context)
+            if kept.is_none()
+                && holds_draft(
+                    repo.as_ref(),
                     &context.previous_head,
-                    &draft,
+                    &feature,
                     h.config.max_file_bytes,
-                    ReadView::Trusted,
                 )
-                .await
-            {
-                Ok(_) | Err(WorkspaceError::TooLarge) => Some(Repair {
-                    file: RepoPath::new(FEEDBACK_FILE).map_err(|_| StageError::Internal)?,
-                    text: super::feedback::render(context),
-                    round: context.round,
-                }),
-                Err(WorkspaceError::PathNotFound(_)) => None,
-                Err(error) => return Err(workspace_error(error)),
-            }
+                .await? =>
+        {
+            Some(Repair {
+                file: RepoPath::new(FEEDBACK_FILE).map_err(|_| StageError::Internal)?,
+                text: super::feedback::render(context),
+                round: context.round,
+            })
         }
         _ => None,
     };
-    let start = match (&repair, &rework, &previous) {
-        (Some(_), Some(context), _) => context.previous_head.clone(),
-        (_, _, Some(revised)) => revised.commit.clone(),
+    // A run that stopped on questions goes on from the draft the questions are about, once a person
+    // answered. Writing the specification again would give other questions with the same
+    // identifiers, and the answers would meet questions they were never given to. A repair starts
+    // from the draft that was sent back and reads the answers beside the feedback, so it is not a
+    // resume. A run that asked before it wrote a specification has nothing to go on from.
+    let resume = match &asked_before {
+        Some(asked)
+            if repair.is_none()
+                && !answered.is_empty()
+                && holds_draft(
+                    repo.as_ref(),
+                    &asked.commit,
+                    &feature,
+                    h.config.max_file_bytes,
+                )
+                .await? =>
+        {
+            Some((
+                asked.commit.clone(),
+                u8::try_from(ctx.human_inputs.len()).unwrap_or(u8::MAX),
+            ))
+        }
+        _ => None,
+    };
+    let start = match (&repair, &rework, &resume, &previous) {
+        (Some(_), Some(context), _, _) => context.previous_head.clone(),
+        (_, _, Some((commit, _)), _) => commit.clone(),
+        (_, _, _, Some(revised)) => revised.commit.clone(),
         _ => base.clone(),
     };
     let repairing = repair.is_some();
+    let resuming = resume.is_some();
     let mut work = Work {
         feature: feature.clone(),
         request_file: RepoPath::new(REQUEST_FILE).map_err(|_| StageError::Internal)?,
@@ -1116,6 +1187,7 @@ pub(super) async fn execute(
         answers,
         answered,
         repair,
+        resume: resume.map(|(_, round)| round),
         manifest: writer_manifest,
         repo,
         previous: previous.as_ref(),
@@ -1187,8 +1259,9 @@ pub(super) async fn execute(
     } else {
         let revising = previous.as_ref();
         // The clarify skill is the one that changes a specification that exists: the frozen one
-        // of a revision, or the draft a rework repairs. The specify skill writes a new one.
-        let operations: Vec<SpecOperation> = if revising.is_some() || repairing {
+        // of a revision, the draft a rework repairs, or the draft that stopped on questions a
+        // person has now answered. The specify skill writes a new one.
+        let operations: Vec<SpecOperation> = if revising.is_some() || repairing || resuming {
             vec![SpecOperation::Clarify, SpecOperation::Checklist]
         } else if work.answers.is_empty() {
             vec![SpecOperation::Specify, SpecOperation::Checklist]
@@ -1212,7 +1285,7 @@ pub(super) async fn execute(
             // A revision copies the frozen specification into its new directory. A repair works in
             // the directory the draft is already in.
             let seed = match (revising, index) {
-                (Some(p), 0) if !repairing => p
+                (Some(p), 0) if !repairing && !resuming => p
                     .contract
                     .provenance
                     .feature_directory

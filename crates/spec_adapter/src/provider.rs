@@ -197,11 +197,11 @@ impl SpecKitProvider {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             // The first skill of a feature starts its notes again: what an earlier attempt heard
             // or ran is not a fact about this one.
-            // A revision and a rework start with the clarify skill, on a specification that an
-            // earlier run wrote.
+            // A revision, a rework and a run that goes on from answered questions start with the
+            // clarify skill, on a specification that an earlier run wrote.
             let starts = req.op == SpecOperation::Specify
                 || (req.op == SpecOperation::Clarify
-                    && (req.revision.is_some() || req.rework.is_some()));
+                    && (req.revision.is_some() || req.rework.is_some() || req.resume.is_some()));
             let key = Self::key(req);
             if starts {
                 notes.remove(&key);
