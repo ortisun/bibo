@@ -917,11 +917,34 @@ impl LiveRig {
         let identity = self
             .identity(job, stage_run, StageKind::Specification)
             .await;
+        // Only a kept contract is a draft to approve. A record with no contract is a stop on a
+        // question, and it is answered, not approved (the thirtieth real run).
         self.spec_drafts
             .load(&identity)
             .await
             .expect("the draft is readable")
+            .filter(|draft| !draft.contract.is_empty())
             .map(|draft| draft.commit.as_str().to_owned())
+    }
+
+    /// The question the independent reviewer of the specification put to a person, when its
+    /// verdict was `NEEDS_HUMAN`: the `human_question` of the review the stage kept with its
+    /// record. `None` when the reviewer asked nothing.
+    pub async fn spec_review_question(
+        &self,
+        job: JobId,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> Option<String> {
+        use factory_workflow::stages::specification::SpecDrafts as _;
+        let identity = self
+            .identity(job, stage_run, StageKind::Specification)
+            .await;
+        let draft = self.spec_drafts.load(&identity).await.ok()??;
+        let evidence: serde_json::Value = serde_json::from_slice(&draft.evidence).ok()?;
+        evidence
+            .pointer("/review/answer/human_question")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
     }
 
     /// The questions the specification stage asked when it kept its draft, as `(id, question)`:

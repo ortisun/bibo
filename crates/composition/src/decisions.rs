@@ -1829,9 +1829,13 @@ impl ClaimWork {
             kind: StageKind::Specification,
         };
         let draft = match drafts.load(&identity).await {
-            Ok(Some(draft)) => draft,
-            // The stage kept no draft: nothing was asked, so there is nothing to approve.
-            Ok(None) => return Verdict::Done(Reason::WrongState.into()),
+            // A record with a contract is a draft that passed its gates and waits for its approval.
+            Ok(Some(draft)) if !draft.contract.is_empty() => draft,
+            // The stage kept no draft, or kept one with no contract: it stopped to ask a question
+            // (its own, or the reviewer's), and a question is answered, not approved. In the
+            // thirtieth real run an approval was taken for the answer to the reviewer's question,
+            // and the stage ran again and asked the same question.
+            Ok(_) => return Verdict::Done(Reason::WrongState.into()),
             Err(_) => return Verdict::Later,
         };
         let (Some(head), Some(evidence)) = (

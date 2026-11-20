@@ -2171,8 +2171,9 @@ async fn a_rejection_of_a_stage_that_does_not_wait_is_refused_as_out_of_place() 
 // ------------------------------------------------------------------------------------------
 
 /// The draft the specification stage kept, as a fixed commit: the hook compares the commit the
-/// person named with it.
-struct OneDraft;
+/// person named with it. `true` when the stage kept a contract, that is a draft that waits for its
+/// approval; `false` when it stopped on a question and kept only the commit.
+struct OneDraft(bool);
 
 const DRAFT_COMMIT: &str = "abababababababababababababababababababab";
 
@@ -2200,7 +2201,11 @@ impl factory_workflow::stages::specification::SpecDrafts for OneDraft {
         Ok(Some(factory_workflow::stages::specification::DraftRecord {
             commit: factory_ports::paths::CommitSha::parse(DRAFT_COMMIT).expect("a commit"),
             feature_directory: "specs/001-x".to_owned(),
-            contract: Vec::new(),
+            contract: if self.0 {
+                b"{\"kept\":\"a draft contract\"}".to_vec()
+            } else {
+                Vec::new()
+            },
             evidence: Vec::new(),
         }))
     }
@@ -2241,7 +2246,7 @@ impl Rig {
     /// The hook as the worker builds it in the solo mode: the drafts and the policy.
     fn solo_hook(&self) -> ClaimWork {
         self.hook()
-            .with_specification(Arc::new(OneDraft))
+            .with_specification(Arc::new(OneDraft(true)))
             .with_policy(Arc::clone(&self.policies.engine))
     }
 
@@ -2308,6 +2313,31 @@ async fn the_solo_requester_approves_their_own_specification_through_the_hook() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_specification_that_stopped_on_a_question_cannot_be_approved() {
+    // The thirtieth real run: the reviewer asked a question, the stage kept the commit and no
+    // contract, the owner was shown an approve command, and the approval sent the run back to
+    // READY. The stage ran again and asked the same question. A question is answered.
+    let rig = Rig::solo(&[(REQUESTER, "owner", "requester, approver, operator")]).await;
+    let (job, run) = rig.asking().await;
+    rig.approve_spec_request(rig.world.requester, job, run)
+        .await;
+    rig.hook()
+        .with_specification(Arc::new(OneDraft(false)))
+        .with_policy(Arc::clone(&rig.policies.engine))
+        .pass(rig.tenant)
+        .await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::WrongState.text())
+    );
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn negative_nt_solo_01_with_a_second_approver_the_requester_is_ineligible() {
     let rig = Rig::solo(&[
         (REQUESTER, "owner", "requester, approver, operator"),
@@ -2336,7 +2366,7 @@ async fn a_hook_without_the_policy_keeps_refusing_the_requester() {
     rig.approve_spec_request(rig.world.requester, job, run)
         .await;
     rig.hook()
-        .with_specification(Arc::new(OneDraft))
+        .with_specification(Arc::new(OneDraft(true)))
         .pass(rig.tenant)
         .await;
     assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);

@@ -1113,8 +1113,17 @@ async fn ask_the_owner(
                     .wait_reason(job, run.id)
                     .await
                     .unwrap_or_else(|| "unknown".to_owned());
+                // The independent reviewer may have put a question to a person. It is answered
+                // like the writer's questions; the next attempt reads the answer.
+                let reviewer = match rig.spec_review_question(job, run.id).await {
+                    Some(question) => format!(
+                        "\nThe independent reviewer asks: {question}\n\
+                         Answer it:      {cli} answer {opts} {job_id} {run_id} -- <answer>"
+                    ),
+                    None => String::new(),
+                };
                 tell(&format!(
-                    "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).\n\
+                    "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).{reviewer}\n\
                      See why:        {cli} status {opts} --gates {job_id}\n\
                      Send it back:   {cli} rework {decide} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
                      Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"{answer}"
