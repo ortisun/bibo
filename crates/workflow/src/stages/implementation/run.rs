@@ -255,6 +255,9 @@ pub(super) async fn execute(
     let mut head = rework
         .as_ref()
         .map_or_else(|| base.clone(), |context| context.previous_head.clone());
+    // The commit this run starts from. The commits gate accounts for the changes after it only:
+    // the ones before it were audited by the run this one replaces.
+    let started_from = head.clone();
 
     // 3. The task graph.
     let planned: Vec<PlannedTask> = if rework.is_some() {
@@ -407,6 +410,7 @@ pub(super) async fn execute(
     // 5. What leaves the stage.
     let evidence = ImplementationEvidence {
         base_commit: base.as_str().to_owned(),
+        started_from: Some(started_from.as_str().to_owned()),
         head_commit: head.as_str().to_owned(),
         tasks,
         refusal,

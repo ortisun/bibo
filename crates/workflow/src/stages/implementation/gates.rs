@@ -245,13 +245,22 @@ pub(super) async fn evaluate(
     ];
     // A first run starts from the base. A rework run starts from the commit the run it replaced
     // ended with, and the changes before that were audited and checked by that run.
+    // The run records where it started. In the thirty-third real run a rework round committed
+    // nothing (the audit refused its task), the fallback to the first task found no task, and the
+    // gate accounted the earlier round's audited changes against this round as unaccounted.
     let started_from = evidence
-        .tasks
-        .first()
-        .and_then(|task| factory_ports::paths::CommitSha::parse(&task.built_on).ok())
+        .started_from
+        .as_deref()
+        .and_then(|commit| factory_ports::paths::CommitSha::parse(commit).ok())
+        .or_else(|| {
+            evidence
+                .tasks
+                .first()
+                .and_then(|task| factory_ports::paths::CommitSha::parse(&task.built_on).ok())
+        })
         .unwrap_or_else(|| candidate.base.clone());
     lines.push(format!("started_from={started_from}"));
-    let nothing_committed = candidate.base == candidate.head;
+    let nothing_committed = started_from == candidate.head;
     if nothing_committed {
         if evidence.refusal.is_none() {
             failures.push((

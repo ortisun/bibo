@@ -164,6 +164,66 @@ async fn rework_is_capped_at_two() {
     assert_eq!(third_evidence["base_commit"], rig.base.as_str());
 }
 
+/// A rework round whose only task the audit refuses commits nothing. The commits gate accounts for
+/// the changes after the commit the round started from, so the earlier round's audited changes are
+/// not reported as unaccounted: only the refusal stops the run. In the thirty-third real run the
+/// gate fell back to the job's base, found no task, and listed every file of round one.
+#[tokio::test]
+async fn a_refused_rework_round_is_blocked_by_the_refusal_alone() {
+    let rig = Rig::build(crate::rig::Options {
+        validation: ValidationMode::UnitTestsFail,
+        ..crate::rig::Options::through_review()
+    })
+    .await;
+    rig.run_until_implementation().await;
+    rig.builder_does_the_plan();
+    assert_eq!(rig.run_next().await.1, AttemptOutcome::Succeeded);
+    let (claimed, _) = rig.run_next().await;
+    assert_eq!(claimed.kind, StageKind::Validation);
+
+    // Round one writes a protected path, and the audit refuses the task.
+    rig.queue_feedback(StageKind::Validation, 1).await;
+    rig.builder_will(
+        vec![write(".github/workflows/ci.yml", "on: push\n")],
+        done("rework-round-1", &[".github/workflows/ci.yml"]),
+    );
+    let (claimed, _) = rig.run_next().await;
+    assert_eq!(claimed.kind, StageKind::Implementation);
+    let run = rig.runs_of(StageKind::Implementation).await[1].0;
+    let evidence = rig
+        .deliverable_in(run, "implementation-evidence")
+        .await
+        .expect("the refused round keeps its evidence");
+    let first_head = rig
+        .deliverable_in(
+            rig.runs_of(StageKind::Implementation).await[0].0,
+            "implementation-evidence",
+        )
+        .await
+        .expect("evidence")["head_commit"]
+        .clone();
+    assert_eq!(evidence["started_from"], first_head);
+    let commits: Vec<Value> = rig
+        .gate_reports()
+        .await
+        .into_iter()
+        .filter(|report| {
+            report["metadata"]["gate_id"] == "implementation-commits"
+                && report["metadata"]["stage_run_id"] == run.to_string()
+        })
+        .collect();
+    assert!(!commits.is_empty(), "the commits gate ran");
+    for report in &commits {
+        let unaccounted = report["failures"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|failure| failure["check_id"] == "head-commit-unaccounted-change")
+            .count();
+        assert_eq!(unaccounted, 0, "{report}");
+    }
+}
+
 /// The whole loop: build, validate, review asks for changes, rework with the deduplicated findings
 /// as the only feedback, validate, review passes.
 #[tokio::test]
