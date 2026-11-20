@@ -783,6 +783,12 @@ INSERT INTO expected_policies VALUES
   ('attempts', 'system_lock', 'w', 'factory_system'),
   ('outbox', 'system_find', 'r', 'factory_system'),
   ('outbox', 'system_relay', 'w', 'factory_system');
+-- The troubleshooter's read-only group reads named columns across tenants (migration 2026-11-20-002900, ADR 0021).
+INSERT INTO expected_policies
+SELECT t, 'observer_read', 'r', 'factory_observer'
+  FROM unnest(ARRAY['tenants', 'repositories', 'principals', 'api_tokens', 'artifacts', 'webhook_deliveries', 'jobs',
+                    'stage_runs', 'attempts', 'task_nodes', 'ledger_entries', 'audit_events', 'outbox', 'inbox',
+                    'approvals']) AS t;
 
 CREATE FUNCTION dbtest.policy_set() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' ||
