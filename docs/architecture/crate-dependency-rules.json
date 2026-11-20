@@ -513,6 +513,26 @@
         "rmcp": "ADR 0021, approved by the owner on 2026-11-20. transport-streamable-http-server for HTTP. Not transport-io: it would turn on tokio/io-std in the whole workspace, which the DEP-05 limit for the inner crates does not allow, so stdio is bridged to the server through a tokio duplex pipe and two threads (std::io::stdin and stdout) instead.",
         "axum": "The same version and features as apps/api, already in Cargo.lock: the HTTP server under the Streamable HTTP service and the bearer check."
       }
+    },
+    {
+      "name": "troubleshooter",
+      "path": "apps/troubleshooter",
+      "slice": 3,
+      "responsibility": "The troubleshooter (ADR 0021): watches the factory itself. Runs the deterministic probes of policies/troubleshooting.yaml through its own MCP gateway (crates/mcp_gateway, with crates/mcp_postgres in process) and a direct HTTP health GET; when a probe trips past its cool-down or the sweep is due, and the day caps allow, runs the troubleshooter agent once in its sandbox with the broker it hosts; refuses a report that fails health-findings v1 or cites a call the gateway did not record as ok for the same tool; writes triage issues from the closed domain template through TriageIssueWriter, one per fingerprint, one seen-again comment a day, under the day cap. One instance is active at a time (a PostgreSQL advisory lock). Its rows are the four troubleshooting_* tables (migration 2026-11-20-003000).",
+      "external_dependencies": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[rt,rt-multi-thread,time,sync,macros,signal]",
+        "ureq[rustls]",
+        "uuid[std]"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "The HTTP health probe: the same crate, version and features as the composition library, so Cargo.lock gains nothing.",
+        "uuid": "The job and attempt ids a run borrows for the sandbox and the broker token are built from bytes; no generator feature (DEP-05)."
+      }
     }
   ],
   "tooling": [

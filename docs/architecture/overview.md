@@ -135,7 +135,7 @@ flowchart TB
   classDef test fill:#f3f3f3,stroke:#777,color:#222,stroke-dasharray: 4 3;
   classDef root fill:#f5e9f7,stroke:#7a2a8a,color:#2d0f33;
   subgraph roots["Ring 3: composition roots"]
-    apps["binaries: api, worker, cli, egress-sidecar, mcp-postgres"]
+    apps["binaries: api, worker, cli, egress-sidecar, mcp-postgres, troubleshooter"]
     composition["composition (library)"]
   end
   subgraph application["Ring 2: application"]
@@ -236,6 +236,7 @@ flowchart TB
 | `cli` | `factory-cli` | 3 | binary | all library crates it wires | none | 1 | Operator command line and HTTP client of the API: health, submit, status, timeline, approve, reject, rework, pause, resume, cancel, approve-dependency, approve-build-code, probe. Holds no database login: every command but probe goes to the API over HTTP, and probe runs the start-up checks that need no credential. |
 | `egress-sidecar` | `factory-egress-sidecar` | 3 | binary | all library crates it wires | none | 1 | The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential. |
 | `mcp-postgres` | `factory-mcp-postgres` | 3 | binary | all library crates it wires | none | 3 | Serves crates/mcp_postgres for an engineer's Claude Code: stdio by default, or Streamable HTTP on a loopback address behind a bearer token read from a mode 0600 file. Connection settings from a JSON file or the environment, the password from a file only. Refuses to serve with a login that is a superuser, bypasses row-level security, or belongs to a group other than factory_observer. Starts no process. |
+| `troubleshooter` | `factory-troubleshooter` | 3 | binary | all library crates it wires | none | 3 | The troubleshooter (ADR 0021): watches the factory itself. Runs the deterministic probes of policies/troubleshooting.yaml through its own MCP gateway (crates/mcp_gateway, with crates/mcp_postgres in process) and a direct HTTP health GET; when a probe trips past its cool-down or the sweep is due, and the day caps allow, runs the troubleshooter agent once in its sandbox with the broker it hosts; refuses a report that fails health-findings v1 or cites a call the gateway did not record as ok for the same tool; writes triage issues from the closed domain template through TriageIssueWriter, one per fingerprint, one seen-again comment a day, under the day cap. One instance is active at a time (a PostgreSQL advisory lock). Its rows are the four troubleshooting_* tables (migration 2026-11-20-003000). |
 <!-- GENERATED:end crate-table -->
 
 ### Dependency rules and their enforcement
