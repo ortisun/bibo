@@ -99,6 +99,8 @@ pub enum RunOutcome {
     ReportInvalid,
     /// The agent did not produce a report (timeout, process failure, no output).
     AgentFailed,
+    /// The day's cap of agent runs was reached; the agent did not run.
+    CapReached,
     /// The day's spend ceiling of the role was reached; the agent did not run.
     SpendCeiling,
     /// Something of the troubleshooter's own failed (a gateway run, the sandbox, the store).
@@ -118,6 +120,7 @@ impl RunOutcome {
             Self::EvidenceMismatch => "evidence_mismatch",
             Self::ReportInvalid => "report_invalid",
             Self::AgentFailed => "agent_failed",
+            Self::CapReached => "cap_reached",
             Self::SpendCeiling => "spend_ceiling",
             Self::Failed => "failed",
         }
@@ -133,6 +136,7 @@ impl RunOutcome {
             Self::EvidenceMismatch,
             Self::ReportInvalid,
             Self::AgentFailed,
+            Self::CapReached,
             Self::SpendCeiling,
             Self::Failed,
         ]
@@ -298,6 +302,12 @@ pub struct ProbeState {
 pub struct IssueEntry {
     /// The fingerprint, `sha256:` and 64 hex characters.
     pub fingerprint: Sha256Digest,
+    /// The finding's category, as the schema names it.
+    pub category: String,
+    /// The finding's component.
+    pub component: String,
+    /// The issue title as code rendered it.
+    pub title: String,
     /// The repository, `owner/name`.
     pub repository: String,
     /// The issue number.
@@ -308,6 +318,25 @@ pub struct IssueEntry {
     pub last_comment_day: Option<String>,
     /// How many comments were posted on that day.
     pub comments_on_last_day: u32,
+}
+
+/// An issue to record for a fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewIssue<'a> {
+    /// The fingerprint.
+    pub fingerprint: &'a Sha256Digest,
+    /// The finding's category.
+    pub category: &'a str,
+    /// The finding's component.
+    pub component: &'a str,
+    /// The issue title as code rendered it, at most 200 characters.
+    pub title: &'a str,
+    /// The repository, `owner/name`.
+    pub repository: &'a str,
+    /// The issue number.
+    pub issue_number: u64,
+    /// When it was opened.
+    pub opened_at: &'a Timestamp,
 }
 
 /// The counters of one UTC day.
@@ -416,6 +445,12 @@ struct IssueRow {
     #[diesel(sql_type = Text)]
     fingerprint: String,
     #[diesel(sql_type = Text)]
+    category: String,
+    #[diesel(sql_type = Text)]
+    component: String,
+    #[diesel(sql_type = Text)]
+    title: String,
+    #[diesel(sql_type = Text)]
     repository: String,
     #[diesel(sql_type = BigInt)]
     issue_number: i64,
@@ -511,6 +546,9 @@ fn probe_from_row(row: ProbeRow) -> Result<ProbeState, StoreError> {
 fn issue_from_row(row: IssueRow) -> Result<IssueEntry, StoreError> {
     Ok(IssueEntry {
         fingerprint: digest_from_column(&row.fingerprint)?,
+        category: row.category,
+        component: row.component,
+        title: row.title,
         repository: row.repository,
         issue_number: unsigned_from_column(row.issue_number, "issue number")?,
         opened_at: from_column(row.opened_at),
@@ -883,7 +921,7 @@ impl TroubleshootingStore {
     ) -> Result<Option<IssueEntry>, StoreError> {
         let mut connection = self.begin().await?;
         let outcome = sql_query(
-            "SELECT fingerprint, repository, issue_number, opened_at, last_comment_day::text AS last_comment_day, \
+            "SELECT fingerprint, category, component, title, repository, issue_number, opened_at, last_comment_day::text AS last_comment_day, \
                     comments_on_last_day FROM troubleshooting_issues WHERE fingerprint = $1",
         )
         .bind::<Text, _>(fingerprint.as_str())
@@ -902,7 +940,7 @@ impl TroubleshootingStore {
     pub async fn issues(&self, limit: u32) -> Result<Vec<IssueEntry>, StoreError> {
         let mut connection = self.begin().await?;
         let outcome = sql_query(
-            "SELECT fingerprint, repository, issue_number, opened_at, last_comment_day::text AS last_comment_day, \
+            "SELECT fingerprint, category, component, title, repository, issue_number, opened_at, last_comment_day::text AS last_comment_day, \
                     comments_on_last_day FROM troubleshooting_issues ORDER BY opened_at DESC, fingerprint LIMIT $1",
         )
         .bind::<BigInt, _>(i64::from(limit))
@@ -918,26 +956,25 @@ impl TroubleshootingStore {
     ///
     /// # Errors
     /// [`StoreError`].
-    pub async fn record_issue(
-        &self,
-        fingerprint: &Sha256Digest,
-        repository: &str,
-        issue_number: u64,
-        opened_at: &Timestamp,
-    ) -> Result<(), StoreError> {
+    pub async fn record_issue(&self, issue: &NewIssue<'_>) -> Result<(), StoreError> {
         let mut connection = self.begin().await?;
         let outcome = sql_query(
-            "INSERT INTO troubleshooting_issues (tenant_id, fingerprint, repository, issue_number, opened_at) \
-             VALUES ($1::uuid, $2, $3, $4, $5) \
-             ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET repository = EXCLUDED.repository, \
+            "INSERT INTO troubleshooting_issues \
+                    (tenant_id, fingerprint, category, component, title, repository, issue_number, opened_at) \
+             VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8) \
+             ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET category = EXCLUDED.category, \
+                    component = EXCLUDED.component, title = EXCLUDED.title, repository = EXCLUDED.repository, \
                     issue_number = EXCLUDED.issue_number, opened_at = EXCLUDED.opened_at, \
                     last_comment_day = NULL, comments_on_last_day = 0",
         )
         .bind::<Text, _>(self.tenant.to_string())
-        .bind::<Text, _>(fingerprint.as_str())
-        .bind::<Text, _>(repository)
-        .bind::<BigInt, _>(big(issue_number))
-        .bind::<Timestamptz, _>(instant(opened_at))
+        .bind::<Text, _>(issue.fingerprint.as_str())
+        .bind::<Text, _>(issue.category)
+        .bind::<Text, _>(issue.component)
+        .bind::<Text, _>(issue.title)
+        .bind::<Text, _>(issue.repository)
+        .bind::<BigInt, _>(big(issue.issue_number))
+        .bind::<Timestamptz, _>(instant(issue.opened_at))
         .execute(&mut connection)
         .await
         .map(|_| ())

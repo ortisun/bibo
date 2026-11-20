@@ -1,5 +1,6 @@
 # Every column of every table that the group factory_observer can read (migration 2026-11-20-002900_observer_role, and
-# the troubleshooter's own tables of migration 2026-11-20-003000_troubleshooting_runs, every column operational).
+# the troubleshooter's own tables of migration 2026-11-20-003000_troubleshooting_runs, every column but the
+# agent-written issue title operational).
 #
 # Format: <table> <column> <class> [# why, for a sensitive column]. Class is "operational" (granted) or
 # "sensitive" (never granted: a request text, a specification, an issue body, a token or token digest, a key, a
@@ -244,6 +245,9 @@ troubleshooting_daily_counters comments operational
 troubleshooting_daily_counters spend_micro_usd operational
 troubleshooting_issues tenant_id operational
 troubleshooting_issues fingerprint operational
+troubleshooting_issues category operational
+troubleshooting_issues component operational
+troubleshooting_issues title sensitive # the agent's own words, as the issue title
 troubleshooting_issues repository operational
 troubleshooting_issues issue_number operational
 troubleshooting_issues opened_at operational

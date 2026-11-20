@@ -8,7 +8,7 @@ use factory_domain::troubleshooting::{GatewayCallId, TroubleshootingRunId};
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_ports::store::StoreError;
 use factory_storage::pg::troubleshooting::{
-    DayIncrement, NewRun, ProbeOutcome, ProbeResult, RunEnd, RunOutcome, RunTrigger,
+    DayIncrement, NewIssue, NewRun, ProbeOutcome, ProbeResult, RunEnd, RunOutcome, RunTrigger,
     TroubleshooterLock, TroubleshootingStore, utc_day,
 };
 use support::{Scene, small_pool};
@@ -163,12 +163,15 @@ async fn the_issue_map_counts_comments_per_day() {
         Err(StoreError::NotFound)
     );
     store
-        .record_issue(
-            &fingerprint,
-            "example-org/fixture",
-            7,
-            &at("2026-11-20T09:00:00Z"),
-        )
+        .record_issue(&NewIssue {
+            fingerprint: &fingerprint,
+            category: "retries",
+            component: "worker",
+            title: "Troubleshooter: retries pile up",
+            repository: "example-org/fixture",
+            issue_number: 7,
+            opened_at: &at("2026-11-20T09:00:00Z"),
+        })
         .await
         .expect("record");
     store
@@ -185,6 +188,10 @@ async fn the_issue_map_counts_comments_per_day() {
         .expect("read")
         .expect("an entry");
     assert_eq!(entry.issue_number, 7);
+    assert_eq!(
+        (entry.category.as_str(), entry.component.as_str()),
+        ("retries", "worker")
+    );
     assert_eq!(entry.last_comment_day.as_deref(), Some("2026-11-20"));
     assert_eq!(entry.comments_on_last_day, 2);
     store
@@ -198,12 +205,15 @@ async fn the_issue_map_counts_comments_per_day() {
         .expect("an entry");
     assert_eq!(entry.comments_on_last_day, 1, "a new day counts again");
     store
-        .record_issue(
-            &fingerprint,
-            "example-org/fixture",
-            9,
-            &at("2026-11-22T09:00:00Z"),
-        )
+        .record_issue(&NewIssue {
+            fingerprint: &fingerprint,
+            category: "retries",
+            component: "worker",
+            title: "Troubleshooter: retries pile up",
+            repository: "example-org/fixture",
+            issue_number: 9,
+            opened_at: &at("2026-11-22T09:00:00Z"),
+        })
         .await
         .expect("a new issue replaces a closed one");
     let entry = store

@@ -220,8 +220,8 @@ BEGIN
     VALUES (tn, 'run-' || t, 'probe', now(), false);
   INSERT INTO troubleshooting_probe_state (tenant_id, probe_id, last_outcome, last_checked_at)
     VALUES (tn, 'probe-' || t, 'ok', now());
-  INSERT INTO troubleshooting_issues (tenant_id, fingerprint, repository, issue_number, opened_at)
-    VALUES (tn, dbtest.sha('finding-' || t), 'example-org/fixture', t, now());
+  INSERT INTO troubleshooting_issues (tenant_id, fingerprint, category, component, title, repository, issue_number, opened_at)
+    VALUES (tn, dbtest.sha('finding-' || t), 'retries', 'worker', 'Retries pile up', 'example-org/fixture', t, now());
   INSERT INTO troubleshooting_daily_counters (tenant_id, day) VALUES (tn, current_date);
 END
 $$;

@@ -93,6 +93,7 @@ INSERT INTO expected_column_grants VALUES
   ('troubleshooting_probe_state', 'last_call_id'), ('troubleshooting_probe_state', 'last_run_id'),
   ('troubleshooting_probe_state', 'last_checked_at'), ('troubleshooting_probe_state', 'last_tripped_at'),
   ('troubleshooting_probe_state', 'cooldown_until'),
+  ('troubleshooting_issues', 'category'), ('troubleshooting_issues', 'component'), ('troubleshooting_issues', 'title'),
   ('troubleshooting_issues', 'repository'), ('troubleshooting_issues', 'issue_number'),
   ('troubleshooting_issues', 'opened_at'), ('troubleshooting_issues', 'last_comment_day'),
   ('troubleshooting_issues', 'comments_on_last_day'),

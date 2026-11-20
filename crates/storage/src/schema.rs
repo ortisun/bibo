@@ -359,6 +359,9 @@ diesel::table! {
     troubleshooting_issues (tenant_id, fingerprint) {
         tenant_id -> Uuid,
         fingerprint -> Text,
+        category -> Text,
+        component -> Text,
+        title -> Text,
         repository -> Text,
         issue_number -> Int8,
         opened_at -> Timestamptz,

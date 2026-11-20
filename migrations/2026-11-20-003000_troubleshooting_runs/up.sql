@@ -13,10 +13,10 @@
 -- tables give it a policy only where a loop of the engine needs one.
 --
 -- What `factory_app` may do: SELECT and INSERT, and UPDATE of the columns that change after the insert. No
--- DELETE: history is kept. What `factory_observer` may read: every column, through one `observer_read`
--- policy per table, so the troubleshooter's agent can see its own history through `pg_query`. Every column
--- is an identifier, a state, a time, a count, a code or a digest computed by code
--- (docs/database/observer-columns.txt).
+-- DELETE: history is kept. What `factory_observer` may read: every column but the issue title, through one
+-- `observer_read` policy per table, so the troubleshooter's agent can see its own history through
+-- `pg_query`. Those columns are identifiers, states, times, counts, codes or digests computed by code
+-- (docs/database/observer-columns.txt); the title is the agent's own words.
 --
 -- Times come from the troubleshooter's clock, which reads UTC (ADR 0011); a "day" is a UTC calendar date.
 
@@ -32,7 +32,7 @@ CREATE TABLE troubleshooting_runs (
   gateway_record_sha256 text CHECK (gateway_record_sha256 ~ '^sha256:[0-9a-f]{64}$'),
   outcome text CHECK (outcome IN (
     'healthy', 'findings', 'needs_human', 'blocked', 'source_unavailable', 'evidence_mismatch',
-    'report_invalid', 'agent_failed', 'spend_ceiling', 'failed')),
+    'report_invalid', 'agent_failed', 'cap_reached', 'spend_ceiling', 'failed')),
   agent_ran boolean NOT NULL DEFAULT false,
   dry_run boolean NOT NULL DEFAULT false,
   datadog_enabled boolean NOT NULL,
@@ -65,6 +65,12 @@ CREATE TABLE troubleshooting_probe_state (
 CREATE TABLE troubleshooting_issues (
   tenant_id uuid NOT NULL REFERENCES tenants (id),
   fingerprint text NOT NULL CHECK (fingerprint ~ '^sha256:[0-9a-f]{64}$'),
+  -- The closed category and component of the finding, and the issue title as code rendered it (the
+  -- agent's words on one line, cut to 100 characters). The title is model-written text, so the observer
+  -- group does not read it.
+  category text NOT NULL CHECK (category ~ '^[a-z][a-z_]{0,39}$'),
+  component text NOT NULL CHECK (component ~ '^[a-z][a-z_]{0,39}$'),
+  title text NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
   repository text NOT NULL CHECK (repository ~ '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$'),
   issue_number bigint NOT NULL CHECK (issue_number > 0),
   opened_at timestamptz NOT NULL,
@@ -92,7 +98,8 @@ GRANT UPDATE (state, ended_at, spend_micro_usd, report_sha256, gateway_record_sh
 GRANT UPDATE (last_outcome, last_value, last_call_id, last_run_id, last_checked_at, last_tripped_at,
               cooldown_until)
   ON troubleshooting_probe_state TO factory_app;
-GRANT UPDATE (repository, issue_number, opened_at, last_comment_day, comments_on_last_day)
+GRANT UPDATE (category, component, title, repository, issue_number, opened_at, last_comment_day,
+              comments_on_last_day)
   ON troubleshooting_issues TO factory_app;
 GRANT UPDATE (agent_runs, new_issues, comments, spend_micro_usd)
   ON troubleshooting_daily_counters TO factory_app;
@@ -105,7 +112,8 @@ GRANT SELECT (tenant_id, id, trigger, state, started_at, ended_at, spend_micro_u
 GRANT SELECT (tenant_id, probe_id, last_outcome, last_value, last_call_id, last_run_id, last_checked_at,
               last_tripped_at, cooldown_until)
   ON troubleshooting_probe_state TO factory_observer;
-GRANT SELECT (tenant_id, fingerprint, repository, issue_number, opened_at, last_comment_day, comments_on_last_day)
+GRANT SELECT (tenant_id, fingerprint, category, component, repository, issue_number, opened_at, last_comment_day,
+              comments_on_last_day)
   ON troubleshooting_issues TO factory_observer;
 GRANT SELECT (tenant_id, day, agent_runs, new_issues, comments, spend_micro_usd)
   ON troubleshooting_daily_counters TO factory_observer;
