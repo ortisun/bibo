@@ -376,7 +376,10 @@ pub fn github_adapter_over(
 // The runtimes
 // ---------------------------------------------------------------------------------------------
 
-fn claude_config(
+/// The configuration of Claude Code from the deployment's `runtimes.claude_code` section, with the
+/// credential of the mode. Public so that the troubleshooter builds its runtime the same way.
+#[must_use]
+pub fn claude_config(
     tool: Option<&RuntimeToolConfig>,
     skills: Option<SkillBundle>,
     mode: ProviderCredentialMode,
