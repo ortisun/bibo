@@ -1153,12 +1153,22 @@ async fn drive_to_the_end(
     loop {
         let view = rig
             .drive(job, 600, |view| {
-                finished(view) || waiting_run(view).is_some_and(|(_, id)| asked != Some(id))
+                finished(view)
+                    || waiting_run(view).is_some_and(|(_, id)| asked != Some(id))
+                    || (asked.is_some() && waiting_run(view).is_none())
             })
             .await?;
         crate::full::print_states("real run", &view);
         if finished(&view) {
             return Some(view);
+        }
+        // The run the owner was asked about went on. One stage run can wait more than once, each
+        // time for another thing: the specification first asks its questions and later asks for
+        // the approval of its draft. So the next wait of the same run is asked about again. In the
+        // twentieth real run it was not, and the draft waited with nobody told.
+        if asked.is_some() && waiting_run(&view).is_none() {
+            asked = None;
+            continue;
         }
         match waiting_run(&view) {
             Some((_, id)) if asked != Some(id) => {
@@ -1492,6 +1502,15 @@ pub async fn scenario() {
     let view = drive_to_the_end(&rig, &settings, &api, &token_file, job).await;
     rig.revoke_ended_jobs().await;
     let mut facts = BTreeMap::new();
+    // The text as it was filed with the API: the title of the issue, a blank line, its body. The
+    // check `X.original-kept` compares its hash with the hash of what the store kept.
+    facts.insert(
+        "original_request_sha256".to_owned(),
+        json!(
+            factory_domain::values::Sha256Digest::of(format!("{title}\n\n{body}").as_bytes())
+                .as_str()
+        ),
+    );
     if let Some(view) = &view
         && let Some(run) = view.newest(StageKind::Approval)
     {
