@@ -325,11 +325,11 @@ fn derive(args: &[String], extra_networks: &[String]) -> Value {
     doc
 }
 
-/// What a container would read at the token path: the host file bind-mounted there.
-fn token_from_mount(args: &[String]) -> Option<Vec<u8>> {
+/// What a container would read at a token path: the host file bind-mounted there.
+fn token_from_mount(args: &[String], target: &str) -> Option<Vec<u8>> {
     let mount = args
         .windows(2)
-        .find(|w| w[0] == "--mount" && w[1].contains("dst=/run/factory/job-token"))?;
+        .find(|w| w[0] == "--mount" && w[1].contains(&format!("dst={target},")))?;
     let source = mount[1]
         .split(',')
         .find_map(|part| part.strip_prefix("src="))?;
@@ -454,7 +454,9 @@ impl ProcessRunner for Sim {
                             .unwrap_or_else(|| good_status(10_001));
                         ok(&text)
                     }
-                    ["cat", target] if target.ends_with("job-token") => {
+                    ["cat", target]
+                        if target.ends_with("job-token") || target.ends_with("mcp-token") =>
+                    {
                         let container = rest[command - 1];
                         let bytes = state
                             .token_content
@@ -463,7 +465,7 @@ impl ProcessRunner for Sim {
                                 state
                                     .creates
                                     .get(container)
-                                    .and_then(|a| token_from_mount(a))
+                                    .and_then(|a| token_from_mount(a, target))
                             })
                             .unwrap_or_default();
                         Ok(SpawnOutput {

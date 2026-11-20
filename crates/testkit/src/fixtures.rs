@@ -33,8 +33,8 @@ use factory_ports::agent::{
 };
 use factory_ports::clock::IdGenerator;
 use factory_ports::sandbox::{
-    ExecArgv, FixedEnv, Hardening, ImageDigest, JobTokenMount, NetworkAttachment, SandboxLimits,
-    SandboxMounts, SandboxPolicy, SandboxProfile, SandboxSpec,
+    ExecArgv, FixedEnv, Hardening, ImageDigest, JobTokenMount, McpRunTokenSecret, McpTokenMount,
+    NetworkAttachment, SandboxLimits, SandboxMounts, SandboxPolicy, SandboxProfile, SandboxSpec,
 };
 use factory_ports::workspace::WorkspaceMounts;
 use serde_json::json;
@@ -302,6 +302,7 @@ pub fn sandbox_policy() -> SandboxPolicy {
         fetch_deps_max: limits(1),
         agent_max: limits(2),
         verify_max: limits(4),
+        troubleshooter_max: limits(1),
     }
 }
 
@@ -319,7 +320,7 @@ pub fn sandbox_spec(ids: &Ids, profile: SandboxProfile) -> SandboxSpec {
             },
             None,
         ),
-        SandboxProfile::Agent => (
+        SandboxProfile::Agent | SandboxProfile::Troubleshooter => (
             NetworkAttachment::JobInternal {
                 sidecar: "sidecar-fixture".to_owned(),
             },
@@ -339,7 +340,10 @@ pub fn sandbox_spec(ids: &Ids, profile: SandboxProfile) -> SandboxSpec {
         mounts: SandboxMounts {
             workspace: WorkspaceMounts {
                 workspace: PathBuf::from("/fake/job/worktree"),
-                workspace_read_only: profile == SandboxProfile::Verify,
+                workspace_read_only: matches!(
+                    profile,
+                    SandboxProfile::Verify | SandboxProfile::Troubleshooter
+                ),
                 out: PathBuf::from("/fake/job/out"),
                 protected_overlays: Vec::new(),
                 git_masked: true,
@@ -347,6 +351,10 @@ pub fn sandbox_spec(ids: &Ids, profile: SandboxProfile) -> SandboxSpec {
             caches: Vec::new(),
         },
         job_token,
+        mcp_token: (profile == SandboxProfile::Troubleshooter).then(|| McpTokenMount {
+            // Built at run time so that no secret-shaped literal sits in the source.
+            secret: McpRunTokenSecret::new(format!("{}-{}", "fixture", "mcp-token")),
+        }),
         env: FixedEnv::new(vec![("HOME".to_owned(), "/home/agent".to_owned())])
             .expect("a valid environment"),
         hardening: Hardening::strict(10_001, 10_001),
@@ -404,6 +412,7 @@ pub fn agent_run_request(ids: &Ids) -> AgentRunRequest {
             model: NonEmptyString::parse("fake-model").expect("a valid model name"),
         },
         flag_set: FlagSet::Standard,
+        mcp_gateway: None,
         max_output_bytes: 1_048_576,
     }
 }

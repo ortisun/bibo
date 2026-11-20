@@ -26,6 +26,7 @@ This directory is `docs/adr/`, as the master prompt's workspace layout (section 
 | [0018](0018-project-board-mirror-that-adapts.md) | The issue labels are mirrored on a GitHub Projects board by an Action in the project, with a credential its owner chooses. An existing board is adapted to by mapping, never changed, and the engine never writes to a board. | Proposed, pending the architect |
 | [0019](0019-claude-code-and-codex-alike.md) | The installer prepares a project for Claude Code, for Codex, or for both, with one set of labels, forms, Action and board. The GitHub entry goes in `.mcp.json` for one and in `.codex/config.toml` for the other. | Proposed, pending the architect |
 | [0020](0020-subscription-mode-by-default.md) | The factory runs on the owner's Claude subscription by default: the broker holds the subscription token and sends it as a bearer token, the sandbox still holds only the job token, Codex is unavailable, and API keys stay as the alternative mode. Reverses 0009 item 2. | Decided by the owner, 2026-11-12 |
+| [0021](0021-troubleshooter-agent-and-mcp-sources.md) | A separate troubleshooter program watches the factory itself: cheap probes on a short period, the agent only when a probe trips or on a daily sweep, one MCP gateway that holds every credential (Datadog, VictoriaMetrics, a read-only PostgreSQL server), and an issue written by code for a person to triage. | Accepted by the owner, 2026-11-20 |
 
 ## Rules for this directory
 

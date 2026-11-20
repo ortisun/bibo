@@ -35,6 +35,7 @@
 //! | [`hooks`] | The work a binary's loop does before it claims |
 //! | [`pipeline`] | The whole pipeline from the configuration: the thirteen handlers, the engine, the approval service, the hook and the preflight, with the profile's check of every port (AUT-13) |
 //! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
+//! | [`broker_host`] | The model broker listener hosted in the process that runs agents (the worker and the troubleshooter) |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
 //! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 //! | [`supply_chain`] | The sources of the dependency gates that no adapter implements yet: blocked by design in production, labelled stand-ins in the other profiles |
@@ -48,6 +49,7 @@
 pub mod advisory;
 pub mod assemble;
 pub mod authority;
+pub mod broker_host;
 pub mod commands;
 pub mod config;
 pub mod crates_io;

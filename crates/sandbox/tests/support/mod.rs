@@ -23,8 +23,8 @@ use factory_ports::clock::{IdGenerator, Uuid};
 use factory_ports::paths::RepoPath;
 use factory_ports::process::ProcessRunner;
 use factory_ports::sandbox::{
-    FixedEnv, Hardening, JobTokenMount, NetworkAttachment, SandboxLimits, SandboxMounts,
-    SandboxPolicy, SandboxProfile, SandboxSpec,
+    FixedEnv, Hardening, JobTokenMount, McpRunTokenSecret, McpTokenMount, NetworkAttachment,
+    SandboxLimits, SandboxMounts, SandboxPolicy, SandboxProfile, SandboxSpec,
 };
 use factory_ports::workspace::WorkspaceMounts;
 use factory_sandbox::container::docker::DockerSettings;
@@ -176,6 +176,7 @@ pub fn policy(apparmor_may_be_unavailable: bool) -> SandboxPolicy {
         fetch_deps_max: scaled(&base, 1),
         agent_max: scaled(&base, 2),
         verify_max: scaled(&base, 4),
+        troubleshooter_max: scaled(&base, 1),
     }
 }
 
@@ -251,7 +252,7 @@ pub fn spec(
             },
             None,
         ),
-        SandboxProfile::Agent => (
+        SandboxProfile::Agent | SandboxProfile::Troubleshooter => (
             NetworkAttachment::JobInternal {
                 sidecar: SIDECAR_ALIAS.to_owned(),
             },
@@ -260,8 +261,12 @@ pub fn spec(
             }),
         ),
     };
+    let troubleshooter = profile == SandboxProfile::Troubleshooter;
     let mut mounts = workspace.clone();
-    mounts.workspace_read_only = profile == SandboxProfile::Verify;
+    mounts.workspace_read_only = profile == SandboxProfile::Verify || troubleshooter;
+    if troubleshooter {
+        mounts.protected_overlays.clear();
+    }
     SandboxSpec {
         job: job(1),
         attempt,
@@ -277,6 +282,9 @@ pub fn spec(
             caches: Vec::new(),
         },
         job_token,
+        mcp_token: troubleshooter.then(|| McpTokenMount {
+            secret: McpRunTokenSecret::new(format!("{}-{}", "mcpt", "TESTTOKEN0123456789")),
+        }),
         env: FixedEnv::new(vec![("HOME".to_owned(), "/tmp".to_owned())]).expect("an environment"),
         hardening: Hardening::strict(10_001, 10_001),
     }
@@ -329,6 +337,7 @@ pub fn config(
         caches: Vec::new(),
         owner_labels: owner,
         sidecar_command: vec!["sleep".to_owned(), "3600".to_owned()],
+        gateway_relay: None,
         docker: DockerSettings::default(),
         watchdog: WatchdogSettings {
             disk_poll_interval: Duration::from_millis(500),

@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "model_routing",
+    "version": 1,
+    "status": "designed",
+    "default_action": "deny",
+    "conflict_resolution": "deny_overrides",
+    "project_overrides": "tighten_only",
+    "config_source": "protected_default_branch",
+    "threats": [
+      "T-05",
+      "T-20",
+      "T-26",
+      "T-27"
+    ]
+  },
+  "models": [
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "runtime": "claude-code-cli",
+      "family": "claude",
+      "tier": "standard",
+      "prices": {
+        "input": 6000000,
+        "cache_write": 7500000,
+        "cache_read": 600000,
+        "output": 30000000
+      },
+      "price_checked_on": "2026-10-29",
+      "price_source": "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+    }
+  ],
+  "roles": [
+    {
+      "role": "builder",
+      "stage": "IMPLEMENTATION",
+      "allowed_models": [
+        "claude-sonnet-5-5"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-sonnet-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 2500000,
+        "max_tokens": 200000
+      },
+      "per_request": {
+        "max_input_tokens": 150000,
+        "max_output_tokens": 16000
+      }
+    }
+  ],
+  "routes": [
+    {
+      "stage": "IMPLEMENTATION",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5"
+      ]
+    }
+  ],
+  "independence": {
+    "on_no_independent_model": "wait_for_human",
+    "rules": []
+  },
+  "job": {
+    "max_micro_usd": 10000000,
+    "max_tokens": 1500000
+  },
+  "operations_roles": [
+    {
+      "role": "troubleshooter",
+      "allowed_models": [
+        "claude-sonnet-5-5"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-sonnet-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_run": {
+        "max_micro_usd": 750000,
+        "max_tokens": 150000
+      },
+      "per_request": {
+        "max_input_tokens": 100000,
+        "max_output_tokens": 8000
+      }
+    }
+  ]
+}

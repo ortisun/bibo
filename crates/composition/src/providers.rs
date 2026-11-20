@@ -449,6 +449,76 @@ pub fn spec_kit_installation(
         .collect()
 }
 
+/// What [`docker_sandbox`] is built from.
+pub struct DockerInputs<'a> {
+    /// The deployment profile: AppArmor may be missing outside production.
+    pub profile: Profile,
+    /// The sandbox section of the configuration.
+    pub sandbox: &'a SandboxConfig,
+    /// The security policy.
+    pub security: &'a SecurityPolicy,
+    /// The process runner (`docker` on a fixed path).
+    pub runner: Arc<dyn ProcessRunner>,
+    /// Where command output is kept.
+    pub artifacts: Arc<dyn ArtifactStore>,
+    /// The one redactor.
+    pub redactor: Arc<Redactor>,
+    /// The clock.
+    pub clock: Arc<dyn Clock>,
+    /// The identifier source.
+    pub ids: Arc<dyn IdGenerator>,
+}
+
+/// The Docker sandbox provider from the sandbox section of the configuration and the policy: the
+/// one the worker wraps for indexing, and the one the troubleshooter starts its agent in.
+///
+/// # Errors
+/// [`ProviderError`].
+pub fn docker_sandbox(inputs: DockerInputs<'_>) -> Result<DockerSandboxProvider, ProviderError> {
+    let DockerInputs {
+        profile,
+        sandbox,
+        security,
+        runner,
+        artifacts,
+        redactor,
+        clock,
+        ids,
+    } = inputs;
+    let policy = sandbox_policy_from(security, profile != Profile::Production)
+        .ok_or(ProviderError::SandboxPolicy)?;
+    let images_json = std::fs::read_to_string(&sandbox.images_catalog)
+        .map_err(|_| ProviderError::Catalog(sandbox.images_catalog.display().to_string()))?;
+    Ok(DockerSandboxProvider::new(
+        ProviderConfig {
+            policy,
+            images_json,
+            platform: sandbox.platform.clone(),
+            token_root: sandbox.token_root.clone(),
+            caches: Vec::new(),
+            owner_labels: std::iter::once((OWNER_LABEL.to_owned(), sandbox.owner.clone()))
+                .chain(sandbox.labels.clone())
+                .collect(),
+            sidecar_command: sandbox.sidecar_command.clone(),
+            gateway_relay: sandbox.gateway_upstream.map(|upstream| {
+                factory_sandbox::container::args::GatewayRelay {
+                    listen_port: crate::sandbox_specs::SIDECAR_GATEWAY_PORT,
+                    upstream,
+                }
+            }),
+            docker: docker_settings_from(sandbox)?,
+            watchdog: WatchdogSettings {
+                disk_poll_interval: Duration::from_secs(5),
+            },
+        },
+        runner,
+        artifacts,
+        redactor,
+        clock,
+        ids,
+    ))
+}
+
 /// Assembles the real sandbox, workspace and specification providers.
 ///
 /// # Errors
@@ -469,32 +539,16 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
     let security = &policies.security;
 
     // The sandbox. AppArmor may be missing on a laptop; production never allows that.
-    let policy = sandbox_policy_from(security, profile != Profile::Production)
-        .ok_or(ProviderError::SandboxPolicy)?;
-    let images_json = std::fs::read_to_string(&config.sandbox.images_catalog)
-        .map_err(|_| ProviderError::Catalog(config.sandbox.images_catalog.display().to_string()))?;
-    let docker = DockerSandboxProvider::new(
-        ProviderConfig {
-            policy,
-            images_json,
-            platform: config.sandbox.platform.clone(),
-            token_root: config.sandbox.token_root.clone(),
-            caches: Vec::new(),
-            owner_labels: std::iter::once((OWNER_LABEL.to_owned(), config.sandbox.owner.clone()))
-                .chain(config.sandbox.labels.clone())
-                .collect(),
-            sidecar_command: config.sandbox.sidecar_command.clone(),
-            docker: docker_settings_from(&config.sandbox)?,
-            watchdog: WatchdogSettings {
-                disk_poll_interval: Duration::from_secs(5),
-            },
-        },
-        Arc::clone(&runner),
-        Arc::clone(&artifacts),
-        Arc::clone(&redactor),
-        Arc::clone(&clock),
-        Arc::clone(&ids),
-    );
+    let docker = docker_sandbox(DockerInputs {
+        profile,
+        sandbox: &config.sandbox,
+        security,
+        runner: Arc::clone(&runner),
+        artifacts: Arc::clone(&artifacts),
+        redactor: Arc::clone(&redactor),
+        clock: Arc::clone(&clock),
+        ids: Arc::clone(&ids),
+    })?;
     let sandbox: Arc<dyn SandboxProvider> = Arc::new(IndexingSandbox::new(
         Arc::new(docker),
         Arc::clone(&store),

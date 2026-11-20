@@ -84,6 +84,10 @@ pub(crate) enum Route {
     InstallationRepositories,
     Repo,
     Issue,
+    /// The issues of a repository, filtered by state and labels (the troubleshooter, ports v1.3).
+    IssuesList,
+    /// A new issue (the troubleshooter, ports v1.3).
+    IssueCreate,
     IssueComments,
     IssueEvents,
     CreateComment,
@@ -125,6 +129,8 @@ impl Route {
             Route::InstallationRepositories => "GET /installation/repositories",
             Route::Repo => "GET /repos/{owner}/{repo}",
             Route::Issue => "GET /repos/{owner}/{repo}/issues/{number}",
+            Route::IssuesList => "GET /repos/{owner}/{repo}/issues",
+            Route::IssueCreate => "POST /repos/{owner}/{repo}/issues",
             Route::IssueComments => "GET /repos/{owner}/{repo}/issues/{number}/comments",
             Route::IssueEvents => "GET /repos/{owner}/{repo}/issues/{number}/events",
             Route::CreateComment => "POST /repos/{owner}/{repo}/issues/{number}/comments",
@@ -174,6 +180,8 @@ pub(crate) fn match_route(method: &str, path: &str) -> Option<(Route, Vec<String
         ("GET", ["installation", "repositories"]) => (Route::InstallationRepositories, vec![]),
         ("GET", ["repos", o, r]) => (Route::Repo, params(&[o, r])),
         ("GET", ["repos", o, r, "issues", n]) => (Route::Issue, params(&[o, r, n])),
+        ("GET", ["repos", o, r, "issues"]) => (Route::IssuesList, params(&[o, r])),
+        ("POST", ["repos", o, r, "issues"]) => (Route::IssueCreate, params(&[o, r])),
         ("GET", ["repos", o, r, "issues", n, "comments"]) => {
             (Route::IssueComments, params(&[o, r, n]))
         }
@@ -780,6 +788,169 @@ pub(crate) fn issue_json(state: &State, repo: &Repo, issue: &Issue) -> Value {
     value
 }
 
+/// `GET /repos/{owner}/{repo}/issues`: the issues and pull requests of a repository, as GitHub
+/// lists them. `state` is `open` (the default), `closed` or `all`; `labels` is a comma-separated
+/// list that every issue listed must carry, without regard to case; `sort=created` with
+/// `direction` `asc` or `desc` (the default). Paged like the other lists.
+fn issues_list(state: &State, request: &HttpRequest, token: &TokenRecord, full: &str) -> Outcome {
+    require(token, "issues", "read")?;
+    let repo = &state.repos[full];
+    let wanted_state = request
+        .query_param("state")
+        .unwrap_or_else(|| "open".to_owned());
+    let wanted_labels: Vec<String> = request
+        .query_param("labels")
+        .map(|v| {
+            v.split(',')
+                .map(|l| l.trim().to_owned())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let ascending = request.query_param("direction").as_deref() == Some("asc");
+    let per_page = request
+        .query_param("per_page")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(30, |n| n.clamp(1, 100));
+    let page = request
+        .query_param("page")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(1, |n| n.max(1));
+    let mut listed: Vec<&Issue> = repo
+        .issues
+        .values()
+        .filter(|issue| wanted_state == "all" || issue.state == wanted_state)
+        .filter(|issue| {
+            wanted_labels
+                .iter()
+                .all(|want| issue.labels.iter().any(|l| l.eq_ignore_ascii_case(want)))
+        })
+        .collect();
+    listed.sort_by_key(|issue| (issue.created_at, issue.number));
+    if !ascending {
+        listed.reverse();
+    }
+    let last_page = listed.len().div_ceil(per_page).max(1);
+    let list: Vec<Value> = listed
+        .into_iter()
+        .skip((page - 1) * per_page)
+        .take(per_page)
+        .map(|issue| issue_json(state, repo, issue))
+        .collect();
+    let mut response = HttpResponse::json(200, &Value::Array(list));
+    if page < last_page {
+        let host = request.header("host").unwrap_or("127.0.0.1");
+        let rest: String = request
+            .query()
+            .unwrap_or_default()
+            .split('&')
+            .filter(|p| !p.starts_with("page=") && !p.starts_with("per_page=") && !p.is_empty())
+            .map(|p| format!("&{p}"))
+            .collect();
+        let at = |n: usize| {
+            format!(
+                "<http://{host}{}?per_page={per_page}&page={n}{rest}>",
+                request.path()
+            )
+        };
+        response = response.with_header(
+            "Link",
+            &format!(
+                "{}; rel=\"next\", {}; rel=\"last\"",
+                at(page + 1),
+                at(last_page)
+            ),
+        );
+    }
+    Ok(response)
+}
+
+/// `POST /repos/{owner}/{repo}/issues`: a new issue written by the App, with the labels given.
+fn issue_create(
+    state: &mut State,
+    now: i64,
+    request: &HttpRequest,
+    token: &TokenRecord,
+    full: &str,
+) -> Outcome {
+    require(token, "issues", "write")?;
+    let body = body_json(request)?;
+    let title = body["title"].as_str().unwrap_or_default().to_owned();
+    if title.trim().is_empty() {
+        return Err(ApiError::validation(
+            "Issue",
+            "title",
+            "missing_field",
+            None,
+        ));
+    }
+    if title.chars().count() > 256 {
+        return Err(ApiError::validation(
+            "Issue",
+            "title",
+            "custom",
+            Some("title is too long (maximum is 256 characters)"),
+        ));
+    }
+    let text = body["body"].as_str().unwrap_or_default().to_owned();
+    if text.chars().count() > 65_536 {
+        return Err(ApiError::validation(
+            "Issue",
+            "body",
+            "custom",
+            Some("body is too long (maximum is 65536 characters)"),
+        ));
+    }
+    let labels: Vec<String> = body["labels"]
+        .as_array()
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|l| l.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let author = state.app.bot_login();
+    let ids: Vec<u64> = labels.iter().map(|_| state.new_id()).collect();
+    let repo = state.repos.get_mut(full).expect("checked by the caller");
+    let number = repo.next_number;
+    repo.next_number += 1;
+    let events = labels
+        .iter()
+        .zip(ids)
+        .map(|(label, id)| super::IssueEvent {
+            id,
+            event: "labeled".to_owned(),
+            actor: author.clone(),
+            label: Some(label.clone()),
+            created_at: now,
+        })
+        .collect();
+    repo.issues.insert(
+        number,
+        Issue {
+            number,
+            title,
+            body: text,
+            state: "open".to_owned(),
+            is_pull: false,
+            author,
+            labels,
+            created_at: now,
+            updated_at: now,
+            body_edited_at: None,
+            comments: Vec::new(),
+            events,
+            events_newest_first: false,
+        },
+    );
+    let repo = &state.repos[full];
+    Ok(HttpResponse::json(
+        201,
+        &issue_json(state, repo, &repo.issues[&number]),
+    ))
+}
+
 fn labels_json(labels: &[String]) -> Value {
     Value::Array(
         labels
@@ -876,6 +1047,8 @@ fn dispatch_repo(
                 .ok_or_else(not_found)?;
             Ok(with_etag(request, 200, &issue_json(state, repo, issue)))
         }
+        Route::IssuesList => issues_list(state, request, token, &full),
+        Route::IssueCreate => issue_create(state, now, request, token, &full),
         Route::IssueEvents => {
             require(token, "issues", "read")?;
             let repo = &state.repos[&full];

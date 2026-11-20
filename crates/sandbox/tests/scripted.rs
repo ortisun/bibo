@@ -275,6 +275,7 @@ fn denied_flags_are_never_emitted() {
             network: Some(&names.network),
             labels: &spec_labels,
             token_file: token.then_some(token_path.as_path()),
+            mcp_token_file: None,
             cache_dirs: &[],
         };
         match create_args(&spec, &plan) {
@@ -1172,4 +1173,236 @@ async fn sbx_3_control_a_disk_that_is_measured_leaves_the_sandbox_alone() {
         rig.sim.verbs()
     );
     let _ = session.stop_and_remove(TeardownReason::Completed).await;
+}
+
+// ---- the troubleshooter profile (ADR 0021) ----------------------------------------------------
+
+#[test]
+fn the_troubleshooter_mounts_both_token_files_read_only_and_no_other_profile_takes_the_second() {
+    use factory_ports::sandbox::{JOB_TOKEN_TARGET, MCP_TOKEN_TARGET};
+    let catalog = support::catalog(&images_json_with_stand_in_sidecar());
+    // The troubleshooter runs the agent image.
+    assert_eq!(
+        catalog.reference_for(SandboxProfile::Troubleshooter),
+        catalog.reference_for(SandboxProfile::Agent)
+    );
+    let host = host_workspace(true, &[]);
+    let spec = support::spec(
+        SandboxProfile::Troubleshooter,
+        &catalog,
+        &host.mounts,
+        attempt(1),
+        WALL,
+    );
+    spec.validate(&support::policy(true))
+        .expect("the troubleshooter spec fits the policy");
+    let names = SandboxNames::from_suffix("0a1b2c3d-4e5f6a7b-89abcdef");
+    let spec_labels = labels(Kind::Sandbox, &spec, Some("egress"), &[]);
+    let job_file = std::path::PathBuf::from("/Users/test/tokens/x/job-token");
+    let mcp_file = std::path::PathBuf::from("/Users/test/tokens/x/mcp-token");
+    let plan = CreatePlan {
+        container: &names.container,
+        image: spec.image.reference(),
+        network: Some(&names.network),
+        labels: &spec_labels,
+        token_file: Some(job_file.as_path()),
+        mcp_token_file: Some(mcp_file.as_path()),
+        cache_dirs: &[],
+    };
+    let args = create_args(&spec, &plan).expect("arguments");
+    for (file, target) in [(&job_file, JOB_TOKEN_TARGET), (&mcp_file, MCP_TOKEN_TARGET)] {
+        let mount = format!("type=bind,src={},dst={target},readonly", file.display());
+        assert!(args.contains(&mount), "{mount} in {args:?}");
+    }
+    let workspace = format!(
+        "type=bind,src={},dst=/workspace,readonly",
+        host.mounts.workspace.display()
+    );
+    assert!(args.contains(&workspace), "the workspace is read-only");
+    assert_eq!(
+        denied_flag_in_allowing(&args, &allowed_binds(&spec, &plan)),
+        None
+    );
+    // Without the gateway token file the troubleshooter is refused.
+    let missing = CreatePlan {
+        mcp_token_file: None,
+        ..plan.clone()
+    };
+    assert!(create_args(&spec, &missing).is_err());
+    // An agent sandbox never takes the gateway token file.
+    let agent_host = host_workspace(false, &[]);
+    let agent = support::spec(
+        SandboxProfile::Agent,
+        &catalog,
+        &agent_host.mounts,
+        attempt(2),
+        WALL,
+    );
+    let agent_labels = labels(Kind::Sandbox, &agent, Some("egress"), &[]);
+    let smuggled = CreatePlan {
+        image: agent.image.reference(),
+        labels: &agent_labels,
+        ..plan.clone()
+    };
+    assert!(create_args(&agent, &smuggled).is_err());
+    let no_mcp = CreatePlan {
+        mcp_token_file: None,
+        ..smuggled
+    };
+    let agent_args = create_args(&agent, &no_mcp).expect("arguments");
+    assert!(!agent_args.iter().any(|a| a.contains(MCP_TOKEN_TARGET)));
+}
+
+#[test]
+fn only_the_troubleshooter_sidecar_gets_the_second_relay_and_only_to_its_one_address() {
+    use factory_sandbox::container::args::{GatewayRelay, sidecar_command_for};
+    let base: Vec<String> = [
+        "--mode",
+        "broker",
+        "--listen",
+        "0.0.0.0:8443",
+        "--upstream",
+        "172.17.0.1:9443",
+    ]
+    .map(String::from)
+    .to_vec();
+    let relay = GatewayRelay {
+        listen_port: 8444,
+        upstream: "172.17.0.1:9444".parse().expect("an address"),
+    };
+    let troubleshooter =
+        sidecar_command_for(SandboxProfile::Troubleshooter, &base, Some(relay)).expect("command");
+    let mut expected = base.clone();
+    expected.extend(
+        [
+            "--second-listen",
+            "0.0.0.0:8444",
+            "--second-upstream",
+            "172.17.0.1:9444",
+        ]
+        .map(String::from),
+    );
+    assert_eq!(troubleshooter, expected);
+    // Every other profile gets the deployment's command as it is, relay configured or not.
+    for profile in [
+        SandboxProfile::Agent,
+        SandboxProfile::FetchDeps,
+        SandboxProfile::Verify,
+    ] {
+        assert_eq!(
+            sidecar_command_for(profile, &base, Some(relay)).expect("command"),
+            base,
+            "{profile:?}"
+        );
+    }
+    // The troubleshooter without a relay, a privileged port, or a deployment command that names a
+    // second relay itself (it would reach every profile) are refused.
+    assert!(sidecar_command_for(SandboxProfile::Troubleshooter, &base, None).is_err());
+    let low = GatewayRelay {
+        listen_port: 80,
+        ..relay
+    };
+    assert!(sidecar_command_for(SandboxProfile::Troubleshooter, &base, Some(low)).is_err());
+    let mut sneaky = base.clone();
+    sneaky.extend(["--second-listen", "0.0.0.0:8444"].map(String::from));
+    for profile in [SandboxProfile::Agent, SandboxProfile::Troubleshooter] {
+        assert!(sidecar_command_for(profile, &sneaky, Some(relay)).is_err());
+    }
+}
+
+fn sidecar_create(calls: &[factory_ports::process::SpawnRequest]) -> Vec<String> {
+    calls
+        .iter()
+        .find(|c| c.args[0] == "create" && c.args.iter().any(|a| a.starts_with("sf-side-")))
+        .expect("the sidecar's create")
+        .args
+        .clone()
+}
+
+#[tokio::test]
+async fn a_troubleshooter_sandbox_gets_both_token_files_and_a_sidecar_with_the_gateway_relay() {
+    use factory_sandbox::container::args::GatewayRelay;
+    let relay = GatewayRelay {
+        listen_port: 8444,
+        upstream: "172.17.0.1:9444".parse().expect("an address"),
+    };
+    let rig_for = |relay: Option<GatewayRelay>| {
+        let sim = Sim::new();
+        let tokens = Scratch::new("tokens");
+        let mut cfg = config(
+            &images_json_with_stand_in_sidecar(),
+            tokens.path().join("root"),
+            vec![("owner.test".to_owned(), "scripted".to_owned())],
+            false,
+        );
+        cfg.gateway_relay = relay;
+        let world = support::provider(cfg, Arc::clone(&sim) as Arc<dyn ProcessRunner>);
+        Rig { sim, world, tokens }
+    };
+    let catalog = support::catalog(&images_json_with_stand_in_sidecar());
+    let host = host_workspace(true, &[]);
+    let spec = support::spec(
+        SandboxProfile::Troubleshooter,
+        &catalog,
+        &host.mounts,
+        attempt(1),
+        WALL,
+    );
+
+    let rig = rig_for(Some(relay));
+    let session = create(&rig, spec.clone()).await.expect("a sandbox");
+    let directory = std::fs::read_dir(rig.tokens.path().join("root"))
+        .expect("the token root")
+        .next()
+        .expect("one directory")
+        .expect("an entry")
+        .path();
+    let mut files: Vec<String> = std::fs::read_dir(&directory)
+        .expect("the sandbox's directory")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    assert_eq!(files, ["job-token", "mcp-token"]);
+    let sidecar = sidecar_create(&rig.sim.calls());
+    let at = sidecar
+        .iter()
+        .position(|a| a == "--second-listen")
+        .expect("the second relay");
+    assert_eq!(
+        sidecar[at..],
+        [
+            "--second-listen",
+            "0.0.0.0:8444",
+            "--second-upstream",
+            "172.17.0.1:9444"
+        ]
+    );
+    session
+        .stop_and_remove(TeardownReason::Completed)
+        .await
+        .expect("teardown");
+    assert_eq!(token_dir_entries(&rig), 0, "both token files are gone");
+
+    // An agent sandbox on the same provider gets no second relay.
+    let (agent, _agent_host) = make_spec(SandboxProfile::Agent);
+    let rig = rig_for(Some(relay));
+    let session = create(&rig, agent).await.expect("a sandbox");
+    assert!(
+        !sidecar_create(&rig.sim.calls())
+            .iter()
+            .any(|a| a.starts_with("--second-")),
+        "the agent's sidecar has one relay"
+    );
+    session
+        .stop_and_remove(TeardownReason::Completed)
+        .await
+        .expect("teardown");
+
+    // Without a relay configured, the troubleshooter is refused before its sandbox exists.
+    let rig = rig_for(None);
+    assert_eq!(
+        create(&rig, spec).await.err(),
+        Some(SandboxError::ProvisionFailed(ProvisionStage::Network))
+    );
+    assert_eq!(token_dir_entries(&rig), 0);
 }

@@ -1,7 +1,7 @@
 -- One SHA-256 over every definition the migrations create in the public schema.
 -- Two databases with the same fingerprint have the same tables, columns, constraints, indexes,
 -- triggers, functions (with owner, ACL and SECURITY DEFINER flag), views (with their options), row-level
--- security flags, policies, and the grants of the four group roles. The migrations suite compares the
+-- security flags, policies, and the grants of the four group roles and of factory_observer. The migrations suite compares the
 -- fingerprint after a first run, after revert then run, and after redo.
 WITH defs AS (
   SELECT 'column ' || c.table_name || '.' || c.column_name || ' ' || c.data_type || ' ' || c.is_nullable || ' ' ||
@@ -26,12 +26,12 @@ WITH defs AS (
   UNION ALL
   SELECT 'grant ' || grantee || ' ' || table_name || ' ' || privilege_type
     FROM information_schema.role_table_grants
-   WHERE table_schema = 'public' AND grantee IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver')
+   WHERE table_schema = 'public' AND grantee IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver', 'factory_observer')
      AND table_name <> '__diesel_schema_migrations'
   UNION ALL
   SELECT 'columngrant ' || grantee || ' ' || table_name || '.' || column_name || ' ' || privilege_type
     FROM information_schema.column_privileges
-   WHERE table_schema = 'public' AND grantee IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver')
+   WHERE table_schema = 'public' AND grantee IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver', 'factory_observer')
      AND table_name <> '__diesel_schema_migrations'
   UNION ALL
   SELECT 'rls ' || c.relname || ' enabled=' || c.relrowsecurity || ' forced=' || c.relforcerowsecurity

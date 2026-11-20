@@ -365,6 +365,67 @@
       "responsibility": "The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library)."
     },
     {
+      "name": "mcp_postgres",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/mcp_postgres",
+      "slice": 3,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "rmcp[server,macros]",
+        "tokio-postgres[runtime]",
+        "tokio[rt,sync,time]",
+        "serde",
+        "serde_json"
+      ],
+      "external_allow_notes": {
+        "rmcp": "ADR 0021: the official Rust SDK of the Model Context Protocol, 3.11.0, Apache-2.0, new direct dependency approved by the owner on 2026-11-20. This crate needs the tool router and the server handler only; the transports are chosen by the binary (stdio, Streamable HTTP) and by the gateway (in memory). Its server feature turns on uuid/v4 in the whole workspace; see source_scans.dep_05.resolved_features.",
+        "tokio-postgres": "ADR 0021, decision 4: the server returns arbitrary result sets, which Diesel cannot map. 0.7.18, the version diesel-async already resolves, so nothing new enters Cargo.lock for it. runtime only (Config::connect over TCP or a Unix socket), no TLS feature: the connection is made with NoTls, as the storage crate does."
+      },
+      "responsibility": "The read-only PostgreSQL MCP server (ADR 0021, decision 4): eight tools (pg_list_relations, pg_describe_relation, pg_query, pg_explain, pg_activity, pg_locks, pg_table_health, pg_factory_health) over one connection of a factory_observer login. Every call runs in BEGIN READ ONLY ... ROLLBACK with local timeouts; free SQL is wrapped as a subquery and sent with the extended protocol; rows, bytes and calls are capped; every string is redacted through an injected Redact seam. Depends on no other ring 2 crate; served in process by the troubleshooter's gateway and as apps/mcp-postgres."
+    },
+    {
+      "name": "mcp_gateway",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/mcp_gateway",
+      "slice": 3,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "rmcp[server,client,transport-streamable-http-server,transport-streamable-http-client-reqwest,reqwest-tls-no-provider]",
+        "reqwest[rustls-no-provider]",
+        "rustls[ring,std,tls12]",
+        "webpki-roots",
+        "ring",
+        "base64[std]",
+        "axum[http1,tokio]",
+        "tokio[rt,sync,time,net,io-util]",
+        "tokio-util",
+        "serde",
+        "serde_json",
+        "serde_jcs",
+        "thiserror"
+      ],
+      "external_allow_notes": {
+        "rmcp": "ADR 0021, approved by the owner on 2026-11-20. server and transport-streamable-http-server for the gateway's own MCP server; client, transport-streamable-http-client-reqwest and reqwest-tls-no-provider for the Streamable HTTP client to Datadog and VictoriaMetrics, and the client side of the in-memory pipe to an in-process server. The client features widen the approved feature set; the owner should confirm. Not transport-io (DEP-05).",
+        "reqwest": "0.13.5, the release already in Cargo.lock (opentelemetry-otlp) and the one rmcp's client transport needs. rustls-no-provider (public feature) so the gateway hands reqwest a rustls configuration it builds itself (ring, Mozilla roots). The feature also brings rustls-platform-verifier and its platform crates into Cargo.lock although the gateway never uses that verifier; the alternative was reqwest's private __rustls feature.",
+        "rustls": "0.23.46, already in Cargo.lock through ureq, with ring as the provider: the TLS stack of the GitHub adapter, the broker and the CLI.",
+        "webpki-roots": "The Mozilla roots, already in Cargo.lock and approved for the GitHub adapter on 2026-10-27 (CDLA-Permissive-2.0).",
+        "ring": "The operating system random source for the 256-bit run token, as the broker does, and the rustls crypto provider. 0.17.14, already in Cargo.lock.",
+        "base64": "0.22.1, already in Cargo.lock. base64url without padding for the run token.",
+        "axum": "The same version and features as apps/api and apps/mcp-postgres: the HTTP server under the Streamable HTTP service and the run token check.",
+        "tokio-util": "0.7.20, already resolved by rmcp: the cancellation token its Streamable HTTP server takes, to end every session at shutdown.",
+        "serde_jcs": "RFC 8785 canonical JSON for the argument digest and the run record, as domain uses it for the ledger."
+      },
+      "responsibility": "The troubleshooter's MCP gateway (ADR 0021, decision 3): one MCP server over Streamable HTTP, on a loopback address by default or on one bridge address with allow_non_loopback_listen (never an unspecified address, the run token always required), that the troubleshooter agent reaches as its only MCP server. Lists exactly the allowlisted tools of policies/troubleshooting.yaml that their upstream offers, refuses every other tool and reports upstream tools not on the allowlist (T-51); checks a random per-run bearer token; limits calls per run and per 10 seconds, the call deadline, result bytes (with a truncation marker) and the run wall clock; redacts every result through an injected Redact seam, with the upstream credentials and run tokens registered by exact value; records every call (call-N ids shared with the control-plane probe calls) as a typed run record and canonical JSON. Upstreams behind the Upstream trait: Streamable HTTP clients for Datadog and VictoriaMetrics with credentials from mode 0600 files, and an in-process adapter over any rmcp server. Depends on no other ring 2 crate; apps/troubleshooter wires mcp_postgres in."
+    },
+    {
       "name": "testkit",
       "ring": 2,
       "layer": "test-support",
@@ -435,6 +496,43 @@
       "path": "apps/egress-sidecar",
       "slice": 1,
       "responsibility": "The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential."
+    },
+    {
+      "name": "mcp-postgres",
+      "path": "apps/mcp-postgres",
+      "slice": 3,
+      "responsibility": "Serves crates/mcp_postgres for an engineer's Claude Code: stdio by default, or Streamable HTTP on a loopback address behind a bearer token read from a mode 0600 file. Connection settings from a JSON file or the environment, the password from a file only. Refuses to serve with a login that is a superuser, bypasses row-level security, or belongs to a group other than factory_observer. Starts no process.",
+      "external_dependencies": [
+        "rmcp[server,transport-streamable-http-server]",
+        "axum[http1,tokio]",
+        "tokio[rt,rt-multi-thread,net,time,sync,macros,signal,io-util]",
+        "serde",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "rmcp": "ADR 0021, approved by the owner on 2026-11-20. transport-streamable-http-server for HTTP. Not transport-io: it would turn on tokio/io-std in the whole workspace, which the DEP-05 limit for the inner crates does not allow, so stdio is bridged to the server through a tokio duplex pipe and two threads (std::io::stdin and stdout) instead.",
+        "axum": "The same version and features as apps/api, already in Cargo.lock: the HTTP server under the Streamable HTTP service and the bearer check."
+      }
+    },
+    {
+      "name": "troubleshooter",
+      "path": "apps/troubleshooter",
+      "slice": 3,
+      "responsibility": "The troubleshooter (ADR 0021): watches the factory itself. Runs the deterministic probes of policies/troubleshooting.yaml through its own MCP gateway (crates/mcp_gateway, with crates/mcp_postgres in process) and a direct HTTP health GET; when a probe trips past its cool-down or the sweep is due, and the day caps allow, runs the troubleshooter agent once in its sandbox with the broker it hosts; refuses a report that fails health-findings v1 or cites a call the gateway did not record as ok for the same tool; writes triage issues from the closed domain template through TriageIssueWriter, one per fingerprint, one seen-again comment a day, under the day cap. One instance is active at a time (a PostgreSQL advisory lock). Its rows are the four troubleshooting_* tables (migration 2026-11-20-003000).",
+      "external_dependencies": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[rt,rt-multi-thread,time,sync,macros,signal]",
+        "ureq[rustls]",
+        "uuid[std]"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "The HTTP health probe: the same crate, version and features as the composition library, so Cargo.lock gains nothing.",
+        "uuid": "The job and attempt ids a run borrows for the sandbox and the broker token are built from bytes; no generator feature (DEP-05)."
+      }
     }
   ],
   "tooling": [
@@ -572,13 +670,16 @@
         {
           "package": "uuid",
           "allowed": [
-            "std"
+            "rng",
+            "std",
+            "v4"
           ],
-          "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates."
+          "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates. Since ADR 0021 the rmcp crate (server feature) depends on uuid with v4, and Cargo unifies it into the one uuid the inner crates see, so v4 and rng resolve for them and cannot be removed while rmcp is in the workspace graph. As for time, the guard is therefore the clippy ban on uuid::Uuid::new_v4 and every other generator in the clippy.toml of each inner crate, which DEP-05 requires. Any other generator feature (v1, v3, v5, v6, v7, v8, fast-rng) still fails here. Decided with ADR 0021, pending architect confirmation."
         },
         {
           "package": "tokio",
           "allowed": [
+            "fs",
             "io-util",
             "macros",
             "net",
@@ -590,7 +691,7 @@
             "test-util",
             "time"
           ],
-          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. signal is enabled by apps/worker so that SIGTERM and SIGINT drain the loop instead of abandoning a lease; it adds no crate to Cargo.lock and workflow has no path to it. A new feature (fs, full) appearing in this set needs an architect-reviewed change here."
+          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. signal is enabled by apps/worker so that SIGTERM and SIGINT drain the loop instead of abandoning a lease; it adds no crate to Cargo.lock and workflow has no path to it. fs resolves since ADR 0021: rmcp's Streamable HTTP client over reqwest (crates/mcp_gateway) depends on reqwest with its stream feature, which enables tokio/fs, and cannot be removed while that client is in the workspace graph. As for net and process, the guard is the DEP-05 ban on tokio::fs paths in the clippy.toml of every inner crate. Decided with ADR 0021, pending architect confirmation. A new feature (full, or any other) appearing in this set needs an architect-reviewed change here."
         }
       ]
     },

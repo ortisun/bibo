@@ -62,6 +62,7 @@ pub mod routing;
 pub mod security;
 pub mod tighten;
 pub mod tools;
+pub mod troubleshooting;
 
 mod engine;
 
@@ -129,11 +130,19 @@ pub enum SandboxProfileKind {
     Verify,
     /// The dependency fetch: allowlisted registries, scripts disabled.
     FetchDeps,
+    /// The troubleshooter's agent run: no repository, the model broker and the MCP gateway only
+    /// (ADR 0021).
+    Troubleshooter,
 }
 
 impl SandboxProfileKind {
     /// Every profile.
-    pub const ALL: [SandboxProfileKind; 3] = [Self::Agent, Self::Verify, Self::FetchDeps];
+    pub const ALL: [SandboxProfileKind; 4] = [
+        Self::Agent,
+        Self::Verify,
+        Self::FetchDeps,
+        Self::Troubleshooter,
+    ];
 
     /// The spelling the policy files use.
     #[must_use]
@@ -142,6 +151,7 @@ impl SandboxProfileKind {
             Self::Agent => "agent",
             Self::Verify => "verify",
             Self::FetchDeps => "fetch_deps",
+            Self::Troubleshooter => "troubleshooter",
         }
     }
 

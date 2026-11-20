@@ -19,6 +19,7 @@
 //! | [`ledger`] | The evidence ledger hash chain |
 //! | [`patterns`] | The regular expressions the schemas declare, which the types compile |
 //! | [`policy`] | The typed policy documents and the pure rules that apply them |
+//! | [`troubleshooting`] | A troubleshooter finding, its fingerprint, the triage labels and the issue rendered from a closed template (ADR 0021) |
 //!
 //! # How the code is kept equal to the documents
 //!
@@ -47,6 +48,7 @@ pub mod policy;
 pub mod redaction;
 pub mod scope;
 pub mod state;
+pub mod troubleshooting;
 pub mod values;
 pub mod vocabulary;
 

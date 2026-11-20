@@ -340,3 +340,77 @@ proptest! {
         }
     }
 }
+
+/// ADR 0021, Decision 5: only the troubleshooter reaches the MCP gateway, and only it uses the
+/// troubleshooter egress profile.
+#[test]
+fn the_mcp_gateway_is_reachable_from_the_troubleshooter_profile_only() {
+    assert_eq!(
+        policy().profile_of(SandboxProfileKind::Troubleshooter),
+        EgressProfileId::Troubleshooter
+    );
+    let gateway = "mcp-gateway.sandbox.internal";
+    assert!(
+        policy()
+            .check(EgressProfileId::Troubleshooter, gateway, 8444, "POST")
+            .is_allowed()
+    );
+    assert!(
+        policy()
+            .check(
+                EgressProfileId::Troubleshooter,
+                "model-broker.sandbox.internal",
+                8443,
+                "POST"
+            )
+            .is_allowed()
+    );
+    for profile in [
+        EgressProfileId::Agent,
+        EgressProfileId::FetchDeps,
+        EgressProfileId::None,
+    ] {
+        assert_eq!(
+            denial(&policy().check(profile, gateway, 8444, "POST")),
+            Some(EgressDenial::HostNotAllowed),
+            "{profile:?}"
+        );
+    }
+    assert_eq!(
+        denial(&policy().check(EgressProfileId::Troubleshooter, gateway, 443, "POST")),
+        Some(EgressDenial::PortNotAllowed)
+    );
+    assert_eq!(
+        denial(&policy().check(
+            EgressProfileId::Troubleshooter,
+            "api.anthropic.com",
+            443,
+            "POST"
+        )),
+        Some(EgressDenial::HostNotAllowed)
+    );
+
+    // The gateway entry copied into the agent profile does not build.
+    let mut json = security_json();
+    let entry = json["egress"]["profiles"]["troubleshooter"]["allow"]
+        .as_array()
+        .expect("allow")
+        .iter()
+        .find(|e| e["id"] == "mcp_gateway")
+        .expect("the gateway entry")
+        .clone();
+    json["egress"]["profiles"]["troubleshooter"]["allow"]
+        .as_array_mut()
+        .expect("allow")
+        .retain(|e| e["id"] != "mcp_gateway");
+    json["egress"]["profiles"]["agent"]["allow"]
+        .as_array_mut()
+        .expect("allow")
+        .push(entry);
+    assert!(EgressPolicy::from_policy(&security_from(json)).is_err());
+
+    // Nor does the agent sandbox profile on the troubleshooter egress profile.
+    let mut json = security_json();
+    json["sandbox"]["profiles"]["agent"]["egress_profile"] = "troubleshooter".into();
+    assert!(EgressPolicy::from_policy(&security_from(json)).is_err());
+}

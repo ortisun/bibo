@@ -222,6 +222,13 @@ regexTarget = "match"
 regexes = ['''postgres://factory_admin@127\.0\.0\.1''']
 
 [[rules.allowlists]]
+description = "The same user name with no password, quoted in the troubleshooter review's list of what was run (ADR 0021)"
+condition = "AND"
+paths = ['''^docs/reviews/troubleshooter-security-review\.md$''']
+regexTarget = "match"
+regexes = ['''postgres://factory_admin@127\.0\.0\.1''']
+
+[[rules.allowlists]]
 description = "Made-up clone URLs in the testkit's own tests"
 condition = "AND"
 paths = ['''^crates/testkit/src/fx/(?:sinks|spawn|repos)/tests\.rs$''']

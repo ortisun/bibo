@@ -72,6 +72,7 @@ The API records what people ask for and never runs work. The worker holds the en
 | Fix a job that is stuck | [Runbooks](docs/runbooks/README.md) |
 | Prepare for a live run | [Production guide](docs/guides/production.md) |
 | Run the end-to-end proof E1 for real, on your GitHub and your Claude subscription | [The first real run](docs/guides/first-real-run.md) |
+| Set up the troubleshooter, which watches the factory itself and opens issues for a person to triage | [Troubleshooter guide](docs/guides/troubleshooter.md) |
 | Understand the design | [Architecture overview](docs/architecture/overview.md) and the [decision records](docs/adr/README.md) |
 | Read what independent reviewers found | [Reviews](docs/reviews/) and the [threat model](docs/security/threat-model.md) |
 

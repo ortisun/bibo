@@ -832,6 +832,7 @@ async fn build_in(
         limits: shared.manifest.resource_limits.clone(),
         model: route.model,
         flag_set: route.flag_set,
+        mcp_gateway: None,
     };
     let report = ports.runtime.run(&mut *session, request, ctx.cancel).await;
     tally.usage = tally.usage.saturating_add(report.usage);

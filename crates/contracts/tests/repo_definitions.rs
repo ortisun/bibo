@@ -21,8 +21,8 @@ use serde_json::{Value, json};
 
 use agent_defs::checks::{self, KNOWN_POLICY_GAPS};
 use agent_defs::{
-    Agent, OUTPUT_SCHEMA_OF, SLICE_1_AGENTS, agent_schema_path, agents, answer_schema_texts,
-    profile_files, profile_value, security_policy,
+    Agent, OPERATIONS_AGENTS, OUTPUT_SCHEMA_OF, SLICE_1_AGENTS, agent_schema_path, agents,
+    all_agent_names, answer_schema_texts, profile_files, profile_value, security_policy,
 };
 use support::{TempDir, example_dir, read_example, read_text, repo_root};
 
@@ -205,19 +205,45 @@ fn registry() -> FileAgentRegistry {
 #[test]
 fn the_registry_loads_every_manifest_profile_and_prompt() {
     let registry = registry();
-    assert_eq!(registry.agent_count(), SLICE_1_AGENTS.len());
+    assert_eq!(
+        registry.agent_count(),
+        SLICE_1_AGENTS.len() + OPERATIONS_AGENTS.len()
+    );
     assert!(registry.profile_count() >= 2);
 }
 
 #[test]
-fn the_agent_set_is_exactly_the_nine_slice_1_roles() {
+fn the_agent_set_is_exactly_the_nine_slice_1_roles_and_the_operations_agents() {
     let found: BTreeSet<String> = agents().into_iter().map(|a| a.dir_name).collect();
-    let wanted: BTreeSet<String> = SLICE_1_AGENTS.iter().map(|s| (*s).to_owned()).collect();
+    let wanted: BTreeSet<String> = all_agent_names().into_iter().map(str::to_owned).collect();
     assert_eq!(found, wanted);
     for agent in agents() {
         assert_eq!(agent.manifest["id"], agent.dir_name.as_str());
         assert_eq!(agent.manifest["version"], "1.0.0");
     }
+}
+
+/// A pipeline agent has a stage and an operations agent has none: every role is in exactly one of
+/// the two lists, and the operations agents are the ones with an operations role.
+#[test]
+fn every_role_has_a_stage_or_is_an_operations_role_and_never_both() {
+    for agent in agents() {
+        let role = agent.manifest["role"].as_str().expect("a role");
+        let staged = checks::stage_of_role(role).is_some();
+        let operations = checks::is_operations_role(role);
+        assert!(
+            staged != operations,
+            "{}: the role `{role}` must have a stage or be an operations role, and not both",
+            agent.dir_name
+        );
+        assert_eq!(
+            operations,
+            OPERATIONS_AGENTS.contains(&agent.dir_name.as_str()),
+            "{}",
+            agent.dir_name
+        );
+    }
+    assert_eq!(checks::STAGE_OF_ROLE.len(), SLICE_1_AGENTS.len());
 }
 
 #[test]
@@ -870,6 +896,151 @@ fn a_prompt_without_the_schema_or_without_the_final_message_rule_is_caught() {
     };
     let problems = checks::output_channel_problems(&no_schema, &schemas);
     assert!(mentions(&problems, "shows 0 schema(s)"), "{problems:#?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Operations agents (ADR 0021)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_troubleshooter_holds_only_gateway_tools_and_the_output_channel() {
+    let troubleshooter = agent("troubleshooter");
+    let tools = checks::tools_of(&troubleshooter.manifest);
+    assert!(tools.iter().any(|(n, _, _)| n == "report.submit"));
+    for (name, access, scope) in &tools {
+        assert!(
+            name == "report.submit" || name.starts_with(checks::GATEWAY_TOOL_PREFIX),
+            "{name}"
+        );
+        assert_eq!(access, "read", "{name}");
+        assert!(scope.is_empty(), "{name} has a path scope");
+    }
+    // One manifest entry for each gateway tool of the policy, and no other.
+    let policy = security_policy();
+    let in_policy: BTreeSet<String> = policy
+        .tools
+        .entries
+        .iter()
+        .filter(|e| e.id.starts_with(checks::GATEWAY_TOOL_PREFIX))
+        .map(|e| e.id.clone())
+        .collect();
+    let in_manifest: BTreeSet<String> = tools
+        .into_iter()
+        .map(|(n, _, _)| n)
+        .filter(|n| n.starts_with(checks::GATEWAY_TOOL_PREFIX))
+        .collect();
+    assert_eq!(in_manifest, in_policy);
+    assert_eq!(in_policy.len(), 28);
+}
+
+#[test]
+fn a_pipeline_agent_with_a_gateway_tool_is_caught() {
+    let policy = security_policy();
+    let mut manifest = agent("code-reviewer").manifest;
+    manifest["allowed_tools"]
+        .as_array_mut()
+        .expect("tools")
+        .push(json!({ "name": "mcp.postgres.query", "access": "read" }));
+    let problems = checks::tool_problems(&manifest, &policy);
+    assert!(
+        mentions(&problems, "only an operations agent may hold one"),
+        "{problems:#?}"
+    );
+    assert!(
+        mentions(&problems, "does not give the tool `mcp.postgres.query`"),
+        "{problems:#?}"
+    );
+}
+
+#[test]
+fn an_operations_agent_with_a_file_or_command_tool_is_caught() {
+    let policy = security_policy();
+    for (tool, access) in [("fs.read", "read"), ("exec.run", "execute_sandboxed")] {
+        let mut manifest = agent("troubleshooter").manifest;
+        manifest["allowed_tools"]
+            .as_array_mut()
+            .expect("tools")
+            .push(json!({ "name": tool, "access": access }));
+        let problems = checks::tool_problems(&manifest, &policy);
+        assert!(
+            mentions(&problems, "may hold only gateway tools"),
+            "{tool}: {problems:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_gateway_tool_given_to_a_pipeline_role_or_a_sandbox_profile_is_caught() {
+    let manifest = agent("troubleshooter").manifest;
+    let mut policy = security_policy();
+    let entry = policy
+        .tools
+        .entries
+        .iter_mut()
+        .find(|e| e.id == "mcp.victoriametrics.query")
+        .expect("the gateway tool");
+    entry.roles.push("builder".to_owned());
+    entry.profiles.push("agent".to_owned());
+    let problems = checks::tool_problems(&manifest, &policy);
+    assert!(
+        mentions(&problems, "only operations roles may hold it"),
+        "{problems:#?}"
+    );
+    assert!(
+        mentions(&problems, "runs in the gateway of the control plane"),
+        "{problems:#?}"
+    );
+}
+
+#[test]
+fn an_operations_agent_that_reaches_more_than_the_gateway_or_has_files_is_caught() {
+    let base = agent("troubleshooter").manifest;
+    let mut none = base.clone();
+    none["permissions"]["network"] = json!("none");
+    none["permissions"]
+        .as_object_mut()
+        .expect("permissions")
+        .remove("network_allowlist");
+    let mut wider = base.clone();
+    wider["permissions"]["network_allowlist"] = json!(["mcp_gateway", "api.datadoghq.com"]);
+    let mut files = base;
+    files["permissions"]["filesystem"]["read"] = json!(["**"]);
+    for (label, manifest, needle) in [
+        ("no network", none, "reaches only `mcp_gateway`"),
+        ("a wider allow list", wider, "reaches only `mcp_gateway`"),
+        ("a file scope", files, "empty workspace"),
+    ] {
+        let problems = checks::placement_problems(&manifest);
+        assert!(mentions(&problems, needle), "{label}: {problems:#?}");
+    }
+}
+
+#[test]
+fn a_pipeline_agent_with_a_network_is_caught() {
+    let mut manifest = agent("builder").manifest;
+    manifest["permissions"]["network"] = json!("allowlist");
+    manifest["permissions"]["network_allowlist"] = json!(["mcp_gateway"]);
+    let problems = checks::placement_problems(&manifest);
+    assert!(
+        mentions(&problems, "permissions.network is `allowlist`"),
+        "{problems:#?}"
+    );
+    assert!(
+        mentions(&problems, "a pipeline agent reaches no network"),
+        "{problems:#?}"
+    );
+}
+
+#[test]
+fn an_operations_agent_with_a_skill_is_caught() {
+    let policy = security_policy();
+    let mut manifest = agent("troubleshooter").manifest;
+    manifest["skills"] = json!([{ "id": "speckit.specify", "version": "1.1.2" }]);
+    let problems = checks::skill_problems(&manifest, &policy);
+    assert!(
+        mentions(&problems, "has no stage and no skill"),
+        "{problems:#?}"
+    );
 }
 
 fn strings(value: &Value) -> BTreeSet<String> {

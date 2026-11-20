@@ -219,7 +219,9 @@ impl ImageCatalog {
             .values()
             .find(|image| image.reference == *spec_image)
             .ok_or(ImageRefusal::Unknown)?;
-        let expected = self.by_key(profile.as_str()).ok_or(ImageRefusal::Unknown)?;
+        let expected = self
+            .by_key(image_key(profile))
+            .ok_or(ImageRefusal::Unknown)?;
         if listed.reference != expected.reference {
             return Err(ImageRefusal::WrongProfile);
         }
@@ -246,7 +248,17 @@ impl ImageCatalog {
     /// root uses it to build a spec.
     #[must_use]
     pub fn reference_for(&self, profile: SandboxProfile) -> Option<&ImageDigest> {
-        self.by_key(profile.as_str()).map(|image| &image.reference)
+        self.by_key(image_key(profile))
+            .map(|image| &image.reference)
+    }
+}
+
+/// The catalog entry a profile's image is listed under. The troubleshooter runs the agent image
+/// (ADR 0021): the same tool, the same hardening, with no repository and other tokens.
+fn image_key(profile: SandboxProfile) -> &'static str {
+    match profile {
+        SandboxProfile::Troubleshooter => SandboxProfile::Agent.as_str(),
+        other => other.as_str(),
     }
 }
 
