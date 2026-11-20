@@ -13,9 +13,13 @@ use axum::response::{IntoResponse, Response};
 use factory_composition::redaction::redactor_from_policy;
 use factory_composition::startup::load_policy;
 use factory_domain::redaction::Redactor;
-use factory_mcp_postgres::{ConnectSettings, Inspector, Limits, Password, PostgresMcp, Redact};
+use factory_mcp_postgres::{
+    BudgetScope, ConnectSettings, DEFAULT_BUDGET_WINDOW, Inspector, Limits, Password, PostgresMcp,
+    Redact,
+};
 use factory_mcp_postgres_app::{
-    Options, Settings, USAGE, bearer_matches, check_token, parse_args, read_secret_file,
+    Options, Settings, USAGE, bearer_matches, check_registered, check_token, parse_args,
+    read_secret_file,
 };
 use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -112,11 +116,7 @@ async fn run(options: Options) -> Result<(), (u8, String)> {
         ("mcp_bearer_token", &token),
     ] {
         if let Some(secret) = secret {
-            redactor.register(label, secret).map_err(|_| {
-                usage(format!(
-                    "the {label} cannot be registered with the redactor"
-                ))
-            })?;
+            check_registered(label, redactor.register(label, secret)).map_err(usage)?;
         }
     }
     let redactor: Arc<dyn Redact> = Arc::new(redactor);
@@ -139,7 +139,15 @@ async fn run(options: Options) -> Result<(), (u8, String)> {
         .check_login()
         .await
         .map_err(|failure| (FAILURE, format!("will not serve: {failure}")))?;
-    let server = PostgresMcp::new(inspector);
+    // One budget for the process, renewed every window: the clones served to HTTP sessions share
+    // it, so a new session does not start a new budget.
+    let window = settings
+        .budget_window_s
+        .map_or(DEFAULT_BUDGET_WINDOW, Duration::from_secs);
+    if window.is_zero() {
+        return Err((USAGE_ERROR, "budget_window_s must be at least 1".to_owned()));
+    }
+    let server = PostgresMcp::with_budget(inspector, BudgetScope::Window(window));
 
     match (options.http, token) {
         (None, _) => {

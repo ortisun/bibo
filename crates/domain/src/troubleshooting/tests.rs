@@ -211,28 +211,13 @@ fn the_fingerprint_ignores_order_and_repetition() {
         FindingCategory::Database,
         FindingComponent::Database,
         &["p-b", "p-a"],
-        &[],
     );
     let b = FindingFingerprint::compute(
         FindingCategory::Database,
         FindingComponent::Database,
         &["p-a", "p-b", "p-a"],
-        &[],
     );
     assert_eq!(a, b);
-    let t1 = FindingFingerprint::compute(
-        FindingCategory::Latency,
-        FindingComponent::Api,
-        &[],
-        &["vm_query", "datadog_search_logs"],
-    );
-    let t2 = FindingFingerprint::compute(
-        FindingCategory::Latency,
-        FindingComponent::Api,
-        &[],
-        &["datadog_search_logs", "vm_query", "vm_query"],
-    );
-    assert_eq!(t1, t2);
 }
 
 #[test]
@@ -241,57 +226,65 @@ fn a_different_category_component_or_source_is_a_different_fingerprint() {
         FindingCategory::Database,
         FindingComponent::Database,
         &["p-a"],
-        &[],
     );
     for other in [
         FindingFingerprint::compute(
             FindingCategory::Latency,
             FindingComponent::Database,
             &["p-a"],
-            &[],
         ),
         FindingFingerprint::compute(
             FindingCategory::Database,
             FindingComponent::Worker,
             &["p-a"],
-            &[],
         ),
         FindingFingerprint::compute(
             FindingCategory::Database,
             FindingComponent::Database,
             &["p-b"],
-            &[],
         ),
         FindingFingerprint::compute(
             FindingCategory::Database,
             FindingComponent::Database,
             &["p-a", "p-b"],
-            &[],
         ),
-        FindingFingerprint::compute(
-            FindingCategory::Database,
-            FindingComponent::Database,
-            &[],
-            &["p-a"],
-        ),
+        FindingFingerprint::compute(FindingCategory::Database, FindingComponent::Database, &[]),
     ] {
         assert_ne!(base, other);
     }
 }
 
 #[test]
-fn a_finding_explained_by_probes_keeps_its_fingerprint_whatever_tools_the_agent_used() {
+fn the_tools_the_agent_cited_never_change_the_fingerprint() {
+    // TR-8: one problem cited once with vm_query and once with vm_query and pg_activity is one
+    // problem, whether a probe explains it or not.
     let mut one = finding("Stage failures rose");
     let mut two = one.clone();
-    two.observations = vec![observation("call-9", "datadog_search_logs", "other words")];
+    two.observations = vec![
+        observation("call-9", "datadog_search_logs", "other words"),
+        observation("call-10", "pg_activity", "more words"),
+    ];
     two.title = "Different words".to_owned();
     assert_eq!(FindingFingerprint::of(&one), FindingFingerprint::of(&two));
     one.probe_ids.clear();
     two.probe_ids.clear();
-    assert_ne!(
+    assert_eq!(
         FindingFingerprint::of(&one),
         FindingFingerprint::of(&two),
-        "a sweep finding is identified by its tools"
+        "a sweep finding is identified by its category and component"
+    );
+    assert_eq!(
+        FindingFingerprint::of(&one),
+        FindingFingerprint::compute(one.category, one.component, &[])
+    );
+    let text = format!(
+        "troubleshooter-fingerprint/v1\ncategory={}\ncomponent={}\n",
+        one.category.as_str(),
+        one.component.as_str()
+    );
+    assert_eq!(
+        FindingFingerprint::of(&one).digest(),
+        &Sha256Digest::of(text.as_bytes())
     );
 }
 
@@ -302,7 +295,6 @@ fn the_fingerprint_is_pinned() {
         FindingCategory::StageFailures,
         FindingComponent::Worker,
         &["stage-failure-rate"],
-        &[],
     );
     let text = "troubleshooter-fingerprint/v1\ncategory=stage_failures\ncomponent=worker\nsource=probe:stage-failure-rate\n";
     assert_eq!(fingerprint.digest(), &Sha256Digest::of(text.as_bytes()));
@@ -314,14 +306,9 @@ fn only_an_exact_marker_line_is_read() {
         FindingCategory::Spend,
         FindingComponent::ModelBroker,
         &["spend"],
-        &[],
     );
-    let other = FindingFingerprint::compute(
-        FindingCategory::Spend,
-        FindingComponent::Api,
-        &["spend"],
-        &[],
-    );
+    let other =
+        FindingFingerprint::compute(FindingCategory::Spend, FindingComponent::Api, &["spend"]);
     assert_eq!(
         FindingFingerprint::from_body(&format!("text\n{}\n", fp.marker())),
         Some(fp.clone())
@@ -460,7 +447,6 @@ fn an_issue_names_a_closed_predecessor_and_held_back_findings() {
             FindingCategory::Retries,
             FindingComponent::Sandbox,
             &["retries"],
-            &[],
         ),
     }];
     let mut inv = investigation(&run);
@@ -640,15 +626,13 @@ proptest! {
     #[test]
     fn the_fingerprint_does_not_depend_on_order(
         mut probes in prop::collection::vec("[a-z][a-z0-9-]{0,8}[a-z0-9]", 0..6),
-        mut tools in prop::collection::vec("vm_[a-z]{1,8}", 1..6),
     ) {
         let a = FindingFingerprint::compute(FindingCategory::Capacity, FindingComponent::Sandbox,
-            &probes.iter().map(String::as_str).collect::<Vec<_>>(), &tools.iter().map(String::as_str).collect::<Vec<_>>());
+            &probes.iter().map(String::as_str).collect::<Vec<_>>());
         probes.reverse();
-        tools.reverse();
         probes.extend(probes.clone());
         let b = FindingFingerprint::compute(FindingCategory::Capacity, FindingComponent::Sandbox,
-            &probes.iter().map(String::as_str).collect::<Vec<_>>(), &tools.iter().map(String::as_str).collect::<Vec<_>>());
+            &probes.iter().map(String::as_str).collect::<Vec<_>>());
         prop_assert_eq!(a, b);
     }
 }

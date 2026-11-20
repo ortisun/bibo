@@ -43,7 +43,7 @@ Skip this part if you do not use Datadog. Without it the troubleshooter still ha
 
 ### The database login `factory_troubleshooter`
 
-The migrations up to `2026-11-20-002900_observer_role` must be applied. Then a database administrator creates the login once per cluster with [`docs/database/observer-login.sql`](../database/observer-login.sql), which reads the password from a file:
+The migrations up to `2026-11-20-003100_observer_hardening` must be applied (by a superuser: it revokes the advisory lock functions from `PUBLIC`). Then a database administrator creates the login once per cluster, from the root of a checkout, with [`docs/database/observer-login.sql`](../database/observer-login.sql). It reads the password from a file and sets it as a SCRAM verifier computed on your machine by `scripts/scram-verifier.py`, so the password is never in the SQL text that the server log or `pg_stat_statements` keep:
 
 ```bash no-run reason="needs a database administrator's connection"
 umask 077
@@ -53,7 +53,7 @@ psql "$ADMIN_URL" -v ON_ERROR_STOP=1 \
      -f docs/database/observer-login.sql
 ```
 
-The login belongs to `factory_observer` and nothing else. It can read the operational columns listed in [`docs/database/observer-columns.txt`](../database/observer-columns.txt), across every tenant, and never a request text, a payload, a token or a key. Every transaction is read-only, and a statement stops after 5 seconds.
+The login belongs to `factory_observer` and nothing else; the troubleshooter and `factory-mcp-postgres` refuse to start with a login that holds anything more (another role, a predefined role such as `pg_read_all_data` or `pg_monitor`, ownership of an object, a column or a write beyond the group's). It can read the operational columns listed in [`docs/database/observer-columns.txt`](../database/observer-columns.txt), across every tenant, and never a request text, a payload, a token, a key or a GitHub id. It reads other sessions' query texts only with their literals replaced, and it cannot take an advisory lock. Every transaction is read-only, a statement stops after 5 seconds, and reading a result stops at 64 KiB.
 
 ### The GitHub App on the issue repository
 
@@ -62,6 +62,26 @@ The issues go to `troubleshooting.issue_repository` of the troubleshooter's conf
 ### The VictoriaMetrics MCP token
 
 Make the token file and start the VictoriaMetrics MCP server as [`infra/troubleshooter/README.md`](../../infra/troubleshooter/README.md) describes. The server and the gateway read the same file.
+
+### Where the gateway listens
+
+The agent in its sandbox reaches the MCP gateway only through the second fixed relay of its egress sidecar, as it reaches the model broker through the first. The sidecar relays to one IP address and port, `sandbox.gateway_upstream`, and resolves no name. So the gateway must listen on an address that the sidecar container can reach, and `sandbox.gateway_upstream` names that address as the container sees it.
+
+| Where Docker runs | `gateway.listen` | `gateway.allow_non_loopback_listen` | `sandbox.gateway_upstream` |
+|---|---|---|---|
+| Docker Desktop (macOS, Windows) | `127.0.0.1:9444` | `false` | The address of `host.docker.internal` inside a container, port 9444. Find it with `docker run --rm alpine getent hosts host.docker.internal` (`192.168.65.254` on current releases). Docker Desktop forwards it to the host's loopback interface. |
+| Colima (macOS) | `127.0.0.1:9444` | `false` | `192.168.5.2:9444`, the host as Colima's virtual machine sees it (`host.lima.internal`), which Lima forwards to the host's loopback interface. Check it with `docker run --rm alpine getent hosts host.lima.internal`. |
+| Linux, Docker Engine, troubleshooter on the host | The address of the `docker0` bridge, `172.17.0.1:9444` by default (`ip -4 addr show docker0`) | `true` | `172.17.0.1:9444` |
+| Linux, troubleshooter in a container on a network the sidecars also join (as the worker is on `broker`) | That container's address on that network, port 9444 | `true` | The same address |
+
+The rules the gateway applies, whatever the platform:
+
+- **Loopback by default.** An address that is not loopback is refused unless `allow_non_loopback_listen` is `true`. On Linux the host's loopback interface is out of reach from a container, so the bridge address is the one that works, and the flag says that someone chose it.
+- **Never every interface.** `0.0.0.0`, `::`, a multicast or a broadcast address is refused even with the flag. The model broker's example configuration listens on `0.0.0.0:8731`; the gateway does not follow it there.
+- **The run token on every request.** Wherever the gateway listens, a request without the bearer token of an open run gets 401. On a Linux bridge every container on the default bridge can reach the port, so the token is the guard; also limit the port to the bridge's subnet with the host firewall.
+- **`allowed_hosts` for the `Host` check.** The agent's MCP address is `http://egress:8444/mcp`, so it sends `Host: egress:8444`. Put `egress` in `gateway.allowed_hosts`; a name without a port matches any port.
+
+The troubleshooter program applies these rules when it serves the gateway with `Gateway::serve_config` and its `gateway` section. Nothing in this table was run on the three platforms: the Docker Desktop and Colima addresses are from their documentation, and the Linux bridge address is Docker Engine's default.
 
 ## When it looks, and how much it may spend
 
@@ -77,7 +97,7 @@ The numbers are those of [`policies/troubleshooting.yaml`](../../policies/troubl
 
 ## How to read a run's record
 
-Each run is designed to keep a record: the probes that started it, every gateway call (tool, a digest of the arguments, the upstream, the time it took, the size of the result, the outcome, and a call id), and the agent's report. The record is stored as an artifact, and its digest is in the ledger entry of the run. The run itself is a row of `troubleshooting_runs`, not a job.
+Each run is designed to keep a record: the probes that started it, every gateway call (who made it, the agent or a probe; tool, a digest of the arguments, the upstream, the time it took, the size of the result, the outcome, a digest of the text the caller received, and a call id), and the agent's report. An agent call that the gateway refused before it reached a source (a tool not offered, the run's call limits, its time) gets no call id and cannot be cited; it is listed among the run's refusals. A probe's call always gets an id, so a probe that could not run can be cited. The record is stored as an artifact, and its digest is in the ledger entry of the run. The run itself is a row of `troubleshooting_runs`, not a job.
 
 The report has a `status`: `healthy`, `findings`, `needs_human` (the agent has a question; it is in `human_question`) or `blocked` (the reason is in `blocked_reason`). `unavailable_sources` names the upstreams that did not answer. `ignored_instructions` lists text in the observed data that tried to give the agent orders; a line there is worth a look, because someone put that text into your logs or your database.
 

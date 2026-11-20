@@ -8,8 +8,8 @@
 //! * [`Finding`] is one finding of a validated report. Its identifiers are typed (a call id, a
 //!   gateway tool name, a probe id), so a value that does not match the schema's pattern cannot be
 //!   read. Its texts are plain strings written by the agent: untrusted.
-//! * [`FindingFingerprint`] is computed by code from the category, the component and the probes or
-//!   tools behind the finding. The agent never supplies it.
+//! * [`FindingFingerprint`] is computed by code from the category, the component and the probes
+//!   that tripped in the run. The agent never supplies it, and the tools it cited never count.
 //! * [`TriageLabels`] can only be made from the policy, and only holds labels of the
 //!   `troubleshooter` namespace. The trigger label `factory`, a `factory:` label and a `design:`
 //!   label cannot be represented.
@@ -29,6 +29,13 @@ use crate::policy::troubleshooting::Issues;
 use crate::values::{Sha256Digest, Slug};
 
 pub use neutralise::{code_span, one_line};
+
+/// The `_meta` key under which the MCP gateway names the run of a call it forwards to an
+/// in-process upstream, and under which the read-only PostgreSQL server looks for the scope of
+/// its call budget, so that each run has a budget of its own (TR-6 of the security review). Only
+/// an in-process caller the factory wrote sets it: the agent's own requests never reach an
+/// upstream with their `_meta`.
+pub const BUDGET_SCOPE_META_KEY: &str = "factory.troubleshooting/run_id";
 
 /// The pattern of a run id, as `troubleshooter-input.v1.schema.json` declares it.
 const RUN_ID: &str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
@@ -172,44 +179,41 @@ pub const FINGERPRINT_MARKER_PREFIX: &str = "<!-- troubleshooter-fingerprint: ";
 const MARKER_SUFFIX: &str = " -->";
 
 /// Which problem a finding is about, as code computes it: the SHA-256 of the category, the
-/// component and the sorted names of the sources behind the finding. Two findings of the same
-/// problem have the same fingerprint whatever order the agent listed things in, and the agent
-/// never supplies it.
+/// component and the sorted names of the probes behind the finding. Two findings of the same
+/// problem have the same fingerprint whatever order things were listed in, and the agent never
+/// supplies it.
 ///
-/// The sources are the tripped probes when the finding names any, and the gateway tools of its
-/// observations when it names none (a finding of a sweep). A probe is a fixed, deterministic check,
-/// while the agent may reach the same problem through different tools from one run to the next, so
-/// a finding that a probe explains is identified by its probes alone.
+/// It never depends on what the agent chose to cite (TR-8 of the security review): not on the
+/// gateway tools of its observations, which the agent picks and which change from one run to the
+/// next for the same problem, and not on probe ids the agent typed. The sources are the probes
+/// that tripped in the run, which code knows; a finding no tripped probe explains (a sweep) is
+/// identified by its category and component alone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FindingFingerprint(Sha256Digest);
 
 impl FindingFingerprint {
-    /// Computes the fingerprint of a finding.
+    /// The fingerprint of a finding whose `probe_ids` the caller has already replaced with
+    /// code-derived ones: the probes that tripped in this run and that the finding names, or none.
+    /// The observations, and so the tools the agent cited, never count. The issue renderer of
+    /// [`issue`] computes the marker this way, so pass it the finding prepared in the same way.
     #[must_use]
     pub fn of(finding: &Finding) -> Self {
-        let tools: Vec<&str> = finding
-            .observations
-            .iter()
-            .map(|o| o.tool.as_str())
-            .collect();
         let probes: Vec<&str> = finding.probe_ids.iter().map(Slug::as_str).collect();
-        Self::compute(finding.category, finding.component, &probes, &tools)
+        Self::compute(finding.category, finding.component, &probes)
     }
 
-    /// The fingerprint of a category, a component, and the probes and tools behind it. The probes
-    /// win when there are any. Order and repetition do not matter.
+    /// The fingerprint of a category, a component and the tripped probes behind it, from code.
+    /// Order and repetition do not matter; no probe means a finding of a sweep.
     #[must_use]
     pub fn compute(
         category: FindingCategory,
         component: FindingComponent,
-        probes: &[&str],
-        tools: &[&str],
+        tripped_probes: &[&str],
     ) -> Self {
-        let sources: BTreeSet<String> = if probes.is_empty() {
-            tools.iter().map(|t| format!("tool:{t}")).collect()
-        } else {
-            probes.iter().map(|p| format!("probe:{p}")).collect()
-        };
+        let sources: BTreeSet<String> = tripped_probes
+            .iter()
+            .map(|p| format!("probe:{p}"))
+            .collect();
         // One field on each line. The names are patterned identifiers that hold no line break, so
         // the encoding is unambiguous.
         let mut text = format!(

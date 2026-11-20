@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::ToolFailure;
 
 /// Bytes kept free for the envelope of a result (`returned_rows`, the truncation marker).
-const ENVELOPE_RESERVE: usize = 320;
+const ENVELOPE_RESERVE: usize = 384;
 
 /// The free SQL as the caller sent it, with surrounding white space and trailing semicolons
 /// removed, or a refusal.
@@ -31,8 +31,13 @@ fn clean(sql: &str, max_sql_bytes: usize) -> Result<&str, ToolFailure> {
     Ok(trimmed)
 }
 
+/// The key of a row that was over the byte cap on its own: `{"_cut_row": "<its first bytes>"}`.
+pub const CUT_ROW_KEY: &str = "_cut_row";
+
 /// Wraps free SQL as a subquery whose rows come back as JSON text, with a row limit one above
-/// the cap so the caller can tell that more rows exist.
+/// the cap so the caller can tell that more rows exist. Each row's text is cut in SQL to one
+/// character more than `max_row_bytes`, so no row larger than the byte cap is ever sent: a cut
+/// row is recognised by its length and is not valid JSON.
 ///
 /// The newlines around the text keep a trailing `--` comment from swallowing the closing
 /// parenthesis. The result must be sent with the extended protocol, which accepts one statement:
@@ -40,10 +45,16 @@ fn clean(sql: &str, max_sql_bytes: usize) -> Result<&str, ToolFailure> {
 ///
 /// # Errors
 /// [`ToolFailure::Refused`] for an empty, oversized or NUL-carrying text.
-pub fn wrap_query(sql: &str, max_rows: usize, max_sql_bytes: usize) -> Result<String, ToolFailure> {
+pub fn wrap_query(
+    sql: &str,
+    max_rows: usize,
+    max_sql_bytes: usize,
+    max_row_bytes: usize,
+) -> Result<String, ToolFailure> {
     let body = clean(sql, max_sql_bytes)?;
     Ok(format!(
-        "SELECT to_jsonb(q)::text FROM (\n{body}\n) AS q LIMIT {}",
+        "SELECT left(to_jsonb(q)::text, {}) FROM (\n{body}\n) AS q LIMIT {}",
+        max_row_bytes.saturating_add(1),
         max_rows.saturating_add(1)
     ))
 }
@@ -60,9 +71,13 @@ pub fn wrap_explain(sql: &str, max_sql_bytes: usize) -> Result<String, ToolFailu
     ))
 }
 
-/// Wraps a fixed query of this crate so that its rows come back as JSON text.
-pub(crate) fn wrap_fixed(sql: &str) -> String {
-    format!("SELECT to_jsonb(q)::text FROM (\n{sql}\n) AS q")
+/// Wraps a fixed query of this crate so that its rows come back as JSON text, each cut as
+/// [`wrap_query`] cuts it.
+pub(crate) fn wrap_fixed(sql: &str, max_row_bytes: usize) -> String {
+    format!(
+        "SELECT left(to_jsonb(q)::text, {}) FROM (\n{sql}\n) AS q",
+        max_row_bytes.saturating_add(1)
+    )
 }
 
 /// Replaces the literals of a query text with `?`: quoted strings (with `''` and, after `E`,
@@ -187,15 +202,36 @@ fn prefix_within(text: &str, max: usize) -> &str {
 /// Whole rows are kept while they fit. When even the first row does not fit, a cut copy of it
 /// comes back as `{"_cut_row": "<first bytes of its JSON>"}` so the caller sees what it is.
 pub fn render_rows(rows: &[Value], more_rows_than_limit: bool, max_bytes: usize) -> String {
+    render_read(rows, more_rows_than_limit, false, max_bytes)
+}
+
+/// The text of a row that the reader cut at the byte cap (`{"_cut_row": "<text>"}`), if it is one.
+fn cut_row_text(row: &Value) -> Option<&str> {
+    match row {
+        Value::Object(map) if map.len() == 1 => map.get(CUT_ROW_KEY).and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// [`render_rows`] for rows read under the byte cap. `stopped` says that reading stopped at the
+/// cap: the `truncated` object is then always present, says `"reading_stopped": true`, and its
+/// counts are of what was read, so they are lower bounds.
+pub fn render_read(
+    rows: &[Value],
+    more_rows_than_limit: bool,
+    stopped: bool,
+    max_bytes: usize,
+) -> String {
     let budget = max_bytes.saturating_sub(ENVELOPE_RESERVE).max(16);
     let mut kept: Vec<String> = Vec::new();
     let mut used = 0usize;
     let mut omitted_rows = 0usize;
     let mut omitted_bytes = 0usize;
     for row in rows {
-        let text = row.to_string();
+        // A row the reader cut is shown by its own first bytes, never whole.
+        let text = cut_row_text(row).map_or_else(|| row.to_string(), str::to_owned);
         let cost = text.len() + 1;
-        if omitted_rows == 0 && used + cost <= budget {
+        if omitted_rows == 0 && cut_row_text(row).is_none() && used + cost <= budget {
             used += cost;
             kept.push(text);
             continue;
@@ -230,7 +266,11 @@ pub fn render_rows(rows: &[Value], more_rows_than_limit: bool, max_bytes: usize)
     } else {
         "false"
     });
-    if omitted_rows > 0 {
+    if stopped {
+        out.push_str(&format!(
+            ",\"truncated\":{{\"omitted_rows\":{omitted_rows},\"omitted_bytes\":{omitted_bytes},\"limit_bytes\":{max_bytes},\"reading_stopped\":true,\"note\":\"over the byte limit: reading stopped and the rest was never fetched; select fewer columns or rows\"}}"
+        ));
+    } else if omitted_rows > 0 {
         out.push_str(&format!(
             ",\"truncated\":{{\"omitted_rows\":{omitted_rows},\"omitted_bytes\":{omitted_bytes},\"limit_bytes\":{max_bytes},\"note\":\"the result was over the byte limit; select fewer columns or rows\"}}"
         ));
@@ -262,16 +302,16 @@ mod tests {
 
     #[test]
     fn free_sql_becomes_a_limited_subquery_on_its_own_lines() {
-        let wrapped = wrap_query("  select 1 as a ;; \n", 200, 1000).expect("wrapped");
+        let wrapped = wrap_query("  select 1 as a ;; \n", 200, 1000, 65536).expect("wrapped");
         assert_eq!(
             wrapped,
-            "SELECT to_jsonb(q)::text FROM (\nselect 1 as a\n) AS q LIMIT 201"
+            "SELECT left(to_jsonb(q)::text, 65537) FROM (\nselect 1 as a\n) AS q LIMIT 201"
         );
     }
 
     #[test]
     fn a_trailing_line_comment_cannot_eat_the_closing_parenthesis() {
-        let wrapped = wrap_query("select 1 -- note", 5, 1000).expect("wrapped");
+        let wrapped = wrap_query("select 1 -- note", 5, 1000, 100).expect("wrapped");
         assert!(wrapped.ends_with("-- note\n) AS q LIMIT 6"), "{wrapped}");
     }
 
@@ -279,22 +319,23 @@ mod tests {
     fn the_comment_trick_stays_two_statements_inside_one_text() {
         // The text closes the subquery early. The wrapper does not try to stop that: the
         // extended protocol refuses the second statement (the integration tests show it).
-        let wrapped = wrap_query("SELECT 1) q; DELETE FROM jobs --", 5, 1000).expect("wrapped");
+        let wrapped =
+            wrap_query("SELECT 1) q; DELETE FROM jobs --", 5, 1000, 100).expect("wrapped");
         assert!(wrapped.contains("SELECT 1) q; DELETE FROM jobs --\n) AS q LIMIT 6"));
     }
 
     #[test]
     fn empty_oversized_and_nul_texts_are_refused() {
         assert!(matches!(
-            wrap_query(" ; ", 5, 100),
+            wrap_query(" ; ", 5, 100, 100),
             Err(ToolFailure::Refused(_))
         ));
         assert!(matches!(
-            wrap_query("select 1", 5, 3),
+            wrap_query("select 1", 5, 3, 100),
             Err(ToolFailure::Refused(_))
         ));
         assert!(matches!(
-            wrap_query("select '\0'", 5, 100),
+            wrap_query("select '\0'", 5, 100, 100),
             Err(ToolFailure::Refused(_))
         ));
         assert!(matches!(
@@ -366,6 +407,28 @@ mod tests {
         assert!(value["rows"][0]["_cut_row"].is_string());
         assert_eq!(value["returned_rows"], json!(0));
         assert_eq!(value["truncated"]["omitted_rows"], json!(1));
+    }
+
+    #[test]
+    fn a_read_that_stopped_says_so_and_shows_a_cut_row_by_its_first_bytes() {
+        let cut = json!({ CUT_ROW_KEY: format!("{{\"big\": \"{}", "z".repeat(9000)) });
+        let text = render_read(&[cut], false, true, 4096);
+        assert!(text.len() <= 4096, "{} bytes", text.len());
+        let value: Value = serde_json::from_str(&text).expect("JSON");
+        let shown = value["rows"][0][CUT_ROW_KEY].as_str().expect("the cut row");
+        assert!(shown.starts_with("{\"big\": \"zzz"), "{shown}");
+        assert_eq!(value["returned_rows"], json!(0));
+        assert_eq!(value["truncated"]["reading_stopped"], json!(true));
+        // Rows that fit, then a stop: the marker is there even though nothing was omitted.
+        let text = render_read(&[json!({"n": 1})], false, true, 4096);
+        let value: Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(value["returned_rows"], json!(1));
+        assert_eq!(value["truncated"]["reading_stopped"], json!(true));
+        assert!(
+            render_read(&[json!({"n": 1})], false, false, 4096)
+                .find("truncated")
+                .is_none()
+        );
     }
 
     #[test]

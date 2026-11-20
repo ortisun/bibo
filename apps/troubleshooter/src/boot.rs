@@ -36,7 +36,9 @@ use factory_mcp_gateway::{
     CatalogReport, FactoryRedactor, Gateway, GatewayServer, HttpUpstream, InProcessUpstream,
     UpstreamId, read_secret_file,
 };
-use factory_mcp_postgres::{ConnectSettings, Inspector, Limits, Password, PostgresMcp};
+use factory_mcp_postgres::{
+    BudgetScope, ConnectSettings, Inspector, Limits, Password, PostgresMcp,
+};
 use factory_ports::agent::{AgentRuntime, ModelSelection, RequestCaps, RuntimeId, TurnAttestation};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::registry::{AgentRegistry, VersionReq};
@@ -144,7 +146,8 @@ pub async fn gateway(
     let mut builder = Gateway::builder(policy, Arc::new(FactoryRedactor::new(redactor.clone())))
         .upstream(Arc::new(InProcessUpstream::new(
             UpstreamId::Postgres,
-            PostgresMcp::new(inspector),
+            // One call budget per gateway run (finding TR-6), not one shared by every run.
+            PostgresMcp::with_budget(inspector, BudgetScope::PerCallerScope),
         )));
     if let Some(vm) = &config.gateway.victoriametrics {
         builder = builder.upstream(Arc::new(
@@ -205,7 +208,8 @@ pub async fn boot(config: &TroubleshooterConfig, dry_run: bool) -> Result<Booted
     let inspector = observer_inspector(config, &redactor).await?;
     let (gateway, catalog) = gateway(config, &policy, &redactor, inspector).await?;
     let server = gateway
-        .serve(config.gateway.listen, &config.gateway.allowed_hosts)
+        // The configured rule: loopback, or a bridge address with allow_non_loopback_listen.
+        .serve_config(&config.gateway)
         .await
         .map_err(|e| other(format!("gateway.listen: {e}")))?;
 

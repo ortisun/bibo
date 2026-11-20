@@ -371,15 +371,20 @@ pub fn policy() -> TroubleshootingPolicy {
         },
         "tools": [
             {"id": "mcp.victoriametrics.query", "gateway_name": "vm_query",
-             "upstream": "victoriametrics", "upstream_tool": "query"},
+             "upstream": "victoriametrics", "upstream_tool": "query",
+             "description": "Runs an instant PromQL query against the factory metrics."},
             {"id": "mcp.victoriametrics.labels", "gateway_name": "vm_labels",
-             "upstream": "victoriametrics", "upstream_tool": "labels"},
+             "upstream": "victoriametrics", "upstream_tool": "labels",
+             "description": "Lists the label names of the factory metrics."},
             {"id": "mcp.datadog.search_monitors", "gateway_name": "datadog_search_monitors",
-             "upstream": "datadog", "upstream_tool": "search_datadog_monitors"},
+             "upstream": "datadog", "upstream_tool": "search_datadog_monitors",
+             "description": "Lists Datadog monitors and their states."},
             {"id": "mcp.postgres.query", "gateway_name": "pg_query",
-             "upstream": "postgres", "upstream_tool": "pg_query"},
+             "upstream": "postgres", "upstream_tool": "pg_query",
+             "description": "Runs one read-only query against the factory database."},
             {"id": "mcp.postgres.factory_health", "gateway_name": "pg_factory_health",
-             "upstream": "postgres", "upstream_tool": "pg_factory_health"}
+             "upstream": "postgres", "upstream_tool": "pg_factory_health",
+             "description": "Runs a fixed health check over the factory tables."}
         ],
         "probes": [
             {"id": "retries", "kind": "promql_threshold",

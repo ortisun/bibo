@@ -14,17 +14,29 @@ use serde_json::Value;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
-use crate::record::{CallId, CallOrigin, CallRecord, Outcome, RefusalReason, RunLimits, RunRecord};
+use crate::record::{
+    CallId, CallOrigin, CallRecord, Outcome, RefusalReason, RefusalRecord, RunLimits, RunRecord,
+};
 use crate::redact::{Redact, SecretKey, redact_json};
 use crate::secret::RunToken;
 use crate::upstream::{Upstream, UpstreamId};
 
 /// The most calls one run record holds. Past it, calls are refused without a record and counted
 /// in [`RunRecord::unrecorded_calls`]. The health-findings schema cites at most `call-9999`.
+/// [`MAX_CONTROL_PLANE_CALLS`] of it are the control plane's, the rest the agent's, so neither
+/// can fill the other's share (TR-5).
 pub const MAX_RECORDED_CALLS: usize = 1000;
 
-/// The longest upstream tool description passed to the agent.
-const MAX_DESCRIPTION_BYTES: usize = 4096;
+/// The share of [`MAX_RECORDED_CALLS`] kept for the control plane's calls (the probes).
+pub const MAX_CONTROL_PLANE_CALLS: usize = 500;
+
+/// The most agent refusals one run record lists ([`RunRecord::refusals`]); past it they are
+/// counted only.
+pub const MAX_RECORDED_REFUSALS: usize = 200;
+
+/// The largest upstream input schema the gateway passes to the model, as JSON. A tool whose schema
+/// is larger is not offered ([`MissingReason::SchemaTooLarge`], TR-7).
+pub const MAX_INPUT_SCHEMA_BYTES: usize = 16 * 1024;
 
 /// The longest tool name kept in a record.
 const MAX_RECORDED_NAME_BYTES: usize = 128;
@@ -79,7 +91,8 @@ pub enum GatewayError {
     Listen(std::net::SocketAddr),
 }
 
-/// The result of one call through the gateway, as the caller sees it.
+/// The result of one call of the control plane through the gateway ([`Gateway::call_for_run`]).
+/// Every such call is recorded under an id, refused or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallResult {
     /// The id the call was recorded under, to cite.
@@ -107,6 +120,34 @@ impl CallResult {
     }
 }
 
+/// The result of one agent call. A call refused before it reached an upstream has no id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentResult {
+    pub(crate) call_id: Option<CallId>,
+    pub(crate) outcome: Outcome,
+    pub(crate) text: String,
+}
+
+impl AgentResult {
+    /// The MCP result the agent receives: a first text block naming the call id (or saying that a
+    /// refused call has none to cite), then the result or the reason.
+    pub(crate) fn to_mcp(&self) -> CallToolResult {
+        let first = match self.call_id {
+            Some(id) => format!("call_id: {id}"),
+            None => "call_id: none (a refused call is not recorded and cannot be cited)".to_owned(),
+        };
+        let content = vec![
+            ContentBlock::text(first),
+            ContentBlock::text(self.text.clone()),
+        ];
+        if self.outcome == Outcome::Ok {
+            CallToolResult::success(content)
+        } else {
+            CallToolResult::error(content)
+        }
+    }
+}
+
 /// Which tools the gateway offers and why others are not offered.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CatalogReport {
@@ -117,6 +158,22 @@ pub struct CatalogReport {
     /// Tools an upstream offers that are not on the allowlist. Never listed or callable; each is
     /// a finding with the reason [`UPSTREAM_TOOL_NOT_ALLOWED`] (threat T-51).
     pub not_allowed: Vec<UpstreamTool>,
+    /// Allowlisted tools whose upstream description or input schema changed since the gateway
+    /// first listed them (TR-7). Each is withheld until the gateway is built again, and is in
+    /// `missing` with [`MissingReason::ChangedSinceConnect`]; the troubleshooter flags it.
+    pub changed: Vec<ChangedTool>,
+}
+
+/// An allowlisted tool whose upstream definition changed after the gateway pinned it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChangedTool {
+    /// The tool.
+    #[serde(flatten)]
+    pub tool: ToolMapping,
+    /// SHA-256 of the definition the gateway pinned when it first listed the tool.
+    pub pinned_sha256: Sha256Digest,
+    /// SHA-256 of the definition the upstream offers now.
+    pub current_sha256: Sha256Digest,
 }
 
 /// A gateway tool and the upstream tool it calls.
@@ -140,6 +197,11 @@ pub enum MissingReason {
     UpstreamUnavailable,
     /// No upstream with this id was given to the gateway (not configured).
     UpstreamNotConfigured,
+    /// The upstream's input schema for the tool is larger than [`MAX_INPUT_SCHEMA_BYTES`].
+    SchemaTooLarge,
+    /// The upstream's description or input schema changed since the gateway first listed the
+    /// tool ([`CatalogReport::changed`]).
+    ChangedSinceConnect,
 }
 
 /// An allowlisted tool that is not listed.
@@ -184,6 +246,10 @@ struct RunState {
     window: VecDeque<Instant>,
     calls: Vec<CallRecord>,
     unrecorded_calls: u64,
+    agent_recorded: usize,
+    control_recorded: usize,
+    refusals: Vec<RefusalRecord>,
+    unrecorded_refusals: u64,
     in_flight: u32,
 }
 
@@ -196,6 +262,8 @@ impl RunState {
             limits: self.limits,
             calls: self.calls.clone(),
             unrecorded_calls: self.unrecorded_calls,
+            refusals: self.refusals.clone(),
+            unrecorded_refusals: self.unrecorded_refusals,
         }
     }
 }
@@ -206,6 +274,8 @@ struct Inner {
     upstreams: Vec<Arc<dyn Upstream>>,
     redactor: Arc<dyn Redact>,
     catalog: RwLock<Catalog>,
+    /// The digest of each allowlisted upstream tool's definition when the gateway first listed it.
+    pinned: Mutex<HashMap<(UpstreamId, String), Sha256Digest>>,
     runs: Mutex<HashMap<String, RunState>>,
     idle: Notify,
 }
@@ -284,6 +354,7 @@ impl GatewayBuilder {
                 upstreams: self.upstreams,
                 redactor: self.redactor,
                 catalog: RwLock::new(Catalog::default()),
+                pinned: Mutex::new(HashMap::new()),
                 runs: Mutex::new(HashMap::new()),
                 idle: Notify::new(),
             }),
@@ -337,6 +408,20 @@ pub(crate) fn truncate(text: String, max: usize) -> String {
 /// SHA-256 of the RFC 8785 canonical JSON of the arguments, `{}` when there are none.
 pub(crate) fn arguments_digest(arguments: Option<&JsonObject>) -> Sha256Digest {
     let value = Value::Object(arguments.cloned().unwrap_or_default());
+    let bytes = serde_jcs::to_vec(&value)
+        .or_else(|_| serde_json::to_vec(&value))
+        .unwrap_or_default();
+    Sha256Digest::of(&bytes)
+}
+
+/// SHA-256 of the RFC 8785 canonical JSON of an upstream tool's name, description and input
+/// schema: what the gateway pins when it first lists the tool (TR-7).
+pub(crate) fn definition_digest(tool: &Tool) -> Sha256Digest {
+    let value = serde_json::json!({
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.input_schema.as_ref(),
+    });
     let bytes = serde_jcs::to_vec(&value)
         .or_else(|_| serde_json::to_vec(&value))
         .unwrap_or_default();
@@ -431,6 +516,11 @@ impl Gateway {
 
     fn build_catalog(&self, listings: &HashMap<UpstreamId, Option<Vec<Tool>>>) -> Catalog {
         let mut catalog = Catalog::default();
+        let mut pinned = self
+            .inner
+            .pinned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for entry in &self.inner.allowlist {
             let mapping = ToolMapping {
                 gateway_name: entry.gateway_name.clone(),
@@ -445,23 +535,39 @@ impl Gateway {
                     .find(|tool| tool.name == entry.upstream_tool)
                     .ok_or(MissingReason::NotOfferedByUpstream),
             };
-            match found {
-                Ok(upstream_tool) => match self.exposed_tool(&entry.gateway_name, upstream_tool) {
-                    Some(tool) => {
-                        catalog.report.offered.push(mapping.clone());
-                        catalog.exposed.push(ExposedTool { mapping, tool });
+            let exposed = found.and_then(|upstream_tool| {
+                // The definition is pinned the first time the gateway lists it; a later change is
+                // withheld until the gateway is built again (TR-7).
+                let current = definition_digest(upstream_tool);
+                let key = (entry.upstream, entry.upstream_tool.clone());
+                match pinned.get(&key) {
+                    Some(first) if *first != current => {
+                        catalog.report.changed.push(ChangedTool {
+                            tool: mapping.clone(),
+                            pinned_sha256: first.clone(),
+                            current_sha256: current,
+                        });
+                        return Err(MissingReason::ChangedSinceConnect);
                     }
-                    None => catalog.report.missing.push(MissingTool {
-                        tool: mapping,
-                        reason: MissingReason::UpstreamUnavailable,
-                    }),
-                },
+                    Some(_) => {}
+                    None => {
+                        pinned.insert(key, current);
+                    }
+                }
+                self.exposed_tool(entry, upstream_tool)
+            });
+            match exposed {
+                Ok(tool) => {
+                    catalog.report.offered.push(mapping.clone());
+                    catalog.exposed.push(ExposedTool { mapping, tool });
+                }
                 Err(reason) => catalog.report.missing.push(MissingTool {
                     tool: mapping,
                     reason,
                 }),
             }
         }
+        drop(pinned);
         for (upstream, listed) in listings {
             for tool in listed.iter().flatten() {
                 let allowed =
@@ -482,25 +588,26 @@ impl Gateway {
         catalog
     }
 
-    /// The upstream tool under its gateway name, with its description and input schema
-    /// redacted. Nothing else of the upstream's definition (output schema, annotations, icons,
-    /// metadata) is passed on. `None` when redaction fails.
-    fn exposed_tool(&self, gateway_name: &str, upstream: &Tool) -> Option<Tool> {
+    /// The upstream tool under its gateway name, with the policy's description and the
+    /// upstream's input schema, redacted and at most [`MAX_INPUT_SCHEMA_BYTES`]. The upstream's own
+    /// description, and anything else of its definition (output schema, annotations, icons,
+    /// metadata), is not passed on: it would reach the model as part of its tool set, outside the
+    /// prompt's data delimiters (TR-7).
+    fn exposed_tool(&self, entry: &GatewayTool, upstream: &Tool) -> Result<Tool, MissingReason> {
+        let schema_bytes = serde_json::to_vec(upstream.input_schema.as_ref())
+            .map_or(usize::MAX, |bytes| bytes.len());
+        if schema_bytes > MAX_INPUT_SCHEMA_BYTES {
+            return Err(MissingReason::SchemaTooLarge);
+        }
         let redactor = self.inner.redactor.as_ref();
-        let description = match &upstream.description {
-            Some(text) => Some(Cow::Owned(
-                prefix(&redactor.redact(text).ok()?, MAX_DESCRIPTION_BYTES).to_owned(),
-            )),
-            None => None,
-        };
         let mut schema = Value::Object((*upstream.input_schema).clone());
-        redact_json(&mut schema, redactor).ok()?;
+        redact_json(&mut schema, redactor).map_err(|_| MissingReason::UpstreamUnavailable)?;
         let Value::Object(schema) = schema else {
-            return None;
+            return Err(MissingReason::UpstreamUnavailable);
         };
-        Some(Tool::new_with_raw(
-            gateway_name.to_owned(),
-            description,
+        Ok(Tool::new_with_raw(
+            entry.gateway_name.clone(),
+            Some(Cow::Owned(entry.description.clone())),
             Arc::new(schema),
         ))
     }
@@ -572,6 +679,10 @@ impl Gateway {
                 window: VecDeque::new(),
                 calls: Vec::new(),
                 unrecorded_calls: 0,
+                agent_recorded: 0,
+                control_recorded: 0,
+                refusals: Vec::new(),
+                unrecorded_refusals: 0,
                 in_flight: 0,
             },
         );
@@ -651,8 +762,9 @@ impl Gateway {
     }
 
     /// A call of the troubleshooter itself, for the deterministic probes: recorded in the run's
-    /// record with the next call id, with the same allowlist, deadline, redaction and result cap
-    /// as an agent call, but not counted against the agent's call limits.
+    /// record with the next call id, refused or not, with the same allowlist, deadline, redaction
+    /// and result cap as an agent call, but not counted against the agent's call limits. The
+    /// control plane has its own share of the record ([`MAX_CONTROL_PLANE_CALLS`]).
     ///
     /// # Errors
     /// [`GatewayError::UnknownRun`] for a run that is not open, [`GatewayError::RecordFull`].
@@ -662,8 +774,16 @@ impl Gateway {
         gateway_tool: &str,
         arguments: Option<JsonObject>,
     ) -> Result<CallResult, GatewayError> {
-        self.call(run_id, CallOrigin::ControlPlane, gateway_tool, arguments)
-            .await
+        let result = self
+            .call(run_id, CallOrigin::ControlPlane, gateway_tool, arguments)
+            .await?;
+        Ok(CallResult {
+            // Every call of the control plane is given an id; a missing one cannot happen and is
+            // reported as the record refusing it.
+            call_id: result.call_id.ok_or(GatewayError::RecordFull)?,
+            outcome: result.outcome,
+            text: result.text,
+        })
     }
 
     /// A call of the agent, already authenticated by its run token.
@@ -672,7 +792,7 @@ impl Gateway {
         run_id: &str,
         gateway_tool: &str,
         arguments: Option<JsonObject>,
-    ) -> Result<CallResult, GatewayError> {
+    ) -> Result<AgentResult, GatewayError> {
         self.call(run_id, CallOrigin::Agent, gateway_tool, arguments)
             .await
     }
@@ -683,7 +803,7 @@ impl Gateway {
         origin: CallOrigin,
         gateway_tool: &str,
         arguments: Option<JsonObject>,
-    ) -> Result<CallResult, GatewayError> {
+    ) -> Result<AgentResult, GatewayError> {
         let started = Instant::now();
         let started_at_unix_ms = unix_ms();
         let arguments_sha256 = arguments_digest(arguments.as_ref());
@@ -692,18 +812,20 @@ impl Gateway {
             .allowlist
             .iter()
             .find(|entry| entry.gateway_name == gateway_tool);
+        let recorded_name = prefix(gateway_tool, MAX_RECORDED_NAME_BYTES).to_owned();
         let mut record = CallRecord {
             call_id: CallId::new(0),
             origin,
-            gateway_tool: prefix(gateway_tool, MAX_RECORDED_NAME_BYTES).to_owned(),
+            gateway_tool: recorded_name.clone(),
             upstream: entry.map(|entry| entry.upstream),
             upstream_tool: entry.map(|entry| entry.upstream_tool.clone()),
-            arguments_sha256,
+            arguments_sha256: arguments_sha256.clone(),
             started_at_unix_ms,
             duration_ms: 0,
             result_bytes: 0,
             returned_bytes: 0,
             outcome: Outcome::Ok,
+            result_sha256: Sha256Digest::of(b""),
         };
 
         let admission = {
@@ -716,28 +838,64 @@ impl Gateway {
                 .get_mut(run_id)
                 .filter(|run| !run.closing)
                 .ok_or_else(|| GatewayError::UnknownRun(run_id.to_owned()))?;
-            if run.calls.len() >= MAX_RECORDED_CALLS {
+            // Each origin has its own share of the record, so the agent cannot fill it and leave
+            // the probes blind (TR-5).
+            let (recorded, cap) = match origin {
+                CallOrigin::Agent => (
+                    run.agent_recorded,
+                    MAX_RECORDED_CALLS - MAX_CONTROL_PLANE_CALLS,
+                ),
+                CallOrigin::ControlPlane => (run.control_recorded, MAX_CONTROL_PLANE_CALLS),
+            };
+            if recorded >= cap {
                 run.unrecorded_calls += 1;
                 return Err(GatewayError::RecordFull);
             }
-            record.call_id = CallId::new(run.next_call);
-            run.next_call += 1;
             let admission = self.admit(run, origin, gateway_tool, started);
-            match admission {
-                Admission::Refused(reason) => {
-                    record.outcome = Outcome::Refused(reason);
+            match (&admission, origin) {
+                // An agent call refused before it reached an upstream gets no call id: it is
+                // recorded as a refusal, which cannot be cited.
+                (Admission::Refused(reason), CallOrigin::Agent) => {
+                    if run.refusals.len() < MAX_RECORDED_REFUSALS {
+                        run.refusals.push(RefusalRecord {
+                            gateway_tool: recorded_name,
+                            arguments_sha256,
+                            at_unix_ms: started_at_unix_ms,
+                            reason: *reason,
+                        });
+                    } else {
+                        run.unrecorded_refusals += 1;
+                    }
+                }
+                // Every call of the control plane gets an id, refused or not, so that a probe that
+                // could not run can be cited in a `source_unavailable` finding.
+                (Admission::Refused(reason), CallOrigin::ControlPlane) => {
+                    record.call_id = CallId::new(run.next_call);
+                    run.next_call += 1;
+                    run.control_recorded += 1;
+                    record.outcome = Outcome::Refused(*reason);
+                    let text = format!("refused: {}", reason.sentence());
+                    record.result_sha256 = Sha256Digest::of(text.as_bytes());
                     run.calls.push(record.clone());
                 }
-                Admission::Admitted { .. } => run.in_flight += 1,
+                (Admission::Admitted { .. }, _) => {
+                    record.call_id = CallId::new(run.next_call);
+                    run.next_call += 1;
+                    match origin {
+                        CallOrigin::Agent => run.agent_recorded += 1,
+                        CallOrigin::ControlPlane => run.control_recorded += 1,
+                    }
+                    run.in_flight += 1;
+                }
             }
             admission
         };
 
         let (upstream, upstream_tool, deadline, max_bytes) = match admission {
             Admission::Refused(reason) => {
-                return Ok(CallResult {
-                    call_id: record.call_id,
-                    outcome: record.outcome,
+                return Ok(AgentResult {
+                    call_id: (origin == CallOrigin::ControlPlane).then_some(record.call_id),
+                    outcome: Outcome::Refused(reason),
                     text: format!("refused: {}", reason.sentence()),
                 });
             }
@@ -749,8 +907,11 @@ impl Gateway {
             } => (upstream, upstream_tool, deadline, max_bytes),
         };
 
-        let answered =
-            tokio::time::timeout(deadline, upstream.call_tool(upstream_tool, arguments)).await;
+        let answered = tokio::time::timeout(
+            deadline,
+            upstream.call_tool_for_run(run_id, upstream_tool, arguments),
+        )
+        .await;
         let text = match answered {
             Err(_) => {
                 record.outcome = Outcome::Timeout;
@@ -782,6 +943,7 @@ impl Gateway {
             },
         };
         record.duration_ms = millis(started.elapsed());
+        record.result_sha256 = Sha256Digest::of(text.as_bytes());
 
         {
             let mut runs = self
@@ -795,8 +957,8 @@ impl Gateway {
             }
         }
         self.inner.idle.notify_waiters();
-        Ok(CallResult {
-            call_id: record.call_id,
+        Ok(AgentResult {
+            call_id: Some(record.call_id),
             outcome: record.outcome,
             text,
         })
@@ -976,7 +1138,8 @@ mod tests {
             "upstreams": {"datadog": {"toolsets": ["core"], "omit_tools": []},
                 "victoriametrics": {"disabled_tools": []}},
             "tools": [{"id": "mcp.victoriametrics.query", "gateway_name": "vm_query",
-                "upstream": "victoriametrics", "upstream_tool": "query"}],
+                "upstream": "victoriametrics", "upstream_tool": "query",
+                "description": "A PromQL query."}],
             "probes": []
         }))
         .expect("policy")
@@ -1084,32 +1247,69 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_record_is_capped() {
+    async fn refused_agent_calls_take_no_id_and_cannot_starve_the_probes() {
+        // TR-5: refusals of the agent are free to make, so they must not mint citable ids nor
+        // fill the record that the probes need.
         let gateway = gateway().await;
         gateway
             .open_run("run", gateway.policy_limits())
             .expect("run");
-        for _ in 0..MAX_RECORDED_CALLS {
-            let _ = gateway
+        for _ in 0..MAX_RECORDED_CALLS + 50 {
+            let refused = gateway
                 .agent_call("run", "nope", None)
                 .await
-                .expect("recorded");
+                .expect("answered");
+            assert_eq!(refused.call_id, None);
+            assert_eq!(
+                refused.outcome,
+                Outcome::Refused(RefusalReason::ToolNotAllowed)
+            );
+            let mcp = refused.to_mcp();
+            assert_eq!(mcp.is_error, Some(true));
+            let first = mcp.content[0].as_text().expect("text").text.clone();
+            assert!(first.starts_with("call_id: none"), "{first}");
+        }
+        // The probes still get ids, refused calls included, up to their own share.
+        for n in 0..MAX_CONTROL_PLANE_CALLS {
+            let tool = if n % 2 == 0 { "vm_query" } else { "nope" };
+            let probe = gateway
+                .call_for_run("run", tool, None)
+                .await
+                .expect("a probe is recorded");
+            assert_eq!(probe.call_id.sequence(), n as u64 + 1);
         }
         assert_eq!(
-            gateway.agent_call("run", "nope", None).await,
+            gateway.call_for_run("run", "vm_query", None).await,
             Err(GatewayError::RecordFull)
         );
+        // The agent's share is its own.
+        let agent = gateway
+            .agent_call("run", "vm_query", None)
+            .await
+            .expect("answered");
+        assert_eq!(agent.outcome, Outcome::Ok);
+        assert!(agent.call_id.is_some());
         let record = gateway.close_run("run").await.expect("closed");
-        assert_eq!(record.calls.len(), MAX_RECORDED_CALLS);
+        assert_eq!(record.calls.len(), MAX_CONTROL_PLANE_CALLS + 1);
         assert_eq!(record.unrecorded_calls, 1);
+        assert_eq!(record.refusals.len(), MAX_RECORDED_REFUSALS);
         assert_eq!(
-            record
-                .calls
-                .last()
-                .map(|c| c.call_id.to_string())
-                .as_deref(),
-            Some("call-1000")
+            record.unrecorded_refusals,
+            (MAX_RECORDED_CALLS + 50 - MAX_RECORDED_REFUSALS) as u64
         );
+        assert_eq!(record.refusals[0].reason, RefusalReason::ToolNotAllowed);
+        // A refused probe call is recorded, with its id, and is not evidence.
+        let refused_probe = record.call("call-2").expect("recorded");
+        assert_eq!(refused_probe.origin, CallOrigin::ControlPlane);
+        assert_eq!(
+            refused_probe.outcome,
+            Outcome::Refused(RefusalReason::ToolNotAllowed)
+        );
+        assert!(record.evidence("call-2", "nope").is_none());
+        let first = record.evidence("call-1", "vm_query").expect("evidence");
+        assert_eq!(first.origin, CallOrigin::ControlPlane);
+        assert_eq!(first.result_sha256, &Sha256Digest::of(b"1"));
+        assert!(record.evidence("call-1", "vm_labels").is_none());
     }
 
     #[test]

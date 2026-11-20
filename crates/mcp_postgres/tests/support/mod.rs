@@ -226,6 +226,21 @@ impl TestDb {
         Login { name, password }
     }
 
+    /// A role with no login, `dbtest_<label>_<run>`, dropped with the database.
+    pub async fn role(&self, label: &str) -> String {
+        let name = format!("dbtest_{label}_{}", self.run);
+        self.admin()
+            .await
+            .batch_execute(&format!("CREATE ROLE \"{name}\" NOLOGIN"))
+            .await
+            .expect("create a role");
+        self.roles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(name.clone());
+        name
+    }
+
     /// The observer login of the deployment's shape.
     pub async fn observer(&self) -> Login {
         self.login("observer", &["factory_observer"], true).await

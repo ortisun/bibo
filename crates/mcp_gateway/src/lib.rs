@@ -9,7 +9,10 @@
 //!   output, an error, or the call record.
 //! - **decides which tools exist.** The agent sees exactly the tools of the policy's allowlist
 //!   (`tools` of `policies/troubleshooting.yaml`) that their upstream offers, under the gateway
-//!   name, with the upstream's description and input schema. An upstream tool that is not on the
+//!   name, with the policy's description (never the upstream's) and the upstream's input schema,
+//!   capped at [`MAX_INPUT_SCHEMA_BYTES`]. Each upstream tool's definition is pinned by digest the
+//!   first time it is listed; a later change withholds the tool and is reported
+//!   ([`CatalogReport::changed`], TR-7). An upstream tool that is not on the
 //!   allowlist is never listed or callable, and is reported ([`CatalogReport::not_allowed`],
 //!   reason [`UPSTREAM_TOOL_NOT_ALLOWED`], threat T-51).
 //! - **checks a run token.** [`Gateway::open_run`] returns a random 256-bit token for one run;
@@ -19,8 +22,11 @@
 //!   result bytes with a truncation marker that says how much was cut, and the run's wall clock.
 //!   A refused call is a tool error with a short reason, never a transport failure.
 //! - **redacts** every result through the injected [`Redact`] seam before anyone sees it.
-//! - **records** every call ([`CallRecord`]): run, `call-N` id, tools, upstream, argument digest,
-//!   start, duration, bytes, outcome. The record of a run ([`RunRecord`]) is a typed value and
+//! - **records** every call ([`CallRecord`]): run, `call-N` id, origin, tools, upstream, argument
+//!   digest, start, duration, bytes, outcome and the digest of the text returned. An agent call
+//!   refused before it reaches an upstream gets no id and cannot be cited; it is listed in
+//!   [`RunRecord::refusals`]. Every control-plane call gets an id, refused or not.
+//!   [`RunRecord::citable`] and [`RunRecord::evidence`] are what an evidence check reads (TR-5). The record of a run ([`RunRecord`]) is a typed value and
 //!   canonical JSON for the ledger. The troubleshooter's own probes call through
 //!   [`Gateway::call_for_run`] and are recorded in the same run with the same ids, so a probe
 //!   value can be cited like an agent call.
@@ -69,15 +75,17 @@ mod upstream;
 
 pub use config::{
     ConfigError, DATADOG_SITES, DatadogConfig, GatewayConfig, VictoriaMetricsConfig, check_listen,
+    check_listen_address,
 };
 pub use gateway::{
-    CallResult, CatalogReport, Gateway, GatewayBuilder, GatewayError, MAX_RECORDED_CALLS,
+    CallResult, CatalogReport, ChangedTool, Gateway, GatewayBuilder, GatewayError,
+    MAX_CONTROL_PLANE_CALLS, MAX_INPUT_SCHEMA_BYTES, MAX_RECORDED_CALLS, MAX_RECORDED_REFUSALS,
     MissingReason, MissingTool, ToolMapping, UPSTREAM_TOOL_NOT_ALLOWED, UpstreamTool,
 };
 pub use http_upstream::{HttpUpstream, HttpUpstreamError, datadog_url};
 pub use record::{
-    CallId, CallOrigin, CallRecord, MIN_RESULT_BYTES, Outcome, RecordEncodingFailed, RefusalReason,
-    RunLimits, RunRecord,
+    CallId, CallOrigin, CallRecord, Citation, MIN_RESULT_BYTES, Outcome, RecordEncodingFailed,
+    RefusalReason, RefusalRecord, RunLimits, RunRecord,
 };
 pub use redact::{
     FactoryRedactor, Redact, RedactionFailed, RegisterFailed, SecretKey, redact_json,

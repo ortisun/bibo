@@ -7,7 +7,7 @@ The read-only PostgreSQL MCP server of the software factory ([ADR 0021](../../do
 - **Read-only by the database.** It logs in as a member of `factory_observer` (migration `2026-11-20-002900_observer_role`): `SELECT` on operational columns only (the list is [`docs/database/observer-columns.txt`](../../docs/database/observer-columns.txt)), never a request text, payload, token digest or person's identity. It refuses to start with a login that is a superuser, bypasses row-level security, or belongs to a group that can write.
 - **Every call** runs in `BEGIN READ ONLY ... ROLLBACK` with a 5 s statement timeout and a 1 s lock timeout, then `DISCARD ALL`.
 - **Free SQL** (`pg_query`) is wrapped as a subquery and sent with the extended protocol: one query, no writes, no DDL, no `COPY`, no second statement.
-- **Caps:** 200 rows, 64 KiB per result (a `truncated` object says how much was cut), 300 calls per process.
+- **Caps:** 200 rows, 64 KiB per result (a `truncated` object says how much was cut), 300 calls per budget window of the process (an hour by default, `budget_window_s`; the window is shared by every session, so a new session does not start a new budget).
 - **Redaction** of every string with the factory's redactor, and literals scrubbed from the query texts of other sessions.
 
 The tools: `pg_list_relations`, `pg_describe_relation`, `pg_query`, `pg_explain`, `pg_activity`, `pg_locks`, `pg_table_health`, `pg_factory_health`.
@@ -37,7 +37,7 @@ The tools: `pg_list_relations`, `pg_describe_relation`, `pg_query`, `pg_explain`
    }
    ```
 
-   `policy_checkout` is a checkout of the factory whose `policies/security.yaml` gives the redactor its secret patterns. Without it, only the password and the token are redacted, and the program says so on stderr. Unknown keys are refused. The same settings can come from the environment instead: `FACTORY_MCP_PG_USER` (required), `FACTORY_MCP_PG_HOST`, `FACTORY_MCP_PG_PORT`, `FACTORY_MCP_PG_DATABASE`, `FACTORY_MCP_PG_PASSWORD_FILE`, `FACTORY_MCP_PG_POLICY_CHECKOUT`, or `FACTORY_MCP_PG_CONFIG` naming the file.
+   `policy_checkout` is a checkout of the factory whose `policies/security.yaml` gives the redactor its secret patterns. Without it, only the password and the token are redacted, and the program says so on stderr. Unknown keys are refused. The same settings can come from the environment instead: `FACTORY_MCP_PG_USER` (required), `FACTORY_MCP_PG_HOST`, `FACTORY_MCP_PG_PORT`, `FACTORY_MCP_PG_DATABASE`, `FACTORY_MCP_PG_PASSWORD_FILE`, `FACTORY_MCP_PG_POLICY_CHECKOUT`, `FACTORY_MCP_PG_BUDGET_WINDOW_S`, or `FACTORY_MCP_PG_CONFIG` naming the file. A password or token shorter than the redactor can recognise (8 characters by default) is refused at start, since it could not be redacted.
 
 Secret files must not be readable by group or others (`chmod 600`). The program never takes a password or a token in an argument or an environment variable.
 

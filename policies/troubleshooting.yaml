@@ -140,38 +140,153 @@ upstreams:
 # -----------------------------------------------------------------------------
 # `id` is the entry of the tool table of policies/security.yaml. `gateway_name`
 # is what the agent sees (Claude Code renders it `mcp__factory__<gateway_name>`).
-# `upstream_tool` is the one tool the gateway calls on `upstream`. The Datadog
+# `upstream_tool` is the one tool the gateway calls on `upstream`. `description`
+# is what the model reads as the tool's description: the factory's words, never
+# the upstream's, which reach the model outside the prompt's data delimiters
+# (TR-7 of docs/reviews/troubleshooter-security-review.md). The Datadog
 # and VictoriaMetrics names were read from their documentation on 2026-11-20
 # and not called; the PostgreSQL names are those ADR 0021 gives crates/mcp_postgres.
 tools:
-  - { id: mcp.datadog.search_logs,            gateway_name: datadog_search_logs,        upstream: datadog,         upstream_tool: search_datadog_logs }
-  - { id: mcp.datadog.analyze_logs,           gateway_name: datadog_analyze_logs,       upstream: datadog,         upstream_tool: analyze_datadog_logs }
-  - { id: mcp.datadog.get_trace,              gateway_name: datadog_get_trace,          upstream: datadog,         upstream_tool: get_datadog_trace }
-  - { id: mcp.datadog.search_spans,           gateway_name: datadog_search_spans,       upstream: datadog,         upstream_tool: search_datadog_spans }
-  - { id: mcp.datadog.aggregate_spans,        gateway_name: datadog_aggregate_spans,    upstream: datadog,         upstream_tool: aggregate_spans }
-  - { id: mcp.datadog.get_metric,             gateway_name: datadog_get_metric,         upstream: datadog,         upstream_tool: get_datadog_metric }
-  - { id: mcp.datadog.get_metric_context,     gateway_name: datadog_get_metric_context, upstream: datadog,         upstream_tool: get_datadog_metric_context }
-  - { id: mcp.datadog.search_metrics,         gateway_name: datadog_search_metrics,     upstream: datadog,         upstream_tool: search_datadog_metrics }
-  - { id: mcp.datadog.search_monitors,        gateway_name: datadog_search_monitors,    upstream: datadog,         upstream_tool: search_datadog_monitors }
-  - { id: mcp.datadog.search_incidents,       gateway_name: datadog_search_incidents,   upstream: datadog,         upstream_tool: search_datadog_incidents }
-  - { id: mcp.datadog.get_incident,           gateway_name: datadog_get_incident,       upstream: datadog,         upstream_tool: get_datadog_incident }
-  - { id: mcp.victoriametrics.query,          gateway_name: vm_query,                   upstream: victoriametrics, upstream_tool: query }
-  - { id: mcp.victoriametrics.query_range,    gateway_name: vm_query_range,             upstream: victoriametrics, upstream_tool: query_range }
-  - { id: mcp.victoriametrics.labels,         gateway_name: vm_labels,                  upstream: victoriametrics, upstream_tool: labels }
-  - { id: mcp.victoriametrics.label_values,   gateway_name: vm_label_values,            upstream: victoriametrics, upstream_tool: label_values }
-  - { id: mcp.victoriametrics.metrics,        gateway_name: vm_metrics,                 upstream: victoriametrics, upstream_tool: metrics }
-  - { id: mcp.victoriametrics.metrics_metadata, gateway_name: vm_metrics_metadata,      upstream: victoriametrics, upstream_tool: metrics_metadata }
-  - { id: mcp.victoriametrics.alerts,         gateway_name: vm_alerts,                  upstream: victoriametrics, upstream_tool: alerts }
-  - { id: mcp.victoriametrics.active_queries, gateway_name: vm_active_queries,          upstream: victoriametrics, upstream_tool: active_queries }
-  - { id: mcp.victoriametrics.explain_query,  gateway_name: vm_explain_query,           upstream: victoriametrics, upstream_tool: explain_query }
-  - { id: mcp.postgres.list_relations,        gateway_name: pg_list_relations,          upstream: postgres,        upstream_tool: pg_list_relations }
-  - { id: mcp.postgres.describe_relation,     gateway_name: pg_describe_relation,       upstream: postgres,        upstream_tool: pg_describe_relation }
-  - { id: mcp.postgres.query,                 gateway_name: pg_query,                   upstream: postgres,        upstream_tool: pg_query }
-  - { id: mcp.postgres.explain,               gateway_name: pg_explain,                 upstream: postgres,        upstream_tool: pg_explain }
-  - { id: mcp.postgres.activity,              gateway_name: pg_activity,                upstream: postgres,        upstream_tool: pg_activity }
-  - { id: mcp.postgres.locks,                 gateway_name: pg_locks,                   upstream: postgres,        upstream_tool: pg_locks }
-  - { id: mcp.postgres.table_health,          gateway_name: pg_table_health,            upstream: postgres,        upstream_tool: pg_table_health }
-  - { id: mcp.postgres.factory_health,        gateway_name: pg_factory_health,          upstream: postgres,        upstream_tool: pg_factory_health }
+  - id: mcp.datadog.search_logs
+    gateway_name: datadog_search_logs
+    upstream: datadog
+    upstream_tool: search_datadog_logs
+    description: "Search the factory's logs in Datadog by query and time range."
+  - id: mcp.datadog.analyze_logs
+    gateway_name: datadog_analyze_logs
+    upstream: datadog
+    upstream_tool: analyze_datadog_logs
+    description: "Count and group the factory's logs in Datadog by fields over a time range."
+  - id: mcp.datadog.get_trace
+    gateway_name: datadog_get_trace
+    upstream: datadog
+    upstream_tool: get_datadog_trace
+    description: "Read one trace from Datadog APM by its trace id."
+  - id: mcp.datadog.search_spans
+    gateway_name: datadog_search_spans
+    upstream: datadog
+    upstream_tool: search_datadog_spans
+    description: "Search spans in Datadog APM by query and time range."
+  - id: mcp.datadog.aggregate_spans
+    gateway_name: datadog_aggregate_spans
+    upstream: datadog
+    upstream_tool: aggregate_spans
+    description: "Count and group spans in Datadog APM over a time range."
+  - id: mcp.datadog.get_metric
+    gateway_name: datadog_get_metric
+    upstream: datadog
+    upstream_tool: get_datadog_metric
+    description: "Read the values of one Datadog metric over a time range."
+  - id: mcp.datadog.get_metric_context
+    gateway_name: datadog_get_metric_context
+    upstream: datadog
+    upstream_tool: get_datadog_metric_context
+    description: "Read the tags and metadata of one Datadog metric."
+  - id: mcp.datadog.search_metrics
+    gateway_name: datadog_search_metrics
+    upstream: datadog
+    upstream_tool: search_datadog_metrics
+    description: "List the Datadog metric names that match a search."
+  - id: mcp.datadog.search_monitors
+    gateway_name: datadog_search_monitors
+    upstream: datadog
+    upstream_tool: search_datadog_monitors
+    description: "List Datadog monitors and their states, filtered by a query or tags."
+  - id: mcp.datadog.search_incidents
+    gateway_name: datadog_search_incidents
+    upstream: datadog
+    upstream_tool: search_datadog_incidents
+    description: "List Datadog incidents, filtered by a query or state."
+  - id: mcp.datadog.get_incident
+    gateway_name: datadog_get_incident
+    upstream: datadog
+    upstream_tool: get_datadog_incident
+    description: "Read one Datadog incident by its id."
+  - id: mcp.victoriametrics.query
+    gateway_name: vm_query
+    upstream: victoriametrics
+    upstream_tool: query
+    description: "Evaluate a PromQL or MetricsQL instant query against the factory's VictoriaMetrics."
+  - id: mcp.victoriametrics.query_range
+    gateway_name: vm_query_range
+    upstream: victoriametrics
+    upstream_tool: query_range
+    description: "Evaluate a PromQL or MetricsQL range query against the factory's VictoriaMetrics."
+  - id: mcp.victoriametrics.labels
+    gateway_name: vm_labels
+    upstream: victoriametrics
+    upstream_tool: labels
+    description: "List the label names VictoriaMetrics knows."
+  - id: mcp.victoriametrics.label_values
+    gateway_name: vm_label_values
+    upstream: victoriametrics
+    upstream_tool: label_values
+    description: "List the values of one label in VictoriaMetrics."
+  - id: mcp.victoriametrics.metrics
+    gateway_name: vm_metrics
+    upstream: victoriametrics
+    upstream_tool: metrics
+    description: "List the metric names VictoriaMetrics knows."
+  - id: mcp.victoriametrics.metrics_metadata
+    gateway_name: vm_metrics_metadata
+    upstream: victoriametrics
+    upstream_tool: metrics_metadata
+    description: "Read the type and help text of VictoriaMetrics metrics."
+  - id: mcp.victoriametrics.alerts
+    gateway_name: vm_alerts
+    upstream: victoriametrics
+    upstream_tool: alerts
+    description: "List the alerts that the VictoriaMetrics alerting rules have raised."
+  - id: mcp.victoriametrics.active_queries
+    gateway_name: vm_active_queries
+    upstream: victoriametrics
+    upstream_tool: active_queries
+    description: "List the queries VictoriaMetrics is running now."
+  - id: mcp.victoriametrics.explain_query
+    gateway_name: vm_explain_query
+    upstream: victoriametrics
+    upstream_tool: explain_query
+    description: "Explain how VictoriaMetrics would run a query, without running it."
+  - id: mcp.postgres.list_relations
+    gateway_name: pg_list_relations
+    upstream: postgres
+    upstream_tool: pg_list_relations
+    description: "List the tables and views of a schema with their size, estimated rows and what this login may read."
+  - id: mcp.postgres.describe_relation
+    gateway_name: pg_describe_relation
+    upstream: postgres
+    upstream_tool: pg_describe_relation
+    description: "Describe one table or view: its columns and types, which columns this login may read, and its indexes."
+  - id: mcp.postgres.query
+    gateway_name: pg_query
+    upstream: postgres
+    upstream_tool: pg_query
+    description: "Run one read-only SQL query in a read-only transaction with a time limit; at most 200 rows and 64 KiB come back."
+  - id: mcp.postgres.explain
+    gateway_name: pg_explain
+    upstream: postgres
+    upstream_tool: pg_explain
+    description: "Show the plan PostgreSQL would use for a SELECT, without running it (no ANALYZE)."
+  - id: mcp.postgres.activity
+    gateway_name: pg_activity
+    upstream: postgres
+    upstream_tool: pg_activity
+    description: "List this database's sessions with their waits and transaction age; query texts have their literals replaced."
+  - id: mcp.postgres.locks
+    gateway_name: pg_locks
+    upstream: postgres
+    upstream_tool: pg_locks
+    description: "Show each blocked session with the session blocking it, and the locks held and awaited by mode."
+  - id: mcp.postgres.table_health
+    gateway_name: pg_table_health
+    upstream: postgres
+    upstream_tool: pg_table_health
+    description: "Per table: live and dead rows, scans, last vacuum and analyze, and size."
+  - id: mcp.postgres.factory_health
+    gateway_name: pg_factory_health
+    upstream: postgres
+    upstream_tool: pg_factory_health
+    description: "The factory's health in one call: stuck jobs, expired leases, waits for a person, recent failures and the outbox backlog."
 
 # -----------------------------------------------------------------------------
 # 6. Probes (ADR 0021, Decision 2)

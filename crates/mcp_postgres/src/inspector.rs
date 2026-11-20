@@ -2,24 +2,36 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_postgres::types::{FromSql, ToSql, Type};
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, Transaction};
 
-use crate::sql::{self, render_rows, render_sections, scrub_literals, wrap_fixed};
+use crate::sql::{self, CUT_ROW_KEY, render_read, render_sections, scrub_literals, wrap_fixed};
 use crate::{ConnectSettings, Limits, Redact, ToolFailure, redact_json};
 
-/// The keys whose string values are query texts of other sessions. Their literals are scrubbed
-/// before redaction. In free SQL this is a heuristic: a column renamed away from these names is
-/// only redacted.
+/// The keys whose string values are query texts of other sessions. The database already returns
+/// them normalized (`observer_normalize_query`); their literals are scrubbed here again before
+/// redaction, as a second layer. Free SQL cannot read a raw query text of another role at all.
 const QUERY_TEXT_KEYS: [&str; 3] = ["query", "blocked_query", "blocking_query"];
 
-/// The groups a login of this server must not belong to: each would add a write privilege or a
-/// policy that the observer does not have.
-const FORBIDDEN_GROUPS: &str = "'factory_app', 'factory_api_app', 'factory_system', 'factory_resolver', 'factory_lookup', 'pg_write_all_data', 'pg_signal_backend', 'pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program'";
+/// The check of [`Inspector::check_login`], one row: what the login is, not a list of what it
+/// must not be.
+const LOGIN_CHECK: &str = include_str!("login_check.sql");
+
+/// Rows fetched from a portal at a time. Each row is cut at the byte cap by the SQL wrapper, so
+/// one fetch holds at most this many rows of the cap's size (four bytes a character at worst).
+const FETCH_ROWS: i32 = 16;
+
+/// The rows of one statement, as far as they were read.
+#[derive(Debug, Default)]
+struct ReadSet {
+    rows: Vec<Value>,
+    /// Reading stopped at the byte cap: more rows or bytes may exist that were never fetched.
+    stopped: bool,
+}
 
 /// One statement and its text parameters. Every fixed statement casts its parameters from text.
 struct Statement {
@@ -69,6 +81,7 @@ pub struct Inspector {
     redactor: Arc<dyn Redact>,
     client: Mutex<Option<Client>>,
     calls: AtomicU64,
+    bytes_read: AtomicU64,
 }
 
 impl std::fmt::Debug for Inspector {
@@ -89,6 +102,7 @@ impl Inspector {
             redactor,
             client: Mutex::new(None),
             calls: AtomicU64::new(0),
+            bytes_read: AtomicU64::new(0),
         }
     }
 
@@ -97,32 +111,44 @@ impl Inspector {
         &self.limits
     }
 
-    /// Calls answered or refused so far.
+    /// Calls made so far (every call, whatever budget it was charged to).
     pub fn calls_made(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
     }
 
-    /// Connects and checks that the login is fit to serve: not a superuser, no `BYPASSRLS`, a
-    /// member of `factory_observer`, and a member of no group that could write. Does not count
-    /// against the call budget. Returns the login's name.
+    /// Bytes of result rows this inspector has received from the database in its life. Reading
+    /// stops at the byte cap, so one call adds at most the cap plus one fetch of cut rows.
+    pub fn bytes_read(&self) -> u64 {
+        self.bytes_read.load(Ordering::Relaxed)
+    }
+
+    /// Connects and checks that the login is fit to serve. An allowlist of what the login is
+    /// (`login_check.sql`):
+    ///
+    /// - not a superuser, and no `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`;
+    /// - a member of `factory_observer`, and directly of no other role, so that everything it
+    ///   holds comes through that group, and the group passes on the privileges of no role;
+    /// - a member of no predefined role (`pg_read_all_data`, `pg_write_all_data`,
+    ///   `pg_read_server_files`, `pg_execute_server_program`, `pg_signal_backend`, `pg_monitor`,
+    ///   `pg_database_owner` and every other `pg_*` role) by effective membership. For
+    ///   `pg_read_all_stats` the test is on its privileges: migration 002900, run again for another
+    ///   database of the cluster, grants it for a moment to the group, which is NOINHERIT;
+    /// - the owner of nothing in this database, and a member of no role that owns something;
+    /// - able to read no column the group cannot read and to write to no table or sequence,
+    ///   whatever role or `PUBLIC` grant gives it: the property itself.
+    ///
+    /// Does not count against any call budget. Returns the login's name.
     ///
     /// # Errors
     /// [`ToolFailure::Unavailable`] when the database cannot be reached, and
     /// [`ToolFailure::Refused`] naming what is wrong with the login.
     pub async fn check_login(&self) -> Result<String, ToolFailure> {
-        let check = format!(
-            "SELECT current_user::text AS login, r.rolsuper AS superuser, r.rolbypassrls AS bypassrls, \
-                    pg_catalog.pg_has_role(current_user, 'factory_observer', 'MEMBER') AS observer, \
-                    coalesce((SELECT bool_or(pg_catalog.pg_has_role(current_user, g.oid, 'MEMBER')) \
-                                FROM pg_catalog.pg_roles g WHERE g.rolname IN ({FORBIDDEN_GROUPS})), false) AS too_much \
-               FROM pg_catalog.pg_roles r WHERE r.rolname = current_user"
-        );
         let mut sets = self
-            .read_uncharged(&[Statement::new(wrap_fixed(&check))])
+            .read_uncharged(&[Statement::new(self.fixed(LOGIN_CHECK))])
             .await?;
         let row = sets
             .pop()
-            .and_then(|mut rows| rows.pop())
+            .and_then(|mut set| set.rows.pop())
             .ok_or_else(|| ToolFailure::Refused("the login could not be checked".to_owned()))?;
         let flag = |key: &str| row.get(key).and_then(Value::as_bool).unwrap_or(true);
         let login = row
@@ -130,24 +156,60 @@ impl Inspector {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
+        let refused = |why: String| {
+            ToolFailure::Refused(format!(
+                "the login {login} {why}; use a login made as docs/database/observer-login.sql makes it, a member of factory_observer and of nothing else"
+            ))
+        };
         if flag("superuser") || flag("bypassrls") {
-            return Err(ToolFailure::Refused(format!(
-                "the login {login} is a superuser or bypasses row-level security; use a login made as docs/database/observer-login.sql makes it"
-            )));
+            return Err(refused(
+                "is a superuser or bypasses row-level security".to_owned(),
+            ));
+        }
+        if flag("createrole") || flag("createdb") || flag("replication") {
+            return Err(refused(
+                "may create roles or databases, or replicate".to_owned(),
+            ));
         }
         if !row
             .get("observer")
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            return Err(ToolFailure::Refused(format!(
-                "the login {login} is not a member of factory_observer"
-            )));
+            return Err(refused("is not a member of factory_observer".to_owned()));
         }
-        if flag("too_much") {
-            return Err(ToolFailure::Refused(format!(
-                "the login {login} is a member of a group that can write or signal; it must belong to factory_observer only"
-            )));
+        for (key, why) in [
+            ("other_groups", "is also a member of"),
+            (
+                "group_inherits",
+                "belongs to factory_observer, which passes on the privileges of",
+            ),
+            ("predefined", "holds the predefined roles"),
+            ("owns", ""),
+            (
+                "reads_more",
+                "can read columns factory_observer may not read, in",
+            ),
+            ("writes", "can write to"),
+            ("sequences", "can use or set the sequences"),
+        ] {
+            if key == "owns" {
+                if flag(key) {
+                    return Err(refused(
+                        "owns objects in this database, or is a member of a role that does"
+                            .to_owned(),
+                    ));
+                }
+                continue;
+            }
+            // A missing value counts as found: the check refuses what it cannot read.
+            let found = row
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("(the check gave no answer)");
+            if !found.is_empty() {
+                return Err(refused(format!("{why} {found}")));
+            }
         }
         Ok(login)
     }
@@ -158,7 +220,12 @@ impl Inspector {
     /// A [`ToolFailure`].
     pub async fn query(&self, sql: &str, max_rows: Option<usize>) -> Result<String, ToolFailure> {
         let cap = max_rows.map_or(self.limits.max_rows, |n| n.clamp(1, self.limits.max_rows));
-        let wrapped = sql::wrap_query(sql, cap, self.limits.max_sql_bytes)?;
+        let wrapped = sql::wrap_query(
+            sql,
+            cap,
+            self.limits.max_sql_bytes,
+            self.limits.max_result_bytes,
+        )?;
         let rows = self.single(Statement::new(wrapped)).await?;
         self.render_capped(rows, cap)
     }
@@ -169,9 +236,14 @@ impl Inspector {
     /// A [`ToolFailure`].
     pub async fn explain(&self, sql: &str) -> Result<String, ToolFailure> {
         let wrapped = sql::wrap_explain(sql, self.limits.max_sql_bytes)?;
-        let mut rows = self.single(Statement::new(wrapped)).await?;
+        let ReadSet { mut rows, stopped } = self.single(Statement::new(wrapped)).await?;
         self.clean(&mut rows)?;
-        Ok(render_rows(&rows, false, self.limits.max_result_bytes))
+        Ok(render_read(
+            &rows,
+            false,
+            stopped,
+            self.limits.max_result_bytes,
+        ))
     }
 
     /// `pg_list_relations`: tables and views of a schema, with size, estimated rows and what the
@@ -201,7 +273,7 @@ impl Inspector {
         );
         let rows = self
             .single(Statement::with(
-                wrap_fixed(&fixed),
+                self.fixed(&fixed),
                 vec![Some(schema.to_owned()), name_like.map(str::to_owned)],
             ))
             .await?;
@@ -226,12 +298,12 @@ impl Inspector {
         let params = vec![Some(schema.to_owned()), Some(name.to_owned())];
         let mut sets = self
             .read(&[
-                Statement::with(wrap_fixed(columns), params.clone()),
-                Statement::with(wrap_fixed(indexes), params),
+                Statement::with(self.fixed(columns), params.clone()),
+                Statement::with(self.fixed(indexes), params),
             ])
             .await?;
-        let mut index_rows = sets.pop().unwrap_or_default();
-        let mut column_rows = sets.pop().unwrap_or_default();
+        let mut index_rows = sets.pop().unwrap_or_default().rows;
+        let mut column_rows = sets.pop().unwrap_or_default().rows;
         if column_rows.is_empty() {
             return Err(ToolFailure::Refused(format!(
                 "no table or view {schema}.{name} is visible; pg_list_relations lists them"
@@ -255,16 +327,19 @@ impl Inspector {
     /// A [`ToolFailure`].
     pub async fn activity(&self) -> Result<String, ToolFailure> {
         let cap = self.limits.max_rows;
+        // The sessions come from observer_activity() (migration 2026-11-20-003100): factory_observer has no
+        // pg_read_all_stats, so the function, owned by a role that has it, returns the query texts with their
+        // literals and comments already replaced and only this database's sessions.
         let fixed = format!(
-            "SELECT pid, usename AS login, application_name, backend_type, state, wait_event_type, wait_event, \
+            "SELECT pid, login, application_name, backend_type, state, wait_event_type, wait_event, \
                     backend_start, xact_start, query_start, state_change, \
                     (now() - xact_start)::text AS transaction_age, (now() - query_start)::text AS query_age, \
-                    backend_xmin::text AS backend_xmin, left(query, 2000) AS query \
-               FROM pg_catalog.pg_stat_activity WHERE pid <> pg_catalog.pg_backend_pid() \
+                    backend_xmin, query \
+               FROM public.observer_activity() \
               ORDER BY xact_start NULLS LAST, backend_start LIMIT {}",
             cap + 1
         );
-        let rows = self.single(Statement::new(wrap_fixed(&fixed))).await?;
+        let rows = self.single(Statement::new(self.fixed(&fixed))).await?;
         self.render_capped(rows, cap)
     }
 
@@ -275,16 +350,11 @@ impl Inspector {
     pub async fn locks(&self) -> Result<String, ToolFailure> {
         let cap = self.limits.max_rows;
         let blocked = format!(
-            "SELECT blocked.pid AS blocked_pid, blocked.usename AS blocked_login, blocked.wait_event_type, \
-                    blocked.wait_event, (now() - blocked.query_start)::text AS blocked_for, \
-                    left(blocked.query, 1000) AS blocked_query, blocking.pid AS blocking_pid, \
-                    blocking.usename AS blocking_login, blocking.state AS blocking_state, \
-                    (now() - blocking.xact_start)::text AS blocking_transaction_age, \
-                    left(blocking.query, 1000) AS blocking_query \
-               FROM pg_catalog.pg_stat_activity blocked \
-               CROSS JOIN LATERAL unnest(pg_catalog.pg_blocking_pids(blocked.pid)) AS b(pid) \
-               JOIN pg_catalog.pg_stat_activity blocking ON blocking.pid = b.pid \
-              ORDER BY blocked.query_start NULLS LAST LIMIT {}",
+            "SELECT blocked_pid, blocked_login, wait_event_type, wait_event, \
+                    (now() - blocked_since)::text AS blocked_for, blocked_query, blocking_pid, blocking_login, \
+                    blocking_state, (now() - blocking_xact_start)::text AS blocking_transaction_age, blocking_query \
+               FROM public.observer_lock_waits() \
+              ORDER BY blocked_since NULLS LAST LIMIT {}",
             cap + 1
         );
         let summary = format!(
@@ -294,8 +364,8 @@ impl Inspector {
         );
         let sets = self
             .read(&[
-                Statement::new(wrap_fixed(&blocked)),
-                Statement::new(wrap_fixed(&summary)),
+                Statement::new(self.fixed(&blocked)),
+                Statement::new(self.fixed(&summary)),
             ])
             .await?;
         self.render_named(&["blocked", "lock_counts"], sets, cap)
@@ -320,7 +390,7 @@ impl Inspector {
         );
         let rows = self
             .single(Statement::with(
-                wrap_fixed(&fixed),
+                self.fixed(&fixed),
                 vec![Some(schema.to_owned())],
             ))
             .await?;
@@ -376,9 +446,9 @@ impl Inspector {
             .zip(uses_window)
             .map(|(text, windowed)| {
                 if windowed {
-                    Statement::with(wrap_fixed(text), vec![window.clone()])
+                    Statement::with(self.fixed(text), vec![window.clone()])
                 } else {
-                    Statement::new(wrap_fixed(text))
+                    Statement::new(self.fixed(text))
                 }
             })
             .collect();
@@ -399,25 +469,37 @@ impl Inspector {
 
     // ---------------------------------------------------------------------------------------
 
-    fn render_capped(&self, mut rows: Vec<Value>, cap: usize) -> Result<String, ToolFailure> {
+    /// A fixed statement of this crate, wrapped so that each row is JSON text cut at the byte cap.
+    fn fixed(&self, sql: &str) -> String {
+        wrap_fixed(sql, self.limits.max_result_bytes)
+    }
+
+    fn render_capped(&self, set: ReadSet, cap: usize) -> Result<String, ToolFailure> {
+        let ReadSet { mut rows, stopped } = set;
         let more = rows.len() > cap;
         rows.truncate(cap);
         self.clean(&mut rows)?;
-        Ok(render_rows(&rows, more, self.limits.max_result_bytes))
+        Ok(render_read(
+            &rows,
+            more,
+            stopped,
+            self.limits.max_result_bytes,
+        ))
     }
 
     fn render_named(
         &self,
         names: &[&str],
-        sets: Vec<Vec<Value>>,
+        sets: Vec<ReadSet>,
         cap: usize,
     ) -> Result<String, ToolFailure> {
         let mut sections = Vec::with_capacity(names.len());
-        for (name, mut rows) in names.iter().zip(sets) {
+        for (name, set) in names.iter().zip(sets) {
+            let ReadSet { mut rows, stopped } = set;
             let more = rows.len() > cap;
             rows.truncate(cap);
             self.clean(&mut rows)?;
-            sections.push((*name, rows, more));
+            sections.push((*name, rows, more || stopped));
         }
         Ok(render_sections(&sections, self.limits.max_result_bytes))
     }
@@ -437,26 +519,19 @@ impl Inspector {
         Ok(())
     }
 
-    async fn single(&self, statement: Statement) -> Result<Vec<Value>, ToolFailure> {
+    async fn single(&self, statement: Statement) -> Result<ReadSet, ToolFailure> {
         let mut sets = self.read(&[statement]).await?;
         Ok(sets.pop().unwrap_or_default())
     }
 
-    /// Runs the statements in one read-only transaction, counting one call.
-    async fn read(&self, statements: &[Statement]) -> Result<Vec<Vec<Value>>, ToolFailure> {
-        let made = self.calls.fetch_add(1, Ordering::Relaxed);
-        if made >= self.limits.max_calls {
-            return Err(ToolFailure::CallBudgetSpent {
-                limit: self.limits.max_calls,
-            });
-        }
+    /// Runs the statements in one read-only transaction, counting one call. The call budget is
+    /// not here: [`crate::PostgresMcp`] charges it per run or per window before it calls.
+    async fn read(&self, statements: &[Statement]) -> Result<Vec<ReadSet>, ToolFailure> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
         self.read_uncharged(statements).await
     }
 
-    async fn read_uncharged(
-        &self,
-        statements: &[Statement],
-    ) -> Result<Vec<Vec<Value>>, ToolFailure> {
+    async fn read_uncharged(&self, statements: &[Statement]) -> Result<Vec<ReadSet>, ToolFailure> {
         let mut slot = self.client.lock().await;
         let deadline = self.limits.call_deadline();
         match tokio::time::timeout(deadline, self.run(&mut slot, statements)).await {
@@ -479,69 +554,146 @@ impl Inspector {
         &self,
         slot: &mut Option<Client>,
         statements: &[Statement],
-    ) -> Result<Vec<Vec<Value>>, ToolFailure> {
+    ) -> Result<Vec<ReadSet>, ToolFailure> {
         if slot.as_ref().is_none_or(Client::is_closed) {
             *slot = Some(self.connect().await?);
         }
-        let Some(client) = slot.as_ref() else {
+        let Some(client) = slot.as_mut() else {
             return Err(ToolFailure::Unavailable);
         };
-        // Fixed text: the numbers come from the limits, never from a caller.
-        let begin = format!(
-            "BEGIN READ ONLY; SET LOCAL statement_timeout = {}; SET LOCAL lock_timeout = {}",
-            self.limits.statement_timeout_ms(),
-            self.limits.lock_timeout_ms()
-        );
-        if let Err(error) = client.batch_execute(&begin).await {
-            let failure = self.map_error(&error);
-            *slot = None;
-            return Err(failure);
-        }
-        let mut sets = Vec::with_capacity(statements.len());
-        let mut failure = None;
-        for statement in statements {
-            let params: Vec<&(dyn ToSql + Sync)> = statement
-                .params
-                .iter()
-                .map(|param| param as &(dyn ToSql + Sync))
-                .collect();
-            // `query` prepares the text first (the extended protocol), which takes one statement.
-            match client.query(statement.sql.as_str(), &params).await {
-                Ok(rows) => {
-                    let mut values = Vec::with_capacity(rows.len());
-                    for row in rows {
-                        let parsed = row
-                            .try_get::<_, JsonText>(0)
-                            .ok()
-                            .and_then(|text| serde_json::from_str::<Value>(&text.0).ok());
-                        match parsed {
-                            Some(value) => values.push(value),
-                            None => {
-                                failure = Some(ToolFailure::Refused(
-                                    "a result row could not be read as JSON".to_owned(),
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                    sets.push(values);
-                }
-                Err(error) => failure = Some(self.map_error(&error)),
-            }
-            if failure.is_some() {
-                break;
-            }
-        }
-        // End the transaction whatever happened, and reset the session: an advisory lock or a
-        // setting taken at session level does not outlive the call.
-        let clean = client.batch_execute("ROLLBACK").await.is_ok()
-            && client.batch_execute("DISCARD ALL").await.is_ok();
+        let (result, ended) = self.transaction(client, statements).await;
+        // Reset the session: an advisory lock or a setting taken at session level does not outlive
+        // the call. A session that cannot be reset is dropped.
+        let clean = ended && client.batch_execute("DISCARD ALL").await.is_ok();
         if !clean {
             *slot = None;
         }
-        match failure {
-            Some(failure) => Err(failure),
-            None => Ok(sets),
+        result
+    }
+
+    /// One `BEGIN READ ONLY` ... `ROLLBACK` around the statements. The second value says whether
+    /// the transaction was ended cleanly.
+    async fn transaction(
+        &self,
+        client: &mut Client,
+        statements: &[Statement],
+    ) -> (Result<Vec<ReadSet>, ToolFailure>, bool) {
+        let tx = match client.build_transaction().read_only(true).start().await {
+            Ok(tx) => tx,
+            Err(error) => return (Err(self.map_error(&error)), false),
+        };
+        // Fixed text: the numbers come from the limits, never from a caller.
+        let settings = format!(
+            "SET LOCAL statement_timeout = {}; SET LOCAL lock_timeout = {}",
+            self.limits.statement_timeout_ms(),
+            self.limits.lock_timeout_ms()
+        );
+        if let Err(error) = tx.batch_execute(&settings).await {
+            let failure = self.map_error(&error);
+            let ended = tx.rollback().await.is_ok();
+            return (Err(failure), ended);
+        }
+        let started = Instant::now();
+        let mut sets = Vec::with_capacity(statements.len());
+        let mut failure = None;
+        for statement in statements {
+            match self.read_one(&tx, statement, started).await {
+                Ok(set) => sets.push(set),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        // End the transaction whatever happened. The rollback also closes the portal of a
+        // statement whose rows were not all read.
+        let ended = tx.rollback().await.is_ok();
+        (failure.map_or(Ok(sets), Err), ended)
+    }
+
+    /// Reads one statement through a portal, [`FETCH_ROWS`] rows at a time, and stops as soon as
+    /// the rows read pass the byte cap: the rest is never fetched, so what this process holds is
+    /// bounded by the caps whatever the query would return (TR-2). Each row arrives already cut
+    /// at the byte cap by the SQL wrapper, so one fetch holds at most [`FETCH_ROWS`] cut rows.
+    async fn read_one(
+        &self,
+        tx: &Transaction<'_>,
+        statement: &Statement,
+        started: Instant,
+    ) -> Result<ReadSet, ToolFailure> {
+        let params: Vec<&(dyn ToSql + Sync)> = statement
+            .params
+            .iter()
+            .map(|param| param as &(dyn ToSql + Sync))
+            .collect();
+        // `bind` prepares the text first (the extended protocol), which takes one statement.
+        let portal = tx
+            .bind(statement.sql.as_str(), &params)
+            .await
+            .map_err(|error| self.map_error(&error))?;
+        let byte_cap = self.limits.max_result_bytes;
+        let mut set = ReadSet::default();
+        let mut used = 0usize;
+        let mut first = true;
+        loop {
+            if !first {
+                // Each fetch is a statement of its own for statement_timeout, so the time left
+                // of the call's one timeout is set again before it.
+                let left = self
+                    .limits
+                    .statement_timeout
+                    .saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    return Err(ToolFailure::Timeout);
+                }
+                tx.batch_execute(&format!(
+                    "SET LOCAL statement_timeout = {}",
+                    left.as_millis().max(1)
+                ))
+                .await
+                .map_err(|error| self.map_error(&error))?;
+            }
+            first = false;
+            let rows = tx
+                .query_portal(&portal, FETCH_ROWS)
+                .await
+                .map_err(|error| self.map_error(&error))?;
+            let fetched = rows.len();
+            for row in rows {
+                let text = row
+                    .try_get::<_, JsonText>(0)
+                    .map_err(|_| {
+                        ToolFailure::Refused("a result row could not be read as JSON".to_owned())
+                    })?
+                    .0;
+                self.bytes_read.fetch_add(
+                    u64::try_from(text.len()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                used = used.saturating_add(text.len());
+                if set.stopped {
+                    continue;
+                }
+                if text.chars().count() > byte_cap {
+                    // Cut by the wrapper: this row alone is over the cap. Its first bytes stand
+                    // for it, and nothing after it is read.
+                    let mut cut = serde_json::Map::new();
+                    cut.insert(CUT_ROW_KEY.to_owned(), Value::String(text));
+                    set.rows.push(Value::Object(cut));
+                    set.stopped = true;
+                    continue;
+                }
+                let value = serde_json::from_str::<Value>(&text).map_err(|_| {
+                    ToolFailure::Refused("a result row could not be read as JSON".to_owned())
+                })?;
+                set.rows.push(value);
+                if used > byte_cap {
+                    set.stopped = true;
+                }
+            }
+            if set.stopped || fetched < usize::try_from(FETCH_ROWS).unwrap_or(usize::MAX) {
+                return Ok(set);
+            }
         }
     }
 

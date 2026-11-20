@@ -290,8 +290,7 @@ mod tests {
             FindingFingerprint::compute(
                 FindingCategory::Retries,
                 FindingComponent::Worker,
-                &["retries"],
-                &[]
+                &["retries"]
             )
         );
     }
@@ -308,8 +307,7 @@ mod tests {
             FindingFingerprint::compute(
                 FindingCategory::Retries,
                 FindingComponent::Worker,
-                &[SWEEP_SOURCE],
-                &[]
+                &[SWEEP_SOURCE]
             )
         );
     }

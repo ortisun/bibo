@@ -4,7 +4,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use factory_mcp_postgres::{Limits, PostgresMcp, TOOL_NAMES, ToolFailure};
+use factory_mcp_postgres::{
+    BUDGET_SCOPE_META_KEY, BudgetScope, Limits, PostgresMcp, TOOL_NAMES, ToolFailure,
+};
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use serde_json::Value;
@@ -147,19 +149,18 @@ async fn another_session_cannot_be_terminated() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settings_and_advisory_locks_do_not_outlive_a_call() {
+async fn settings_do_not_outlive_a_call_and_advisory_locks_are_refused() {
     let db = TestDb::fresh().await;
     let login = db.observer().await;
     let inspector = db.inspector(&login, quick_limits());
     inspector
         .query(
             "SELECT set_config('statement_timeout', '0', false) AS a, \
-                    set_config('factory.tenant_id', '00000000-0000-7000-8000-000000000001', false) AS b, \
-                    pg_advisory_lock(4242) AS c",
+                    set_config('factory.tenant_id', '00000000-0000-7000-8000-000000000001', false) AS b",
             None,
         )
         .await
-        .expect("set_config and an advisory lock are allowed in a read-only transaction");
+        .expect("set_config is allowed in a read-only transaction");
     let text = inspector
         .query(
             "SELECT current_setting('statement_timeout') AS timeout, \
@@ -171,10 +172,66 @@ async fn settings_and_advisory_locks_do_not_outlive_a_call() {
     let row = &json(&text)["rows"][0];
     assert_eq!(row["timeout"], Value::from("1s"), "{text}");
     assert_eq!(row["tenant"], Value::from(""), "{text}");
+    // Migration 003100 (TR-4): the observer may not take an advisory lock at all, so it cannot
+    // hold the audit chain lock of a tenant either.
+    for sql in [
+        "SELECT pg_advisory_lock(4242) AS c",
+        "SELECT pg_advisory_xact_lock(hashtextextended('factory.audit_events:' || id::text, 0)) AS c FROM tenants",
+    ] {
+        let failure = inspector.query(sql, None).await.expect_err(sql);
+        assert_eq!(database_code(&failure), "42501", "{sql}: {failure}");
+    }
     let held = db
-        .number("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 4242")
+        .number(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' \
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        )
         .await;
-    assert_eq!(held, 0, "DISCARD ALL released the session's advisory lock");
+    assert_eq!(held, 0, "no advisory lock is held");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn free_sql_cannot_read_another_roles_query_text() {
+    let db = TestDb::fresh().await;
+    let worker = db.login("app", &["factory_app"], false).await;
+    let busy = db.connect_as(&worker).await;
+    let running = tokio::spawn(async move {
+        let _ = busy
+            .batch_execute("SELECT 'customer-literal-31337' AS v, pg_sleep(3) /* note-31337 */")
+            .await;
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let login = db.observer().await;
+    let inspector = db.inspector(&login, quick_limits());
+    // The review's own query (TR-3): an alias, a transformation, and a cut in pieces.
+    let text = inspector
+        .query(
+            &format!(
+                "SELECT pid, query AS text_of_session, reverse(query) AS backwards, \
+                        encode(convert_to(query, 'UTF8'), 'base64') AS encoded, state \
+                   FROM pg_stat_activity WHERE usename = '{}'",
+                worker.name
+            ),
+            None,
+        )
+        .await
+        .expect("pg_stat_activity is readable");
+    assert!(!text.contains("31337"), "{text}");
+    assert!(text.contains("<insufficient privilege>"), "{text}");
+    // The same session through the observer function: listed, its text normalized.
+    let text = inspector
+        .query(
+            &format!(
+                "SELECT query AS t FROM observer_activity() WHERE login = '{}'",
+                worker.name
+            ),
+            None,
+        )
+        .await
+        .expect("observer_activity is readable");
+    assert!(text.contains("pg_sleep(?)"), "{text}");
+    assert!(!text.contains("31337"), "{text}");
+    let _ = running.await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -214,17 +271,24 @@ async fn huge_results_are_capped_in_rows_and_bytes() {
         .expect("the query runs");
     assert!(text.len() <= 64 * 1024, "{} bytes", text.len());
     let value = json(&text);
-    assert_eq!(value["more_rows_than_limit"], Value::from(true));
+    // The rows pass the byte cap long before the row cap: reading stopped there.
+    assert_eq!(value["truncated"]["reading_stopped"], Value::from(true));
     let kept = value["returned_rows"].as_u64().expect("kept");
     let omitted = value["truncated"]["omitted_rows"]
         .as_u64()
         .expect("omitted");
-    assert_eq!(
-        kept + omitted,
-        200,
-        "the row cap is 200 whatever the caller asks"
-    );
+    assert!(kept + omitted < 200, "{kept} + {omitted}");
     assert!(value["truncated"]["omitted_bytes"].as_u64().expect("bytes") > 0);
+    // Small rows meet the row cap: 200 whatever the caller asks.
+    let many = json(
+        &inspector
+            .query("SELECT g FROM generate_series(1, 100000) g", Some(10_000))
+            .await
+            .expect("runs"),
+    );
+    assert_eq!(many["returned_rows"], Value::from(200));
+    assert_eq!(many["more_rows_than_limit"], Value::from(true));
+    assert!(many.get("truncated").is_none(), "{many}");
     let small = inspector
         .query("SELECT g FROM generate_series(1, 10) g", Some(3))
         .await
@@ -232,6 +296,68 @@ async fn huge_results_are_capped_in_rows_and_bytes() {
     let small = json(&small);
     assert_eq!(small["returned_rows"], Value::from(3));
     assert_eq!(small["more_rows_than_limit"], Value::from(true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_query_of_gigabytes_stops_at_the_byte_cap_without_reading_them() {
+    // TR-2: 201 rows (the row cap plus one) of 20 MB each, 4 GB in all, and a single row of
+    // 100 MB. Reading stops at the byte cap: the process receives a bounded number of bytes, not
+    // the result, and the call answers fast with a truncation marker.
+    let db = TestDb::fresh().await;
+    let login = db.observer().await;
+    let limits = Limits {
+        statement_timeout: Duration::from_secs(5),
+        ..Limits::default()
+    };
+    let inspector = db.inspector(&login, limits);
+    // Rows cut at the cap by the wrapper, and at most one fetch of them: 16 rows of the cap's
+    // size, four bytes a character at worst, plus the cap itself.
+    let bound = 16 * 4 * (limits.max_result_bytes as u64 + 1) + limits.max_result_bytes as u64;
+    for sql in [
+        "SELECT g, repeat('x', 20000000) AS pad FROM generate_series(1, 100000) g",
+        "SELECT repeat('y', 100000000) AS pad",
+    ] {
+        let before = inspector.bytes_read();
+        let started = Instant::now();
+        let text = inspector.query(sql, None).await.expect(sql);
+        let read = inspector.bytes_read() - before;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{sql}: {:?}",
+            started.elapsed()
+        );
+        assert!(read <= bound, "{sql}: {read} bytes read, bound {bound}");
+        assert!(
+            text.len() <= limits.max_result_bytes,
+            "{} bytes",
+            text.len()
+        );
+        let value = json(&text);
+        assert_eq!(
+            value["truncated"]["reading_stopped"],
+            Value::from(true),
+            "{sql}: {text:.400}"
+        );
+    }
+    // Many small rows past the byte cap stop the same way, after the cap and one fetch.
+    let before = inspector.bytes_read();
+    let text = inspector
+        .query(
+            "SELECT g, repeat('w', 3000) AS pad FROM generate_series(1, 100000) g",
+            None,
+        )
+        .await
+        .expect("small rows");
+    let read = inspector.bytes_read() - before;
+    assert!(read <= bound, "{read} bytes read");
+    let value = json(&text);
+    assert_eq!(value["truncated"]["reading_stopped"], Value::from(true));
+    assert!(value["returned_rows"].as_u64().expect("rows") > 10);
+    // The connection is fit for the next call.
+    inspector
+        .query("SELECT 1 AS one", None)
+        .await
+        .expect("next call");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -372,41 +498,190 @@ async fn curated_tools_answer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_call_budget_is_enforced() {
+async fn the_call_budget_is_per_run_behind_the_gateway_and_per_window_alone() {
+    // TR-6: one server serves run after run. Each run (the scope the gateway names in _meta)
+    // has a budget of its own; a call that names no run is refused.
     let db = TestDb::fresh().await;
     let login = db.observer().await;
-    let inspector = db.inspector(
-        &login,
-        Limits {
-            max_calls: 2,
-            ..quick_limits()
-        },
+    let limits = Limits {
+        max_calls: 2,
+        ..quick_limits()
+    };
+    let server =
+        PostgresMcp::with_budget(db.inspector(&login, limits), BudgetScope::PerCallerScope);
+    let (server_end, client_end) = tokio::io::duplex(64 * 1024);
+    let serving = tokio::spawn(async move {
+        let running = server.serve(server_end).await.expect("serve");
+        let _ = running.waiting().await;
+    });
+    let client = ().serve(client_end).await.expect("client");
+    let call = |run: Option<&str>| {
+        let mut params = CallToolRequestParams::new("pg_activity");
+        if let Some(run) = run {
+            let mut meta = rmcp::model::RequestMetaObject::default();
+            meta.insert(BUDGET_SCOPE_META_KEY.to_owned(), Value::from(run));
+            params.meta = Some(meta);
+        }
+        params
+    };
+    for run in ["run-1", "run-2"] {
+        for _ in 0..2 {
+            let answer = client.call_tool(call(Some(run))).await.expect("call");
+            assert_ne!(answer.is_error, Some(true), "{run}: {answer:?}");
+        }
+        let spent = client.call_tool(call(Some(run))).await.expect("call");
+        assert_eq!(spent.is_error, Some(true));
+        let text = spent.content[0].as_text().expect("text").text.clone();
+        assert!(text.contains("call budget (2 calls)"), "{text}");
+    }
+    let unnamed = client.call_tool(call(None)).await.expect("call");
+    assert_eq!(unnamed.is_error, Some(true));
+    let _ = client.cancel().await;
+    let _ = serving.await;
+
+    // Alone (apps/mcp-postgres), one budget for the window, whatever a client puts in _meta.
+    let server = PostgresMcp::with_budget(
+        db.inspector(&login, limits),
+        BudgetScope::Window(Duration::from_secs(3600)),
     );
-    inspector.query("SELECT 1 AS a", None).await.expect("first");
-    inspector.activity().await.expect("second");
+    let (server_end, client_end) = tokio::io::duplex(64 * 1024);
+    let serving = tokio::spawn(async move {
+        let running = server.serve(server_end).await.expect("serve");
+        let _ = running.waiting().await;
+    });
+    let client = ().serve(client_end).await.expect("client");
+    for run in ["a", "b"] {
+        let answer = client.call_tool(call(Some(run))).await.expect("call");
+        assert_ne!(answer.is_error, Some(true));
+    }
+    let spent = client.call_tool(call(Some("c"))).await.expect("call");
     assert_eq!(
-        inspector.query("SELECT 1 AS a", None).await,
-        Err(ToolFailure::CallBudgetSpent { limit: 2 })
+        spent.is_error,
+        Some(true),
+        "a new scope does not renew the window"
     );
+    let _ = client.cancel().await;
+    let _ = serving.await;
+}
+
+/// The reason `check_login` gives for a login, or `None` when it accepts it.
+async fn refusal(db: &TestDb, login: &support::Login) -> Option<String> {
+    match db.inspector(login, quick_limits()).check_login().await {
+        Ok(name) => {
+            assert_eq!(name, login.name);
+            None
+        }
+        Err(ToolFailure::Refused(why)) => Some(why),
+        Err(other) => panic!("{}: {other}", login.name),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_login_that_can_write_is_refused() {
+async fn only_a_login_that_is_an_observer_and_nothing_else_is_accepted() {
     let db = TestDb::fresh().await;
-    let both = db
-        .login("both", &["factory_observer", "factory_app"], true)
-        .await;
-    let inspector = db.inspector(&both, quick_limits());
-    assert!(matches!(
-        inspector.check_login().await,
-        Err(ToolFailure::Refused(_))
+    let observer = db.observer().await;
+    assert_eq!(refusal(&db, &observer).await, None);
+
+    // The cases of TR-1, each with the part of the reason that names it.
+    let mut cases: Vec<(support::Login, &str)> = Vec::new();
+    for (label, group, expected) in [
+        ("app", "factory_app", "also a member of factory_app"),
+        (
+            "rad",
+            "pg_read_all_data",
+            "also a member of pg_read_all_data",
+        ),
+        ("monitor", "pg_monitor", "also a member of pg_monitor"),
+        (
+            "signal",
+            "pg_signal_backend",
+            "also a member of pg_signal_backend",
+        ),
+        (
+            "stats",
+            "pg_read_all_stats",
+            "also a member of pg_read_all_stats",
+        ),
+    ] {
+        let login = db.login(label, &["factory_observer", group], true).await;
+        cases.push((login, expected));
+    }
+    // A member of the role that owns a table.
+    let owner = db.role("owner").await;
+    db.admin()
+        .await
+        .batch_execute(&format!(
+            "CREATE TABLE public.owned_elsewhere (secret text); ALTER TABLE public.owned_elsewhere OWNER TO \"{owner}\""
+        ))
+        .await
+        .expect("a table owned by another role");
+    cases.push((
+        db.login("ownergroup", &["factory_observer", &owner], true)
+            .await,
+        "also a member of dbtest_owner",
     ));
-    let bare = db.login("bare", &[], true).await;
-    let inspector = db.inspector(&bare, quick_limits());
-    assert!(matches!(
-        inspector.check_login().await,
-        Err(ToolFailure::Refused(_))
+    // The owner of a table itself, with nothing else.
+    let owns = db.login("owns", &["factory_observer"], true).await;
+    db.admin()
+        .await
+        .batch_execute(&format!(
+            "CREATE TABLE public.owned_by_login (n int); ALTER TABLE public.owned_by_login OWNER TO \"{}\"",
+            owns.name
+        ))
+        .await
+        .expect("a table owned by the login");
+    cases.push((owns, "owns objects"));
+    // CREATEROLE, CREATEDB, BYPASSRLS.
+    for (label, attribute, expected) in [
+        ("createrole", "CREATEROLE", "may create roles"),
+        ("createdb", "CREATEDB", "may create roles or databases"),
+        ("bypass", "BYPASSRLS", "bypasses row-level security"),
+    ] {
+        let login = db.login(label, &["factory_observer"], true).await;
+        db.admin()
+            .await
+            .batch_execute(&format!("ALTER ROLE \"{}\" {attribute}", login.name))
+            .await
+            .expect("give the attribute");
+        cases.push((login, expected));
+    }
+    // Not an observer at all.
+    cases.push((
+        db.login("bare", &[], true).await,
+        "is not a member of factory_observer",
     ));
+    for (login, expected) in &cases {
+        let why = refusal(&db, login)
+            .await
+            .unwrap_or_else(|| panic!("{} was accepted", login.name));
+        assert!(why.contains(expected), "{}: {why}", login.name);
+    }
+
+    // The property itself: a grant to PUBLIC that lets every role read a sensitive column, or
+    // write, refuses even the correctly made login.
+    let admin = db.admin().await;
+    admin
+        .batch_execute("GRANT SELECT (idempotency_key) ON jobs TO PUBLIC")
+        .await
+        .expect("grant to PUBLIC");
+    let why = refusal(&db, &observer).await.expect("refused");
+    assert!(
+        why.contains("can read columns factory_observer may not read, in public.jobs"),
+        "{why}"
+    );
+    admin
+        .batch_execute(
+            "REVOKE SELECT (idempotency_key) ON jobs FROM PUBLIC; GRANT INSERT ON inbox TO PUBLIC",
+        )
+        .await
+        .expect("grant a write to PUBLIC");
+    let why = refusal(&db, &observer).await.expect("refused");
+    assert!(why.contains("can write to public.inbox"), "{why}");
+    admin
+        .batch_execute("REVOKE INSERT ON inbox FROM PUBLIC")
+        .await
+        .expect("revoke");
+    assert_eq!(refusal(&db, &observer).await, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

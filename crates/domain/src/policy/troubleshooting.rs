@@ -191,6 +191,10 @@ strict! {
         pub upstream: Upstream,
         /// The tool's name on the upstream server.
         pub upstream_tool: String,
+        /// What the tool does, in one short factual sentence written by the factory. The gateway
+        /// offers this to the model as the tool's description instead of the upstream's own,
+        /// which reaches the model outside the prompt's data delimiters (TR-7).
+        pub description: String,
     }
 }
 
@@ -416,8 +420,15 @@ pub fn check_tighten(
     if candidate.issues.labels != central.issues.labels {
         loosen("issues.labels", "the labels changed");
     }
+    // A tool is the same tool when its id and mapping are; its description is prose.
     for tool in &candidate.tools {
-        if !central.tools.contains(tool) {
+        let known = central.tools.iter().any(|c| {
+            c.id == tool.id
+                && c.gateway_name == tool.gateway_name
+                && c.upstream == tool.upstream
+                && c.upstream_tool == tool.upstream_tool
+        });
+        if !known {
             loosen("tools", "a gateway tool was added or remapped");
         }
     }
