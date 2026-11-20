@@ -24,7 +24,7 @@
   "outputs_schema": {
     "name": "intake-classification",
     "version": 1,
-    "sha256": "sha256:a052f5a004b44946eb49a15614e573c4d28196b22cddffcc585ca3fcc6b9b31e"
+    "sha256": "sha256:006c2470a3c139bf8a0980b331f42beda49ea6dbafb699b95ac3a5f7f508aadd"
   },
   "resource_limits": {
     "max_wall_time_seconds": 120,
@@ -73,7 +73,7 @@
   },
   "prompt": {
     "template_path": "agents/intake-classifier/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:f5683900e954bbb9fd312b18900e5af84f1a2ea4d16479a088112c2348646411"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:714d6a125d743f5c561991bad10485ce28ba65019d50430ffd95c49f57d7b295"
   }
 }

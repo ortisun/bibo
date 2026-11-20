@@ -3,6 +3,13 @@
   "status": "CLASSIFIED",
   "request_kind": "feature",
   "summary": "The request asks for a flag on the word count tool that prints its counts as JSON, so that other programs can read them.",
+  "stated_requirements": [
+    "The tool gains a `--json` option.",
+    "With `--json`, the tool prints one JSON object on standard output with the keys `lines`, `words` and `characters`, in that order.",
+    "Without `--json`, the output stays exactly as it is today.",
+    "If the file does not exist, standard output is empty, standard error explains that the file could not be read, and the exit status is not zero, with and without `--json`.",
+    "No third-party dependency is added."
+  ],
   "domain_tags": [
     "general-software",
     "command-line-tool"

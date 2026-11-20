@@ -1,7 +1,8 @@
 //! The normalized request and the decision, as the documents the stage returns.
 //!
 //! The normalized request is what later stages read. It holds a plain-English title and
-//! description written from the classifier's summary, and it points at the original text by hash.
+//! description written from the classifier's summary and from its list of what the request
+//! states, and it points at the original text by hash.
 //! It holds no byte of the original text: the original is stored once, apart (FR-003), and a later
 //! stage that wants it receives it only as quoted data.
 //!
@@ -50,10 +51,25 @@ pub fn title_from(summary: &str) -> String {
     }
 }
 
-/// The description: the summary, the kind of work, and the reasons for a risk above low.
+/// The description: the summary, what the request states, the kind of work, and the reasons for
+/// a risk above low.
+///
+/// The list of what the request states is how the detail of the request reaches the stages after
+/// this one. They read this description and never the original text, so a summary of two or three
+/// sentences alone would lose every acceptance criterion the person wrote.
 #[must_use]
 pub fn description_from(classification: &Classification) -> String {
     let mut text = classification.summary.trim().to_owned();
+    if !classification.stated_requirements.is_empty() {
+        text.push_str("\n\nWhat the request states:\n");
+        for stated in &classification.stated_requirements {
+            text.push_str("- ");
+            // One line for each item, so that an item cannot pose as another section.
+            text.push_str(&stated.split_whitespace().collect::<Vec<_>>().join(" "));
+            text.push('\n');
+        }
+        text.truncate(text.trim_end().len());
+    }
     text.push_str("\n\nType of work: ");
     text.push_str(classification.kind.as_str());
     text.push('.');

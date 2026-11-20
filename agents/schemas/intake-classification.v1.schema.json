@@ -40,6 +40,14 @@
     "summary": {
       "$ref": "#/$defs/humanText"
     },
+    "stated_requirements": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "$ref": "#/$defs/humanText"
+      },
+      "description": "Everything the request states that the work must meet: each requirement, each acceptance criterion and each constraint, one per item, as a complete sentence. The exact names, option names, numbers, file names and values of the request are kept. Nothing the request does not say is added. Later stages write the specification from the summary and this list and never read the request itself, so a criterion that is left out is lost. An empty list means the request states none."
+    },
     "domain_tags": {
       "type": "array",
       "minItems": 1,

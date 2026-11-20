@@ -112,6 +112,10 @@ pub struct Classification {
     pub kind: RequestKind,
     /// Two or three plain sentences.
     pub summary: String,
+    /// Everything the request states that the work must meet: each requirement, acceptance
+    /// criterion and constraint, one per item, with the request's own names and values. Later
+    /// stages never read the request itself, so this list is how its detail reaches them.
+    pub stated_requirements: Vec<String>,
     /// One to five tags.
     pub domain_tags: Vec<String>,
     /// The hint.
@@ -145,11 +149,12 @@ pub enum ReadProblem {
     Unusable,
 }
 
-const FIELDS: [&str; 11] = [
+const FIELDS: [&str; 12] = [
     "schema_version",
     "status",
     "request_kind",
     "summary",
+    "stated_requirements",
     "domain_tags",
     "risk_hint",
     "risk_reasons",
@@ -158,6 +163,9 @@ const FIELDS: [&str; 11] = [
     "confidence",
     "ignored_instructions",
 ];
+
+/// The most items of `stated_requirements` the schema allows.
+const STATED_MAX: usize = 40;
 
 fn text_list(value: &Value, max: usize) -> Result<Vec<String>, ReadProblem> {
     let items = value.as_array().ok_or(ReadProblem::Shape)?;
@@ -208,6 +216,10 @@ impl Classification {
             .filter(|text| (10..=4000).contains(&text.chars().count()))
             .ok_or(ReadProblem::Shape)?
             .to_owned();
+        let stated_requirements = match object.get("stated_requirements") {
+            Some(stated) => text_list(stated, STATED_MAX)?,
+            None => Vec::new(),
+        };
         let tags = object.get("domain_tags").ok_or(ReadProblem::Shape)?;
         let domain_tags = text_tags(tags)?;
         let risk = object
@@ -270,6 +282,7 @@ impl Classification {
             needs_human,
             kind,
             summary,
+            stated_requirements,
             domain_tags,
             risk,
             risk_reasons,
