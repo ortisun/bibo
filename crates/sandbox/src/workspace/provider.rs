@@ -152,6 +152,16 @@ impl GitWorkspaceProvider {
         repo::fetch_branch(&self.shared, job, target, branch, cancel).await
     }
 
+    async fn do_list_branches(
+        &self,
+        job: JobId,
+        target: &FetchTarget,
+        prefix: &str,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Vec<BranchName>, WorkspaceError> {
+        repo::list_remote_branches(&self.shared, job, target, prefix, cancel).await
+    }
+
     async fn do_repo(&self, job: JobId) -> Result<Box<dyn JobRepo>, WorkspaceError> {
         let dirs = self.shared.job_dirs(job);
         if !dirs.has_store() {
@@ -219,6 +229,23 @@ impl WorkspaceProvider for GitWorkspaceProvider {
         Self: 'async_trait,
     {
         Box::pin(self.do_fetch(job, target, branch, cancel))
+    }
+
+    fn list_branches<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        job: JobId,
+        target: &'life1 FetchTarget,
+        prefix: &'life2 str,
+        cancel: &'life3 dyn CancelSignal,
+    ) -> BoxFuture<'async_trait, Result<Vec<BranchName>, WorkspaceError>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(self.do_list_branches(job, target, prefix, cancel))
     }
 
     fn create<'life0, 'life1, 'async_trait>(

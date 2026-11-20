@@ -647,6 +647,32 @@ impl WorkspaceProvider for FakeWorkspaceProvider {
         Fidelity::Fake
     }
 
+    async fn list_branches(
+        &self,
+        _job: JobId,
+        target: &FetchTarget,
+        prefix: &str,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Vec<BranchName>, WorkspaceError> {
+        if cancel.is_cancelled() {
+            return Err(WorkspaceError::Cancelled);
+        }
+        if target.repo != self.repo {
+            return Err(WorkspaceError::Unauthorized);
+        }
+        let remote = self
+            .remote
+            .state
+            .lock()
+            .expect("the lock is never poisoned");
+        Ok(remote
+            .branches
+            .keys()
+            .filter(|(repo, branch)| *repo == target.repo && branch.as_str().starts_with(prefix))
+            .map(|(_, branch)| branch.clone())
+            .collect())
+    }
+
     async fn fetch(
         &self,
         job: JobId,

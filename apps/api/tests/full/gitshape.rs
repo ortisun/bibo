@@ -95,6 +95,15 @@ impl WorkspaceProvider for GitShapedWorkspaces {
             artifacts: self.artifacts.clone(),
         }))
     }
+    async fn list_branches(
+        &self,
+        job: JobId,
+        target: &FetchTarget,
+        prefix: &str,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Vec<BranchName>, WorkspaceError> {
+        self.inner.list_branches(job, target, prefix, cancel).await
+    }
     async fn dispose_job(&self, job: JobId) -> Result<(), WorkspaceError> {
         self.inner.dispose_job(job).await
     }

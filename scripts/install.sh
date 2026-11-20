@@ -35,6 +35,12 @@
 #                                                      variable names the factory's GitHub App, the Action does nothing and
 #                                                      says so in its log. Use it only when the App does not exist yet.
 #   --no-tools                                         Skip the host-tools step: leave the factory's own tools as they are.
+#   --gitflow-mode develop|release                     Where feature/ and bugfix/ branches close: into develop (classic
+#                                                      gitflow) or straight into the open release/ branch. Without it the
+#                                                      installer infers the mode from the project's history, or asks.
+#   --interactive | --non-interactive                  Ask for what cannot be inferred, or never ask. The default asks when
+#                                                      standard input is a terminal and the run is not --check.
+#   --no-git-policy                                    Skip the settings, git-hooks and gitflow steps (and their files).
 #   --help                                             Show this text.
 #
 # What each step does
@@ -81,6 +87,24 @@
 #                  a person to review. No option of an existing field is ever created, renamed or deleted. A mapping
 #                  file that is already there is only checked against the board. The credential for the board is
 #                  checked by name only.
+#   settings       With --checkout: the project's settings in .factory/repository.json: the GitHub repository, the GitHub
+#                  Projects board (or none) and the gitflow closing mode, plus the Conventional Commits types. A value
+#                  comes from a flag, from the file, or is inferred: the repository from the git remote (origin, or the
+#                  one GitHub remote, or `gh repo view`), the board from .github/project-board.json or the one board
+#                  linked to the repository, the closing mode from the merges of feature and bugfix branches (merged pull
+#                  requests and git's merge commits: three or more, four in five the same way). What cannot be inferred
+#                  is asked on the terminal (a new project); without a terminal it is NEEDS. An inferred repository is
+#                  used as --repo, so the GitHub steps run for it. A flag that disagrees with the file stops the run
+#                  before anything changes. A folder that is not a git repository is offered 'git init -b main'. The file
+#                  is written after the board step, so a board made by --create-project is recorded with its number.
+#   git-hooks      With --checkout: the hooks in .github/githooks (commit-msg, pre-commit, pre-push), turned on with
+#                  'git config core.hooksPath .github/githooks'. They run .github/scripts/git_policy.py, which also asks
+#                  for the settings when they are missing. A core.hooksPath that is set to something else, or hooks
+#                  already active in .git/hooks (git-lfs, for one), are left alone and reported: the person decides.
+#                  The pull request check .github/workflows/git-policy.yml is copied with the workflow files.
+#   gitflow        With --checkout: the long-lived branches. A missing develop is created from main, locally; the
+#                  installer never pushes, so pushing it is left to the person. Reads whether the default branch on
+#                  GitHub is develop, the branch the factory's pull requests go to.
 #   project-map    Whether every directory that holds code has a README.md or EGM.md contract. EGM's bootstrap writes
 #                  them, and it needs a person (it asks before it maps a large tree), so this script only checks.
 #
@@ -122,6 +146,9 @@ BOARD_TOOL="$SELF_DIR/lib/project_board.py"
 BOARD_POLICY="$ROOT/onboarding/github/project-board-policy.json"
 BOARD_CONFIG_REL=".github/project-board.json"
 MAP_TOOL="$SELF_DIR/lib/project_map.py"
+POLICY_TOOL="$SELF_DIR/lib/git_policy.py"
+SETTINGS_REL=".factory/repository.json"
+HOOKS_REL=".github/githooks"
 RENDERED="$ROOT/onboarding/github/issue-workflow.json"
 
 check_only=0
@@ -130,6 +157,9 @@ agent="auto"
 want_mcp=1
 want_speckit=1
 want_tools=1
+want_policy=1
+interactive=auto
+gitflow_mode=""
 allow_missing_bot=0
 # Set to 1 by the gate on FACTORY_BOT_LOGIN: the steps that change things do not run.
 HALT=0
@@ -152,6 +182,14 @@ while [ $# -gt 0 ]; do
     --no-mcp) want_mcp=0 ;;
     --no-speckit) want_speckit=0 ;;
     --no-tools) want_tools=0 ;;
+    --no-git-policy) want_policy=0 ;;
+    --interactive) interactive=yes ;;
+    --non-interactive) interactive=no ;;
+    --gitflow-mode)
+      [ $# -ge 2 ] || usage_error "--gitflow-mode needs develop or release"
+      gitflow_mode=$2
+      shift
+      ;;
     --allow-missing-bot-login) allow_missing_bot=1 ;;
     --agent)
       [ $# -ge 2 ] || usage_error "--agent needs auto, claude, codex or both"
@@ -201,8 +239,14 @@ if [ -n "$repo" ]; then
   case "$repo" in */*) ;; *) usage_error "--repo must look like OWNER/NAME" ;; esac
   [ -n "$checkout" ] || usage_error "--repo goes with --checkout, so the labels and the files come from one install"
 fi
+case "$gitflow_mode" in "" | develop | release) ;; *) usage_error "--gitflow-mode must be develop or release" ;; esac
+if [ -n "$gitflow_mode" ] && { [ -z "$checkout" ] || [ "$want_policy" -eq 0 ]; }; then
+  usage_error "--gitflow-mode goes with --checkout and the git policy"
+fi
 if [ -n "$project" ] || [ -n "$create_project" ]; then
-  [ -n "$repo" ] || usage_error "--project and --create-project go with --repo"
+  # Without --repo, the repository may come from the project's settings or its git remote (the settings step).
+  [ -n "$repo" ] || { [ -n "$checkout" ] && [ "$want_policy" -eq 1 ]; } ||
+    usage_error "--project and --create-project go with --repo (or with --checkout, which can infer the repository)"
   [ -n "$project" ] && [ -n "$create_project" ] && usage_error "use --project or --create-project, not both"
   [ "$want_board" -eq 1 ] || usage_error "--no-board cannot be combined with --project or --create-project"
 fi
@@ -447,6 +491,282 @@ step_tools() {
     report BLOCKED agents "no coding agent is installed: neither claude nor codex is on the PATH"
     needs_you "Install Claude Code (https://claude.com/claude-code) or Codex (https://developers.openai.com/codex), then run this script again."
   fi
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Step 1b: the project's settings (.factory/repository.json): repository, board, gitflow closing mode
+# ---------------------------------------------------------------------------------------------------------------
+# scripts/lib/git_policy.py does the finding and the asking; this step uses what it found. The questions go to the
+# terminal (/dev/tty), so the lines it prints here stay machine-readable.
+SETTINGS_STATE=""   # present | absent | invalid | not-git | conflict; empty when the step did not run
+SETTINGS_REPO=""
+SETTINGS_BOARD=""   # OWNER/NUMBER, none or new:OWNER; empty while unknown
+SETTINGS_MODE=""
+SETTINGS_MAIN="main"
+SETTINGS_DEVELOP="develop"
+NO_BOARD_REASON="--no-board"
+
+# git in the checkout for configuration and refs only, without letting its configuration start a program.
+checkout_git() { GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$checkout" "$@"; }
+
+asks_questions() {
+  [ "$check_only" -eq 0 ] || return 1
+  case "$interactive" in
+    yes) return 0 ;;
+    auto) [ -t 0 ] && return 0 ;;
+  esac
+  return 1
+}
+
+step_settings() {
+  [ -n "$checkout" ] && [ "$want_policy" -eq 1 ] || return 0
+  if refuse_link settings ".factory"; then
+    SETTINGS_STATE=conflict
+    return
+  fi
+  local -a args=(resolve --checkout "$checkout")
+  if [ -n "$repo" ]; then args+=(--repo "$repo"); fi
+  if [ "$want_board" -eq 0 ]; then
+    args+=(--board none)
+  elif [ -n "$project" ]; then
+    args+=(--board "$project")
+  elif [ -n "$create_project" ]; then
+    args+=(--board "new:$create_project" --allow-new-board)
+  fi
+  if [ -n "$gitflow_mode" ]; then args+=(--closing-mode "$gitflow_mode"); fi
+  if [ "$HAVE_GH" -ne 1 ]; then args+=(--no-gh); fi
+  if asks_questions; then
+    args+=(--interactive)
+    if [ -z "$create_project" ]; then args+=(--allow-new-board); fi
+  fi
+  local out rc=0
+  out=$(python3 -I "$POLICY_TOOL" "${args[@]}" 2>"$WORK_DIR/settings.err") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    report BLOCKED settings "scripts/lib/git_policy.py resolve ended with exit code $rc"
+    indent_clean <"$WORK_DIR/settings.err"
+    FAILED=1
+    SETTINGS_STATE=conflict
+    return
+  fi
+  local key value sure source detail="" needs="" conflicts="" found=""
+  while IFS=$'\t' read -r key value sure source; do
+    case "$key" in
+      settings)
+        SETTINGS_STATE=$value
+        detail=$sure
+        ;;
+      created) done_for_you "Created a git repository in $checkout (git init -b main)." ;;
+      repository | board | closing_mode)
+        [ "$value" != "-" ] || continue
+        case "$key" in
+          repository) SETTINGS_REPO=$value ;;
+          board) SETTINGS_BOARD=$value ;;
+          closing_mode) SETTINGS_MODE=$value ;;
+        esac
+        found="$found; $key $value (from $source)"
+        ;;
+      main_branch) SETTINGS_MAIN=$value ;;
+      develop_branch) SETTINGS_DEVELOP=$value ;;
+      need) needs="$needs"$'\n'"$value: $sure" ;;
+      conflict) conflicts="$conflicts"$'\n'"$value: $sure" ;;
+    esac
+  done <<EOF_SETTINGS
+$out
+EOF_SETTINGS
+
+  if [ -n "$conflicts" ]; then
+    printf '%s\n' "${conflicts#$'\n'}" | while IFS= read -r line; do report BLOCKED settings "$line"; done
+    needs_you "Nothing was installed or changed. A flag disagrees with $SETTINGS_REL (lines above): edit the file, or run this script again with the values it records."
+    SETTINGS_STATE=conflict
+    HALT=1
+    return
+  fi
+  case "$SETTINGS_STATE" in
+    not-git)
+      report NEEDS settings "$detail"
+      needs_you "Make $checkout a git repository ('git init -b main' for a new project, or clone the project), then run this script again. Run it in a terminal and it offers to do it for you."
+      return
+      ;;
+    invalid)
+      report NEEDS settings "$SETTINGS_REL is not valid: $detail"
+      needs_you "Fix $SETTINGS_REL, or delete it and run this script again in a terminal to answer the questions."
+      return
+      ;;
+    present) report PRESENT settings "$SETTINGS_REL: repository $SETTINGS_REPO, board $SETTINGS_BOARD, gitflow closing mode $SETTINGS_MODE" ;;
+    *)
+      if [ -n "$found" ]; then report NOTE settings "found:${found#;}"; fi
+      if [ -n "$needs" ]; then
+        printf '%s\n' "${needs#$'\n'}" | while IFS= read -r line; do report NEEDS settings "$line"; done
+        needs_you "Give the missing settings (lines above) as flags, or run this script in a terminal to answer the questions. A new project has no history to infer from. The git hooks ask for them too, at the first commit."
+      fi
+      ;;
+  esac
+
+  # What was found is used as if it had been given.
+  if [ -z "$repo" ] && [ -n "$SETTINGS_REPO" ]; then repo=$SETTINGS_REPO; fi
+  case "$SETTINGS_BOARD" in
+    none)
+      if [ "$want_board" -eq 1 ]; then NO_BOARD_REASON="$SETTINGS_REL records no board"; fi
+      want_board=0
+      ;;
+    new:*) if [ -z "$create_project" ]; then create_project=${SETTINGS_BOARD#new:}; fi ;;
+    */*) if [ -z "$project" ] && [ -z "$create_project" ]; then project=$SETTINGS_BOARD; fi ;;
+  esac
+}
+
+# Written after the board step, so that a board made by --create-project (or a "new" answer) is recorded by number.
+step_settings_write() {
+  [ -n "$checkout" ] && [ "$want_policy" -eq 1 ] && [ "$SETTINGS_STATE" = absent ] || return 0
+  [ -n "$SETTINGS_REPO" ] && [ -n "$SETTINGS_MODE" ] && [ -n "$SETTINGS_BOARD" ] || return 0
+  local board=$SETTINGS_BOARD config="$checkout/$BOARD_CONFIG_REL"
+  case "$board" in
+    new:*)
+      if [ -f "$config" ] && [ ! -L "$config" ]; then
+        board="$(board_config_field "$config" owner)/$(board_config_field "$config" number)"
+      elif [ "$check_only" -eq 1 ]; then
+        report WOULD_ADD settings "$SETTINGS_REL would be written once the board exists"
+        return
+      else
+        report NEEDS settings "$SETTINGS_REL was not written: the new board is not there (see the project-board line)"
+        needs_you "Run this script again once the board exists, with --project OWNER/NUMBER."
+        return
+      fi
+      ;;
+  esac
+  local -a args=(write --checkout "$checkout" --repo "$SETTINGS_REPO" --board "$board" --closing-mode "$SETTINGS_MODE")
+  if [ "$check_only" -eq 1 ]; then args+=(--check); fi
+  local out rc=0 state detail
+  out=$(python3 -I "$POLICY_TOOL" "${args[@]}" 2>&1) || rc=$?
+  state=${out%%$'\t'*}
+  detail=${out#*$'\t'}
+  case "$state" in
+    ADDED | UPDATED)
+      report "$state" settings "$detail"
+      done_for_you "Recorded the project's settings in $SETTINGS_REL: commit it with the other files."
+      ;;
+    PRESENT | WOULD_ADD) report "$state" settings "$detail" ;;
+    NEEDS | BLOCKED)
+      report "$state" settings "$detail"
+      needs_you "Fix $SETTINGS_REL (see the settings line above) and run this script again."
+      ;;
+    *)
+      report BLOCKED settings "could not write $SETTINGS_REL (exit code $rc)"
+      printf '%s\n' "$out" | indent_clean
+      FAILED=1
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Step 6a: the git hooks, and the long-lived gitflow branches
+# ---------------------------------------------------------------------------------------------------------------
+HOOK_NAMES="commit-msg pre-commit pre-push"
+
+step_hooks() {
+  [ -n "$checkout" ] && [ "$want_policy" -eq 1 ] || return 0
+  checkout_git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  local name file current common active=""
+  if [ "$check_only" -eq 0 ]; then
+    # A copied file is written with mode 644; a hook must be executable, and git records the mode.
+    for name in $HOOK_NAMES; do
+      file="$checkout/$HOOKS_REL/$name"
+      if [ -f "$file" ] && [ ! -L "$file" ] && [ ! -x "$file" ]; then chmod 755 "$file"; fi
+    done
+  fi
+  current=$(checkout_git config --get core.hooksPath 2>/dev/null) || current=""
+  common=$(checkout_git rev-parse --git-common-dir 2>/dev/null) || common=".git"
+  case "$common" in /*) ;; *) common="$checkout/$common" ;; esac
+  for file in "$common"/hooks/*; do
+    [ -f "$file" ] && [ -x "$file" ] || continue
+    case "$file" in *.sample) continue ;; esac
+    active="$active ${file##*/}"
+  done
+  case "$current" in
+    "$HOOKS_REL" | "./$HOOKS_REL" | "$checkout/$HOOKS_REL")
+      report PRESENT git-hooks "core.hooksPath is $HOOKS_REL"
+      ;;
+    "")
+      if [ -n "$active" ]; then
+        report NEEDS git-hooks "hooks are active in .git/hooks ($(printf '%s' "$active" | sed 's/^ //')); core.hooksPath was not set, because that would turn them off"
+        needs_you "Decide how the hooks run together: move the hooks of .git/hooks into $HOOKS_REL and run 'git config core.hooksPath $HOOKS_REL', or keep them and call the policy from them: 'python3 .github/scripts/git_policy.py hook commit-msg \"\$1\"' (and hook pre-commit, hook pre-push \"\$@\")."
+      elif [ "$check_only" -eq 1 ]; then
+        report WOULD_ADD git-hooks "core.hooksPath would be set to $HOOKS_REL"
+      elif checkout_git config core.hooksPath "$HOOKS_REL" 2>/dev/null; then
+        report ADDED git-hooks "core.hooksPath is now $HOOKS_REL: commit-msg, pre-commit and pre-push check the git policy"
+        done_for_you "Turned on the git hooks of $HOOKS_REL in this clone."
+        remember "Git does not turn hooks on by itself. Each person who clones the project runs once: git config core.hooksPath $HOOKS_REL . The pull request check (.github/workflows/git-policy.yml) applies the same rules to everybody: make it a required status check of $SETTINGS_MAIN and $SETTINGS_DEVELOP."
+      else
+        report BLOCKED git-hooks "could not set core.hooksPath"
+        FAILED=1
+      fi
+      ;;
+    *)
+      report NEEDS git-hooks "core.hooksPath is already '$current'; it was left alone"
+      needs_you "This clone runs its hooks from $current. Call the factory's policy from them: 'python3 .github/scripts/git_policy.py hook commit-msg \"\$1\"', 'hook pre-commit' and 'hook pre-push \"\$@\"'. Or set 'git config core.hooksPath $HOOKS_REL' if those hooks are no longer needed."
+      ;;
+  esac
+}
+
+step_gitflow() {
+  [ -n "$checkout" ] && [ "$want_policy" -eq 1 ] && [ -n "$SETTINGS_MODE" ] || return 0
+  checkout_git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  local main=$SETTINGS_MAIN develop=$SETTINGS_DEVELOP main_ref="" remote_develop remotes_known
+  if ! checkout_git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    report NEEDS gitflow "the repository has no commit yet, so $develop cannot be made from $main"
+    needs_you "Make the first commit on $main, for example: git add -A && git commit -m 'chore: set up the factory' . The hooks accept the first commit on $main. Then run this script again: it creates $develop from $main."
+    return
+  fi
+  if checkout_git show-ref --verify --quiet "refs/heads/$main"; then
+    main_ref=$main
+  else
+    main_ref=$(checkout_git for-each-ref --format='%(refname:short)' "refs/remotes/*/$main" 2>/dev/null | head -n 1)
+  fi
+  remote_develop=$(checkout_git for-each-ref --format='%(refname:short)' "refs/remotes/*/$develop" 2>/dev/null | head -n 1)
+  remotes_known=$(checkout_git remote 2>/dev/null | head -n 1)
+  local push_hint="Push it: git push -u ${remotes_known:-origin} $develop"
+  if [ -z "$remotes_known" ]; then
+    push_hint="Add the GitHub remote and push both branches: git remote add origin https://github.com/${SETTINGS_REPO:-OWNER/NAME}.git && git push -u origin $main $develop"
+  fi
+  if checkout_git show-ref --verify --quiet "refs/heads/$develop"; then
+    if [ -n "$remote_develop" ]; then
+      report PRESENT gitflow "$develop exists here and on the remote ($remote_develop)"
+    else
+      report NEEDS gitflow "$develop exists here but not on the remote (as last fetched)"
+      needs_you "$push_hint"
+    fi
+  elif [ -n "$remote_develop" ]; then
+    report PRESENT gitflow "$develop is on the remote ($remote_develop); 'git switch $develop' makes a local branch"
+  elif [ -z "$main_ref" ]; then
+    report NEEDS gitflow "there is no $main branch to start $develop from"
+    needs_you "Create $main (the production branch of $SETTINGS_REL), or correct gitflow.main_branch in $SETTINGS_REL, and run this script again."
+  elif [ "$check_only" -eq 1 ]; then
+    report WOULD_ADD gitflow "$develop would be created from $main_ref"
+  elif checkout_git branch "$develop" "$main_ref" >/dev/null 2>&1; then
+    report ADDED gitflow "created $develop from $main_ref, in this clone only"
+    done_for_you "Created the branch $develop from $main_ref."
+    needs_you "$push_hint"
+  else
+    report BLOCKED gitflow "could not create $develop from $main_ref"
+    FAILED=1
+  fi
+  if [ "$SETTINGS_MODE" = release ] &&
+    [ -z "$(checkout_git for-each-ref --format='%(refname)' 'refs/heads/release/*' 'refs/remotes/*/release/*' 2>/dev/null | head -n 1)" ]; then
+    remember "This project closes feature and bugfix branches straight into the open release branch, and there is none yet. Start one from $develop when a release begins, for example: git switch -c release/1.0.0 $develop"
+  fi
+  if [ -n "$repo" ] && [ "$HAVE_GH" -eq 1 ]; then
+    local default
+    default=$(gh api "repos/$repo" --jq .default_branch 2>/dev/null) || default=""
+    if [ -n "$default" ] && [ "$default" != "$develop" ]; then
+      remember "The default branch of $repo is $default. In gitflow, make $develop the default branch (Settings, General): people's pull requests open against it unless they pick another base. The factory reads $SETTINGS_REL on the default branch, so keep the file the same on $default and $develop."
+    fi
+  fi
+  remember "The factory's engine reads $SETTINGS_REL on the default branch: a job starts from $develop (or, in release mode, from the one open release/ branch) and opens its pull request there, from a factory/job-... branch, and its commits and pull request title are Conventional Commits. In release mode a job is BLOCKED while no release branch, or more than one, is open."
+  local manifest
+  for manifest in "$checkout/.factory/project.yaml" "$checkout/.factory/project.yml" "$checkout/.factory/project.json"; do
+    if [ -f "$manifest" ] && [ ! -L "$manifest" ] && ! grep -q 'title-type-tag' "$manifest" 2>/dev/null; then
+      remember "Conventional Commits titles start with a type tag, and the factory's readability rule title-type-tag warns about that (it never blocks). To silence the warning in the factory's own reports, add title-type-tag to documentation.disabled_readability_rules in .factory/${manifest##*/} (ADR 0009 allows it)."
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -879,6 +1199,14 @@ step_files() {
   copy_one "$BOARD_TOOL" ".github/scripts/project_board.py"
   copy_one "$BOARD_POLICY" ".github/project-board-policy.json"
   copy_one "$ROOT/onboarding/github/workflows/issue-workflow.yml" ".github/workflows/issue-workflow.yml"
+  if [ "$want_policy" -eq 1 ]; then
+    copy_one "$POLICY_TOOL" ".github/scripts/git_policy.py"
+    copy_one "$ROOT/onboarding/github/workflows/git-policy.yml" ".github/workflows/git-policy.yml"
+    local hook
+    for hook in "$ROOT"/onboarding/github/githooks/*; do
+      copy_one "$hook" "$HOOKS_REL/$(basename "$hook")"
+    done
+  fi
   local template
   for template in "$ROOT"/onboarding/github/ISSUE_TEMPLATE/*.yml; do
     copy_one "$template" ".github/ISSUE_TEMPLATE/$(basename "$template")"
@@ -1274,7 +1602,7 @@ sys.exit(0 if "FACTORY_BOARD_TOKEN" in secret or ("FACTORY_BOARD_APP_PRIVATE_KEY
 step_board() {
   [ -n "$repo" ] || return 0
   if [ "$want_board" -eq 0 ]; then
-    report SKIPPED project-board "--no-board"
+    report SKIPPED project-board "$NO_BOARD_REASON"
     return
   fi
   if [ "$HAVE_GH" -ne 1 ]; then
@@ -1473,7 +1801,7 @@ step_uncommitted() {
   local changed
   # Only the paths that this script and EGM's bootstrap write. Other work in progress is the person's business.
   # The checkout is not trusted: its .git/config could name a command (core.fsmonitor) that git would run.
-  changed=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" status --porcelain -- .github .mcp.json .codex .specify .agents .claude/skills '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
+  changed=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" status --porcelain -- .github .factory .mcp.json .codex .specify .agents .claude/skills '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$changed" -gt 0 ]; then
     report NEEDS uncommitted "$changed installed or generated path(s) are not committed"
     needs_you "Review the changes in $checkout and merge them by pull request, so that the map is on the default branch before a person attests it. The engine cannot see your repository: it records the commit that you attest and does not check that the commit exists. A second person enables the repository after the one who attested the map; if you are the only maintainer, register the repository with 'factory-cli repository register --single-maintainer' (see the onboarding guide, 'A single-maintainer repository'). Registering, confirming and enabling are requests that the worker applies: each command waits up to 60 seconds for it (exit code 3 means the worker had not applied it yet; look again with 'factory-cli repository change REQUEST', do not send it again)."
@@ -1485,7 +1813,8 @@ step_uncommitted() {
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$check_only" -eq 1 ]; then printf 'Checking only. Nothing will be changed.\n'; fi
 step_tools
-step_bot_gate
+step_settings
+if [ "$HALT" -eq 0 ]; then step_bot_gate; fi
 if [ "$HALT" -eq 0 ]; then
   step_host_tools
   step_egm
@@ -1494,6 +1823,9 @@ if [ "$HALT" -eq 0 ]; then
   step_speckit
   step_labels
   step_board
+  step_settings_write
+  step_hooks
+  step_gitflow
   step_review_rule
   step_map
   step_uncommitted

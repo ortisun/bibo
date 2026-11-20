@@ -364,6 +364,22 @@ pub trait WorkspaceProvider: Send + Sync {
         cancel: &dyn CancelSignal,
     ) -> Result<FetchedBase, WorkspaceError>;
 
+    /// The branches the remote has whose names start with `prefix`, without `refs/heads/`, sorted.
+    /// It reads the remote with the fetch credential (`git ls-remote --heads`) and fetches nothing.
+    /// The factory uses it to find the open `release/` branch of a project whose gitflow closes
+    /// feature branches there (`factory_domain::policy::git_conventions`). A name that is not a
+    /// [`BranchName`] is left out.
+    ///
+    /// Additive change to ports 1.2 (2026-11-20). The answer is the remote's at the time of the
+    /// call; the caller fetches the branch it picks, which settles the commit.
+    async fn list_branches(
+        &self,
+        job: JobId,
+        target: &FetchTarget,
+        prefix: &str,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Vec<BranchName>, WorkspaceError>;
+
     /// A sparse, detached worktree of `req.base`. Paths the rules classify as `Hidden` are not in
     /// it, except in a `Verify` workspace for the holdout globs.
     async fn create(

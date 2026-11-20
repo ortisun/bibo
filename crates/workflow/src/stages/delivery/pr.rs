@@ -22,6 +22,7 @@ use super::input::Dossier;
 use super::manifest::{ChangeFacts, score_of};
 use super::seams::DeliveryTarget;
 use super::text::{TextRefused, ensure_no_secret, finish, fragment};
+use crate::conventions::Conventions;
 
 /// The hosts a link in the pull request may point to.
 pub const LINK_HOSTS: [&str; 1] = ["github.com"];
@@ -41,6 +42,9 @@ pub struct PrFacts<'a> {
     pub risk: &'a RiskAssessment,
     /// The size of the change.
     pub change: &'a ChangeFacts,
+    /// The project's git conventions, when it keeps them: the title becomes a Conventional
+    /// Commits header, which is the commit a squash merge writes.
+    pub conventions: Option<&'a Conventions>,
 }
 
 /// A title and a body that passed the checks of [`finish`].
@@ -100,8 +104,10 @@ pub fn compose(facts: &PrFacts<'_>, redactor: &Redactor) -> Result<PrText, TextR
     for link in &facts.target.links {
         ensure_no_secret(&link.label, redactor)?;
     }
-    let (title, _) = safe_title(d.specification.title.as_str(), issue, redactor);
-    let spec_title = title.clone();
+    let (spec_title, _) = safe_title(d.specification.title.as_str(), issue, redactor);
+    let title = facts
+        .conventions
+        .map_or_else(|| spec_title.clone(), |c| c.title(&spec_title));
 
     let mut body = String::new();
     body.push_str(&format!(

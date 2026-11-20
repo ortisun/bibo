@@ -281,20 +281,26 @@ class Case(unittest.TestCase):
         write_executable(os.path.join(self.bin, "gh"), FAKE_GH)
 
     # -- helpers -----------------------------------------------------------------------------
-    def run_install(self, *args, env=None, with_claude=True, with_gh=True, token=None, shell=(), tools=False):
-        """tools=False adds --no-tools: the host-tools step has its own tests (HostTools here, test_setup_tools.py)."""
+    def run_install(self, *args, env=None, with_claude=True, with_gh=True, token=None, shell=(), tools=False, policy=False):
+        """tools=False adds --no-tools: the host-tools step has its own tests (HostTools here, test_setup_tools.py).
+        policy=False adds --no-git-policy: the settings, git-hooks and gitflow steps have their own tests (GitPolicy here,
+        test_git_policy.py). Standard input is never a terminal here, so the installer asks nothing unless a test passes
+        --interactive with FACTORY_PROMPT_TTY."""
         if not with_claude:
             os.remove(os.path.join(self.bin, "claude"))
         if not with_gh:
             os.remove(os.path.join(self.bin, "gh"))
         if not tools:
             args = ("--no-tools", *args)
+        if not policy:
+            args = ("--no-git-policy", *args)
         environment = {"PATH": self.bin + ":/usr/bin:/bin", "FAKE_STATE": self.state, "HOME": self.tmp,
                        "FACTORY_TOOLS_PREFIX": os.path.join(self.tmp, "factory-tools")}
         if token:
             environment["FACTORY_GITHUB_MCP_TOKEN"] = token
         environment.update(env or {})
-        done = subprocess.run([BASH, *shell, INSTALL, *args], capture_output=True, text=True, env=environment)
+        done = subprocess.run([BASH, *shell, INSTALL, *args], capture_output=True, text=True, env=environment,
+                              stdin=subprocess.DEVNULL)
         return done.returncode, done.stdout + done.stderr
 
     def add_codex(self):
@@ -1999,6 +2005,177 @@ class HostTools(Case):
         self.assertEqual(code, 0, out)
         self.assertTrue(self.has(out, "SKIPPED", "host-tools", "--no-tools"), out)
         self.assertNotIn("gitleaks", out)
+
+
+class GitPolicy(Case):
+    """The settings (.factory/repository.json), the git hooks and the gitflow branches (scripts/lib/git_policy.py has
+    its own tests in test_git_policy.py; here, that the installer finds, asks, records and uses them)."""
+
+    GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "A", "GIT_AUTHOR_EMAIL": "a@example.invalid",
+               "GIT_COMMITTER_NAME": "A", "GIT_COMMITTER_EMAIL": "a@example.invalid"}
+
+    def setUp(self):
+        super().setUp()
+        self.egm_installed()
+
+    def git(self, *args, check=True):
+        environment = dict(self.GIT_ENV, PATH="/usr/bin:/bin", HOME=self.tmp)
+        done = subprocess.run(["git", *args], cwd=self.project, capture_output=True, text=True, env=environment)
+        if check and done.returncode != 0:
+            raise AssertionError("git %s: %s" % (" ".join(args), done.stdout + done.stderr))
+        return done
+
+    def make_repo(self, commit=True, remote="git@github.com:acme/widgets.git"):
+        self.git("init", "-q", "-b", "main")
+        if remote:
+            self.git("remote", "add", "origin", remote)
+        if commit:
+            self.git("commit", "-q", "--allow-empty", "-m", "chore: start")
+
+    def install(self, *args, env=None, token=None):
+        return self.run_install("--checkout", self.project, *args, policy=True, token=token,
+                                env=dict(self.GIT_ENV, **(env or {})))
+
+    def settings(self):
+        return json.loads(self.read(".factory/repository.json"))
+
+    def answers(self, *lines):
+        path = os.path.join(self.tmp, "answers.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("".join(line + "\n" for line in lines))
+        return path
+
+    def test_an_existing_project_gets_its_settings_hooks_and_develop_branch(self):
+        self.make_repo()
+        code, out = self.install("--gitflow-mode", "develop", "--no-board")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NOTE", "settings", "found: repository acme/widgets (from the remote origin); "
+                                 "board none (from --no-board); closing_mode develop (from --gitflow-mode)"), out)
+        self.assertTrue(self.has(out, "ADDED", "settings", ".factory/repository.json: repository acme/widgets, board none"),
+                        out)
+        self.assertEqual(self.settings()["gitflow"]["closing_mode"], "develop")
+        self.assertIsNone(self.settings()["project_board"])
+        # The inferred repository is used as --repo: the GitHub steps ran for it.
+        self.assertTrue(any(c.startswith("gh label list --repo acme/widgets") for c in self.calls()), self.calls())
+        for hook in ("commit-msg", "pre-commit", "pre-push"):
+            self.assertTrue(os.access(os.path.join(self.project, ".github", "githooks", hook), os.X_OK), hook)
+        self.assertTrue(self.exists(".github/scripts/git_policy.py"))
+        self.assertTrue(self.exists(".github/workflows/git-policy.yml"))
+        self.assertEqual(self.git("config", "--get", "core.hooksPath").stdout.strip(), ".github/githooks")
+        self.assertTrue(self.has(out, "ADDED", "git-hooks"), out)
+        self.assertTrue(self.has(out, "ADDED", "gitflow", "created develop from main"), out)
+        self.assertEqual(self.git("rev-parse", "develop").stdout, self.git("rev-parse", "main").stdout)
+        self.assertIn("Push it: git push -u origin develop", out)
+        self.assertIn("The default branch of acme/widgets is main", out)
+        self.assertIn("The factory's engine reads .factory/repository.json on the default branch", out)
+
+    def test_a_second_run_after_the_files_are_merged_is_ready(self):
+        self.make_repo()
+        self.install("--gitflow-mode", "develop", "--no-board")
+        # The person commits the files on a gitflow branch, through the hooks, and develop is on the remote.
+        self.git("switch", "-q", "-c", "feature/factory-setup")
+        self.put_project({"README.md": "# Widgets\n"})
+        self.git("add", "-A")
+        done = self.git("commit", "-q", "-m", "set up the factory", check=False)
+        self.assertNotEqual(done.returncode, 0, "the commit-msg hook should refuse this message")
+        self.git("commit", "-q", "-m", "chore: set up the factory")
+        self.git("update-ref", "refs/remotes/origin/develop", "develop")
+        code, out = self.install(token=DUMMY_TOKEN)
+        self.assertTrue(self.has(out, "PRESENT", "settings", ".factory/repository.json: repository acme/widgets, "
+                                 "board none, gitflow closing mode develop"), out)
+        self.assertTrue(self.has(out, "SKIPPED", "project-board", ".factory/repository.json records no board"), out)
+        self.assertTrue(self.has(out, "PRESENT", "git-hooks"), out)
+        self.assertTrue(self.has(out, "PRESENT", "gitflow", "develop exists here and on the remote"), out)
+        self.assertEqual((code, is_ready(out)), (0, True), out)
+
+    def test_without_a_terminal_a_new_project_is_told_what_is_missing(self):
+        self.make_repo(commit=False)
+        code, out = self.install()
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NEEDS", "settings", "closing_mode: a new project: no history to judge by"), out)
+        self.assertTrue(self.has(out, "NEEDS", "settings", "board: no board is linked to acme/widgets"), out)
+        self.assertFalse(self.exists(".factory/repository.json"))
+        self.assertFalse(self.has(out, "ADDED", "gitflow"), out)
+
+    def test_answers_on_the_terminal_and_a_new_board_recorded_by_its_number(self):
+        self.make_repo()
+        answers = self.answers("", "new", "2")
+        code, out = self.install("--interactive", env={"FACTORY_PROMPT_TTY": answers})
+        self.assertTrue(self.has(out, "NOTE", "settings", "found: repository acme/widgets (from the remote origin, "
+                                 "confirmed); board new:@me (from your answer); closing_mode release (from your answer)"),
+                        out)
+        self.assertTrue(any(c.startswith("gh project create --owner me-user") for c in self.calls()), self.calls())
+        self.assertEqual(self.settings()["project_board"], {"owner": "me-user", "number": 9})
+        self.assertEqual(self.settings()["gitflow"]["closing_mode"], "release")
+        self.assertIn("there is none yet", out)
+        self.assertNotEqual(code, 1, out)
+
+    def test_check_changes_nothing(self):
+        self.make_repo()
+        before = snapshot(self.project)
+        code, out = self.install("--check", "--gitflow-mode", "release", "--no-board")
+        self.assertEqual(code, 3, out)
+        for step in ("settings", "git-hooks", "gitflow"):
+            self.assertTrue(self.has(out, "WOULD_ADD", step), step + "\n" + out)
+        self.assertEqual(snapshot(self.project), before)
+
+    def test_a_flag_that_disagrees_with_the_settings_stops_before_any_change(self):
+        self.make_repo()
+        self.install("--gitflow-mode", "develop", "--no-board")
+        before, calls = snapshot(self.project), len(self.calls())
+        code, out = self.install("--repo", "other/thing")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "BLOCKED", "settings", "repository: --repo says other/thing"), out)
+        self.assertIn("Nothing was installed or changed", out)
+        self.assertEqual(snapshot(self.project), before)
+        self.assertEqual([c for c in self.calls()[calls:] if c.startswith("gh ")], [])
+
+    def test_a_folder_that_is_not_a_git_repository(self):
+        code, out = self.install("--gitflow-mode", "develop", "--no-board")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NEEDS", "settings"), out)
+        self.assertIn("is not a git repository", out)
+        self.assertNotIn("git-hooks", out)
+
+    def test_a_new_folder_is_made_a_repository_when_the_person_says_yes(self):
+        answers = self.answers("yes", "acme/widgets", "none", "1")
+        code, out = self.install("--interactive", env={"FACTORY_PROMPT_TTY": answers})
+        self.assertIn("Created a git repository", out)
+        self.assertEqual(self.settings()["repository"], {"owner": "acme", "name": "widgets"})
+        self.assertTrue(self.has(out, "NEEDS", "gitflow", "the repository has no commit yet"), out)
+        self.assertIn("git commit -m 'chore: set up the factory'", out)
+        self.assertNotEqual(code, 1, out)
+
+    def test_hooks_that_are_already_active_are_not_turned_off(self):
+        self.make_repo()
+        write_executable(os.path.join(self.project, ".git", "hooks", "pre-push"), "#!/bin/sh\nexit 0\n")
+        code, out = self.install("--gitflow-mode", "develop", "--no-board")
+        self.assertTrue(self.has(out, "NEEDS", "git-hooks", "hooks are active in .git/hooks (pre-push)"), out)
+        self.assertEqual(self.git("config", "--get", "core.hooksPath", check=False).stdout, "")
+        self.assertEqual(code, 3, out)
+
+    def test_a_hooks_path_of_another_tool_is_left_alone(self):
+        self.make_repo()
+        self.git("config", "core.hooksPath", ".husky")
+        _, out = self.install("--gitflow-mode", "develop", "--no-board")
+        self.assertTrue(self.has(out, "NEEDS", "git-hooks", "core.hooksPath is already '.husky'"), out)
+        self.assertEqual(self.git("config", "--get", "core.hooksPath").stdout.strip(), ".husky")
+
+    def test_the_readability_rule_is_named_when_the_manifest_keeps_it(self):
+        self.make_repo()
+        self.put_project({".factory/project.yaml": "schema_version: 1\n"})
+        _, out = self.install("--gitflow-mode", "develop", "--no-board")
+        self.assertIn("add title-type-tag to documentation.disabled_readability_rules in .factory/project.yaml", out)
+        self.assertIn("it never blocks", out)
+
+    def test_no_git_policy_skips_the_steps_and_their_files(self):
+        self.make_repo()
+        _, out = self.run_install("--checkout", self.project)
+        self.assertNotIn("git-hooks", out)
+        self.assertFalse(self.exists(".github/scripts/git_policy.py"))
+        self.assertFalse(self.exists(".factory/repository.json"))
+        code, out = self.run_install("--checkout", self.project, "--gitflow-mode", "develop")
+        self.assertEqual(code, 2, out)
 
 
 if __name__ == "__main__":

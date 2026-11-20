@@ -228,3 +228,25 @@ Rules of the operations:
 
 - Everything against the real GitHub: the label filter of the issue listing and its letter case, that the listing carries pull requests marked `pull_request`, what `POST .../issues` does with a label that does not exist (the installer must create `troubleshooter` and `troubleshooter: triage`), the bot login of an App's issue, how GitHub renders the code spans and the defanged text.
 - The troubleshooter's own use of the port (its store of daily counts, the choice between open, comment and nothing): that is the application's, not built here.
+
+## Ports v1.4: the workspace provider lists remote branches
+
+- Status: proposed on 2026-11-20, **pending the review ADR 0016 asks for a port change**. It comes with the project git policy (`.factory/repository.json`, see the [onboarding guide](../guides/onboarding.md)).
+- What this does not change: every other port of v1.2 and v1.3 and its contract. No GitHub route, token class or permission is added.
+- Verified against: a real bare repository (the sandbox's git adapter) and the in-memory fake. **Not verified against the real GitHub.**
+
+A project that keeps `.factory/repository.json` closes its feature branches with gitflow, and in the `release` mode the factory works from the one open `release/` branch. To find it, `WorkspaceProvider` gains one method:
+
+```rust
+async fn list_branches(
+    &self,
+    job: JobId,
+    target: &FetchTarget,
+    prefix: &str,
+    cancel: &dyn CancelSignal,
+) -> Result<Vec<BranchName>, WorkspaceError>;
+```
+
+It returns the branches the remote has whose names start with `prefix`, without `refs/heads/`, sorted. The git adapter runs `git ls-remote --heads -- URL refs/heads/PREFIX*` with the fetch credential, the same remote and egress as `fetch`, and fetches nothing. It refuses a prefix that is not a branch-name prefix ending in `/`, or that starts with a character other than a letter or a digit, before git runs. A name that is not a `BranchName` is left out. The in-memory fake lists the branches of its fake remote. Every wrapper (`IndexingWorkspaces` and the test spies) passes the call to the provider it wraps: the method has no default, so a wrapper cannot answer for the provider by accident.
+
+Nothing else of the port changes. No GitHub route, token class or permission is added. The test `list_branches_names_the_remote_branches_under_a_prefix` (`crates/sandbox/tests/workspace/behavior.rs`) runs it against a real bare repository. Like the other changes of this file, it needs an independent review and the architect's confirmation.

@@ -457,3 +457,57 @@ async fn patch_and_views() {
         Err(WorkspaceError::TooLarge)
     );
 }
+
+/// `list_branches` reads the remote's branch names under a prefix with `ls-remote`, sorted, and
+/// fetches nothing. A prefix that is not a branch-name prefix is refused before git runs.
+#[tokio::test]
+async fn list_branches_names_the_remote_branches_under_a_prefix() {
+    let world = World::new().await;
+    for name in [
+        "release/1.3.0",
+        "release/1.2.0",
+        "releases/x",
+        "develop",
+        "feature/release/9",
+    ] {
+        world.remote.push_branch(name).await;
+    }
+    let found = world
+        .provider
+        .list_branches(
+            support::job(41),
+            &world.fetch_target(),
+            "release/",
+            &FakeCancel::new(),
+        )
+        .await
+        .expect("the remote is listed");
+    let names: Vec<&str> = found.iter().map(|b| b.as_str()).collect();
+    assert_eq!(names, ["release/1.2.0", "release/1.3.0"]);
+    let none = world
+        .provider
+        .list_branches(
+            support::job(41),
+            &world.fetch_target(),
+            "hotfix/",
+            &FakeCancel::new(),
+        )
+        .await
+        .expect("the remote is listed");
+    assert!(none.is_empty());
+    for bad in ["release", "rel*/", "-x/", ""] {
+        assert!(
+            world
+                .provider
+                .list_branches(
+                    support::job(41),
+                    &world.fetch_target(),
+                    bad,
+                    &FakeCancel::new()
+                )
+                .await
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+}

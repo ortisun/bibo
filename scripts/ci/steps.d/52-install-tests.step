@@ -1,4 +1,4 @@
 id       = install-tests
-title    = The installer, the tool setup, the project map check and the Codex config editor pass their tests, with fake claude, codex, gh, cargo, npm, brew and curl programs (scripts/tests/test_install.py, test_setup_tools.py, test_project_map.py, test_codex_config.py)
+title    = The installer, the tool setup, the project map check, the Codex config editor and the git policy pass their tests, with fake claude, codex, gh, cargo, npm, brew and curl programs and real git (scripts/tests/test_install.py, test_setup_tools.py, test_project_map.py, test_codex_config.py, test_git_policy.py)
 requires = python3 bash git
 run      = scripts/tests/run-install-tests.sh

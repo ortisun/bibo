@@ -35,6 +35,8 @@
     "documents": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/document" } },
     "excluded_paths": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/excluded" } },
     "project_manifest": { "$ref": "#/$defs/manifest" },
+    "base_branch": { "type": "string", "minLength": 1, "maxLength": 255, "description": "The branch the job starts from and opens its pull request against. Without git settings it is the default branch; with .factory/repository.json it is the integration branch of the project's gitflow (develop, or the one open release branch)." },
+    "git_settings": { "$ref": "#/$defs/manifest" },
     "baseline": { "$ref": "#/$defs/baseline" },
     "counts": { "$ref": "#/$defs/counts" }
   },

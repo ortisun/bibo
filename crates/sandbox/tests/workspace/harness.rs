@@ -144,6 +144,14 @@ impl Remote {
         CommitSha::parse(sha.trim()).expect("a commit id")
     }
 
+    /// Points the remote branch `name` at the tip of `main`.
+    pub async fn push_branch(&self, name: &str) {
+        let spec = format!("main:refs/heads/{name}");
+        self.git
+            .run(&self.seed, &["push", "--quiet", &self.url(), &spec])
+            .await;
+    }
+
     pub async fn branch_tip(&self, branch: &str) -> Option<CommitSha> {
         let name = format!("refs/heads/{branch}");
         let out = self

@@ -298,3 +298,27 @@ async fn every_validation_gate_is_in_the_matrix() {
         GATES.len()
     );
 }
+
+/// A project that keeps git settings gets a Conventional Commits title: the commit a squash merge
+/// writes. The body still names the specification by its own title.
+#[tokio::test]
+async fn the_title_follows_the_projects_git_conventions() {
+    const SETTINGS: &str = r#"{"schema":"factory-repository-settings/1","repository":{"owner":"example-org","name":"fixture"},"project_board":null,"commits":{"convention":"conventional-commits","types":["chore","docs","feat","fix","test"],"scopes":[],"require_scope":false,"header_max_length":72},"gitflow":{"closing_mode":"develop","main_branch":"main","develop_branch":"develop","prefixes":{"feature":["feature/","factory/"],"bugfix":["bugfix/"],"release":["release/"],"hotfix":["hotfix/"],"support":["support/"]},"additional_flows":[]}}"#;
+    let plain = World::new();
+    plain.run().await;
+    let plain_title = plain.host.opened()[0].title.clone();
+    assert!(!plain_title.starts_with("feat"), "{plain_title}");
+
+    let world = World::with(Scenario {
+        git_settings: Some(SETTINGS),
+        ..Scenario::default()
+    });
+    world.run().await;
+    let request = &world.host.opened()[0];
+    assert_eq!(request.title, format!("feat: {plain_title}"));
+    assert!(request.title.chars().count() <= 72);
+    assert!(
+        request.body.contains(&plain_title),
+        "the body names the specification as it is"
+    );
+}
