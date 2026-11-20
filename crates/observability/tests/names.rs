@@ -29,7 +29,10 @@ fn there_is_one_span_for_each_part_of_a_job() {
             span::ATTEMPT,
             span::AGENT,
             span::TOOL_CALL,
-            span::GATE
+            span::GATE,
+            span::TROUBLESHOOTING_RUN,
+            span::PROBE,
+            span::TRIAGE_ISSUE
         ]
     );
 }
@@ -102,7 +105,17 @@ fn every_required_attribute_is_declared_for_its_span() {
 
 #[test]
 fn every_factory_span_carries_the_correlation_id_and_the_job_id() {
+    // The troubleshooter (ADR 0021) runs outside every job: its spans carry its run id instead.
+    let outside_jobs = [span::TROUBLESHOOTING_RUN, span::PROBE, span::TRIAGE_ISSUE];
     for spec in SPANS {
+        if outside_jobs.contains(&spec.name) {
+            assert!(
+                spec.required.contains(&attr::TROUBLESHOOTING_RUN_ID),
+                "{} does not require the troubleshooting run id",
+                spec.name
+            );
+            continue;
+        }
         assert!(
             spec.required.contains(&attr::CORRELATION_ID),
             "{} does not require the correlation id",
@@ -126,6 +139,7 @@ fn identifiers_digests_and_measurements_are_unbounded() {
         attr::JOB_ID,
         attr::STAGE_RUN_ID,
         attr::ATTEMPT_ID,
+        attr::TROUBLESHOOTING_RUN_ID,
     ];
     for spec in ATTRIBUTES {
         let must_be_unbounded = instance_identifiers.contains(&spec.key)
