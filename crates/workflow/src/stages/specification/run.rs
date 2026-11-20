@@ -1353,6 +1353,7 @@ pub(super) async fn execute(
             return Ok(StageOutput {
                 needs_human: Some(NeedsHumanRequest {
                     reason: slug("constitution-required")?,
+                    detail: None,
                 }),
                 ..StageOutput::default()
             });
@@ -1737,6 +1738,7 @@ async fn asked(
         permission_denials: work.tally.denials.clone(),
         needs_human: Some(NeedsHumanRequest {
             reason: slug(reason)?,
+            detail: None,
         }),
         ..StageOutput::default()
     })

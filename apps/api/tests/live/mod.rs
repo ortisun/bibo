@@ -962,6 +962,30 @@ impl LiveRig {
 
     /// Why a stage run waits for a person: the reason code of the newest transition the store
     /// holds for it, such as `reviewer-needs-a-person`.
+    /// What the agent of a waiting stage run said a person must know or decide: the `detail` of
+    /// the request it left as its last attempt's output. `None` when it said nothing more.
+    pub async fn wait_detail(&self, stage_run: factory_domain::ids::StageRunId) -> Option<String> {
+        let scope = factory_domain::scope::TenantScope::new(self.tenant);
+        let mut tx = self.store.begin(scope).await.ok()?;
+        let attempts = tx.list_attempts(stage_run).await.ok()?;
+        let _ = tx.rollback().await;
+        let output = attempts
+            .iter()
+            .rev()
+            .find_map(|attempt| attempt.value.output.clone())?;
+        let reference = factory_domain::contracts::ArtifactRef {
+            sha256: output,
+            media_type: factory_domain::values::MediaType::parse("application/json").ok()?,
+            size_bytes: None,
+        };
+        let bytes = self.artifacts.get(&scope, &reference).await.ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        value
+            .get("detail")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
     pub async fn wait_reason(
         &self,
         job: JobId,

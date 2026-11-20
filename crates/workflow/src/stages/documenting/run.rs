@@ -316,6 +316,7 @@ pub(super) async fn execute(
             usage: outcome.spent,
             needs_human: Some(NeedsHumanRequest {
                 reason: slug(reason)?,
+                detail: None,
             }),
             ..StageOutput::default()
         });

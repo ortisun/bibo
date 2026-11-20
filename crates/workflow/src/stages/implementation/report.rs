@@ -50,6 +50,9 @@ pub struct BuilderReport {
     pub dependency_requests: usize,
     /// Instructions found in the data that the builder says it did not follow.
     pub ignored_instructions: Vec<String>,
+    /// Why the builder is blocked (`BLOCKED`) or what it asks a person (`NEEDS_HUMAN`), in its
+    /// words. Untrusted text; it reaches the person and nothing else.
+    pub for_a_person: Option<String>,
 }
 
 /// Why a report was not read.
@@ -104,19 +107,16 @@ impl BuilderReport {
             .and_then(Value::as_array)
             .ok_or(ReportProblem)?
             .len();
-        match status {
-            Status::Blocked => {
-                text(object, "blocked_reason")?;
-            }
-            Status::NeedsHuman => {
-                text(object, "human_question")?;
-            }
+        let for_a_person = match status {
+            Status::Blocked => Some(text(object, "blocked_reason")?.to_owned()),
+            Status::NeedsHuman => Some(text(object, "human_question")?.to_owned()),
             Status::Done => {
                 if files_changed.is_empty() {
                     return Err(ReportProblem);
                 }
+                None
             }
-        }
+        };
         Ok(Self {
             status,
             task_id,
@@ -125,6 +125,7 @@ impl BuilderReport {
             tests_added,
             dependency_requests,
             ignored_instructions,
+            for_a_person,
         })
     }
 }

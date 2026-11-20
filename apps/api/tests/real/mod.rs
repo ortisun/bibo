@@ -1188,10 +1188,27 @@ async fn ask_the_owner(
              The factory refuses an approval here: the review would pass with no review verdict.\n\
              See docs/guides/first-real-run.md, \"Who reviews the code\"."
         ),
-        other => format!(
-            "WAITING FOR YOU: the stage {} of job {job_id} waits for a person. See: {cli} status {opts} --gates {job_id}",
-            other.as_str()
-        ),
+        other => {
+            // The agent's own words, when it left any: why it is blocked or what it asks. In the
+            // twenty-eighth real run the builder was blocked and the owner was told nothing more.
+            let said = match rig.wait_detail(run.id).await {
+                Some(detail) => format!("\nThe agent says: {detail}"),
+                None => String::new(),
+            };
+            let reason = rig
+                .wait_reason(job, run.id)
+                .await
+                .unwrap_or_else(|| "unknown".to_owned());
+            format!(
+                "WAITING FOR YOU: the stage {} of job {job_id} waits for a person (reason: {reason}).{said}\n\
+                 See:            {cli} status {opts} --gates {job_id}\n\
+                 Answer it:      {cli} answer {opts} {job_id} {run_id} -- <answer>\n\
+                 Send it back:   {cli} rework {decide} {job_id} {run_id} target={} \"<what to change>\"\n\
+                 Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"",
+                other.as_str(),
+                other.as_str()
+            )
+        }
     };
     tell(&text);
 }

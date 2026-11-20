@@ -98,8 +98,8 @@ enum TaskOutcome {
     Committed(TaskEvidence, CommitSha),
     /// The audit refused the change. Nothing was committed.
     Refused(Refusal),
-    /// The builder cannot go on, and a person is needed.
-    Asked(&'static str),
+    /// The builder cannot go on, and a person is needed: the code, and what the builder said.
+    Asked(&'static str, Option<String>),
 }
 
 pub(crate) fn ledger_error(error: LedgerError) -> StageError {
@@ -316,7 +316,7 @@ pub(super) async fn execute(
     let mut tally = Tally::default();
     let mut tasks: Vec<TaskEvidence> = Vec::new();
     let mut refusal: Option<Refusal> = None;
-    let mut asked: Option<&'static str> = None;
+    let mut asked: Option<(&'static str, Option<String>)> = None;
 
     // A run with nothing left to build still proves that the sandbox can be made, because the
     // engine fails a stage that declares a sandbox and never reports one.
@@ -381,8 +381,8 @@ pub(super) async fn execute(
                 refusal = Some(found);
                 break;
             }
-            TaskOutcome::Asked(reason) => {
-                asked = Some(reason);
+            TaskOutcome::Asked(reason, detail) => {
+                asked = Some((reason, detail));
                 break;
             }
         }
@@ -392,12 +392,13 @@ pub(super) async fn execute(
         ready_check(handler, ctx, &head, &mut tally).await?;
     }
 
-    if let Some(reason) = asked {
+    if let Some((reason, detail)) = asked {
         return Ok(StageOutput {
             usage: tally.usage,
             permission_denials: tally.denials,
             needs_human: Some(NeedsHumanRequest {
                 reason: slug(reason)?,
+                detail,
             }),
             ..StageOutput::default()
         });
@@ -869,12 +870,22 @@ async fn build_in(
         return Err(StageError::InvalidOutput);
     }
     match parsed.status {
-        Status::Blocked => return Ok(TaskOutcome::Asked("builder-blocked")),
-        Status::NeedsHuman => return Ok(TaskOutcome::Asked("builder-needs-human")),
+        // What the builder said goes to the person with the request, so that they know why the
+        // stage waits. In the twenty-eighth real run the builder was blocked and nobody could
+        // read its reason.
+        Status::Blocked => {
+            return Ok(TaskOutcome::Asked("builder-blocked", parsed.for_a_person));
+        }
+        Status::NeedsHuman => {
+            return Ok(TaskOutcome::Asked(
+                "builder-needs-human",
+                parsed.for_a_person,
+            ));
+        }
         Status::Done => {}
     }
     if parsed.dependency_requests > 0 {
-        return Ok(TaskOutcome::Asked("dependency-requested"));
+        return Ok(TaskOutcome::Asked("dependency-requested", None));
     }
 
     // The audit. A refusal is a result, not a failure to try again.

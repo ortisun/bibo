@@ -42,6 +42,10 @@ pub struct OutputDocument {
 pub struct NeedsHumanRequest {
     /// A short machine code such as `ambiguous-requirement`.
     pub reason: Slug,
+    /// What the agent said a person must know or decide, in its words: the reason it is blocked or
+    /// the question it asks. Untrusted text, stored with the request so that the person reads why
+    /// the stage waits. `None` when the stage has nothing to add to the code.
+    pub detail: Option<String>,
 }
 
 /// Everything a successful `execute` returns.
