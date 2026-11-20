@@ -33,7 +33,7 @@ fn some_code_opens(name: &str, helper: Option<&str>) -> bool {
 }
 
 #[test]
-fn the_page_names_six_spans() {
+fn the_page_names_six_spans_of_a_job_and_three_of_the_troubleshooter() {
     assert_eq!(
         span_names(),
         [
@@ -41,8 +41,11 @@ fn the_page_names_six_spans() {
             "factory.attempt",
             "factory.gate",
             "factory.job",
+            "factory.probe",
             "factory.stage_run",
-            "factory.tool_call"
+            "factory.tool_call",
+            "factory.triage_issue",
+            "factory.troubleshooting_run"
         ],
         "a span was added to or removed from the page: say what this file does about it"
     );
@@ -57,6 +60,18 @@ fn the_spans_that_exist_today_have_an_opener() {
 }
 
 /// Gap OBS-2, closed (the test of its behavior is in `crates/workflow/tests/trace_shape.rs`).
+/// The troubleshooter (ADR 0021) opens its three spans in `apps/troubleshooter`, outside every job.
+#[test]
+fn the_troubleshooter_opens_its_spans() {
+    for name in [
+        "factory.troubleshooting_run",
+        "factory.probe",
+        "factory.triage_issue",
+    ] {
+        assert!(some_code_opens(name, None), "{name}");
+    }
+}
+
 /// This one is the scan side: `run_attempt` in the engine opens `factory.stage_run`.
 #[test]
 fn some_code_opens_the_stage_run_span() {
