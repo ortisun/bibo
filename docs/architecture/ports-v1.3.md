@@ -127,10 +127,14 @@ pub trait ProjectRulesHost: Send + Sync {
 
 **Cancellation and timeouts.** Every call is safe to drop, with the effect of a request already sent being possible: a branch created and no pull request yet. The next call finds the branch and finishes. The adapter sets a request timeout of 30 seconds and reports `Unavailable` when it is exceeded.
 
-## 4. The credential
+## 4. The one `PUT`
+
+A file is written with `PUT /repos/{owner}/{repo}/contents/{path}`. The adapter's wire module gained exactly one method for it, `Method::PutContents`. The client refuses it, before it asks for a token, for any path that is not a file of the contents API (`is_contents_path`), and the transport refuses it again. A merge, also a `PUT`, therefore cannot be sent. `crates/github/tests/security_review/main.rs` holds that `PutContents` is the only `PUT` and that only the rules host and the client's guard name it.
+
+## 5. The credential
 
 `PermissionSet::project_rules`: `metadata: read`, `contents: write`, `pull_requests: write`, for one repository, minted under `TokenClass::ProjectRules`, which does not depend on a stage. The minter checks the answer of GitHub against the request as for every token, so a token wider than this is not used. No stage holds this set, and nothing a sandbox sees carries it.
 
-## 5. The worker step
+## 6. The worker step
 
 `ProjectRulesSync` (composition) runs the check for one repository: `default_branch`, `read_file` of `AGENTS.md` and of each skeleton file, `latest_rules_pull_request`, then the pure `decide`, then `propose` when the decision says so. It writes the audit record `project_rules.proposed` when it opened or updated a pull request, and `project_rules.not_proposed` when the installed file cannot be read. It never fails a request, a claim or a job: a failure is logged and tried again at the next occasion after an hour. It is called after the worker applied a register or an enable request, and before each claim for the repository of each job waiting for admission.

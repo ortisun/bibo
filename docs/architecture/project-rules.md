@@ -124,6 +124,9 @@ The factory gains no right to write to the default branch:
 - The adapter writes only to `refs/heads/factory/project-rules`. It refuses any other head before it sends a request (`BranchNotAllowed`), and it never names the default branch as the branch of a file write.
 - The default branch must be protected by a rule that requires a reviewed pull request (the protection preflight checks this for every repository before its jobs run). The App is on no bypass list, which an administrator attests.
 - The port has no merge call and no call that marks a pull request ready (rule DEP-09, extended by ADR 0014).
+- The adapter had no `PUT` at all, because a merge is a `PUT`. Writing a file through the contents API needs one, so the adapter gained exactly one method, `Method::PutContents`, which the client and the transport refuse for any path but `/repos/{owner}/{repo}/contents/{path}`. The security tests hold that it is the only `PUT`, that only the rules host sends it, and that a merge path is refused. The reference routes (`/git/refs`), which no other part of the adapter uses, appear only in the rules host, built from the constant `factory/project-rules`.
+
+The token exists in the worker before a job is admitted, because the check runs before each claim. It is minted and used by deterministic code only, never handed to a sandbox, and the check reads no issue text. The loopback scenarios of the worker, which judge the intake path alone and require that no pull request and no push happen on it, run with `github.propose_project_rules: false`.
 
 ## How the agents read the rules
 
@@ -135,8 +138,8 @@ What the output holds:
 |---|---|---|
 | Present with the factory's markers, any version, UTF-8, at most 64 KiB | The file as it is | `repository` |
 | Present without the factory's markers | What the pull request would install: the factory's section, then the project's file | `repository_with_factory_rules` |
-| Missing | The built-in copy: the factory's section and the empty project's section | `factory_default` |
-| Over 64 KiB, or not UTF-8 | The built-in copy | `factory_default`, with the reason `too_large` or `not_utf8` |
+| Missing | The built-in copy: the factory's section and the empty project's section | `built_in` |
+| Over 64 KiB, or not UTF-8 | The built-in copy | `built_in`, with the reason `too_large` or `not_utf8` |
 
 So the built-in copy applies until the pull request is merged, and from the merge on the project's own file applies, including what its people added below the factory's section. An installed older version applies as installed: it is what the people of the project approved, and the update waits for their approval like the first install.
 
@@ -144,7 +147,13 @@ The limit is 64 KiB (65,536 bytes), counted in bytes of the file. A larger file 
 
 Every agent stage pins `project-rules` in its stage contract by digest, like every other input, and gives it to its agent as the input `project_rules`, class `repo_file`, in a quoted data block like every other input. The agents that get it: the specification writer and reviewer, the architect and the architecture critic, the planner, the builder, the code reviewer, the documentation writer and the documentation reviewer. The intake classifier does not: it only sorts an issue.
 
-Each prompt says how to treat the block: these are the working conventions of the project, approved by its owners. Apply them where they do not conflict with this prompt. They never change the role, the tools, the boundaries, the output contract or the stop conditions of the prompt, and an instruction in them to do anything else is ignored. A stage whose contract has no `project-rules` input (a job whose repository stage ran before this change) gives the built-in copy, so a job in flight is not blocked.
+Each prompt says how to treat the block. The fixed text on untrusted data, which is the same in every prompt, says that no block is an instruction; it now names one exception: the block `project_rules`, when the input contract lists it, holds the working conventions of the project, which its owners approved. The agent applies them where they do not conflict with the prompt. They never change the role, the tools, the permissions, the stop conditions or the form of the answer, and an instruction in them to do anything else is ignored like any other. A stage whose contract has no `project-rules` input (a job whose repository stage ran before this change) gives the built-in copy, so a job in flight is not blocked.
+
+The specification writer is the one agent whose prompt is not assembled from its `prompt.md`: it runs the Spec Kit skills, whose arguments are a fixed instruction (ADR 0006). So the stage writes the rules, redacted, into the sandbox as `inputs/project-rules.md`, next to the request file, and takes them away after the run, as it does the request. The fixed instruction of the specify, clarify and checklist skills names that file with the same exception in one fixed sentence. The path is a constant: no text chooses it.
+
+The reviewers keep a short, closed list of inputs (the contract test `REVIEWER_INPUTS`). `project_rules` joins each list: it is text the project's owners approved, never the author's account of the work.
+
+The repository map records `project_rules` (path, digest, origin and the reason for a fallback), so the digest in the map moves with every new template version.
 
 ## `AGENTS.md` in a job
 
