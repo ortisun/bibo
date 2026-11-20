@@ -219,6 +219,45 @@ pub struct CallRecord {
     pub returned_bytes: u64,
     /// How it ended.
     pub outcome: Outcome,
+    /// SHA-256 of the text the caller received for this call (the result, or the reason it has
+    /// none), not counting the `call_id` line. A quote from the call can be matched to it (TR-5).
+    pub result_sha256: Sha256Digest,
+}
+
+/// An agent call the gateway refused before it reached an upstream (or past the record's cap).
+/// A refusal has no call id and cannot be cited (TR-5): only calls that reached an upstream, and
+/// every call of the control plane, have one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RefusalRecord {
+    /// The gateway tool name the agent used, as given (capped at 128 bytes).
+    pub gateway_tool: String,
+    /// SHA-256 of the RFC 8785 canonical JSON of the arguments.
+    pub arguments_sha256: Sha256Digest,
+    /// When the gateway received the call, in milliseconds since the Unix epoch.
+    pub at_unix_ms: u64,
+    /// Why it was refused.
+    #[serde(serialize_with = "reason_name")]
+    pub reason: RefusalReason,
+}
+
+fn reason_name<S: Serializer>(value: &RefusalReason, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(value.as_str())
+}
+
+/// What a citation of a call id can be checked against: the call's origin, tool, outcome and the
+/// digest of the text its caller received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Citation<'a> {
+    /// The id.
+    pub call_id: CallId,
+    /// Who made the call. The agent's evidence may cite its own calls and the probes' calls.
+    pub origin: CallOrigin,
+    /// The gateway tool of the call, which a citation's `tool` must equal.
+    pub gateway_tool: &'a str,
+    /// How the call ended; only `ok` showed something to cite.
+    pub outcome: Outcome,
+    /// SHA-256 of the text the caller received.
+    pub result_sha256: &'a Sha256Digest,
 }
 
 /// The record of one run.
@@ -232,10 +271,16 @@ pub struct RunRecord {
     pub closed: bool,
     /// The run's limits.
     pub limits: RunLimits,
-    /// Every recorded call, in call id order.
+    /// Every recorded call, in call id order: each agent call that reached an upstream and every
+    /// call of the control plane, refused or not.
     pub calls: Vec<CallRecord>,
     /// Calls refused without a record because the record reached its size cap.
     pub unrecorded_calls: u64,
+    /// The agent calls refused before they reached an upstream, in the order received, at most
+    /// [`crate::MAX_RECORDED_REFUSALS`]. They have no call id.
+    pub refusals: Vec<RefusalRecord>,
+    /// Agent refusals past [`crate::MAX_RECORDED_REFUSALS`], counted only.
+    pub unrecorded_refusals: u64,
 }
 
 /// The record could not be written as canonical JSON.
@@ -261,12 +306,36 @@ impl RunRecord {
     }
 
     /// The call with this id, if the gateway recorded it for this run. The engine refuses a
-    /// finding whose observation cites a call that is not here (ADR 0021, decision 7).
+    /// finding whose observation cites a call that is not here (ADR 0021, decision 7). A refused
+    /// agent call is never here: it has no id.
     #[must_use]
     pub fn call(&self, call_id: &str) -> Option<&CallRecord> {
         self.calls
             .iter()
             .find(|call| call.call_id.to_string() == call_id)
+    }
+
+    /// What a citation of `call_id` can be checked against, if the gateway recorded the call for
+    /// this run (TR-5): its origin, gateway tool, outcome and result digest. The caller checks
+    /// that the tool is the one cited and that the outcome is `ok`, or uses
+    /// [`RunRecord::evidence`], which does both.
+    #[must_use]
+    pub fn citable(&self, call_id: &str) -> Option<Citation<'_>> {
+        self.call(call_id).map(|call| Citation {
+            call_id: call.call_id,
+            origin: call.origin,
+            gateway_tool: &call.gateway_tool,
+            outcome: call.outcome,
+            result_sha256: &call.result_sha256,
+        })
+    }
+
+    /// The call `call_id` when it may back an observation of `tool`: recorded for this run, a
+    /// call of that gateway tool, and ended `ok`.
+    #[must_use]
+    pub fn evidence(&self, call_id: &str, tool: &str) -> Option<Citation<'_>> {
+        self.citable(call_id)
+            .filter(|citation| citation.outcome == Outcome::Ok && citation.gateway_tool == tool)
     }
 }
 

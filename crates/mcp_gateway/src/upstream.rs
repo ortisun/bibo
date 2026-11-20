@@ -5,7 +5,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool};
+use factory_domain::troubleshooting::BUDGET_SCOPE_META_KEY;
+use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, RequestMetaObject, Tool};
 use rmcp::service::{Peer, RoleClient, RunningService};
 use rmcp::{ServerHandler, ServiceExt};
 
@@ -44,6 +45,20 @@ pub trait Upstream: Send + Sync {
         name: String,
         arguments: Option<JsonObject>,
     ) -> BoxFuture<'_, Result<CallToolResult, UpstreamError>>;
+
+    /// Calls one upstream tool on behalf of the run `run_id`. By default the same as
+    /// [`Upstream::call_tool`]: a remote upstream never learns the run. [`InProcessUpstream`]
+    /// names the run in the request's `_meta` under [`BUDGET_SCOPE_META_KEY`], so that the
+    /// read-only PostgreSQL server can keep a call budget per run (TR-6).
+    fn call_tool_for_run<'a>(
+        &'a self,
+        run_id: &'a str,
+        name: String,
+        arguments: Option<JsonObject>,
+    ) -> BoxFuture<'a, Result<CallToolResult, UpstreamError>> {
+        let _ = run_id;
+        self.call_tool(name, arguments)
+    }
 }
 
 /// What went wrong with an upstream, without the transport's message.
@@ -106,9 +121,19 @@ impl ClientSession {
         name: String,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, UpstreamError> {
+        self.call_tool_with_meta(name, arguments, None).await
+    }
+
+    pub(crate) async fn call_tool_with_meta(
+        &self,
+        name: String,
+        arguments: Option<JsonObject>,
+        meta: Option<RequestMetaObject>,
+    ) -> Result<CallToolResult, UpstreamError> {
         let peer = self.peer()?;
         let mut params = CallToolRequestParams::new(name);
         params.arguments = arguments;
+        params.meta = meta;
         peer.call_tool(params)
             .await
             .map_err(|_| UpstreamError::Request(self.id))
@@ -206,5 +231,22 @@ impl Upstream for InProcessUpstream {
         arguments: Option<JsonObject>,
     ) -> BoxFuture<'_, Result<CallToolResult, UpstreamError>> {
         Box::pin(self.session.call_tool(name, arguments))
+    }
+
+    fn call_tool_for_run<'a>(
+        &'a self,
+        run_id: &'a str,
+        name: String,
+        arguments: Option<JsonObject>,
+    ) -> BoxFuture<'a, Result<CallToolResult, UpstreamError>> {
+        let mut meta = RequestMetaObject::default();
+        meta.insert(
+            BUDGET_SCOPE_META_KEY.to_owned(),
+            serde_json::Value::from(run_id),
+        );
+        Box::pin(
+            self.session
+                .call_tool_with_meta(name, arguments, Some(meta)),
+        )
     }
 }

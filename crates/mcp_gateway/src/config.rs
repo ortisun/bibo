@@ -22,11 +22,18 @@ pub const DATADOG_SITES: [&str; 6] = [
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
-    /// The address the gateway's MCP server listens on. Loopback only.
+    /// The address the gateway's MCP server listens on. A loopback address, unless
+    /// `allow_non_loopback_listen` is set; never an unspecified address (`0.0.0.0`, `::`).
     pub listen: SocketAddr,
+    /// Lets `listen` be an address that is not loopback, such as the Docker bridge address of a
+    /// Linux host (`172.17.0.1`), where the troubleshooter sandbox's sidecar reaches the host the
+    /// way the worker's sidecars reach the model broker. Every request still needs the run token.
+    /// Default false.
+    #[serde(default)]
+    pub allow_non_loopback_listen: bool,
     /// `Host` header values accepted besides the loopback names, such as the alias under which
-    /// the egress sidecar relays the agent to the gateway (ADR 0021, decision 5). Host names
-    /// only, never an address that is not loopback for the listener itself.
+    /// the egress sidecar relays the agent to the gateway (`egress`, ADR 0021, decision 5). Host
+    /// names, with or without a port; without one any port matches.
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
     /// The Datadog MCP Server, when the deployment uses Datadog.
@@ -65,11 +72,17 @@ pub struct VictoriaMetricsConfig {
 /// A configuration value the gateway refuses.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
-    /// The listen address is not loopback.
+    /// The listen address is not loopback and the configuration does not allow that.
     #[error(
-        "the gateway listen address {0} is not a loopback address; the gateway serves loopback only"
+        "the gateway listen address {0} is not a loopback address; set allow_non_loopback_listen to serve on it (the run token is still required on every request)"
     )]
     NotLoopback(SocketAddr),
+    /// The listen address is unspecified (`0.0.0.0` or `::`), multicast or broadcast: it would
+    /// listen on every interface, or on none that a sidecar can reach.
+    #[error(
+        "the gateway listen address {0} names no single interface; name the loopback address or the one bridge address the sidecar reaches"
+    )]
+    NotOneInterface(SocketAddr),
     /// An allowed host is empty or holds characters a host name cannot.
     #[error("the allowed host {0:?} is not a host name")]
     BadAllowedHost(String),
@@ -90,9 +103,9 @@ impl GatewayConfig {
     /// # Errors
     /// The first [`ConfigError`].
     pub fn validate(&self) -> Result<(), ConfigError> {
-        check_listen(self.listen)?;
+        check_listen_address(self.listen, self.allow_non_loopback_listen)?;
         for host in &self.allowed_hosts {
-            check_host_name(host)?;
+            check_host(host)?;
         }
         if let Some(datadog) = &self.datadog {
             datadog_site(&datadog.site)?;
@@ -107,16 +120,34 @@ impl GatewayConfig {
 /// Refuses a listen address that is not loopback.
 ///
 /// # Errors
-/// [`ConfigError::NotLoopback`].
+/// [`ConfigError::NotOneInterface`] or [`ConfigError::NotLoopback`].
 pub fn check_listen(address: SocketAddr) -> Result<(), ConfigError> {
-    if address.ip().is_loopback() {
+    check_listen_address(address, false)
+}
+
+/// The gateway's listen rule, the same as the model broker's deployment needs: loopback by
+/// default; an address that is not loopback only when `allow_non_loopback` says so; never an
+/// unspecified, multicast or broadcast address.
+///
+/// # Errors
+/// [`ConfigError::NotOneInterface`] or [`ConfigError::NotLoopback`].
+pub fn check_listen_address(
+    address: SocketAddr,
+    allow_non_loopback: bool,
+) -> Result<(), ConfigError> {
+    let ip = address.ip();
+    let broadcast = matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast());
+    if ip.is_unspecified() || ip.is_multicast() || broadcast {
+        return Err(ConfigError::NotOneInterface(address));
+    }
+    if ip.is_loopback() || allow_non_loopback {
         Ok(())
     } else {
         Err(ConfigError::NotLoopback(address))
     }
 }
 
-fn check_host_name(host: &str) -> Result<(), ConfigError> {
+pub(crate) fn check_host(host: &str) -> Result<(), ConfigError> {
     let ok = !host.is_empty()
         && host.len() <= 253
         && host
@@ -209,16 +240,42 @@ mod tests {
     }
 
     #[test]
-    fn a_non_loopback_listen_address_is_refused() {
-        for address in ["0.0.0.0:7811", "10.0.0.5:7811", "[::]:7811"] {
+    fn a_non_loopback_listen_address_needs_the_flag_and_an_unspecified_one_is_never_taken() {
+        for address in ["10.0.0.5:7811", "172.17.0.1:9444", "[fd00::5]:7811"] {
             let parsed = config(&format!(r#"{{"listen": "{address}"}}"#)).expect("parses");
             assert!(
                 matches!(parsed.validate(), Err(ConfigError::NotLoopback(_))),
                 "{address}"
             );
+            let allowed = config(&format!(
+                r#"{{"listen": "{address}", "allow_non_loopback_listen": true}}"#
+            ))
+            .expect("parses");
+            assert_eq!(allowed.validate(), Ok(()), "{address}");
+        }
+        for address in [
+            "0.0.0.0:7811",
+            "[::]:7811",
+            "255.255.255.255:7811",
+            "224.0.0.1:7811",
+        ] {
+            for flag in [false, true] {
+                let parsed = config(&format!(
+                    r#"{{"listen": "{address}", "allow_non_loopback_listen": {flag}}}"#
+                ))
+                .expect("parses");
+                assert!(
+                    matches!(parsed.validate(), Err(ConfigError::NotOneInterface(_))),
+                    "{address} {flag}"
+                );
+            }
         }
         let parsed = config(r#"{"listen": "[::1]:7811"}"#).expect("parses");
         assert_eq!(parsed.validate(), Ok(()));
+        assert!(matches!(
+            check_listen("172.17.0.1:9444".parse().expect("address")),
+            Err(ConfigError::NotLoopback(_))
+        ));
     }
 
     #[test]

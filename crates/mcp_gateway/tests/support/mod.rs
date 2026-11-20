@@ -59,6 +59,9 @@ pub struct FakeServer {
     behaviors: Arc<Mutex<HashMap<String, Behavior>>>,
     calls: Arc<Mutex<Vec<String>>>,
     in_flight: Arc<AtomicUsize>,
+    descriptions: Arc<Mutex<HashMap<String, String>>>,
+    schema_padding: Arc<Mutex<HashMap<String, usize>>>,
+    run_scopes: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl FakeServer {
@@ -84,6 +87,27 @@ impl FakeServer {
     /// Every tool name the server was asked to call, in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("calls").clone()
+    }
+
+    /// Changes the description the server gives a tool.
+    pub fn set_description(&self, name: &str, text: &str) {
+        self.descriptions
+            .lock()
+            .expect("descriptions")
+            .insert(name.to_owned(), text.to_owned());
+    }
+
+    /// Pads the input schema of a tool with a property description of this many bytes.
+    pub fn pad_schema(&self, name: &str, bytes: usize) {
+        self.schema_padding
+            .lock()
+            .expect("padding")
+            .insert(name.to_owned(), bytes);
+    }
+
+    /// The run each call named in its `_meta`, in order.
+    pub fn run_scopes(&self) -> Vec<Option<String>> {
+        self.run_scopes.lock().expect("scopes").clone()
     }
 }
 
@@ -112,11 +136,21 @@ impl ServerHandler for FakeServer {
             .expect("tools")
             .iter()
             .map(|name| {
-                let mut tool = Tool::new(
-                    name.clone(),
-                    format!("The upstream tool {name}."),
-                    Arc::new(schema()),
-                );
+                let description = self
+                    .descriptions
+                    .lock()
+                    .expect("descriptions")
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("The upstream tool {name}."));
+                let mut input = schema();
+                if let Some(bytes) = self.schema_padding.lock().expect("padding").get(name) {
+                    input.insert(
+                        "description".to_owned(),
+                        serde_json::Value::from("p".repeat(*bytes)),
+                    );
+                }
+                let mut tool = Tool::new(name.clone(), description, Arc::new(input));
                 tool.output_schema = Some(Arc::new(schema()));
                 tool
             })
@@ -131,6 +165,13 @@ impl ServerHandler for FakeServer {
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.to_string();
         self.calls.lock().expect("calls").push(name.clone());
+        self.run_scopes.lock().expect("scopes").push(
+            context
+                .meta
+                .get(factory_domain::troubleshooting::BUDGET_SCOPE_META_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        );
         let behavior = self
             .behaviors
             .lock()
@@ -254,17 +295,17 @@ pub fn policy() -> TroubleshootingPolicy {
         },
         "tools": [
             {"id": "mcp.datadog.search_logs", "gateway_name": "datadog_search_logs",
-             "upstream": "datadog", "upstream_tool": "search_datadog_logs"},
+             "upstream": "datadog", "upstream_tool": "search_datadog_logs", "description": "The factory's description of search_datadog_logs."},
             {"id": "mcp.victoriametrics.query", "gateway_name": "vm_query",
-             "upstream": "victoriametrics", "upstream_tool": "query"},
+             "upstream": "victoriametrics", "upstream_tool": "query", "description": "The factory's description of query."},
             {"id": "mcp.victoriametrics.labels", "gateway_name": "vm_labels",
-             "upstream": "victoriametrics", "upstream_tool": "labels"},
+             "upstream": "victoriametrics", "upstream_tool": "labels", "description": "The factory's description of labels."},
             {"id": "mcp.victoriametrics.alerts", "gateway_name": "vm_alerts",
-             "upstream": "victoriametrics", "upstream_tool": "alerts"},
+             "upstream": "victoriametrics", "upstream_tool": "alerts", "description": "The factory's description of alerts."},
             {"id": "mcp.postgres.query", "gateway_name": "pg_query",
-             "upstream": "postgres", "upstream_tool": "pg_query"},
+             "upstream": "postgres", "upstream_tool": "pg_query", "description": "The factory's description of pg_query."},
             {"id": "mcp.postgres.factory_health", "gateway_name": "pg_factory_health",
-             "upstream": "postgres", "upstream_tool": "pg_factory_health"}
+             "upstream": "postgres", "upstream_tool": "pg_factory_health", "description": "The factory's description of pg_factory_health."}
         ],
         "probes": []
     }))
