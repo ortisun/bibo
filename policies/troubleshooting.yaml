@@ -59,7 +59,7 @@ policy:
   default_action: deny                # a gateway tool that is not listed is neither offered nor callable
   project_overrides: tighten_only
   config_source: protected_default_branch
-  threats: [T-03, T-06, T-16, T-26, T-27]
+  threats: [T-03, T-06, T-16, T-26, T-27, T-49, T-50, T-51, T-52, T-53, T-54]
 
 # -----------------------------------------------------------------------------
 # 1. Schedule (ADR 0021, Decision 2)
@@ -133,6 +133,7 @@ upstreams:
       - retention_filters_debug
       - test_rules
       - metric_statistics
+      - documentation                   # never offered by the gateway; disabling it saves ~690 MiB (measured 2026-11-20)
 
 # -----------------------------------------------------------------------------
 # 5. Gateway tools: the allowlist and its mapping

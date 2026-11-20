@@ -50,16 +50,14 @@ services:
       VM_INSTANCE_ENTRYPOINT: http://victoriametrics:8428
       VM_INSTANCE_TYPE: single
       # Exactly `upstreams.victoriametrics.disabled_tools` of policies/troubleshooting.yaml: the
-      # server's own default list plus metric_statistics. The gateway's allowlist is the first layer;
-      # this is the second. Change both together.
+      # server's own default list plus metric_statistics and documentation. The gateway's allowlist
+      # is the first layer; this is the second. Change both together.
       #
-      # Measured on 2026-11-20 with this image: with this list the server builds a search index of
-      # the VictoriaMetrics documentation for its `documentation` tool at start, which takes about
-      # 20 seconds of three CPUs and holds about 705 MiB of memory for as long as it runs. With
-      # `documentation` also disabled it starts at once and holds about 18 MiB. The gateway never
-      # offers `documentation`, so adding it to the policy's list costs nothing; that is a change
-      # to policies/troubleshooting.yaml for a person to make, then here, then the limits below.
-      MCP_DISABLED_TOOLS: export,flags,metric_relabel_debug,downsampling_filters_debug,retention_filters_debug,test_rules,metric_statistics
+      # Measured on 2026-11-20 with this image: with `documentation` enabled the server builds a
+      # search index of the VictoriaMetrics documentation at start (about 20 seconds of three CPUs,
+      # about 705 MiB held for as long as it runs). The gateway never offers that tool, so it is
+      # disabled, and the server starts at once and holds about 18 MiB.
+      MCP_DISABLED_TOOLS: export,flags,metric_relabel_debug,downsampling_filters_debug,retention_filters_debug,test_rules,metric_statistics,documentation
       # MCP resources (documentation pages) are not tools, and the gateway passes tools only.
       MCP_DISABLE_RESOURCES: "true"
       # The largest VictoriaMetrics answer one tool reads: 256 KiB, four times the gateway's
@@ -82,8 +80,8 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
-      # The documentation index (above) delays the listener by about 20 seconds.
-      start_period: 90s
+      # With `documentation` disabled the listener is up in about a second.
+      start_period: 20s
     # ---- Hardening (the same stance as infra/compose and docs/security/sandbox-policy.md) ----
     user: "${FACTORY_VM_MCP_UID:-1000}:${FACTORY_VM_MCP_GID:-1000}"
     cap_drop: [ALL]
@@ -91,8 +89,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m
-    # About 705 MiB is the documentation index (above); with it disabled, 64m would be enough.
-    mem_limit: 1g
+    # About 18 MiB measured with `documentation` disabled; 128m leaves room for large answers
+    # (MCP_MAX_RESPONSE_SIZE) without letting the server grow unbounded.
+    mem_limit: 128m
     pids_limit: 64
     restart: unless-stopped
     logging:

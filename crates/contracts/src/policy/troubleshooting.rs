@@ -52,8 +52,10 @@ pub const DATADOG_NOTEBOOK_TOOLS: [&str; 9] = [
     "recover_datadog_notebook",
 ];
 
-/// The VictoriaMetrics tools `MCP_DISABLED_TOOLS` must remove: `export` and every debug tool.
-pub const VICTORIAMETRICS_DISABLED_TOOLS: [&str; 7] = [
+/// The VictoriaMetrics tools `MCP_DISABLED_TOOLS` must remove: `export`, every debug tool, and
+/// `documentation`, which the gateway never offers and whose search index holds about 705 MiB in
+/// the server (measured 2026-11-20; about 18 MiB without it).
+pub const VICTORIAMETRICS_DISABLED_TOOLS: [&str; 8] = [
     "export",
     "flags",
     "metric_relabel_debug",
@@ -61,6 +63,7 @@ pub const VICTORIAMETRICS_DISABLED_TOOLS: [&str; 7] = [
     "retention_filters_debug",
     "test_rules",
     "metric_statistics",
+    "documentation",
 ];
 
 /// The fixed checks of `pg_factory_health` a `sql_check` probe may name (ADR 0021, Decision 4).
