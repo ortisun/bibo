@@ -47,12 +47,16 @@ factory-composition = { path = "crates/composition" }
 # The read-only PostgreSQL MCP server, a ring 2 adapter (ADR 0021, decision 4). Served in process by the
 # troubleshooter's gateway and as the binary apps/mcp-postgres.
 factory-mcp_postgres = { path = "crates/mcp_postgres" }
+# The troubleshooter's MCP gateway, a ring 2 adapter (ADR 0021, decision 3). It does not depend on
+# mcp_postgres: apps/troubleshooter wires that server in as an in-process upstream.
+factory-mcp_gateway = { path = "crates/mcp_gateway" }
 
 # The official Rust SDK of the Model Context Protocol, maintained by the modelcontextprotocol organization
 # (github.com/modelcontextprotocol/rust-sdk). Apache-2.0. New direct dependency approved by the owner on
 # 2026-11-20 (ADR 0021, "Owner decisions this record needs", item 1). Pinned with `=` because MCP is a moving
 # specification and a minor release of the SDK can change what goes over the wire. Default features off: a
 # crate names the subset it needs from `server`, `macros` and `transport-streamable-http-server`. Not
-# `transport-io`, which would turn on tokio's `io-std` for the inner crates (DEP-05). No client, no auth, no
-# reqwest outside dev-dependencies.
+# `transport-io`, which would turn on tokio's `io-std` for the inner crates (DEP-05). No auth. The client side
+# (`client`, `transport-streamable-http-client-reqwest`, `reqwest-tls-no-provider`) is used by crates/mcp_gateway
+# only, to reach Datadog and VictoriaMetrics (ADR 0021, decision 3).
 rmcp = { version = "=3.11.0", default-features = false }

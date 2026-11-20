@@ -388,6 +388,44 @@
       "responsibility": "The read-only PostgreSQL MCP server (ADR 0021, decision 4): eight tools (pg_list_relations, pg_describe_relation, pg_query, pg_explain, pg_activity, pg_locks, pg_table_health, pg_factory_health) over one connection of a factory_observer login. Every call runs in BEGIN READ ONLY ... ROLLBACK with local timeouts; free SQL is wrapped as a subquery and sent with the extended protocol; rows, bytes and calls are capped; every string is redacted through an injected Redact seam. Depends on no other ring 2 crate; served in process by the troubleshooter's gateway and as apps/mcp-postgres."
     },
     {
+      "name": "mcp_gateway",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/mcp_gateway",
+      "slice": 3,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "rmcp[server,client,transport-streamable-http-server,transport-streamable-http-client-reqwest,reqwest-tls-no-provider]",
+        "reqwest[rustls-no-provider]",
+        "rustls[ring,std,tls12]",
+        "webpki-roots",
+        "ring",
+        "base64[std]",
+        "axum[http1,tokio]",
+        "tokio[rt,sync,time,net,io-util]",
+        "tokio-util",
+        "serde",
+        "serde_json",
+        "serde_jcs",
+        "thiserror"
+      ],
+      "external_allow_notes": {
+        "rmcp": "ADR 0021, approved by the owner on 2026-11-20. server and transport-streamable-http-server for the gateway's own MCP server; client, transport-streamable-http-client-reqwest and reqwest-tls-no-provider for the Streamable HTTP client to Datadog and VictoriaMetrics, and the client side of the in-memory pipe to an in-process server. The client features widen the approved feature set; the owner should confirm. Not transport-io (DEP-05).",
+        "reqwest": "0.13.5, the release already in Cargo.lock (opentelemetry-otlp) and the one rmcp's client transport needs. rustls-no-provider (public feature) so the gateway hands reqwest a rustls configuration it builds itself (ring, Mozilla roots). The feature also brings rustls-platform-verifier and its platform crates into Cargo.lock although the gateway never uses that verifier; the alternative was reqwest's private __rustls feature.",
+        "rustls": "0.23.46, already in Cargo.lock through ureq, with ring as the provider: the TLS stack of the GitHub adapter, the broker and the CLI.",
+        "webpki-roots": "The Mozilla roots, already in Cargo.lock and approved for the GitHub adapter on 2026-10-27 (CDLA-Permissive-2.0).",
+        "ring": "The operating system random source for the 256-bit run token, as the broker does, and the rustls crypto provider. 0.17.14, already in Cargo.lock.",
+        "base64": "0.22.1, already in Cargo.lock. base64url without padding for the run token.",
+        "axum": "The same version and features as apps/api and apps/mcp-postgres: the HTTP server under the Streamable HTTP service and the run token check.",
+        "tokio-util": "0.7.20, already resolved by rmcp: the cancellation token its Streamable HTTP server takes, to end every session at shutdown.",
+        "serde_jcs": "RFC 8785 canonical JSON for the argument digest and the run record, as domain uses it for the ledger."
+      },
+      "responsibility": "The troubleshooter's MCP gateway (ADR 0021, decision 3): one MCP server over Streamable HTTP on a loopback address that the troubleshooter agent reaches as its only MCP server. Lists exactly the allowlisted tools of policies/troubleshooting.yaml that their upstream offers, refuses every other tool and reports upstream tools not on the allowlist (T-51); checks a random per-run bearer token; limits calls per run and per 10 seconds, the call deadline, result bytes (with a truncation marker) and the run wall clock; redacts every result through an injected Redact seam, with the upstream credentials and run tokens registered by exact value; records every call (call-N ids shared with the control-plane probe calls) as a typed run record and canonical JSON. Upstreams behind the Upstream trait: Streamable HTTP clients for Datadog and VictoriaMetrics with credentials from mode 0600 files, and an in-process adapter over any rmcp server. Depends on no other ring 2 crate; apps/troubleshooter wires mcp_postgres in."
+    },
+    {
       "name": "testkit",
       "ring": 2,
       "layer": "test-support",
