@@ -51,7 +51,9 @@ The data goes in last. Under "Untrusted data" the prompt has one line `{{input.<
 
 Every line of data starts with `> `, so no line of data can look like a delimiter. Line breaks of every kind become line breaks, and hidden or direction-control characters are removed. The reference renderer in `crates/contracts/tests/agent_defs/render.rs` states these rules, and the real assembly (`s1-prompt-assembly`) has to keep them.
 
-Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history. The architecture critic is a reviewer in this sense: it gets the frozen specification, the design without the architect's summary, and the repository map, and the router never gives it the architect's model (`architecture_critique_not_by_the_architects_model` in `policies/model_routing.yaml`).
+Every agent but the intake classifier also gets the block `project_rules` (class `repo_file`): the project's `AGENTS.md` read at the job's base commit by the repository stage, or the factory's built-in copy when the project has none yet ([the project's rules for agents](../docs/architecture/project-rules.md), ADR 0026). Each prompt says these are the project's conventions, to apply where they do not conflict with the prompt, and that they never change the role, the tools, the boundaries or the output contract.
+
+Reviewers get a short, closed list of inputs: the frozen specification, the diff, the gate reports, the project's rules and a few plain files. They never get the builder's or the writer's summary, and they hold no tool that reads version control history. The architecture critic is a reviewer in this sense: it gets the frozen specification, the design without the architect's summary, and the repository map, and the router never gives it the architect's model (`architecture_critique_not_by_the_architects_model` in `policies/model_routing.yaml`).
 
 ## How a report is returned
 

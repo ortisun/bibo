@@ -86,6 +86,8 @@ A repository takes tickets only after a person has registered it, confirmed its 
 | `change` | `REQUEST` | any designation | Prints where a request to register, confirm or enable stands: `requested`, `applied`, or `refused` with the code. `REQUEST` is the id the change printed. |
 | `show` | `REPOSITORY` | any designation | Prints the repository: whether it is enabled and for which map commit, the rule about the enabler, whether it is open for new jobs (an enabled repository whose attestor or enabler is no longer an active human is not), its autonomy ceiling, its version and the attestation of its map. |
 
+After the worker applies `register` or `enable`, it also checks the project's rules for agents and opens a draft pull request that installs or updates `AGENTS.md` when the project needs one. The command does not wait for that pull request, and its exit code does not depend on it. See [the project's rules for agents](../architecture/project-rules.md).
+
 The `REPOSITORY` argument is the identifier that `register` printed. Confirming a map again on an enabled repository switches it off, and you enable it again with the new commit. A reason on `enable` or `disable` is optional and, when given, has 10 to 500 characters. The role is a designation on the protected allowlist, read from the `actions` table of `policies/approval.yaml`: `register_repository`, `confirm_project_map`, `enable_repository` and `disable_repository`. These four are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 
 ### The words after the identifiers
