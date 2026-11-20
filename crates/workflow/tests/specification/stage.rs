@@ -437,6 +437,7 @@ async fn a_draft_that_was_sent_back_is_repaired_from_the_findings_and_not_writte
             failed_reports: failed_reports(&rig).await,
             findings: Vec::new(),
             round: 1,
+            person_request: None,
         });
     let requests_before = lock(&rig.provider.requests).len();
 
@@ -539,6 +540,7 @@ async fn a_rework_with_no_draft_to_repair_writes_the_specification_again() {
             failed_reports: Vec::new(),
             findings: Vec::new(),
             round: 1,
+            person_request: None,
         });
     rig.a_sound_specification();
     let (claimed, outcome) = rig.run_next().await;

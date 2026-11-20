@@ -32,6 +32,12 @@ pub fn render_with(context: &ReworkContext, message_max: usize) -> String {
         "Rework round {}. The previous attempt at this work was sent back. Fix only what is listed below.\n",
         context.round
     );
+    if let Some(request) = &context.person_request {
+        // The words of a person with the authority to send the work back. They come first: a
+        // person who read the work outweighs what a gate or a reviewer said about it.
+        text.push_str("\nA person sent the work back and asked for this:\n");
+        text.push_str(&format!("    {}\n", clip(request)));
+    }
     let failed: Vec<&GateReport> = context
         .failed_reports
         .iter()
@@ -132,6 +138,7 @@ mod tests {
             failed_reports: Vec::new(),
             findings: verdict.findings,
             round: 1,
+            person_request: None,
         }
     }
 
@@ -166,5 +173,27 @@ mod tests {
         assert!(text.contains("Rework round 1."));
         assert!(!text.contains("Findings of"));
         assert!(!text.contains("Gates that did not pass"));
+    }
+
+    #[test]
+    fn what_a_person_asked_for_comes_first() {
+        let asked = ReworkContext {
+            person_request: Some("Say what goes to standard error.\nKeep the rest.".to_owned()),
+            ..context()
+        };
+        let text = render(&asked);
+        let person = text
+            .find("A person sent the work back and asked for this:")
+            .expect("the request of the person is in the text");
+        let findings = text
+            .find("Findings of the independent review:")
+            .expect("the findings are in the text");
+        assert!(person < findings, "{text}");
+        // One line, so that a line break in a person's text cannot pose as another section.
+        assert!(
+            text.contains("    Say what goes to standard error. Keep the rest.\n"),
+            "{text}"
+        );
+        assert!(!render(&context()).contains("A person sent the work back"));
     }
 }

@@ -751,6 +751,7 @@ async fn from_the_wait_a_person_can_send_the_work_back_to_the_builder() {
             },
             Decision::RequestRework {
                 target: StageKind::Implementation,
+                instructions: None,
             },
         )
         .await

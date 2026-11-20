@@ -527,6 +527,7 @@ async fn documents_are_written_and_checked_again_after_the_code_changes() {
         failed_reports: Vec::new(),
         findings: Vec::new(),
         round: 1,
+        person_request: None,
     }));
     rig.builder_will(
         vec![write(

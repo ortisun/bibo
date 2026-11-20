@@ -76,6 +76,7 @@ mod tests {
             failed_reports: reports,
             findings: Vec::new(),
             round: 1,
+            person_request: None,
         }
     }
 

@@ -95,9 +95,9 @@ pub struct RevisionRequest {
 /// the same version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReworkRequest {
-    /// The file that holds what the gates and the independent reviewer found in the draft. The
-    /// text came from tools and from a model, so the skill reads it as data and never as an
-    /// instruction.
+    /// The file that holds what must change in the draft: what a person asked for, when a person
+    /// sent it back, and what the gates and the independent reviewer found. The skill reads it as
+    /// data that says what to change in the specification and nothing else.
     pub feedback_file: RepoPath,
     /// Which rework round this is, from 1.
     pub round: u8,

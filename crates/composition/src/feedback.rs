@@ -16,6 +16,9 @@
 //!    or `specification-evidence` names the head commit; the new run builds on it. A specification
 //!    run that left no draft names none, and the new run starts from the base of the job.
 //!
+//! 4. **What a person asked for.** When a person sent the run back and said what to change, the
+//!    engine linked their words to that run (`rework-request`); the new run reads them first.
+//!
 //! A run that replaces nothing has no feedback (`None`). A store that cannot be read is
 //! `Unavailable` and the stage fails closed, as the contract of both traits says: a rework run must
 //! not run as if it were a first run.
@@ -32,7 +35,8 @@ use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::paths::CommitSha;
-use factory_ports::store::{Store, Tx};
+use factory_ports::store::{ArtifactDirection, Store, Tx};
+use factory_workflow::engine::links::REWORK_REQUEST;
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::architecture::seams::{PreviousRound, RoundSource};
 use factory_workflow::stages::implementation::seams::{ReworkContext, ReworkSource};
@@ -163,6 +167,28 @@ impl StoreFeedback {
         Ok((reports, findings))
     }
 
+    /// What a person asked for when they sent `failing` back: the text the engine linked to that
+    /// run with the role `rework-request` (`S15`). A run that a gate sent back has none.
+    async fn person_request(
+        &self,
+        tx: &mut dyn Tx,
+        run: &RunIdentity,
+        failing: StageRunId,
+    ) -> Result<Option<String>, SeamError> {
+        let links = tx
+            .list_stage_run_artifacts(failing)
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        let Some(link) = links.into_iter().find(|link| {
+            link.direction == ArtifactDirection::Input && link.role.as_str() == REWORK_REQUEST
+        }) else {
+            return Ok(None);
+        };
+        let bytes = self.reader.bytes(tx, run.tenant, &link.sha256).await?;
+        let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+        Ok((!text.is_empty()).then_some(text))
+    }
+
     /// The head commit named by a replaced run's result document, if it has one.
     async fn head_of(
         &self,
@@ -249,11 +275,16 @@ impl ReworkSource for StoreFeedback {
                 // base of the job.
                 None => self.base_of(&mut *tx, run).await?,
             };
+            let person_request = match replaced.failing {
+                Some(failing) => self.person_request(&mut *tx, run, failing).await?,
+                None => None,
+            };
             Ok(Some(ReworkContext {
                 previous_head,
                 failed_reports,
                 findings,
                 round: replaced.round,
+                person_request,
             }))
         }
         .await;

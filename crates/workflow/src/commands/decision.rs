@@ -127,6 +127,10 @@ pub enum Decision {
     RequestRework {
         /// The stage that gets a new run. The table of human rework routes limits the choice.
         target: StageKind,
+        /// What the person asks to be changed, when they said. The engine stores the text and
+        /// links it to the run that is sent back, and the run that replaces it reads it with the
+        /// reports of the gates (`ReworkContext::person_request`).
+        instructions: Option<HumanText>,
     },
     /// Lets a blocked stage run go again (`S17`). Guard `G_BLOCK_CLEARED_RERUN` has three
     /// alternatives. The two facts below are the caller's. The third, that a person recorded the

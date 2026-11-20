@@ -184,6 +184,9 @@ pub struct ReworkContext {
     pub findings: Vec<Finding>,
     /// Which round this is, from 1.
     pub round: u8,
+    /// What a person asked for when they sent the work back, in their words. `None` when a gate
+    /// sent it back, or when the person gave no instructions.
+    pub person_request: Option<String>,
 }
 
 /// Where the stage learns that its run replaces another one, and why. The engine hands a handler

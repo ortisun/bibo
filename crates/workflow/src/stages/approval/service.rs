@@ -397,7 +397,14 @@ impl ApprovalService {
                     .rework_target
                     .ok_or(ServiceError::Refused(Refusal::MissingTarget))?;
                 d.engine
-                    .decide(&actor, subject, Decision::RequestRework { target })
+                    .decide(
+                        &actor,
+                        subject,
+                        Decision::RequestRework {
+                            target,
+                            instructions: HumanText::parse(cmd.reason.trim()).ok(),
+                        },
+                    )
                     .await
             }
             Verb::Pause => d.engine.control(&actor, cmd.job, JobCommand::Pause).await,

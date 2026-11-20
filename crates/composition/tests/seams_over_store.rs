@@ -25,7 +25,7 @@ use factory_workflow::stages::implementation::seams::ReworkSource;
 use factory_workflow::stages::specification::seams::{
     DraftRecord, SeamError, SpecApprovals, SpecDrafts, SpecHistory,
 };
-use support::engine::{Eval, PgWorld};
+use support::engine::{Eval, PgWorld, Step};
 use support::pg_world;
 
 fn commit(letter: char) -> CommitSha {
@@ -258,6 +258,88 @@ async fn a_specification_rework_with_no_draft_starts_from_the_base_of_the_job() 
         .expect("readable")
         .expect("a rework run has feedback");
     assert_eq!(context.previous_head, commit('a'));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_person_asked_for_reaches_the_run_that_replaces_the_one_they_sent_back() {
+    use factory_domain::values::HumanText;
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::{Decision, Subject};
+
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Specification)
+        .queue([Step::NeedsHuman, Step::Succeed]);
+    run_through(&world, StageKind::RepositoryIntelligence).await;
+    let map = identity_of(&world, job, StageKind::RepositoryIntelligence, 0).await;
+    deliver(
+        &world,
+        &map,
+        "repository-map",
+        &serde_json::json!({"commit_sha": commit('a').as_str()}),
+    )
+    .await;
+    run_through(&world, StageKind::Specification).await;
+    let waiting = identity_of(&world, job, StageKind::Specification, 0).await;
+
+    let approver = world.person("approver-f", &[HumanRole::Approver]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: waiting.stage_run,
+            },
+            Decision::RequestRework {
+                target: StageKind::Specification,
+                instructions: Some(
+                    HumanText::parse("Say what goes to standard error.").expect("a text"),
+                ),
+            },
+        )
+        .await
+        .expect("the engine sends the work back");
+
+    let second = identity_of(&world, job, StageKind::Specification, 1).await;
+    let context = feedback(&world)
+        .of(&second)
+        .await
+        .expect("readable")
+        .expect("a rework run has feedback");
+    assert_eq!(
+        context.person_request.as_deref(),
+        Some("Say what goes to standard error.")
+    );
+    assert_eq!(context.round, 1);
+    // No gate sent it back, so there is no failed report.
+    assert!(context.failed_reports.is_empty(), "{context:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_a_gate_sent_back_has_no_request_of_a_person() {
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Specification)
+        .queue_evals([Eval::Fail("specification-review")]);
+    run_through(&world, StageKind::Specification).await;
+    let first = identity_of(&world, job, StageKind::Specification, 0).await;
+    deliver(
+        &world,
+        &first,
+        "specification-evidence",
+        &serde_json::json!({"base_commit": commit('a').as_str(), "head_commit": commit('d').as_str()}),
+    )
+    .await;
+    let second = identity_of(&world, job, StageKind::Specification, 1).await;
+    let context = feedback(&world)
+        .of(&second)
+        .await
+        .expect("readable")
+        .expect("feedback");
+    assert_eq!(context.person_request, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

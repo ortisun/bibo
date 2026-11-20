@@ -52,6 +52,7 @@ impl Rig {
             failed_reports,
             findings,
             round,
+            person_request: None,
         }));
     }
 

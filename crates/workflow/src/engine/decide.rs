@@ -72,6 +72,10 @@ impl Engine {
         let stored = match &decision {
             Decision::Answer { text, .. } => Some(self.store_text(text.as_bytes()).await?),
             Decision::Reject { reason } => Some(self.store_text(reason.as_str().as_bytes()).await?),
+            Decision::RequestRework {
+                instructions: Some(instructions),
+                ..
+            } => Some(self.store_text(instructions.as_str().as_bytes()).await?),
             Decision::Override { justification, .. } => {
                 Some(self.store_text(justification.as_str().as_bytes()).await?)
             }
@@ -360,7 +364,7 @@ impl Engine {
                     AuditDecision::Ended,
                 ))
             }
-            Decision::RequestRework { target } => {
+            Decision::RequestRework { target, .. } => {
                 let request = HumanReworkRequest {
                     from: run.value.kind,
                     target: *target,
@@ -378,6 +382,19 @@ impl Engine {
                                 cap: self.config.rework_limits.cap(plan.track),
                             }),
                         )?;
+                        // What the person asked for stays with the run that is sent back, in the
+                        // transaction that sends it back. The run that replaces it finds the
+                        // text there.
+                        if let Some(request) = &stored {
+                            self.index_for(tx, cx, run.value.id, request).await?;
+                            tx.link_stage_run_artifact(
+                                run.value.id,
+                                ArtifactDirection::Input,
+                                links::rework_request_role()?,
+                                request.sha256.clone(),
+                            )
+                            .await?;
+                        }
                         self.apply_rework(
                             tx,
                             cx,

@@ -2516,6 +2516,7 @@ async fn a_person_can_send_work_back_from_the_approval_to_a_listed_stage() {
             },
             Decision::RequestRework {
                 target: StageKind::Specification,
+                instructions: None,
             },
         )
         .await;
@@ -2534,6 +2535,7 @@ async fn a_person_can_send_work_back_from_the_approval_to_a_listed_stage() {
             },
             Decision::RequestRework {
                 target: StageKind::Implementation,
+                instructions: None,
             },
         )
         .await
@@ -2570,6 +2572,7 @@ async fn a_stranger_cannot_send_work_back() {
             },
             Decision::RequestRework {
                 target: StageKind::Implementation,
+                instructions: None,
             },
         )
         .await;

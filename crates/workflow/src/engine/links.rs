@@ -65,6 +65,18 @@ pub(crate) fn warning_role(command: CausationId) -> Result<Slug, EngineError> {
     ))?)
 }
 
+/// The role of what a person asked for when they sent a stage run back (`S15`). A run is sent back
+/// once, so the role has no number.
+pub const REWORK_REQUEST: &str = "rework-request";
+
+/// The role [`REWORK_REQUEST`] as a slug.
+///
+/// # Errors
+/// [`EngineError::Invalid`] if the role is not a slug (it always is).
+pub fn rework_request_role() -> Result<Slug, EngineError> {
+    Ok(Slug::parse(REWORK_REQUEST)?)
+}
+
 /// The role of an answer given after `attempts_before` attempts.
 ///
 /// # Errors

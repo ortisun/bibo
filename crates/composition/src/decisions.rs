@@ -1685,7 +1685,10 @@ impl ClaimWork {
                     return Verdict::Done(Reason::Incomplete.into());
                 };
                 (
-                    EngineDecision::RequestRework { target },
+                    EngineDecision::RequestRework {
+                        target,
+                        instructions: HumanText::parse(decision.reason.trim()).ok(),
+                    },
                     format!("The work was sent back to {}.", target.as_str()),
                 )
             }
