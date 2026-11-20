@@ -98,7 +98,7 @@
   },
   "prompt": {
     "template_path": "agents/architect/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:1eb34ac611dd6368baf25594b54e811a493e06ce769a26289ab116c8a6589c0a"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:0cc83ebb833fe36249ab784dc6a72ca791647ae50b805e04890262aca2ab7f95"
   }
 }
