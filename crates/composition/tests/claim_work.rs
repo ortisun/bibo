@@ -724,8 +724,13 @@ async fn a_rejection_and_a_rework_reach_the_approval_service_with_the_right_comm
     let run = StageRunId::from_uuid(rig.world.ids.new_uuid());
     // The stage run must exist for the audit record to name it; the stand-in service does not read
     // it, so the record names the job's first stage run.
+    // The approval stage is the one whose decisions the approval service judges: it has the pull
+    // request. The stand-in service does not read the run.
     let view = rig.engine.job_view(rig.tenant, job).await.expect("a view");
-    let first = view.stage_runs[0].id;
+    let first = view
+        .newest(StageKind::Approval)
+        .expect("the approval stage run")
+        .id;
     let _ = run;
     let reject = rig
         .request(
@@ -2039,4 +2044,118 @@ async fn a_person_without_a_designation_of_the_answer_row_is_refused_before_the_
         rig.run_status(job, run).await,
         StageRunStatus::WaitingForHuman
     );
+}
+
+// ===== A decision on a stage that waits before the job has a pull request =========================
+//
+// The approval service judges a decision against a pull request, and only the approval stage has
+// one. In the nineteenth real run the owner's rejection of a specification that waited was given up
+// after a few tries, because the service asked for an approval request that no stage had stored.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejection_of_a_waiting_specification_ends_the_job_and_never_asks_the_approval_service() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Reject,
+        Some(run),
+        None,
+        "this is not what I asked for",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+    assert_eq!(
+        rig.reason_of(job, APPLIED).await.as_deref(),
+        Some("The job was rejected.")
+    );
+    assert_eq!(rig.status(job).await, JobStatus::Rejected);
+    assert!(
+        rig.submitter.seen.lock().expect("lock").is_empty(),
+        "there is no pull request to judge the decision against"
+    );
+    // Another pass changes nothing.
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rework_of_a_waiting_specification_gives_the_stage_a_new_run() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Rework,
+        Some(run),
+        Some("SPECIFICATION"),
+        "say what goes to standard error",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+    assert_eq!(
+        rig.reason_of(job, APPLIED).await.as_deref(),
+        Some("The work was sent back to SPECIFICATION.")
+    );
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::ReworkRequested
+    );
+    let view = rig.engine.job_view(rig.tenant, job).await.expect("a view");
+    let newest = view
+        .newest(StageKind::Specification)
+        .expect("a specification run");
+    assert_ne!(newest.id, run, "the stage has a new run");
+    assert_eq!(rig.status(job).await, JobStatus::Active);
+    assert!(rig.submitter.seen.lock().expect("lock").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rework_to_a_stage_the_waiting_stage_has_no_route_to_is_refused_and_nothing_moves() {
+    let rig = Rig::new().await;
+    let (job, run) = rig.asking().await;
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Rework,
+        Some(run),
+        Some("IMPLEMENTATION"),
+        "the specification stage cannot send work forward",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(rig.status(job).await, JobStatus::WaitingForHuman);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejection_of_a_stage_that_does_not_wait_is_refused_as_out_of_place() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let view = rig.engine.job_view(rig.tenant, job).await.expect("a view");
+    let intake = view.newest(StageKind::Intake).expect("the intake run").id;
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Reject,
+        Some(intake),
+        None,
+        "nothing waits for a person here",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(rig.status(job).await, JobStatus::Active, "nothing moved");
+    assert!(rig.submitter.seen.lock().expect("lock").is_empty());
 }

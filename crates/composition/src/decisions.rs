@@ -83,7 +83,7 @@ use factory_domain::policy::authority::{ActorKind, RepositoryIdentity};
 use factory_domain::policy::decision::Designation;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, Status as _};
-use factory_domain::values::{GitSha, Sha256Digest, Slug, Timestamp};
+use factory_domain::values::{GitSha, HumanText, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::clock::Clock;
 use factory_ports::githost::ActorLogin;
@@ -1541,19 +1541,31 @@ impl ClaimWork {
         let Some(stage_run) = fields.stage_run else {
             return Verdict::Done(Reason::NoStageRun.into());
         };
-        // The specification stage asks a person before it freezes its draft. Its question has no
-        // pull request and no approval request: the approval stage writes those, much later.
-        if fields.verb == Verb::Approve {
-            match self.stage_facts(tenant, stage_run).await {
-                Ok(Some((StageKind::Specification, correlation))) => {
-                    return self
-                        .approve_specification(tenant, decision, command, correlation)
-                        .await;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => return Verdict::Done(Reason::NoStageRun.into()),
-                Err(Unreadable) => return Verdict::Later,
+        // The approval service judges a decision against a pull request: its head, its base and
+        // the evidence bound to them. Only the approval stage has one. A stage before it that
+        // waits for a person (a specification with no draft worth approving, a review with no
+        // independent reviewer) has no pull request and no stored approval request, so the
+        // service could never answer for it and the decision was given up. Those decisions go to
+        // the engine, whose own guards say who may take them and from which state.
+        let (kind, correlation) = match self.stage_facts(tenant, stage_run).await {
+            Ok(Some(facts)) => facts,
+            Ok(None) => return Verdict::Done(Reason::NoStageRun.into()),
+            Err(Unreadable) => return Verdict::Later,
+        };
+        match (kind, fields.verb) {
+            // The specification stage asks a person before it freezes its draft.
+            (StageKind::Specification, Verb::Approve) => {
+                return self
+                    .approve_specification(tenant, decision, command, correlation)
+                    .await;
             }
+            (StageKind::Approval, _) | (_, Verb::Approve) => {}
+            (_, Verb::Reject | Verb::Rework) => {
+                return self
+                    .decide_before_the_pull_request(tenant, decision, command)
+                    .await;
+            }
+            _ => {}
         }
         let parsed = ParsedDecision {
             verb: fields.verb,
@@ -1633,6 +1645,81 @@ impl ClaimWork {
             }
             Err(ServiceError::Engine(_)) => Verdict::Done(Reason::WrongState.into()),
             Err(ServiceError::Unavailable) => Verdict::Later,
+        }
+    }
+
+    /// A person's rejection, or their request for rework, of a stage run that waits before the job
+    /// has a pull request.
+    ///
+    /// The engine decides: a rejection is `S16` and needs the approver role, a rework request is
+    /// `S15` and needs a route from the waiting stage to the target (`human_rework_routes`), the
+    /// approver or operator role and room under the rework cap. The hook has already checked, in
+    /// the steps before this one, that the person is a current user of the tenant and that the
+    /// allowlist gives them this verb on this repository.
+    async fn decide_before_the_pull_request(
+        &self,
+        tenant: TenantId,
+        decision: &Pending,
+        command: CausationId,
+    ) -> Verdict {
+        let fields = &decision.fields;
+        let Some(stage_run) = fields.stage_run else {
+            return Verdict::Done(Reason::NoStageRun.into());
+        };
+        let (engine_decision, applied) = match fields.verb {
+            Verb::Reject => {
+                let Ok(reason) = HumanText::parse(decision.reason.trim()) else {
+                    return Verdict::Done(Reason::Incomplete.into());
+                };
+                (
+                    EngineDecision::Reject { reason },
+                    "The job was rejected.".to_owned(),
+                )
+            }
+            Verb::Rework => {
+                let Some(target) = fields
+                    .target
+                    .as_deref()
+                    .and_then(|text| StageKind::parse(text).ok())
+                else {
+                    return Verdict::Done(Reason::Incomplete.into());
+                };
+                (
+                    EngineDecision::RequestRework { target },
+                    format!("The work was sent back to {}.", target.as_str()),
+                )
+            }
+            _ => return Verdict::Done(Reason::WrongState.into()),
+        };
+        let actor = Actor {
+            tenant,
+            principal: decision.principal,
+            command,
+        };
+        let decided = self
+            .engine
+            .decide(
+                &actor,
+                Subject {
+                    job: fields.job,
+                    stage_run,
+                },
+                engine_decision,
+            )
+            .await;
+        match decided {
+            Ok(()) => Verdict::Done(Marked::Applied(applied)),
+            Err(EngineError::Duplicate) => Verdict::Done(Marked::Applied(
+                "The engine had applied this decision already.".to_owned(),
+            )),
+            Err(EngineError::NotAuthorized(_)) => Verdict::Done(Reason::NotAuthorized.into()),
+            Err(EngineError::NotFound) => Verdict::Done(Reason::NoStageRun.into()),
+            // The run does not wait for a person, the target has no route from this stage, or the
+            // rework cap is used up.
+            Err(EngineError::Illegal(_) | EngineError::GuardUnmet(_) | EngineError::Refused(_)) => {
+                Verdict::Done(Reason::WrongState.into())
+            }
+            Err(_) => Verdict::Later,
         }
     }
 
