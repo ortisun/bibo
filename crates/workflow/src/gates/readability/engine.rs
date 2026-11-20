@@ -59,6 +59,10 @@ pub fn check(
                 continue;
             }
             if let Some(draft) = rules::run(rule, &ctx) {
+                // A title the change kept is the project's, and only the body is judged.
+                if !artifact.title_judged && draft.part == super::finding::Part::Title {
+                    continue;
+                }
                 findings.push(Finding {
                     rule,
                     severity: spec.severity,

@@ -263,6 +263,65 @@ proptest! {
     }
 }
 
+/// A page whose title the change kept is judged on its body only (documentation policy 9.3). In
+/// the thirty-fifth real run the README kept its title, `word-count`, and the gate failed it for
+/// a title the change never touched.
+#[test]
+fn a_kept_title_is_not_judged_and_the_body_still_is() {
+    use factory_workflow::gates::readability::Part;
+    let catalog = Catalog::embedded().expect("the catalog loads");
+    let body = "Count the lines, words and characters of a file.\n";
+    let judged = check(
+        &catalog,
+        &Options::new(),
+        &[Artifact::documentation(
+            "word-count",
+            DocumentType::Reference,
+            body,
+        )],
+    )
+    .expect("within the limit");
+    assert!(
+        judged.iter().any(|finding| finding.part == Part::Title),
+        "the machine-like title is judged when the change sets it: {judged:?}"
+    );
+    let kept = check(
+        &catalog,
+        &Options::new(),
+        &[Artifact::documentation("word-count", DocumentType::Reference, body).with_title_kept()],
+    )
+    .expect("within the limit");
+    assert!(
+        kept.iter().all(|finding| finding.part != Part::Title),
+        "{kept:?}"
+    );
+    // The body is still read: a body finding stays when the title is kept.
+    let bad_body = "TODO: write this page.\n";
+    let with_body = check(
+        &catalog,
+        &Options::new(),
+        &[
+            Artifact::documentation("word-count", DocumentType::Reference, bad_body)
+                .with_title_kept(),
+        ],
+    )
+    .expect("within the limit");
+    let judged_body = check(
+        &catalog,
+        &Options::new(),
+        &[Artifact::documentation(
+            "Count words",
+            DocumentType::Reference,
+            bad_body,
+        )],
+    )
+    .expect("within the limit");
+    assert_eq!(
+        with_body.iter().filter(|f| f.part == Part::Body).count(),
+        judged_body.iter().filter(|f| f.part == Part::Body).count()
+    );
+}
+
 /// Checks one hostile body of the largest size, as a task, a pull request and a how-to guide.
 fn finishes_on(unit: &str) {
     let catalog = Catalog::embedded().expect("the catalog loads");
