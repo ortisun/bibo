@@ -66,6 +66,7 @@ use crate::gates::spec::rules;
 use crate::handlers::{NamedArtifact, NeedsHumanRequest, StageContext, StageError, StageOutput};
 use crate::prompts::{Assembler, ContentClass, IndependentRequest, Input, Limits, Scope, Source};
 use crate::stages::architecture::critic::{Review, Verdict};
+use crate::stages::implementation::feedback::earlier_answers;
 use crate::stages::implementation::run::{close, open_sandbox, seam_error, workspace_error};
 use crate::stages::implementation::seams::verify_read_only_tools;
 
@@ -320,6 +321,13 @@ async fn read_set(
     }))
 }
 
+/// What the reviewer reads when no person was asked anything.
+const NO_ANSWERS: &str = "No person has answered a question about this specification.";
+/// The heading of the answers given to the runs this one replaces.
+const EARLIER_ROUNDS: &str = "Answers people gave in earlier rounds of this specification. An identifier such as Q-001 names a question of the round the answer was given in.";
+/// The heading of the answers given to this run.
+const THIS_ROUND: &str = "Answers people gave in this round:";
+
 /// The answers with the questions they were given to. A person answers by identifier
 /// (`Q-002: ...`), and an identifier alone says nothing to the skill that applies the answer.
 fn with_questions(answers: String, asked: Option<&DraftRecord>) -> String {
@@ -377,6 +385,10 @@ struct Work<'a> {
     answers_file: RepoPath,
     answers: String,
     answered: Vec<HumanAnswer>,
+    /// What people decided when this specification asked them: the answers of the rounds this run
+    /// replaces, then the answers given to this run. The independent reviewer reads it, so a
+    /// decision of a person is not taken for something the writer made up.
+    people: String,
     /// Present when this run repairs a draft that was sent back.
     repair: Option<Repair>,
     /// Present when this run goes on from the draft that stopped on questions: how many times
@@ -906,6 +918,16 @@ async fn review_in(
             checklists.clone(),
         )
         .fetched_at(now),
+        // What people decided comes from the factory's own record of their answers, never from a
+        // file the writer wrote.
+        Input::untrusted(
+            "people_answers",
+            ContentClass::IssueComment,
+            artifact("people-answers", work.people.as_bytes()),
+            tenant,
+            work.people.clone().into_bytes(),
+        )
+        .fetched_at(now),
     ];
     // The reviewer reads the request, the specification and the checklists, and nothing the
     // writer said about its own work. `assemble_independent` takes no other kind of input.
@@ -1171,6 +1193,18 @@ pub(super) async fn execute(
         }
         _ => None,
     };
+    let people = {
+        let earlier = rework
+            .as_ref()
+            .map(|context| earlier_answers(&context.earlier_answers))
+            .unwrap_or_default();
+        match (earlier.is_empty(), answers.is_empty()) {
+            (true, true) => NO_ANSWERS.to_owned(),
+            (true, false) => answers.clone(),
+            (false, true) => format!("{EARLIER_ROUNDS}\n{earlier}"),
+            (false, false) => format!("{EARLIER_ROUNDS}\n{earlier}\n{THIS_ROUND}\n{answers}"),
+        }
+    };
     let start = match (&repair, &rework, &resume, &previous) {
         (Some(_), Some(context), _, _) => context.previous_head.clone(),
         (_, _, Some((commit, _)), _) => commit.clone(),
@@ -1186,6 +1220,7 @@ pub(super) async fn execute(
         answers_file: RepoPath::new(ANSWERS_FILE).map_err(|_| StageError::Internal)?,
         answers,
         answered,
+        people,
         repair,
         resume: resume.map(|(_, round)| round),
         manifest: writer_manifest,

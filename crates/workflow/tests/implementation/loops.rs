@@ -53,6 +53,7 @@ impl Rig {
             findings,
             round,
             person_request: None,
+            earlier_answers: Vec::new(),
         }));
     }
 

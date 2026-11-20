@@ -16,6 +16,35 @@ use super::seams::ReworkContext;
 /// The most characters one message keeps. A failure message can carry a long test output.
 const MESSAGE_MAX: usize = 600;
 
+/// The most characters one answer of a person keeps. An answer is short text typed by a person;
+/// the bound only stops a pasted file from filling the prompt.
+const ANSWER_MAX: usize = 4000;
+
+/// The answers people gave in earlier rounds, as a block of text. Empty when there are none.
+///
+/// The lines of an answer are kept, because a person answers several questions one per line. The
+/// same text goes to the agent that repairs the work and to the reviewer that judges it, so both
+/// read the same decisions.
+#[must_use]
+pub fn earlier_answers(answers: &[String]) -> String {
+    let mut text = String::new();
+    for (index, answer) in answers.iter().enumerate() {
+        let kept: String = answer.chars().take(ANSWER_MAX).collect();
+        text.push_str(&format!("Answer {} from a person:\n", index + 1));
+        for line in kept
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+        {
+            text.push_str(&format!("    {line}\n"));
+        }
+        if kept.chars().count() < answer.chars().count() {
+            text.push_str("    (cut)\n");
+        }
+    }
+    text
+}
+
 /// The feedback as the builder reads it.
 #[must_use]
 pub fn render(context: &ReworkContext) -> String {
@@ -37,6 +66,14 @@ pub fn render_with(context: &ReworkContext, message_max: usize) -> String {
         // person who read the work outweighs what a gate or a reviewer said about it.
         text.push_str("\nA person sent the work back and asked for this:\n");
         text.push_str(&format!("    {}\n", clip(request)));
+    }
+    if !context.earlier_answers.is_empty() {
+        // A decision a person took stays taken. Without it the next round asks the same question
+        // again, or a reviewer who never saw the answer calls the decision out of scope.
+        text.push_str(
+            "\nPeople answered questions in earlier rounds of this work. Their decisions stand: do not ask them again, and when a gate or a finding below disagrees with a decision, keep the decision and say so. An identifier such as Q-001 names a question of the round the answer was given in.\n",
+        );
+        text.push_str(&earlier_answers(&context.earlier_answers));
     }
     let failed: Vec<&GateReport> = context
         .failed_reports
@@ -139,6 +176,7 @@ mod tests {
             findings: verdict.findings,
             round: 1,
             person_request: None,
+            earlier_answers: Vec::new(),
         }
     }
 
@@ -176,9 +214,42 @@ mod tests {
     }
 
     #[test]
+    fn the_answers_of_earlier_rounds_stand_before_the_findings() {
+        let answered = ReworkContext {
+            earlier_answers: vec![
+                "Q-001: One line, no spaces.\n\nQ-002: Yes, list it in the help.  ".to_owned(),
+                "x".repeat(ANSWER_MAX + 1),
+            ],
+            ..context()
+        };
+        let text = render(&answered);
+        assert_eq!(text, render(&answered), "the text is stable");
+        let decisions = text.find("Their decisions stand").expect("the rule");
+        let findings = text
+            .find("Findings of the independent review:")
+            .expect("findings");
+        assert!(decisions < findings, "{text}");
+        assert!(
+            text.contains(
+                "Answer 1 from a person:\n    Q-001: One line, no spaces.\n    Q-002: Yes, list it in the help.\n"
+            ),
+            "{text}"
+        );
+        // The bound is the number of characters, and a cut answer says that it was cut.
+        let second = text.split("Answer 2 from a person:\n").nth(1).expect("two");
+        assert!(second.starts_with(&format!("    {}\n    (cut)\n", "x".repeat(ANSWER_MAX))));
+        // No answers, no section.
+        assert!(!render(&context()).contains("Their decisions stand"));
+        assert_eq!(earlier_answers(&[]), "");
+        // An answer exactly at the bound is whole.
+        assert!(!earlier_answers(&["y".repeat(ANSWER_MAX)]).contains("(cut)"));
+    }
+
+    #[test]
     fn what_a_person_asked_for_comes_first() {
         let asked = ReworkContext {
             person_request: Some("Say what goes to standard error.\nKeep the rest.".to_owned()),
+            earlier_answers: Vec::new(),
             ..context()
         };
         let text = render(&asked);

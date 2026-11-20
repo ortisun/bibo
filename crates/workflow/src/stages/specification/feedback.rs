@@ -77,6 +77,7 @@ mod tests {
             findings: Vec::new(),
             round: 1,
             person_request: None,
+            earlier_answers: Vec::new(),
         }
     }
 

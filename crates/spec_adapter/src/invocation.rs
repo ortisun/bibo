@@ -249,7 +249,7 @@ fn safe_path(path: &str) -> Result<&str, InvocationError> {
 const OBSERVABLE_RULE: &str = "State everything a user or a script can observe as a functional requirement, and never only as an assumption: the exact form of each output, what goes to standard output and to standard error, and each exit status.";
 
 /// What may enter a specification that the request did not ask for: nothing, without a person.
-const SCOPE_RULE: &str = "Add no requirement that the request does not ask for. If you think one is needed, do not write it as a requirement: mark it with NEEDS CLARIFICATION, so that a person decides.";
+const SCOPE_RULE: &str = "Add no requirement that the request does not ask for. If you think one is needed, do not write it as a requirement: mark it with NEEDS CLARIFICATION, so that a person decides. What a person has already answered is decided and is part of the request: write it as a requirement and do not mark it again.";
 
 /// The files a skill reads besides the request. Each is read as data.
 ///

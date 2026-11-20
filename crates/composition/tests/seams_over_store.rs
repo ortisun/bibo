@@ -318,6 +318,102 @@ async fn what_a_person_asked_for_reaches_the_run_that_replaces_the_one_they_sent
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn what_people_answered_reaches_every_run_that_replaces_the_one_they_answered() {
+    // The defect this guards against, seen in the twenty-third real run: a person answered the
+    // questions of the specification, the gate then sent the draft back, and the run that replaced
+    // it knew nothing of the answers. The writer asked again and the reviewer called the decisions
+    // out of scope.
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::{Decision, Subject};
+
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Specification).queue([
+        Step::NeedsHuman,
+        Step::Succeed,
+        Step::Succeed,
+        Step::Succeed,
+    ]);
+    world.script(StageKind::Specification).queue_evals([
+        Eval::Fail("specification-review"),
+        Eval::Fail("specification-review"),
+    ]);
+    run_through(&world, StageKind::RepositoryIntelligence).await;
+    let map = identity_of(&world, job, StageKind::RepositoryIntelligence, 0).await;
+    deliver(
+        &world,
+        &map,
+        "repository-map",
+        &serde_json::json!({"commit_sha": commit('a').as_str()}),
+    )
+    .await;
+    run_through(&world, StageKind::Specification).await;
+    let first = identity_of(&world, job, StageKind::Specification, 0).await;
+    // A run that nobody answered has no answers to hand on, and a first run has no feedback.
+    assert!(
+        feedback(&world)
+            .of(&first)
+            .await
+            .expect("readable")
+            .is_none()
+    );
+
+    let person = world.person("approver-g", &[HumanRole::Approver]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(person),
+            Subject {
+                job,
+                stage_run: first.stage_run,
+            },
+            Decision::Answer {
+                text: "Q-001: One line, no spaces.\nQ-002: Yes, list it in the help.".to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the engine takes the answer");
+    // The answered run goes on, its gate fails, and a second run replaces it.
+    run_through(&world, StageKind::Specification).await;
+    let second = identity_of(&world, job, StageKind::Specification, 1).await;
+    let context = feedback(&world)
+        .of(&second)
+        .await
+        .expect("readable")
+        .expect("a rework run has feedback");
+    let answers = vec!["Q-001: One line, no spaces.\nQ-002: Yes, list it in the help.".to_owned()];
+    assert_eq!(context.earlier_answers, answers);
+
+    // The gate fails the second run the same way, so the engine asks a person, who sends it back.
+    // The third run still reads what the first was told.
+    run_through(&world, StageKind::Specification).await;
+    world
+        .engine
+        .decide(
+            &world.actor(person),
+            Subject {
+                job,
+                stage_run: second.stage_run,
+            },
+            Decision::RequestRework {
+                target: StageKind::Specification,
+                instructions: None,
+            },
+        )
+        .await
+        .expect("the engine sends the work back");
+    let third = identity_of(&world, job, StageKind::Specification, 2).await;
+    let context = feedback(&world)
+        .of(&third)
+        .await
+        .expect("readable")
+        .expect("a rework run has feedback");
+    assert_eq!(context.round, 2);
+    assert_eq!(context.earlier_answers, answers);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_run_that_a_gate_sent_back_has_no_request_of_a_person() {
     let (_db, world, _) = pg_world().await;
     let job = world.admitted_job().await;

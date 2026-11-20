@@ -393,7 +393,14 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 3] = [
     ),
     (
         "specification_reviewer",
-        &["request", "specification", "requirements_checklist"],
+        // `people_answers` is what people decided, from the factory's own record of their
+        // answers. The writer cannot write it, so it is not the author's account.
+        &[
+            "request",
+            "specification",
+            "requirements_checklist",
+            "people_answers",
+        ],
     ),
     (
         "documentation_reviewer",

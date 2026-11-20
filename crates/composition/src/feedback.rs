@@ -36,7 +36,7 @@ use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::paths::CommitSha;
 use factory_ports::store::{ArtifactDirection, Store, Tx};
-use factory_workflow::engine::links::REWORK_REQUEST;
+use factory_workflow::engine::links::{REWORK_REQUEST, answer_attempts_before};
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::architecture::seams::{PreviousRound, RoundSource};
 use factory_workflow::stages::implementation::seams::{ReworkContext, ReworkSource};
@@ -189,6 +189,55 @@ impl StoreFeedback {
         Ok((!text.is_empty()).then_some(text))
     }
 
+    /// What people answered to the runs this one replaces: the answers linked to each run of the
+    /// chain, from the oldest run to the one just replaced, and in each run in the order given.
+    async fn earlier_answers(
+        &self,
+        tx: &mut dyn Tx,
+        run: &RunIdentity,
+        previous: StageRunId,
+    ) -> Result<Vec<String>, SeamError> {
+        let runs = tx
+            .list_stage_runs(run.job)
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        let mut chain = Vec::new();
+        let mut cursor = Some(previous);
+        while let Some(id) = cursor {
+            // A chain is as long as the rounds of rework, and a row that names itself ends it.
+            if chain.contains(&id) {
+                break;
+            }
+            chain.push(id);
+            cursor = runs
+                .iter()
+                .find(|candidate| candidate.value.id == id)
+                .and_then(|found| found.value.rework_of);
+        }
+        let mut answers = Vec::new();
+        for id in chain.into_iter().rev() {
+            let mut linked: Vec<(u32, Sha256Digest)> = tx
+                .list_stage_run_artifacts(id)
+                .await
+                .map_err(|_| SeamError::Unavailable)?
+                .into_iter()
+                .filter(|link| link.direction == ArtifactDirection::Input)
+                .filter_map(|link| {
+                    answer_attempts_before(link.role.as_str()).map(|before| (before, link.sha256))
+                })
+                .collect();
+            linked.sort_by_key(|(before, _)| *before);
+            for (_, sha256) in linked {
+                let bytes = self.reader.bytes(tx, run.tenant, &sha256).await?;
+                let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+                if !text.is_empty() {
+                    answers.push(text);
+                }
+            }
+        }
+        Ok(answers)
+    }
+
     /// The head commit named by a replaced run's result document, if it has one.
     async fn head_of(
         &self,
@@ -279,7 +328,11 @@ impl ReworkSource for StoreFeedback {
                 Some(failing) => self.person_request(&mut *tx, run, failing).await?,
                 None => None,
             };
+            let earlier_answers = self
+                .earlier_answers(&mut *tx, run, replaced.previous)
+                .await?;
             Ok(Some(ReworkContext {
+                earlier_answers,
                 previous_head,
                 failed_reports,
                 findings,

@@ -187,6 +187,10 @@ pub struct ReworkContext {
     /// What a person asked for when they sent the work back, in their words. `None` when a gate
     /// sent it back, or when the person gave no instructions.
     pub person_request: Option<String>,
+    /// What people answered when the runs this one replaces asked them, in their words and oldest
+    /// first. A decision a person took stays taken when the work is sent back: the next run and
+    /// its reviewer read it, so that nobody asks it again or calls it out of scope.
+    pub earlier_answers: Vec<String>,
 }
 
 /// Where the stage learns that its run replaces another one, and why. The engine hands a handler

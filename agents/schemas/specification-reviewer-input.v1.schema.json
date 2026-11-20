@@ -8,7 +8,8 @@
   "required": [
     "request",
     "specification",
-    "requirements_checklist"
+    "requirements_checklist",
+    "people_answers"
   ],
   "properties": {
     "request": {
@@ -25,6 +26,11 @@
       "type": "string",
       "maxLength": 1048576,
       "description": "The requirements checklist, with the state of every item."
+    },
+    "people_answers": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "What people answered when the specification asked them a question, from the factory's own record of their answers. A fixed sentence when nobody was asked."
     }
   }
 }

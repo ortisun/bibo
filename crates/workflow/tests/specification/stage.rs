@@ -230,6 +230,12 @@ async fn the_request_is_a_file_and_the_skills_never_see_the_issue_text() {
         .collect();
     assert!(!holding.is_empty(), "the reviewer reads the request");
     assert!(
+        review[0]
+            .instructions
+            .contains("No person has answered a question about this specification."),
+        "the reviewer is told that nobody was asked"
+    );
+    assert!(
         holding.iter().all(|line| line.starts_with("> ")),
         "{holding:?}"
     );
@@ -332,6 +338,15 @@ async fn clarification_questions_go_to_a_person_and_the_answer_reaches_the_next_
         read.find("which order do the keys use?") < read.find("Answer 1 from a person:"),
         "the questions come first"
     );
+    // The independent reviewer reads the decision of the person from the factory's record, so
+    // it does not take the decision for something the writer made up.
+    let review = rig.runtime.prompts("specification-reviewer");
+    let told = &review.last().expect("the reviewer ran").instructions;
+    assert!(
+        told.contains("Q-001: which order do the keys use?"),
+        "{told}"
+    );
+    assert!(told.contains("lines, words and characters"), "{told}");
     assert_eq!(clarify[0].answers.len(), 1);
     assert_eq!(clarify[0].answers[0].question.as_str(), "Q-001");
     assert!(
@@ -452,6 +467,7 @@ async fn a_draft_that_was_sent_back_is_repaired_from_the_findings_and_not_writte
             findings: Vec::new(),
             round: 1,
             person_request: None,
+            earlier_answers: vec!["Q-001: One line, with no spaces.".to_owned()],
         });
     let requests_before = lock(&rig.provider.requests).len();
 
@@ -492,7 +508,20 @@ async fn a_draft_that_was_sent_back_is_repaired_from_the_findings_and_not_writte
         assert!(text.contains("The point of CHK001 is not met"), "{text}");
         assert!(text.contains("checklist-item-unresolved"), "{text}");
         assert!(text.contains("You cannot close an item"), "{text}");
+        // What a person decided in the round that was sent back stands in this one.
+        assert!(text.contains("Their decisions stand"), "{text}");
+        assert!(
+            text.contains("    Q-001: One line, with no spaces."),
+            "{text}"
+        );
     }
+    let review = rig.runtime.prompts("specification-reviewer");
+    let told = &review.last().expect("the reviewer ran").instructions;
+    assert!(
+        told.contains("Answers people gave in earlier rounds"),
+        "{told}"
+    );
+    assert!(told.contains("Q-001: One line, with no spaces."), "{told}");
     // The findings are not the word of a person, so they are never in the answers file.
     assert!(
         written_to(&rig, "inputs/answers.md")
@@ -555,6 +584,7 @@ async fn a_rework_with_no_draft_to_repair_writes_the_specification_again() {
             findings: Vec::new(),
             round: 1,
             person_request: None,
+            earlier_answers: Vec::new(),
         });
     rig.a_sound_specification();
     let (claimed, outcome) = rig.run_next().await;
