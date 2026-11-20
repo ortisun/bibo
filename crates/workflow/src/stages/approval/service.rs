@@ -403,6 +403,12 @@ impl ApprovalService {
             Verb::Pause => d.engine.control(&actor, cmd.job, JobCommand::Pause).await,
             Verb::Resume => d.engine.control(&actor, cmd.job, JobCommand::Resume).await,
             Verb::Cancel => d.engine.control(&actor, cmd.job, JobCommand::Cancel).await,
+            // `judge` refuses an answer, so it never gets here.
+            Verb::Answer => {
+                return Err(ServiceError::Refused(Refusal::NotACommand(
+                    super::judge::NotACommand::NotAnApprovalDecision,
+                )));
+            }
         };
         let replayed = match moved {
             Ok(()) => false,
@@ -461,8 +467,9 @@ impl ApprovalService {
             Verb::Rework => Some(ApprovalDecision::Rework),
             Verb::Pause => Some(ApprovalDecision::Pause),
             Verb::Cancel => Some(ApprovalDecision::Cancel),
-            // There is no stored decision for a resume: it is a job command, audited below.
-            Verb::Resume => None,
+            // There is no stored decision for a resume: it is a job command, audited below. An
+            // answer is not an approval decision and is refused before this.
+            Verb::Resume | Verb::Answer => None,
         };
         let version = auth.allowlist_version();
         let allowlist_hash =

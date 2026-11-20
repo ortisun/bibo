@@ -8,6 +8,7 @@
 //! factory-cli approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
 //! factory-cli reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
 //! factory-cli rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
+//! factory-cli answer   --api URL --token-file FILE [--key K] JOB STAGE_RUN text...
 //! factory-cli pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
 //! factory-cli repository register | confirm-map | enable  --api URL --token-file FILE [--key K] [--wait-seconds N] ...
 //! factory-cli repository change REQUEST  --api URL --token-file FILE
@@ -16,7 +17,7 @@
 //!
 //! The verbs and the words after them are the grammar every channel shares
 //! (`factory_composition::commands`), so a decision typed here and in a pull request comment is read
-//! by the same function. There is no verb that merges or deploys.
+//! by the same function (a comment does not take `answer`, which comes only through the API). There is no verb that merges or deploys.
 //!
 //! # Exit codes
 //!

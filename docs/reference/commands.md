@@ -26,12 +26,13 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli health` | `--api` | none | Asks `GET /healthz`, then `GET /readyz`. Prints whether the API is running and ready. |
 | `factory-cli submit` | `--api`, `--token-file`, `--repository`, `--text-file`, `--source-ref`, `--key` | none | Submits a request as a job in the state `RECEIVED`. `--repository` is the repository identifier, `--text-file` holds the request text, and `--source-ref` is `OWNER/NAME#N`. |
 | `factory-cli status` | `--api`, `--token-file`, `--gates` | `JOB` | Shows the status of a job and its stage runs. With `--gates`, it then lists the gate reports of the job: the stage, the gate, the outcome, the block code and the hash of each report. |
-| `factory-cli show-draft` | `--api`, `--token-file`, `--stage-run` | `JOB` | Shows the specification draft a person is asked to approve: the commit that holds it, the head of the ledger, the draft document and the values to give as `head=` and `evidence=`. |
+| `factory-cli show-draft` | `--api`, `--token-file`, `--stage-run` | `JOB` | Shows the specification draft a person is asked to approve: the commit that holds it, the head of the ledger, the draft document and the values to give as `head=` and `evidence=`. When the stage asked questions, it lists them and prints the `answer` command that answers them. |
 | `factory-cli artifact` | `--api`, `--token-file` | `JOB SHA256` | Prints one stored document of a job, for example a gate report, through the same sanitizer as every other output. A document that is not text is not printed. |
 | `factory-cli timeline` | `--api`, `--token-file` | `JOB` | Shows the state changes of a job and its audit records, in time order. |
 | `factory-cli approve` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN head=H evidence=sha256:D [reason...]` | Records an approval. |
 | `factory-cli reject` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Records a rejection. |
 | `factory-cli rework` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN target=STAGE reason...` | Sends the work back to a stage. |
+| `factory-cli answer` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN text...` | Answers the questions of a stage run that waits for a person. A word `Q-001:` starts a new line, so `Q-001: yes Q-002: no` answers two questions. Put `--` before the text when it holds a word that starts with `--`. |
 | `factory-cli pause` | `--api`, `--token-file`, `--key` | `JOB reason...` | Pauses a job. |
 | `factory-cli resume` | `--api`, `--token-file`, `--key` | `JOB reason...` | Resumes a paused job. |
 | `factory-cli cancel` | `--api`, `--token-file`, `--key` | `JOB reason...` | Cancels a job. |
@@ -103,6 +104,7 @@ The `key=value` words come first. The first word that is not a known `key=value`
 | `approve` | `approver` | `head`, `evidence` | Approves the specification draft or the pull request. Bound to the head and the ledger entry the person saw. |
 | `reject` | `approver` | a reason | Rejects what the stage run waits on. |
 | `rework` | `approver` | `target`, a reason | Sends the work back to the named stage. |
+| `answer` | `requester` (of that job), `operator`, `approver` or `org_admin` (`answer_question`) | `stage_run_id`, the text (1 to 900 bytes, one line `Q-001: ...` per question; a text with no such line answers the first question) | Gives the text to the waiting stage run as a new input, and the stage runs again (transition S13). It decides no gate and never raises a budget ceiling. A pull request or issue comment does not take this verb. |
 | `pause` | `operator` | a reason | Pauses the job. |
 | `resume` | `operator` | a reason | Resumes the job. |
 | `cancel` | `operator` | a reason | Cancels the job. |

@@ -711,6 +711,180 @@ async fn a_retry_a_second_later_is_still_one_record() {
     env.stop().await;
 }
 
+/// `answer`: the designations the engine lets answer may send one, and get `202` and a signed
+/// record that carries the whole text and its hash; any other caller gets `403` and a denial record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_is_recorded_for_the_people_the_engine_lets_answer_and_refused_for_others() {
+    use factory_composition::decision_signing::{Signing, SubjectKind, read_subject};
+    use factory_composition::decisions::answer_digest;
+    use factory_domain::ids::AuditEventId;
+    use factory_workflow::stages::approval::Verb;
+
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let run = stage_run(&env, &env.a, &job).await.as_text();
+    let text = "Q-001: yes, add a line for --json\nQ-002: no";
+    let answer = json!({"verb": "answer", "stage_run_id": run, "answer": text});
+
+    // The requester, an operator and an approver may; each gets a record of their own.
+    for (index, person) in [&env.a.requester, &env.a.operator, &env.a.approver]
+        .into_iter()
+        .enumerate()
+    {
+        let reply = env
+            .send(decision(
+                &env.a,
+                person,
+                &job,
+                &format!("a{index}"),
+                &answer,
+            ))
+            .await;
+        assert_eq!(reply.status, 202, "{}: {}", person.login, reply.text());
+        assert_eq!(reply.json()["status"], "recorded");
+        assert_eq!(reply.json()["applied"], false);
+    }
+    // A security approver holds none of the designations the row names, and an outsider holds
+    // nothing.
+    for person in [&env.a.security, &env.a.outsider] {
+        let denied = env
+            .send(decision(&env.a, person, &job, "denied", &answer))
+            .await;
+        assert_eq!(denied.status, 403, "{}", person.login);
+        assert_eq!(denied.json(), json!({"error": "forbidden"}));
+    }
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+            .await,
+        3
+    );
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.denied'")
+            .await,
+        2
+    );
+
+    // The record keeps the whole text, and the signed subject its hash.
+    let reply = env
+        .send(decision(&env.a, &env.a.requester, &job, "a0", &answer))
+        .await;
+    assert_eq!(reply.status, 202, "a retry is the same record");
+    let event = AuditEventId::parse(reply.json()["decision_id"].as_str().expect("an id"))
+        .expect("an event id");
+    let subject = env
+        .db
+        .text(&format!(
+            "SELECT subject FROM audit_events WHERE event_id = '{}'",
+            event.as_uuid()
+        ))
+        .await
+        .expect("the request is recorded");
+    let Some(SubjectKind::Signed {
+        fields,
+        requested_at,
+        word,
+    }) = read_subject(&subject)
+    else {
+        panic!("the record is not signed: {subject}");
+    };
+    assert_eq!(fields.verb, Verb::Answer);
+    assert_eq!(fields.answer.as_deref(), Some(answer_digest(text).as_str()));
+    assert!(env.state.decision_keys.verify(
+        &Signing {
+            tenant: env.a.id,
+            actor: env.a.requester.principal,
+            event,
+            requested_at: &requested_at,
+            fields: &fields,
+        },
+        &word
+    ));
+    assert_eq!(
+        env.db
+            .text(&format!(
+                "SELECT reason FROM audit_events WHERE event_id = '{}'",
+                event.as_uuid()
+            ))
+            .await
+            .as_deref(),
+        Some(format!("requested: {text}").as_str())
+    );
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+            .await,
+        3,
+        "the retry wrote nothing"
+    );
+    // The same key with another answer is a conflict.
+    let changed = json!({"verb": "answer", "stage_run_id": run, "answer": "Q-001: no"});
+    let conflict = env
+        .send(decision(&env.a, &env.a.requester, &job, "a0", &changed))
+        .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.text());
+
+    // What an answer is not.
+    let long = "x".repeat(factory_composition::commands::MAX_ANSWER_BYTES + 1);
+    let cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "no text",
+            json!({"verb": "answer", "stage_run_id": run}),
+            "answer",
+        ),
+        (
+            "an empty text",
+            json!({"verb": "answer", "stage_run_id": run, "answer": " \n "}),
+            "answer",
+        ),
+        (
+            "a text longer than a record keeps whole",
+            json!({"verb": "answer", "stage_run_id": run, "answer": long}),
+            "answer",
+        ),
+        (
+            "an escape in the text",
+            json!({"verb": "answer", "stage_run_id": run, "answer": "a\u{1b}[31mb"}),
+            "answer",
+        ),
+        (
+            "no stage run",
+            json!({"verb": "answer", "answer": text}),
+            "stage_run_id",
+        ),
+        (
+            "a reason is not an answer",
+            json!({"verb": "answer", "stage_run_id": run, "reason": text}),
+            "reason",
+        ),
+        (
+            "a target means nothing to an answer",
+            json!({"verb": "answer", "stage_run_id": run, "answer": text, "target": "SPECIFICATION"}),
+            "target",
+        ),
+        (
+            "another verb takes no answer",
+            json!({"verb": "cancel", "reason": "The request was withdrawn.", "answer": text}),
+            "answer",
+        ),
+        (
+            "a stage verb takes no answer",
+            json!({"verb": "unblock", "stage_run_id": run, "reason": "The daemon is back.", "answer": text}),
+            "answer",
+        ),
+    ];
+    for (index, (name, body, field)) in cases.into_iter().enumerate() {
+        let key = format!("bad-{index}");
+        let reply = env
+            .send(decision(&env.a, &env.a.requester, &job, &key, &body))
+            .await;
+        assert_eq!(reply.status, 400, "{name}: {}", reply.text());
+        assert_eq!(reply.json()["field"], field, "{name}");
+    }
+    env.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_decision_is_read_by_the_grammar_every_channel_shares() {
     let env = Env::start().await;

@@ -18,8 +18,9 @@
 //!
 //! * The comment parser reads only the **first line** of a body and only if it starts with
 //!   `/factory ` (a body that does not is not a command: `Ok(None)`). A verb that is not one of
-//!   the six is `Err(UnknownVerb)`, which the caller audits and ignores. `merge`, `deploy`,
-//!   `ready` and `undraft` are all unknown.
+//!   the seven is `Err(UnknownVerb)`, which the caller audits and ignores. `merge`, `deploy`,
+//!   `ready` and `undraft` are all unknown. `answer` is known and refused in a comment
+//!   (`Err(NotInComments)`, see below).
 //! * The command line parser takes the words after `factory` as separate arguments and joins what
 //!   is left as the reason, so the grammar is the same.
 //! * The dashboard form is key and value pairs: `verb`, `head`, `evidence`, `target`, `reason`.
@@ -27,12 +28,31 @@
 //! `key=value` words come before the reason. The first word that is not a `key=value` pair of a
 //! known key starts the reason, so a reason may contain `=` later. A key given twice is an error.
 //!
+//! # The answer to a waiting stage run
+//!
+//! ```text
+//! answer <text>
+//! ```
+//!
+//! `answer` takes no `key=value` word: every word after the verb is the answer, which is untrusted
+//! text of 1 to [`MAX_ANSWER_BYTES`] bytes. The stage reads one answer per line `Q-001: ...`, and a
+//! text with no such line answers the first question. Words on a command line cannot carry a line
+//! break, so a word that starts with a question label (`Q-` and three or more digits, then `:`)
+//! starts a new line: `answer Q-001: yes Q-002: no` is the two lines `Q-001: yes` and `Q-002: no`.
+//! The dashboard form gives the text as it is, in the field `answer`.
+//!
+//! **A comment does not take `answer`** (`Err(NotInComments)`). The comment channel reads one line,
+//! which cannot hold several answers; what it reads goes to the approval service, which judges
+//! pull request approvals and has nothing to do with a stage run that asks; and the text of an
+//! answer becomes an input of an agent stage, so it comes only through the authenticated API,
+//! where it is recorded under the person's token and the API's keyed word.
+//!
 //! # The two verbs of a dependency decision
 //!
 //! `approve-dependency <name> <version> [checksum prefix] <reason>` and `approve-build-code ...` are
 //! read by [`parse_dependency_command`], which lives with the gates that wait for them. They are
 //! re-exported here so that the API and the command line read them with the one grammar; they are
-//! not among the six verbs and have no [`ParsedDecision`].
+//! not among the seven verbs and have no [`ParsedDecision`].
 //!
 //! # What "seen" is
 //!
@@ -58,13 +78,18 @@ use factory_workflow::stages::approval::{
 /// The longest reason a decision may carry, in bytes (the store's limit).
 pub const MAX_REASON_BYTES: usize = 2000;
 
+/// The longest answer a decision carries, in bytes. It is what the audit record of the request
+/// keeps of a person's text in full (the API cuts a longer reason, and an answer must never be cut),
+/// and far below the stage's own bound on one answer (8 KiB).
+pub const MAX_ANSWER_BYTES: usize = 900;
+
 /// The word that opens a command in a comment.
 pub const COMMENT_PREFIX: &str = "/factory ";
 
 /// Why a decision could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CommandError {
-    /// The verb is not one of the six.
+    /// The verb is not one of the seven.
     #[error("{0:?} is not a decision the factory takes")]
     UnknownVerb(String),
     /// There is no verb after the prefix.
@@ -82,6 +107,12 @@ pub enum CommandError {
     /// A verb that needs something it was not given.
     #[error("{0} needs {1}")]
     Missing(&'static str, &'static str),
+    /// The answer is empty, or longer than an answer may be.
+    #[error("the answer must be 1 to {MAX_ANSWER_BYTES} bytes")]
+    Answer,
+    /// The verb is one the comment channel does not take.
+    #[error("{0} is not taken in a comment; use the API or the command line")]
+    NotInComments(&'static str),
 }
 
 /// A decision as a person wrote it, before the context is added.
@@ -89,7 +120,7 @@ pub enum CommandError {
 pub struct ParsedDecision {
     /// What is decided.
     pub verb: Verb,
-    /// Why, in the person's words. Untrusted text.
+    /// Why, in the person's words; for `answer`, the answer. Untrusted text.
     pub reason: String,
     /// The head the person says they saw.
     pub head: Option<GitSha>,
@@ -189,8 +220,56 @@ fn reason(words: &[&str]) -> Result<String, CommandError> {
     Ok(text.to_owned())
 }
 
-/// Reads the words after the verb: `key=value` pairs, then the reason.
+/// True when a word starts a line of an answer: `Q-`, three or more digits, then `:`.
+fn starts_a_question_line(word: &str) -> bool {
+    let Some(rest) = word.strip_prefix("Q-") else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    digits >= 3 && rest.as_bytes().get(digits) == Some(&b':')
+}
+
+/// An answer, checked: 1 to [`MAX_ANSWER_BYTES`] bytes after trimming.
+///
+/// # Errors
+/// [`CommandError::Answer`].
+pub fn checked_answer(text: &str) -> Result<String, CommandError> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > MAX_ANSWER_BYTES {
+        return Err(CommandError::Answer);
+    }
+    Ok(text.to_owned())
+}
+
+/// The words of an answer as one text: joined by spaces, and a word that starts with a question
+/// label starts a new line.
+fn answer_of(words: &[&str]) -> Result<String, CommandError> {
+    let mut text = String::new();
+    for word in words {
+        if !text.is_empty() {
+            text.push(if starts_a_question_line(word) {
+                '\n'
+            } else {
+                ' '
+            });
+        }
+        text.push_str(word);
+    }
+    checked_answer(&text)
+}
+
+/// Reads the words after the verb: `key=value` pairs, then the reason. For `answer`, every word is
+/// the answer.
 fn read_words(verb: Verb, words: &[&str]) -> Result<ParsedDecision, CommandError> {
+    if verb == Verb::Answer {
+        return Ok(ParsedDecision {
+            verb,
+            reason: answer_of(words)?,
+            head: None,
+            evidence: None,
+            target: None,
+        });
+    }
     let mut head = None;
     let mut evidence = None;
     let mut target = None;
@@ -258,7 +337,11 @@ pub fn parse_comment(body: &str) -> Result<Option<ParsedDecision>, CommandError>
     };
     let words: Vec<&str> = rest.split_whitespace().collect();
     let (verb, words) = words.split_first().ok_or(CommandError::NoVerb)?;
-    read_words(verb_of(verb)?, words).map(Some)
+    let verb = verb_of(verb)?;
+    if verb == Verb::Answer {
+        return Err(CommandError::NotInComments(verb.as_str()));
+    }
+    read_words(verb, words).map(Some)
 }
 
 /// Reads the arguments of the command line, the words after `factory`.
@@ -283,6 +366,20 @@ pub fn parse_form(fields: &[(&str, &str)]) -> Result<ParsedDecision, CommandErro
             .filter(|value| !value.is_empty())
     };
     let verb = verb_of(get("verb").ok_or(CommandError::NoVerb)?)?;
+    if verb == Verb::Answer {
+        // The text as it is given, line breaks and all; no other word means anything to it.
+        let text = fields
+            .iter()
+            .find(|(key, _)| *key == "answer")
+            .map_or("", |(_, value)| *value);
+        return Ok(ParsedDecision {
+            verb,
+            reason: checked_answer(text)?,
+            head: None,
+            evidence: None,
+            target: None,
+        });
+    }
     let head = get("head")
         .map(|value| GitSha::parse(value).map_err(|_| CommandError::BadValue("head")))
         .transpose()?;
@@ -393,8 +490,72 @@ mod tests {
     }
 
     #[test]
-    fn the_six_verbs_parse_and_nothing_that_merges_does() {
-        for verb in Verb::ALL {
+    fn an_answer_is_its_text_and_each_question_label_starts_a_line() {
+        let parsed =
+            parse_cli(&["answer", "Q-001:", "yes,", "add", "it", "Q-002:", "no"]).expect("reads");
+        assert_eq!(parsed.verb, Verb::Answer);
+        assert_eq!(parsed.reason, "Q-001: yes, add it\nQ-002: no");
+        assert!(parsed.head.is_none() && parsed.evidence.is_none() && parsed.target.is_none());
+        // No key is read: a word with `=` is part of the answer, and so is a label in the middle
+        // of a word.
+        let parsed = parse_cli(&["answer", "target=IMPLEMENTATION", "is", "fine", "xQ-003:"])
+            .expect("reads");
+        assert_eq!(parsed.reason, "target=IMPLEMENTATION is fine xQ-003:");
+        assert!(parsed.target.is_none());
+        // A text with no label is one line: the stage reads it as the answer to Q-001.
+        let parsed = parse_cli(&["answer", "use", "the", "JSON", "flag"]).expect("reads");
+        assert_eq!(parsed.reason, "use the JSON flag");
+        // Two digits are not a label.
+        let parsed = parse_cli(&["answer", "a", "Q-01:", "b"]).expect("reads");
+        assert_eq!(parsed.reason, "a Q-01: b");
+    }
+
+    #[test]
+    fn an_empty_or_too_long_answer_is_refused() {
+        assert_eq!(parse_cli(&["answer"]), Err(CommandError::Answer));
+        assert_eq!(
+            parse_cli(&["answer", "  ", "\t"]),
+            Err(CommandError::Answer)
+        );
+        let long = "x".repeat(MAX_ANSWER_BYTES + 1);
+        assert_eq!(parse_cli(&["answer", &long]), Err(CommandError::Answer));
+        let exact = "x".repeat(MAX_ANSWER_BYTES);
+        assert_eq!(parse_cli(&["answer", &exact]).expect("reads").reason, exact);
+        assert_eq!(parse_form(&[("verb", "answer")]), Err(CommandError::Answer));
+        assert_eq!(
+            parse_form(&[("verb", "answer"), ("answer", " \n ")]),
+            Err(CommandError::Answer)
+        );
+        // The reason of another verb is not an answer.
+        assert_eq!(
+            parse_form(&[("verb", "answer"), ("reason", "yes")]),
+            Err(CommandError::Answer)
+        );
+    }
+
+    #[test]
+    fn the_form_keeps_the_line_breaks_of_an_answer() {
+        let parsed = parse_form(&[("verb", "answer"), ("answer", "Q-001: yes\nQ-002: no\n")])
+            .expect("reads");
+        assert_eq!(parsed.verb, Verb::Answer);
+        assert_eq!(parsed.reason, "Q-001: yes\nQ-002: no");
+    }
+
+    #[test]
+    fn a_comment_does_not_take_an_answer() {
+        assert_eq!(
+            parse_comment("/factory answer Q-001: yes"),
+            Err(CommandError::NotInComments("answer"))
+        );
+        assert_eq!(
+            parse_comment("/factory answer"),
+            Err(CommandError::NotInComments("answer"))
+        );
+    }
+
+    #[test]
+    fn the_verbs_parse_and_nothing_that_merges_does() {
+        for verb in Verb::ALL.into_iter().filter(|verb| *verb != Verb::Answer) {
             let line = format!("/factory {} because I say so", verb.as_str());
             let parsed = parse_comment(&line).expect("reads").expect("a command");
             assert_eq!(parsed.verb, verb);

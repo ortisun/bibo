@@ -67,6 +67,39 @@ fn the_configuration_of_a_real_run_is_a_production_configuration() {
     );
 }
 
+/// While the specification waits with questions, the owner is told the exact command that answers
+/// them, command first and then the options, with one `Q-00N: <answer>` per question, and the
+/// questions themselves. With no question there is no such line.
+#[test]
+fn the_owner_is_told_how_to_answer_the_questions_of_a_waiting_specification() {
+    let questions = vec![
+        (
+            "Q-001".to_owned(),
+            "Should the --help text add a line for --json?".to_owned(),
+        ),
+        ("Q-002".to_owned(), "Which exit code on error?".to_owned()),
+    ];
+    let text = real::answer_lines(
+        "factory-cli",
+        "--api http://127.0.0.1:8080 --token-file /tmp/t",
+        "J",
+        "R",
+        &questions,
+    );
+    assert!(
+        text.contains(
+            "Answer it:   factory-cli answer --api http://127.0.0.1:8080 --token-file /tmp/t J R -- Q-001: <answer> Q-002: <answer>"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Q-001: Should the --help text add a line for --json?"));
+    assert!(text.contains("Q-002: Which exit code on error?"));
+    assert_eq!(
+        real::answer_lines("factory-cli", "--api x", "J", "R", &[]),
+        ""
+    );
+}
+
 /// The configuration the `protection` command reads the default branch's protection with parses.
 /// It holds only GitHub for real: the sandbox and the broker are there because the configuration
 /// requires them, and that command starts neither. The first real run on 2026-11-15 stopped here

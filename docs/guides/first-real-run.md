@@ -159,6 +159,7 @@ The run talks to you on the terminal, and it writes the same lines to `target/e2
 | When | What you do |
 |---|---|
 | The specification draft waits | Read it with `factory-cli show-draft`. Approve it with `factory-cli approve JOB STAGE_RUN head=H evidence=sha256:D`, or reject it with `factory-cli reject`. The run prints the exact values. |
+| The specification asked questions | `factory-cli show-draft` lists them (`Q-001: ...`). Answer them with `factory-cli answer JOB STAGE_RUN -- Q-001: <answer> Q-002: <answer>`; the stage runs again with the answers. The run prints the command and the questions on its `Answer it:` line. |
 | A review waits (rare: only when no other Claude model is served) | See the next section. The factory refuses an approval there. |
 | The draft pull request waits | Read it on GitHub. Approve it with `factory-cli approve`, or reject it. Approving merges nothing: the pull request stays a draft. |
 

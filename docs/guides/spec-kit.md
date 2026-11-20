@@ -18,7 +18,7 @@ Spec Kit 1.1.2 installs ten skills. The factory uses three of them in Slice 1, t
 |---|---|---|
 | `constitution` | A precondition of the repository. The factory checks that it exists and never runs the skill. | The constitution belongs to the repository and is approved apart from any feature request. No agent manifest grants this skill. |
 | `specify` | Used | Writes `spec.md` from the request. |
-| `clarify` | Used when the ambiguity is material | Asks questions. The stage puts them to a person and stops after `stages.max_clarification_rounds` rounds. The default is 2. |
+| `clarify` | Used when the ambiguity is material | Asks questions. The stage puts them to a person and stops after `stages.max_clarification_rounds` rounds. The default is 2. A person reads them with `factory-cli show-draft` and answers with `factory-cli answer`. |
 | `checklist` | Used | Writes a checklist for the reviewer. Its ticks count for nothing. |
 | `plan`, `tasks`, `analyze`, `implement`, `converge` | Never | The factory's architecture and planning stages own these jobs. `analyze` also needs a plan and tasks, so it cannot judge a specification alone. |
 | `taskstoissues` | Never | It breaks the plain-English title policy and has side effects outside the repository. |

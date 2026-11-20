@@ -8,9 +8,15 @@
 //!
 //! # The verbs
 //!
-//! There are six: `approve`, `reject`, `rework`, `pause`, `resume`, `cancel`. There is no verb
-//! that merges, marks a pull request ready or deploys, and [`parse_verb`] gives
+//! There are seven: `approve`, `reject`, `rework`, `pause`, `resume`, `cancel` and `answer`. There
+//! is no verb that merges, marks a pull request ready or deploys, and [`parse_verb`] gives
 //! [`VerbParse::Unknown`] for each such word. The caller ignores an unknown verb and audits it.
+//!
+//! `answer` is not a decision of this stage: it answers the questions of a stage run that waits for
+//! a person (the specification stage's clarification, `S13`), and the worker gives it to the
+//! engine as `Decision::Answer`. It shares the grammar, the API and the action table with the other
+//! six so that it is authorized, recorded and applied the same way; the approval service refuses
+//! it ([`super::judge`]), and the comment channel does not read it.
 
 use factory_domain::ids::{CausationId, JobId, StageRunId, TenantId};
 use factory_domain::policy::authority::ActorKind;
@@ -34,17 +40,21 @@ pub enum Verb {
     Resume,
     /// Cancels the job.
     Cancel,
+    /// Answers the questions of a stage run that waits for a person. The text is untrusted and
+    /// becomes a new input of that stage run.
+    Answer,
 }
 
 impl Verb {
     /// Every verb.
-    pub const ALL: [Verb; 6] = [
+    pub const ALL: [Verb; 7] = [
         Self::Approve,
         Self::Reject,
         Self::Rework,
         Self::Pause,
         Self::Resume,
         Self::Cancel,
+        Self::Answer,
     ];
 
     /// The word a person types.
@@ -57,6 +67,7 @@ impl Verb {
             Self::Pause => "pause",
             Self::Resume => "resume",
             Self::Cancel => "cancel",
+            Self::Answer => "answer",
         }
     }
 
@@ -68,14 +79,21 @@ impl Verb {
             Self::Reject | Self::Rework => "reject_or_request_rework",
             Self::Pause | Self::Resume => "pause_or_resume_job",
             Self::Cancel => "cancel_job",
+            Self::Answer => ANSWER_ACTION,
         }
     }
 }
 
+/// The row of the action table that authorizes an answer to a waiting stage run. It names the
+/// designations the engine lets answer (`Decision::Answer`): the requester of the job, an operator,
+/// an approver or an organization administrator. The engine also checks that a person who answers
+/// as a requester is the requester of that job, which an allowlist cannot say.
+pub const ANSWER_ACTION: &str = "answer_question";
+
 /// What a word is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerbParse {
-    /// One of the six.
+    /// One of the seven.
     Known(Verb),
     /// Anything else, `merge`, `deploy`, `ready` and `undraft` included. The command is ignored
     /// and audited.
@@ -164,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_six_verbs_are_known_and_nothing_else_is() {
+    fn the_seven_verbs_are_known_and_nothing_else_is() {
         for verb in Verb::ALL {
             assert_eq!(parse_verb(verb.as_str()), VerbParse::Known(verb));
         }
@@ -193,6 +211,7 @@ mod tests {
             "reject_or_request_rework",
             "pause_or_resume_job",
             "cancel_job",
+            "answer_question",
         ];
         for verb in Verb::ALL {
             assert!(rows.contains(&verb.action()), "{verb:?}");

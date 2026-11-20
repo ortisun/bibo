@@ -141,7 +141,7 @@ const PAGE: u32 = 500;
 /// and the worker reads it, so the one grammar is here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionFields {
-    /// The verb, one of the six words of the grammar.
+    /// The verb, one of the seven words of the grammar.
     pub verb: Verb,
     /// The job.
     pub job: JobId,
@@ -153,13 +153,25 @@ pub struct DecisionFields {
     pub evidence: Option<String>,
     /// The stage to send rework to.
     pub target: Option<String>,
+    /// For `answer`, the SHA-256 of the answer text (`sha256:` and 64 hex digits). The text itself
+    /// is the reason of the record, which the keyed word does not cover; its hash is in the
+    /// subject, so the word covers the text too, and the hook applies the text only if it has
+    /// this hash.
+    pub answer: Option<String>,
+}
+
+/// The value of the subject's `answer=` word for an answer text.
+#[must_use]
+pub fn answer_digest(text: &str) -> String {
+    Sha256Digest::of(text.as_bytes()).as_str().to_owned()
 }
 
 impl DecisionFields {
-    /// The subject text of the audit record.
+    /// The subject text of the audit record. The six words, and for an answer a seventh,
+    /// `answer=`, so that the subject of every other verb is the text it always was.
     #[must_use]
     pub fn subject(&self) -> String {
-        format!(
+        let mut subject = format!(
             "verb={} job={} run={} head={} evidence={} target={}",
             self.verb.as_str(),
             self.job.as_text(),
@@ -168,11 +180,16 @@ impl DecisionFields {
             self.head.as_deref().unwrap_or("none"),
             self.evidence.as_deref().unwrap_or("none"),
             self.target.as_deref().unwrap_or("none"),
-        )
+        );
+        if let Some(answer) = &self.answer {
+            subject.push_str(" answer=");
+            subject.push_str(answer);
+        }
+        subject
     }
 
     /// Reads a subject back and accepts it only if it is exactly the text [`Self::subject`] writes
-    /// for what it says: one space between the six `key=value` words, in the order of the grammar,
+    /// for what it says: one space between the `key=value` words, in the order of the grammar,
     /// each key once, `none` spelled `none`. A subject that reads the same but is not byte for byte
     /// the canonical text was not written by the API (R-2). `None` for anything else.
     #[must_use]
@@ -191,6 +208,7 @@ impl DecisionFields {
         let mut head = None;
         let mut evidence = None;
         let mut target = None;
+        let mut answer = None;
         for word in subject.split_whitespace() {
             let (key, value) = word.split_once('=')?;
             let some = (value != "none").then(|| value.to_owned());
@@ -206,6 +224,7 @@ impl DecisionFields {
                 "head" => head = some,
                 "evidence" => evidence = some,
                 "target" => target = some,
+                "answer" => answer = Some(value.to_owned()),
                 _ => return None,
             }
         }
@@ -216,6 +235,7 @@ impl DecisionFields {
             head,
             evidence,
             target,
+            answer,
         })
     }
 }
@@ -1453,6 +1473,7 @@ impl ClaimWork {
                 self.approve_or_reject(tenant, decision, command, sender)
                     .await
             }
+            Verb::Answer => self.answer(tenant, decision, command).await,
         };
         // Two workers can take one request at once. The one that lost the race sees a job that the
         // other already moved and would call the request out of place; it asks again whether the
@@ -1697,6 +1718,59 @@ impl ClaimWork {
         }
     }
 
+    /// A person's answer to the questions of a stage run that waits (the specification stage's
+    /// clarification). The engine stores the text, links it to the stage run as a human answer and
+    /// sends the run back to `READY` (`S13`); its next attempt reads the answer as data. The text
+    /// is applied only if its hash is the one the keyed word covers, so no writer of the audit log
+    /// can change what a person answered. An answer never raises a budget ceiling from here.
+    async fn answer(&self, tenant: TenantId, decision: &Pending, command: CausationId) -> Verdict {
+        let fields = &decision.fields;
+        let Some(stage_run) = fields.stage_run else {
+            return Verdict::Done(Reason::NoStageRun.into());
+        };
+        let text = &decision.reason;
+        if fields.answer.as_deref() != Some(answer_digest(text).as_str()) {
+            return Verdict::Done(Reason::Malformed.into());
+        }
+        if crate::commands::checked_answer(text).as_deref() != Ok(text.as_str()) {
+            return Verdict::Done(Reason::Incomplete.into());
+        }
+        let actor = Actor {
+            tenant,
+            principal: decision.principal,
+            command,
+        };
+        let decided = self
+            .engine
+            .decide(
+                &actor,
+                Subject {
+                    job: fields.job,
+                    stage_run,
+                },
+                EngineDecision::Answer {
+                    text: text.clone(),
+                    raises_budget_ceiling: false,
+                },
+            )
+            .await;
+        match decided {
+            Ok(()) => Verdict::Done(Marked::Applied(
+                "The answer was recorded. The stage runs again with it.".to_owned(),
+            )),
+            Err(EngineError::Duplicate) => Verdict::Done(Marked::Applied(
+                "The engine had applied this decision already.".to_owned(),
+            )),
+            Err(EngineError::NotAuthorized(_)) => Verdict::Done(Reason::NotAuthorized.into()),
+            Err(EngineError::NotFound) => Verdict::Done(Reason::NoStageRun.into()),
+            // The run does not wait for a person (`S13` is not a move from where it is).
+            Err(EngineError::Illegal(_) | EngineError::GuardUnmet(_) | EngineError::Refused(_)) => {
+                Verdict::Done(Reason::WrongState.into())
+            }
+            Err(_) => Verdict::Later,
+        }
+    }
+
     // ---- reads -----------------------------------------------------------------------------
 
     /// The kind of a stage run and the correlation id of its job, or `None` for a stage run the
@@ -1899,6 +1973,10 @@ fn requested_from(
     if record.event.job != Some(fields.job) || record.event.stage_run != fields.stage_run {
         return Err(Fault::Malformed);
     }
+    // The hash of an answer belongs to an answer, and an answer has one.
+    if (fields.verb == Verb::Answer) != fields.answer.is_some() {
+        return Err(Fault::Malformed);
+    }
     let reason = record
         .event
         .reason
@@ -2077,8 +2155,42 @@ mod tests {
             head: Some("a".repeat(40)),
             evidence: Some(format!("sha256:{}", "b".repeat(64))),
             target: None,
+            answer: None,
         };
         assert_eq!(DecisionFields::parse(&fields.subject()), Some(fields));
+    }
+
+    #[test]
+    fn an_answer_carries_the_hash_of_its_text_and_the_other_verbs_keep_their_six_words() {
+        let job = JobId::from_uuid(uuid::Uuid::from_u128(7));
+        let run = StageRunId::from_uuid(uuid::Uuid::from_u128(8));
+        let answer = DecisionFields {
+            verb: Verb::Answer,
+            job,
+            stage_run: Some(run),
+            head: None,
+            evidence: None,
+            target: None,
+            answer: Some(answer_digest("Q-001: yes")),
+        };
+        let subject = answer.subject();
+        assert!(subject.ends_with(&format!(
+            " target=none answer={}",
+            answer_digest("Q-001: yes")
+        )));
+        assert_eq!(DecisionFields::parse_canonical(&subject), Some(answer));
+        let pause = DecisionFields {
+            verb: Verb::Pause,
+            job,
+            stage_run: None,
+            head: None,
+            evidence: None,
+            target: None,
+            answer: None,
+        };
+        assert!(!pause.subject().contains("answer="));
+        assert_eq!(pause.subject().split(' ').count(), 6);
+        assert_ne!(answer_digest("Q-001: yes"), answer_digest("Q-001: no"));
     }
 
     #[test]
@@ -2224,6 +2336,7 @@ mod tests {
             head: None,
             evidence: None,
             target: None,
+            answer: None,
         };
         let request_word = keys.sign(&Signing {
             tenant,

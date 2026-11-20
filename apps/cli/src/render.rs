@@ -221,6 +221,36 @@ pub fn draft(body: &Value) -> String {
     } else {
         out.push_str("It cannot be approved now: the stage run does not wait for a person or holds no draft.\n");
     }
+    let questions = body
+        .get("questions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !questions.is_empty() {
+        out.push_str(&format!(
+            "The stage asked {} question(s):\n",
+            questions.len()
+        ));
+        for question in &questions {
+            out.push_str(&format!(
+                "  {}: {}\n",
+                text(question, "id"),
+                text(question, "question")
+            ));
+        }
+        if body.get("answerable").and_then(Value::as_bool) == Some(true) {
+            let template: Vec<String> = questions
+                .iter()
+                .map(|question| format!("{}: <answer>", text(question, "id")))
+                .collect();
+            out.push_str(&format!(
+                "To answer: factory-cli answer --api URL --token-file FILE {} {} -- {}\n",
+                text(body, "job_id"),
+                text(body, "stage_run_id"),
+                template.join(" "),
+            ));
+        }
+    }
     out
 }
 

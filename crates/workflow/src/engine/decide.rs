@@ -24,7 +24,7 @@ use factory_domain::machines::guards::{
 use factory_domain::machines::rework::{
     HumanReworkDecision, HumanReworkRequest, decide_human_rework,
 };
-use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
+use factory_domain::state::{Guard, StageRunEvent, StageRunStatus, Status as _};
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole, StageKind};
 use factory_ports::store::{
@@ -182,6 +182,10 @@ impl Engine {
                         "only the requester, an operator, an approver or an org admin may answer",
                     ));
                 }
+                // Only a run that waits takes an answer (`S13`). Asked before the answer is linked,
+                // so an answer to a run that no longer waits is refused as the illegal move it is
+                // and not as a clash of link names with an earlier answer.
+                run.value.status.transition(StageRunEvent::HumanAnswered)?;
                 let facts = AnswerFacts {
                     answer_recorded_with_principal: true,
                     answer_became_a_new_input_hash: stored.is_some(),

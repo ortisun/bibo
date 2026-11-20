@@ -495,6 +495,7 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
                 head: None,
                 evidence: None,
                 target: None,
+                answer: None,
             };
             let mut tx = world
                 .store

@@ -217,6 +217,7 @@ actions:
   - { id: reject_or_request_rework,       min_level: L1, requires: human,            approver_roles: [approver], threats: [T-23] }
   - { id: pause_or_resume_job,            min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
   - { id: cancel_job,                     min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
+  - { id: answer_question,                min_level: L0, requires: human,            approver_roles: [requester, operator, approver, org_admin], when: "a person answers the questions of a stage run that waits for a person (the specification stage's clarification, state machine transition S13); the designations are the ones the engine lets answer (Decision::Answer), and the engine also checks that a person who answers as a requester asked for that job; the text is untrusted, at most 900 bytes, becomes a new input of the stage and decides no gate; an answer through the API or the command line never raises a budget ceiling; a pull request or issue comment does not take this verb", threats: [T-01, T-23] }
   - { id: write_status_label,             min_level: L0, requires: none,             when: "only a label of the factory namespace (prefix `factory: `) that policies/issue-workflow.yaml maps to a job state; never the trigger label, never a `design:` label, never a label of any other kind; written with a token narrowed to issues: write for one repository, and the status comment goes by post_comment; the labels show state and decide nothing; pending confirmation by the architect (ADR 0017)", threats: [T-42, T-43, T-44] }
   - { id: close_or_label_issue,           min_level: L1, requires: none,             when: "closing an issue, or a label of the factory namespace that is not a status label (there is none today); the status label has its own row, write_status_label, and the trigger label and the `design:` labels are never written by the factory; pending confirmation by the architect (ADR 0017)" }
   - { id: add_new_direct_dependency,      min_level: L1, requires: human,            approver_roles: [approver], when: "always, for a package name absent from the base commit lockfile as anything but a member of the project; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver; the decision is bound to the exact name, version and checksum, and it does not cover the build code of a new package: a build script or a procedural macro that comes in needs its own decision, approve_build_code", threats: [T-29] }
@@ -275,6 +276,7 @@ always_human:
   - install_spec_kit_or_tooling
   - change_authority_allowlist
   - acknowledge_documentation_warning
+  - answer_question
   - unblock_blocked_stage_run
   - register_repository
   - confirm_project_map
@@ -343,7 +345,7 @@ approval_binding:
 # -----------------------------------------------------------------------------
 # One command set, three channels. The authorization rules are identical.
 commands:
-  verbs: [approve, reject, pause, resume, rework, cancel, unblock, approve-dependency, approve-build-code, approve-project-build-code, ack-translation-warning]
+  verbs: [approve, reject, pause, resume, rework, cancel, answer, unblock, approve-dependency, approve-build-code, approve-project-build-code, ack-translation-warning]
   channels: [dashboard, cli, github_comment]
   github_comment:
     prefix: "/factory"

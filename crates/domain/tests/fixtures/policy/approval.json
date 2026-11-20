@@ -138,6 +138,22 @@
       ]
     },
     {
+      "approver_roles": [
+        "requester",
+        "operator",
+        "approver",
+        "org_admin"
+      ],
+      "id": "answer_question",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-01",
+        "T-23"
+      ],
+      "when": "a person answers the questions of a stage run that waits for a person (the specification stage's clarification, state machine transition S13); the designations are the ones the engine lets answer (Decision::Answer), and the engine also checks that a person who answers as a requester asked for that job; the text is untrusted, at most 900 bytes, becomes a new input of the stage and decides no gate; an answer through the API or the command line never raises a budget ceiling; a pull request or issue comment does not take this verb"
+    },
+    {
       "id": "write_status_label",
       "min_level": "L0",
       "requires": "none",
@@ -446,6 +462,7 @@
     "install_spec_kit_or_tooling",
     "change_authority_allowlist",
     "acknowledge_documentation_warning",
+    "answer_question",
     "unblock_blocked_stage_run",
     "register_repository",
     "confirm_project_map",
@@ -710,6 +727,7 @@
       "resume",
       "rework",
       "cancel",
+      "answer",
       "unblock",
       "approve-dependency",
       "approve-build-code",
