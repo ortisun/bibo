@@ -55,7 +55,12 @@ INSERT INTO expected_table_grants VALUES
   ('audit_events', 'SELECT'), ('audit_events', 'INSERT'),
   ('outbox', 'SELECT'), ('outbox', 'INSERT'),
   ('inbox', 'SELECT'), ('inbox', 'INSERT'),
-  ('approvals', 'SELECT'), ('approvals', 'INSERT');
+  ('approvals', 'SELECT'), ('approvals', 'INSERT'),
+  -- The troubleshooter's own tables (migration 2026-11-20-003000, ADR 0021).
+  ('troubleshooting_runs', 'SELECT'), ('troubleshooting_runs', 'INSERT'),
+  ('troubleshooting_probe_state', 'SELECT'), ('troubleshooting_probe_state', 'INSERT'),
+  ('troubleshooting_issues', 'SELECT'), ('troubleshooting_issues', 'INSERT'),
+  ('troubleshooting_daily_counters', 'SELECT'), ('troubleshooting_daily_counters', 'INSERT');
 
 -- Column-level UPDATE grants. Anything not listed cannot be updated by the application role.
 CREATE TEMP TABLE expected_column_grants (tbl text, col text);
@@ -79,7 +84,20 @@ INSERT INTO expected_column_grants VALUES
   ('task_nodes', 'status'), ('task_nodes', 'version'), ('task_nodes', 'retry_count'), ('task_nodes', 'current_attempt_id'),
   ('task_nodes', 'commit_sha'), ('task_nodes', 'finished_at'),
   ('outbox', 'published_at'), ('outbox', 'publish_attempts'),
-  ('approvals', 'invalidated_at'), ('approvals', 'invalidation_reason');
+  ('approvals', 'invalidated_at'), ('approvals', 'invalidation_reason'),
+  ('troubleshooting_runs', 'state'), ('troubleshooting_runs', 'ended_at'), ('troubleshooting_runs', 'spend_micro_usd'),
+  ('troubleshooting_runs', 'report_sha256'), ('troubleshooting_runs', 'gateway_record_sha256'),
+  ('troubleshooting_runs', 'outcome'), ('troubleshooting_runs', 'agent_ran'), ('troubleshooting_runs', 'issues_opened'),
+  ('troubleshooting_runs', 'comments_posted'), ('troubleshooting_runs', 'deferred_fingerprints'),
+  ('troubleshooting_probe_state', 'last_outcome'), ('troubleshooting_probe_state', 'last_value'),
+  ('troubleshooting_probe_state', 'last_call_id'), ('troubleshooting_probe_state', 'last_run_id'),
+  ('troubleshooting_probe_state', 'last_checked_at'), ('troubleshooting_probe_state', 'last_tripped_at'),
+  ('troubleshooting_probe_state', 'cooldown_until'),
+  ('troubleshooting_issues', 'repository'), ('troubleshooting_issues', 'issue_number'),
+  ('troubleshooting_issues', 'opened_at'), ('troubleshooting_issues', 'last_comment_day'),
+  ('troubleshooting_issues', 'comments_on_last_day'),
+  ('troubleshooting_daily_counters', 'agent_runs'), ('troubleshooting_daily_counters', 'new_issues'),
+  ('troubleshooting_daily_counters', 'comments'), ('troubleshooting_daily_counters', 'spend_micro_usd');
 
 DO $$
 DECLARE

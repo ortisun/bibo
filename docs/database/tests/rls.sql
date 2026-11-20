@@ -215,6 +215,14 @@ BEGIN
     VALUES (tn, dbtest.u(t * 1000 + 961), job, run, 'approve', dbtest.u(t * 1000 + 2), 7000 + t, 'approver',
             dbtest.sha('allowlist'), dbtest.sha('policy'), 'Reviewed the evidence.', 'cli', now() + interval '72 hours',
             repeat('a', 40), repeat('b', 40), repeat('c', 40), dbtest.sha('manifest'), 1);
+  -- The troubleshooter's own tables (migration 2026-11-20-003000, ADR 0021).
+  INSERT INTO troubleshooting_runs (tenant_id, id, trigger, started_at, datadog_enabled)
+    VALUES (tn, 'run-' || t, 'probe', now(), false);
+  INSERT INTO troubleshooting_probe_state (tenant_id, probe_id, last_outcome, last_checked_at)
+    VALUES (tn, 'probe-' || t, 'ok', now());
+  INSERT INTO troubleshooting_issues (tenant_id, fingerprint, repository, issue_number, opened_at)
+    VALUES (tn, dbtest.sha('finding-' || t), 'example-org/fixture', t, now());
+  INSERT INTO troubleshooting_daily_counters (tenant_id, day) VALUES (tn, current_date);
 END
 $$;
 
@@ -358,9 +366,9 @@ $$;
 
 DO $$
 BEGIN
-  PERFORM dbtest.expect_eq('the catalog found the 17 tenant-owned tables (a new one must be added to mk_everything and to the policy migration)',
-    (SELECT count(*) FROM dbtest.tenant_tables()), 17::bigint);
-  PERFORM dbtest.expect_eq('all 17 tenant-owned tables are isolated: a tenant-1 session cannot read, insert, update or delete tenant 2 rows, and a session with no tenant sees nothing',
+  PERFORM dbtest.expect_eq('the catalog found the 21 tenant-owned tables, the four of the troubleshooter included (a new one must be added to mk_everything and to the policy migration)',
+    (SELECT count(*) FROM dbtest.tenant_tables()), 21::bigint);
+  PERFORM dbtest.expect_eq('all 21 tenant-owned tables are isolated: a tenant-1 session cannot read, insert, update or delete tenant 2 rows, and a session with no tenant sees nothing',
     dbtest.all_table_problems(), '');
 END
 $$;
@@ -788,7 +796,10 @@ INSERT INTO expected_policies
 SELECT t, 'observer_read', 'r', 'factory_observer'
   FROM unnest(ARRAY['tenants', 'repositories', 'principals', 'api_tokens', 'artifacts', 'webhook_deliveries', 'jobs',
                     'stage_runs', 'attempts', 'task_nodes', 'ledger_entries', 'audit_events', 'outbox', 'inbox',
-                    'approvals']) AS t;
+                    'approvals',
+                    -- The troubleshooter's own tables (migration 2026-11-20-003000), so it can read its history.
+                    'troubleshooting_runs', 'troubleshooting_probe_state', 'troubleshooting_issues',
+                    'troubleshooting_daily_counters']) AS t;
 
 CREATE FUNCTION dbtest.policy_set() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' ||
@@ -802,7 +813,7 @@ BEGIN
   PERFORM dbtest.expect_eq('the policies in the database are exactly the policies on the list: no extra, none missing, none for PUBLIC, none restrictive',
     dbtest.policy_set(),
     (SELECT string_agg(tbl || '.' || policy || ' ' || cmd || ' ' || role, E'\n' ORDER BY tbl, policy) FROM expected_policies));
-  PERFORM dbtest.expect_eq('row-level security is enabled on exactly the 17 tenant-owned tables and tenants, and forced on the 17',
+  PERFORM dbtest.expect_eq('row-level security is enabled on exactly the 21 tenant-owned tables and tenants, and forced on the 21',
     (SELECT string_agg(relname || CASE WHEN relforcerowsecurity THEN '+force' ELSE '' END, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relrowsecurity),
     (SELECT string_agg(n, ',' ORDER BY sort_key) FROM (SELECT t || '+force' AS n, t AS sort_key FROM dbtest.tenant_tables() t UNION ALL SELECT 'tenants', 'tenants') x));
   PERFORM dbtest.expect_eq('the reference tables carry no policy and no row-level security, and the application role can only read them',
