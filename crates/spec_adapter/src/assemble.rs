@@ -402,7 +402,7 @@ pub fn assemble(
     let mut seen_text = BTreeSet::new();
     for marker in &spec.markers {
         if seen_text.insert(collapse(&marker.question)) {
-            let value = question_json(next(), &marker.question, true, None, true);
+            let value = question_json(next(), &marker.asked(), true, None, true);
             blocking_for_human.push(value.clone());
             questions.push(value);
         }

@@ -113,6 +113,48 @@ pub struct Marker {
     pub line: u32,
     /// The question inside the marker.
     pub question: String,
+    /// The rest of the line the marker stands in, without its list bullet. A writer often puts
+    /// the point in doubt there and only the reason inside the marker. Empty when the marker is
+    /// alone on its line.
+    pub context: String,
+}
+
+impl Marker {
+    /// What a person is asked: the line around the marker, then the words inside it. The words
+    /// inside the marker alone, when nothing else is on the line.
+    #[must_use]
+    pub fn asked(&self) -> String {
+        if self.context.is_empty() {
+            self.question.clone()
+        } else {
+            format!("{} ({})", self.context, self.question)
+        }
+    }
+}
+
+/// The text of a line outside its markers: the bullet or number at the start is dropped and the
+/// blanks are collapsed.
+fn around_markers(line: &str) -> String {
+    let without = MARKER.replace_all(line, " ");
+    let words = without.split_whitespace().collect::<Vec<_>>().join(" ");
+    let body = words
+        .strip_prefix("- ")
+        .or_else(|| words.strip_prefix("* "))
+        .unwrap_or(&words);
+    let body = match body.split_once(". ") {
+        Some((digits, rest))
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            rest
+        }
+        _ => body,
+    };
+    // A line that holds only punctuation around its marker says nothing to a person.
+    if body.chars().any(char::is_alphanumeric) {
+        body.trim().to_owned()
+    } else {
+        String::new()
+    }
 }
 
 /// A specification read from `spec.md`.
@@ -279,6 +321,7 @@ pub fn parse_spec(text: &str) -> Result<ParsedSpec, ParseFailure> {
                 markers.push(Marker {
                     line: number as u32,
                     question: found[1].to_owned(),
+                    context: around_markers(trimmed),
                 });
             }
         }
@@ -650,6 +693,42 @@ mod tests {
         let spec = parse_spec(&text).expect("parses");
         assert_eq!(spec.markers.len(), 1);
         assert_eq!(spec.markers[0].question, "how large may a file be?");
+        assert_eq!(spec.markers[0].context, "Unknown limit");
+        assert_eq!(
+            spec.markers[0].asked(),
+            "Unknown limit (how large may a file be?)"
+        );
+    }
+
+    #[test]
+    fn a_marker_carries_the_line_it_stands_in() {
+        let around = |line: &str| {
+            let text = MINIMAL.replace(
+                "- Risk: a file may be large.",
+                &format!("- Risk: a file may be large.\n{line}"),
+            );
+            parse_spec(&text).expect("parses").markers
+        };
+        let alone = around("[NEEDS CLARIFICATION: how large may a file be?]");
+        assert_eq!(alone[0].context, "");
+        assert_eq!(alone[0].asked(), "how large may a file be?");
+        let bullet = around("- [NEEDS CLARIFICATION: how large may a file be?]");
+        assert_eq!(bullet[0].asked(), "how large may a file be?");
+        let reason = around(
+            "- Should the `--help` text list `--json`?  [NEEDS CLARIFICATION: the request names the README only]",
+        );
+        assert_eq!(
+            reason[0].asked(),
+            "Should the `--help` text list `--json`? (the request names the README only)"
+        );
+        let numbered = around("3. Limit is 1.5 MB [NEEDS CLARIFICATION: or more?] for now");
+        assert_eq!(numbered[0].asked(), "Limit is 1.5 MB for now (or more?)");
+        let two = around(
+            "- Size [NEEDS CLARIFICATION: how large?] and age [NEEDS CLARIFICATION: how old?]",
+        );
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].asked(), "Size and age (how large?)");
+        assert_eq!(two[1].asked(), "Size and age (how old?)");
     }
 
     #[test]
