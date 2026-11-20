@@ -245,9 +245,11 @@ mod dependency_rules {
         fn a_tokio_feature_that_no_limit_lists_reaches_workflow_through_an_adapter() {
             // storage may enable any tokio feature by its own entry. Cargo unifies the feature
             // into the tokio that workflow uses, and the limit on the resolved set catches it.
+            // `full`, not `fs`: since ADR 0021 the limit allows `fs` (rmcp's reqwest client
+            // enables it), so `fs` alone no longer shows the mechanism.
             let mut fx = Fixture::baseline("dep04-adapter-unified");
             fx.allow_external_in_rules("storage", "tokio");
-            fx.external("storage", "tokio", &["fs"]);
+            fx.external("storage", "tokio", &["full"]);
             let run = fx.run();
             run.assert_violation_mentions("DEP-05", "factory-workflow resolves tokio");
             run.assert_no_violation("DEP-04");

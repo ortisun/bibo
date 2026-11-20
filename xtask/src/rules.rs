@@ -334,9 +334,9 @@ mod tests {
     }
 
     #[test]
-    fn the_real_rules_file_parses_with_fourteen_libraries_five_binaries_and_xtask() {
+    fn the_real_rules_file_parses_with_fifteen_libraries_five_binaries_and_xtask() {
         let rules = Rules::parse(&real_rules_text()).expect("the real rules file parses");
-        assert_eq!(rules.crates.len(), 14);
+        assert_eq!(rules.crates.len(), 15);
         assert_eq!(
             rules
                 .crates
