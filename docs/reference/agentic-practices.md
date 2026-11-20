@@ -1,6 +1,6 @@
 # Agentic practices the factory follows
 
-- Status: first version, 2026-11-20. It records choices of three architecture decision records (ADR): [ADR 0027](../adr/0027-capability-packs.md), [ADR 0028](../adr/0028-project-knowledge-base.md) and [ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md), which the owner confirmed on 2026-11-20 and which are not built.
+- Status: first version, 2026-11-20. It records choices of three architecture decision records (ADR): [ADR 0027](../adr/0027-capability-packs.md), [ADR 0028](../adr/0028-project-knowledge-base.md) and [ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md), which the owner confirmed on 2026-11-20 and which are not built. The section on code quality records [ADR 0030](../adr/0030-quality-ratchet-for-structure-tests-and-modularity.md), proposed on 2026-11-20 and pending the owner.
 - Form: reference.
 - Goal: say which practices of the field the factory uses, which it is trying, and which it avoids, with the source and the date of each.
 - Review: at least once a quarter, and whenever a new model, a new revision of the Model Context Protocol (MCP) or a new host tool arrives. The next review is due by 2027-02-20.
@@ -52,6 +52,19 @@ A practice moves up only with evidence: a passed evaluation suite or a measured 
 | The protocol revision of 2026-07-28 (stateless requests, extensions, stricter authorization) | Assess | Not verified against the gateway. A short test must show which revision the gateway and each upstream server speak. |
 | Write tools on outside systems | Hold | Off unless the security policy grants the tool to the role. Money, accounts and production are never grantable. |
 
+## Code quality
+
+| Practice | Status | Where and why |
+|---|---|---|
+| A ratchet on structure, test strength and modularity, judged against the base commit | Trial | ADR 0030, Decisions 1 to 3. A change fails only for what it makes worse. Proven on a five-checkpoint fixture before a profile requires it (Decision 6). |
+| Code quality measured over a trajectory of changes, not only the pass rate | Trial | ADR 0030, Decision 5. SlopCodeBench found that agents pass tests while their code erodes. |
+| Separate measures instead of one composite score | Trial | ADR 0030, Decision 2. One number hides which thing got worse. |
+| Mutation testing on the changed lines | Trial | ADR 0030, Decision 3. A test that asserts nothing kills no mutant. Bounded by a cap on mutants per run. |
+| A list of patterns to avoid in the builder prompt | Trial | ADR 0030, Decision 4. It improves the start, does not stop the decay, and costs pass rate, so it runs as a measured variant. |
+| Fetching up front what an agent will certainly need | Adopted | Repository intelligence runs before any agent. ADR 0030, Decision 4, adds `quality_hotspots` to the builder's input. |
+| Compact failures fed back to the agent, with a retry limit | Adopted | Failed gate reports are the builder's only feedback, and rework rounds are capped (ADR 0023). |
+| An agent's own pass report before delivery | Hold | The factory measures and never takes an agent's word that its work passed. |
+
 ## Evaluation and improvement
 
 | Practice | Status | Where and why |
@@ -76,3 +89,6 @@ Read on 2026-11-20. Blog posts are opinions of their authors. Where a claim was 
 | [Design patterns for agentic workloads](https://orchestrator.dev/blog/2026-10-09-agentic-workload-design-patterns/) and [orchestration patterns in production](https://www.requesty.ai/blog/multi-agent-orchestration-patterns-that-work-in-production) | The workflow patterns. Practitioner blogs; their cost figures are not used. |
 | [SurrealDB releases](https://surrealdb.com/releases) | The current version line of SurrealDB. |
 | ["You Shouldn't Be Coding Anymore. You Should Be Building a Factory."](https://www.youtube.com/watch?v=nwMNQJ_Wtw8), Web Dev Cody, 2026-11-05 | The owner's reference. Ideas taken from it: people work at the input and at the review of the factory; the pull request body carries the evidence and the risk; a retrospective improves the skills; outside context joins the knowledge base through MCP, with care for private data; scheduled sweeps; merging by risk. |
+| [SlopCodeBench](https://arxiv.org/abs/2603.24755), Orlanski and others, version 2 of 2026-05-07 | The code quality section: erosion and verbosity over iterations, the effect of a prompt. A benchmark study in Python; read, not reproduced. |
+| [12-factor-agents](https://github.com/humanlayer/12-factor-agents), HumanLayer, last commit 2025-09-21 | Fetching context up front, compact errors with a retry limit, prompts kept as code. Most of its factors the factory already follows. |
+| [antislop](https://github.com/miqdadbadjuber/anti-slop), last commit 2026-11-20 | The comment rules of the code quality catalog. Its web page and copy rules are left to a web capability pack. It enforces nothing by itself. |
