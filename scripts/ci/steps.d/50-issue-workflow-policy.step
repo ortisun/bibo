@@ -1,0 +1,4 @@
+id       = issue-workflow-policy
+title    = The issue workflow policy is sound, covers every job state, and its JSON rendering is current (scripts/lib/issue_workflow.py check)
+requires = uv python3
+run      = uv run --no-project --with pyyaml==6.0.3 python -I scripts/lib/issue_workflow.py check

@@ -1,0 +1,39 @@
+# Architecture decision records
+
+One decision per file, in the order they were made. The format follows MADR: context, considered options, outcome, consequences. Each record names its status and says what was verified and what was not.
+
+This directory is `docs/adr/`, as the master prompt's workspace layout (section 14) specifies. The harness default is `docs/adrs/`. If the project later moves to the harness convention, rename the directory in one commit and update the links.
+
+| Number | Decision | Status |
+|---|---|---|
+| [0001](0001-orchestration-engine.md) | Orchestrate with a narrow PostgreSQL durable state machine. Temporal is not integrated. | Accepted |
+| [0002](0002-workspace-layout-and-dependency-rule.md) | Hexagonal workspace in four rings. Twelve library crates and four binaries in Slice 1. | Accepted |
+| [0003](0003-sandbox-strategy.md) | Hardened ephemeral containers under a supervisor, a masked git workspace, two ports, labelled fakes. Aligned with the security sandbox policy. | Accepted, revised 2026-10-27 |
+| [0004](0004-event-model.md) | Transactional outbox to NATS JetStream, at-least-once, idempotent consumers. Outbox written in Slice 1, relay in Slice 2. | Accepted |
+| [0005](0005-agent-runtime-adapter-boundary.md) | `AgentRuntime` port with probed Claude Code and Codex adapters that run inside the sandbox behind a model broker. API keys, not subscription logins (credentials superseded by 0020). | Accepted; location and credentials decided by default, pending confirmation; open spike |
+| [0006](0006-spec-kit-boundary.md) | Spec Kit only in the specification stage, behind the `spec_adapter` anti-corruption layer. Revision, checklist and argument handling need a spike. | Accepted, revised 2026-10-27; open spike |
+| [0007](0007-persistence-access-and-tenancy.md) | Diesel with `diesel-async`; tenant on every row and every call. | Accepted, revised 2026-10-27 by 0012 |
+| [0008](0008-artifact-store-and-evidence-ledger.md) | Content-addressed artifacts and a hash-chained, append-only evidence ledger. | Accepted |
+| [0009](0009-operating-defaults-pending-confirmation.md) | Nineteen operating defaults: the six security defaults (agent in the sandbox, API keys behind a broker (reversed by 0020), L0 without rulesets, human approval for new dependencies, named requester allowlist, two rework rounds), then those of records 0010 to 0013 and the documenter's five. | Decided by default, pending human confirmation |
+| [0010](0010-failure-escalation-routing-and-invalidation.md) | A limit asks a person, a skipped stage satisfies its dependants, unfixable findings go to a person, and every outside change has a row in the invalidation table. | Accepted by the architect, defaults pending confirmation |
+| [0011](0011-canonical-time-and-numbers.md) | Timestamps compare by instant and are written in the shortest form. Ledger integers stay within 2^53 - 1. | Accepted by the architect, defaults pending confirmation |
+| [0012](0012-row-level-security-in-slice-1.md) | Row-level security in Slice 1: a tenant setting per transaction, a separate role and pool for the system scope, two narrow lookup functions. Replaces four statements of 0007. | Accepted by the architect, default pending confirmation |
+| [0013](0013-telemetry-wiring.md) | Telemetry names as literals with a repository scan, one redactor injected by the composition root, and a job traced by an id derived from it. | Accepted by the architect, defaults pending confirmation |
+| [0014](0014-ports-v1-1-claim-protocol-and-port-revision.md) | Ports v1.1: one claim protocol (find in the system scope, start in the tenant scope, the lease on the attempt), a complete store, guard-bound transitions, a job-owned object store, a typed sandbox spec, agent output as bytes, check runs, and two new stage run transitions. | Accepted by the architect, defaults pending confirmation |
+| [0015](0015-composition-library.md) | The shared composition core is a ring 3 library crate that only binaries may depend on, with no `main`. Not one app linking another, not one binary, not three copies. | Decided by the lead, pending the architect |
+| [0016](0016-design-phase-onboarding-and-issue-workflow.md) | A design phase with EGM runs before the factory, a project is installed and mapped before it takes tickets, and issues are tracked with labels in two namespaces. The engine is not changed yet. | Proposed, pending the architect |
+| [0017](0017-ports-v1-2-issue-status-writer.md) | Ports v1.2: a new `IssueStatusWriter` port writes the state of a job on its issue, one `factory: <state>` label and one status comment, with a label type that only the policy can make, a token of its own and a worker step that can never hold up a job. | Proposed, pending the architect |
+| [0018](0018-project-board-mirror-that-adapts.md) | The issue labels are mirrored on a GitHub Projects board by an Action in the project, with a credential its owner chooses. An existing board is adapted to by mapping, never changed, and the engine never writes to a board. | Proposed, pending the architect |
+| [0019](0019-claude-code-and-codex-alike.md) | The installer prepares a project for Claude Code, for Codex, or for both, with one set of labels, forms, Action and board. The GitHub entry goes in `.mcp.json` for one and in `.codex/config.toml` for the other. | Proposed, pending the architect |
+| [0020](0020-subscription-mode-by-default.md) | The factory runs on the owner's Claude subscription by default: the broker holds the subscription token and sends it as a bearer token, the sandbox still holds only the job token, Codex is unavailable, and API keys stay as the alternative mode. Reverses 0009 item 2. | Decided by the owner, 2026-11-12 |
+| [0021](0021-troubleshooter-agent-and-mcp-sources.md) | A separate troubleshooter program watches the factory itself: cheap probes on a short period, the agent only when a probe trips or on a daily sweep, one MCP gateway that holds every credential (Datadog, VictoriaMetrics, a read-only PostgreSQL server), and an issue written by code for a person to triage. | Accepted by the owner, 2026-11-20 |
+
+## Rules for this directory
+
+1. Write an ADR for a choice that is costly to reverse or that a future maintainer will ask about. Skip naming and library micro-choices.
+2. A record needs at least two real options, the reason each lost, and at least one cost of the chosen one.
+3. Accepted records are not edited in substance. To change a decision, write a new record and set the old status to `Superseded by NNNN`. Fixing a typo or a broken link is fine. Records 0001, 0003, 0006 and 0007 each carry a revision note where a measurement or a review corrected a statement. A revision note says what changed and why, and points to the record that carries the evidence.
+4. State what was checked, with dates and sources, and what was not. Mark every external claim as verified or unverified.
+5. A record changes in the same pull request as the code it governs.
+6. Keep the numbers monotonic and the file names `NNNN-kebab-title.md`.
+7. Mirror each accepted record into project memory with `save_decision`, using the number and title, and keep this table current.

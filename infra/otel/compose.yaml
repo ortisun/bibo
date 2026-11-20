@@ -1,0 +1,60 @@
+# A local telemetry stack for development: a collector, VictoriaMetrics for metrics and Jaeger for
+# traces. Not for production. Nothing here has authentication, and the data is not kept safe.
+#
+#   docker compose -f infra/otel/compose.yaml up -d --wait
+#
+# Every port is published on the loopback address only. The host ports are the usual ones for
+# each tool and can be changed with an environment variable when another stack already uses them.
+#
+#   FACTORY_OTLP_HTTP_PORT  4318   OTLP over HTTP (what the factory processes use)
+#   FACTORY_OTLP_GRPC_PORT  4317   OTLP over gRPC
+#   FACTORY_VM_PORT         8428   VictoriaMetrics: query API and web UI
+#   FACTORY_JAEGER_PORT     16686  Jaeger web UI
+#
+# Image versions are pinned. The collector is the contrib build because the health check
+# extension is part of it. Each version was released at least two weeks before it was chosen.
+
+name: factory-otel
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol/collector.yaml"]
+    volumes:
+      - ./collector.yaml:/etc/otelcol/collector.yaml:ro
+    ports:
+      - "127.0.0.1:${FACTORY_OTLP_HTTP_PORT:-4318}:4318"
+      - "127.0.0.1:${FACTORY_OTLP_GRPC_PORT:-4317}:4317"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    restart: unless-stopped
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.153.0
+    command:
+      - "-storageDataPath=/storage"
+      - "-retentionPeriod=7d"
+      - "-httpListenAddr=:8428"
+      - "-opentelemetry.usePrometheusNaming"
+    volumes:
+      - victoriametrics-data:/storage
+    ports:
+      - "127.0.0.1:${FACTORY_VM_PORT:-8428}:8428"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    ports:
+      - "127.0.0.1:${FACTORY_JAEGER_PORT:-16686}:16686"
+    restart: unless-stopped
+
+volumes:
+  victoriametrics-data:

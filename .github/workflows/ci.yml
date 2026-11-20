@@ -1,0 +1,117 @@
+# Continuous integration.
+#
+# This workflow does two things: it installs the tools the checks need, and it runs
+# scripts/ci.sh. It holds no check logic of its own. Every check lives in scripts/ci.sh, which
+# a developer runs the same way on a laptop, so a result here and a result there cannot drift.
+#
+# Rules this file follows (scripts/ci.sh enforces them in its "workflow-policy" step):
+#   * Every action is pinned to a full commit SHA. A version tag can be moved to different code.
+#     The tag is kept in a comment so a person can see what the SHA means.
+#   * The trigger is "pull_request", never "pull_request_target". A pull request from a fork
+#     runs without secrets and with a read-only token. This workflow reads no secret at all.
+#   * The token can only read the repository. The checkout does not keep it for later steps.
+#   * No text from the pull request (title, branch name, body) is used anywhere in this file.
+#
+# Why the install steps are here and not in scripts/ci.sh: installing a tool changes the
+# machine, and running a check must not. A missing tool is reported by scripts/ci.sh as BLOCKED.
+#
+# Tool versions are pinned here, in .github/tools/pyright/, and as PIN_* lines in scripts/lib/tool-pins.sh
+# (read by scripts/ci.sh and scripts/setup-tools.sh). Change a version in every place, in one pull request.
+# The "tool-pins" step of scripts/ci.sh fails if the places disagree.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read the repository, nothing else.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the older run. A run on main is never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    name: scripts/ci.sh
+    runs-on: ubuntu-24.04
+    # One stuck step must not hold a runner for the default six hours.
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # v7.0.1 (2026-07-20). The whole history is needed: scripts/ci.sh scans every commit for
+      # secrets and reports BLOCKED on a shallow clone.
+      - name: Check out the repository with its full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # rust-toolchain.toml names the version, the profile and the components. With no argument,
+      # rustup installs exactly that, so the version is written in one place only.
+      - name: Install the Rust toolchain named in rust-toolchain.toml
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+
+      # Prebuilt, checksum-verified binaries for the versions named here.
+      # install-action v2.87.28 (2026-10-12). uv 0.13.0 is the newest uv that release lists.
+      - name: Install cargo-nextest, cargo-deny, cargo-audit, shellcheck and uv
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest@0.9.137,cargo-deny@0.19.9,cargo-audit@0.22.2,shellcheck@0.11.0,uv@0.13.0
+
+      # gitleaks and actionlint are not offered by the action above, so they are downloaded from
+      # their own GitHub releases. The SHA-256 of each archive is written here, in the repository,
+      # so a swapped release file is refused. The hashes were checked against the checksum files
+      # published with each release (gitleaks 8.30.1, actionlint 1.7.12).
+      - name: Install gitleaks and actionlint with checked hashes
+        run: |
+          set -euo pipefail
+          bin_dir="$RUNNER_TEMP/tools/bin"
+          mkdir -p "$bin_dir"
+          fetch() {
+            local url="$1" sha256="$2" archive="$RUNNER_TEMP/$3"
+            curl --fail --silent --show-error --location --retry 3 --output "$archive" "$url"
+            echo "$sha256  $archive" | sha256sum --check --strict -
+          }
+          fetch "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
+            551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gitleaks.tar.gz
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$bin_dir" gitleaks
+          fetch "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz" \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint.tar.gz
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$bin_dir" actionlint
+          echo "$bin_dir" >> "$GITHUB_PATH"
+
+      # "npm ci" installs exactly what .github/tools/pyright/package-lock.json lists and refuses a
+      # package whose hash differs. The install happens in a temporary folder, so no node_modules
+      # appears in the repository. Install scripts are switched off.
+      - name: Install pyright from its lockfile
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pyright"
+          cp .github/tools/pyright/package.json .github/tools/pyright/package-lock.json "$RUNNER_TEMP/pyright/"
+          (cd "$RUNNER_TEMP/pyright" && npm ci --ignore-scripts --no-audit --no-fund)
+          echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # The one command that matters. It exits 0 only if every step passed, 1 if a step failed,
+      # and 3 if a step was BLOCKED (for example a missing tool). The summary is also saved.
+      - name: Run scripts/ci.sh
+        run: scripts/ci.sh --json-file "$RUNNER_TEMP/ci-summary.json"
+
+      # v7.0.2 (2026-10-07). Kept even when the run fails, because that is when it is read.
+      - name: Keep the machine-readable summary
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-summary
+          path: ${{ runner.temp }}/ci-summary.json
+          if-no-files-found: warn
+          retention-days: 30

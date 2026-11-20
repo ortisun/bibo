@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "intake-classifier",
+  "version": "1.0.0",
+  "title": "Intake classifier",
+  "description": "Reads one normalized request and classifies it: the kind of work, the domain tags, a risk hint and whether a material question must be asked first. It has no file or command access and returns its answer through the result channel only.",
+  "role": "intake",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [],
+  "inputs_schema": {
+    "name": "intake-classifier-input",
+    "version": 1,
+    "sha256": "sha256:2ccd851ce84b79d33392fa0a9e8431afdbd70ce95ce5e7323dcaedf8d0c529a9"
+  },
+  "outputs_schema": {
+    "name": "intake-classification",
+    "version": 1,
+    "sha256": "sha256:006c2470a3c139bf8a0980b331f42beda49ea6dbafb699b95ac3a5f7f508aadd"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 120,
+    "max_tokens": 30000,
+    "max_cost_usd": 0.25,
+    "max_tool_calls": 2,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [],
+      "write": []
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "Classification is a short task, and the starting model is enough."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use only after two bounded repairs by the starting model have failed the output check, and never as the first attempt. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "intake-classifier-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/intake-classifier/prompt.md",
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:714d6a125d743f5c561991bad10485ce28ba65019d50430ffd95c49f57d7b295"
+  }
+}

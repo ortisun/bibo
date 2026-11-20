@@ -1,0 +1,66 @@
+[package]
+name = "factory-composition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+# The shared composition core (ring 3, library, ADR 0015). It chooses and connects adapters, so it
+# is the one library that may depend on several of them (DEP-08 does not apply to it). The
+# binaries in `apps/` depend on it and own only their `main` and what is specific to them: the
+# worker keeps the loop and the broker listener, the API will keep HTTP, the CLI the commands.
+# No crate in rings 0 to 2 may depend on this one, and it holds no `main`.
+
+[lib]
+name = "factory_composition"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+factory-workflow.workspace = true
+factory-spec_adapter.workspace = true
+factory-storage.workspace = true
+factory-runtime.workspace = true
+factory-sandbox.workspace = true
+factory-github.workspace = true
+factory-contracts.workspace = true
+factory-egress.workspace = true
+factory-observability.workspace = true
+
+# The seams are `#[async_trait]` traits. Maintained by dtolnay.
+async-trait = "0.1.92"
+# Typed configuration and the health report. Same release and features the other crates pin.
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+# `rt` (current thread: the engine's futures are not `Send`), `time` for the production `Ticker`
+# and the idle waits, `sync` for the shutdown channel, `macros` for `select!`, `signal` for
+# SIGTERM and SIGINT.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros", "signal"] }
+# Instants for the clock and the lease arithmetic. `std` provides `OffsetDateTime::now_utc`.
+time = { version = "0.3.55", default-features = false, features = ["std"] }
+# R-1 and AUT-12: the hook applies only the decision requests the API signed. HMAC-SHA256 of the
+# request, and the constant-time comparison of the word. Same crates and versions as factory-github.
+hmac = "0.13.0"
+sha2 = { version = "0.11.1", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
+# The package registry client (`crates_io`): a blocking HTTP client with rustls only, run under
+# `spawn_blocking`, with redirects and proxies off. The same crate, version and features as
+# factory-github and factory-egress, so the resolved tree gains nothing (rules file, `external_allow`).
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+# Identifiers are built from 16 random bytes with `Builder::from_random_bytes`. No generator
+# feature (`v4`, `v7`) is turned on, because the DEP-05 resolved-feature rule forbids them.
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# The database test server of the storage crate is included with `#[path]` and needs these.
+diesel = { version = "2.3.14", default-features = false, features = ["postgres_backend"] }
+diesel-async = { version = "0.9.2", default-features = false, features = ["postgres", "deadpool"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "time", "sync", "macros", "signal", "test-util"] }

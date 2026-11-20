@@ -1,0 +1,4 @@
+id       = e2e-self-test
+title    = Each end-to-end assertion fails on corrupted evidence (scripts/e2e.sh --self-test-all)
+requires = cargo python3
+run      = scripts/e2e.sh --self-test-all

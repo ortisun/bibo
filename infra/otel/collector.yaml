@@ -1,0 +1,67 @@
+# OpenTelemetry Collector configuration for local development.
+#
+# Receives OTLP from the factory processes and forwards
+#   * metrics to VictoriaMetrics (single node), over OTLP/HTTP
+#   * traces to Jaeger, over OTLP/gRPC
+# The `debug` exporter also prints a one-line count of what arrived, so a developer can see data
+# flowing in the collector log.
+#
+# Written for the contrib distribution, version 0.162.0 (see compose.yaml). `validate.sh` checks
+# this file with that exact image. The conventions are in docs/observability/conventions.md.
+
+extensions:
+  # Answers GET / on port 13133 with 200 once the pipelines are running. Compose uses it.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      # 0.0.0.0 is the address inside the container. compose.yaml publishes both ports on the
+      # host's loopback address only, so nothing outside this machine can reach them.
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Refuses data instead of running the container out of memory.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # VictoriaMetrics reads OTLP metrics at this path. The names the factory sends already follow
+  # Prometheus naming, so VictoriaMetrics stores them unchanged.
+  otlp_http/victoriametrics:
+    metrics_endpoint: http://victoriametrics:8428/opentelemetry/v1/metrics
+    compression: gzip
+    encoding: proto
+  # Jaeger 2 accepts OTLP natively. The traffic stays on the compose network, so TLS is off.
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/victoriametrics, debug]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: basic

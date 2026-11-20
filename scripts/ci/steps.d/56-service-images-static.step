@@ -1,0 +1,4 @@
+id       = service-images-static
+title    = The API and worker image recipes keep their promises: bases pinned by digest, locked release build, numeric non-root user, no shell step, deny-all build context, compose runs what build.sh makes (infra/service-images/test.sh --static, no Docker daemon)
+requires = python3
+run      = infra/service-images/test.sh --static

@@ -1,0 +1,94 @@
+{
+  "base_commit": "6e3122badba63735847092c56ba81b0706340088",
+  "fake": true,
+  "head_commit": "bfc82deeef9e24af728a430e95ea065223dbb56f",
+  "kind": "implementation-evidence",
+  "refusal": null,
+  "rework_round": null,
+  "tasks": [
+    {
+      "built_on": "6e3122badba63735847092c56ba81b0706340088",
+      "changes": [
+        {
+          "kind": "modified",
+          "path": "src/lib.rs"
+        }
+      ],
+      "commit": "81014449d5e07eacabe986ff14c743030d4fdcef",
+      "diff_stats": {
+        "additions": 142,
+        "deletions": 91
+      },
+      "key": "write-json-formatter",
+      "reported_by_builder": {
+        "commands": [
+          {
+            "argv": [
+              "cargo",
+              "test",
+              "--locked",
+              "--lib"
+            ],
+            "exit_code": 0
+          }
+        ],
+        "ignored_instructions": [],
+        "note": "These are the builder's own statements. They are not evidence.",
+        "tests_added": [
+          "fr_001_the_json_text_has_the_three_keys_in_order",
+          "fr_001_an_empty_text_gives_zero_counts_in_json",
+          "fr_004_the_json_text_holds_the_object_and_no_other_text",
+          "sc_001_the_json_counts_are_the_plain_counts"
+        ]
+      }
+    },
+    {
+      "built_on": "81014449d5e07eacabe986ff14c743030d4fdcef",
+      "changes": [
+        {
+          "kind": "modified",
+          "path": "src/main.rs"
+        },
+        {
+          "kind": "added",
+          "path": "tests/json_output.rs"
+        }
+      ],
+      "commit": "bfc82deeef9e24af728a430e95ea065223dbb56f",
+      "diff_stats": {
+        "additions": 232,
+        "deletions": 107
+      },
+      "key": "read-json-option",
+      "reported_by_builder": {
+        "commands": [
+          {
+            "argv": [
+              "cargo",
+              "test",
+              "--locked"
+            ],
+            "exit_code": 0
+          }
+        ],
+        "ignored_instructions": [],
+        "note": "These are the builder's own statements. They are not evidence.",
+        "tests_added": [
+          "fr_001_json_prints_the_three_counts_in_order",
+          "fr_001_json_for_an_empty_file_prints_zero_counts",
+          "fr_004_one_line_break_follows_the_object_and_nothing_else",
+          "fr_002_without_the_option_the_plain_line_is_unchanged",
+          "fr_003_a_missing_file_fails_the_same_way_with_and_without_the_option",
+          "json_reads_standard_input_when_the_name_is_a_dash",
+          "a_repeated_option_behaves_as_one"
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "cost_micro_usd": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "requests": 0
+  }
+}

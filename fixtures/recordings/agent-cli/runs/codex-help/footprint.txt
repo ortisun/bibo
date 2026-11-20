@@ -1,0 +1,10 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+0 /home/agent/.codex/tmp/arg0-linux/codex-arg0JvlzJ9/.lock
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=4083712
+pids.peak=7
+memory.max=4294967296
+pids.max=256

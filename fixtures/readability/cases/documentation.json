@@ -1,0 +1,272 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "doc-howto-restore-scheduler",
+      "kind": "documentation",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["doc-guide-missing-part"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "States the problem, the prerequisites, ordered steps, the expected result and troubleshooting.",
+      "input": {
+        "title": "Restore the workflow scheduler after a database outage",
+        "doc_type": "how-to",
+        "body": [
+          "Use this guide when the scheduler has stopped because its database was unavailable and the database is now back. It brings the scheduler back without losing queued jobs.",
+          "",
+          "## Prerequisites",
+          "- Access to the machine that runs the scheduler.",
+          "- A running database that accepts connections.",
+          "",
+          "## Steps",
+          "1. Check that the database accepts connections: `psql \"$DATABASE_URL\" -c \"select 1\"`.",
+          "2. Start the scheduler: `docker compose up -d scheduler`.",
+          "3. Open the scheduler log and wait for the line that says lease recovery has finished.",
+          "",
+          "## Expected result",
+          "The scheduler reports that it is ready, and jobs that were queued before the outage start running again.",
+          "",
+          "## Troubleshooting",
+          "- If step 1 fails, the database is still unreachable. Fix that first and repeat the guide.",
+          "- If jobs do not resume, look in the log for lease errors and ask the operator on call."
+        ]
+      }
+    },
+    {
+      "id": "doc-howto-missing-parts",
+      "kind": "documentation",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["doc-guide-missing-part"],
+      "breaks": ["doc-guide-missing-part"],
+      "verdict": "warn",
+      "reason": "The steps are there, but there are no prerequisites, no expected result and no troubleshooting.",
+      "suggested_fix": "Add Prerequisites, Expected result and Troubleshooting sections.",
+      "input": {
+        "title": "Reset a forgotten administrator password",
+        "doc_type": "how-to",
+        "body": [
+          "Use this guide when an administrator cannot sign in because the password was forgotten.",
+          "",
+          "1. Open the sign-in page and choose the reset link.",
+          "2. Enter the administrator email address.",
+          "3. Follow the link in the email and choose a new password."
+        ]
+      }
+    },
+    {
+      "id": "doc-tutorial-missing-numbered-steps",
+      "kind": "documentation",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["doc-guide-missing-part"],
+      "breaks": ["doc-guide-missing-part"],
+      "verdict": "warn",
+      "reason": "The headings are there, but the actions are one paragraph instead of ordered steps a learner can follow.",
+      "suggested_fix": "Turn the actions into a numbered list with one action per step.",
+      "input": {
+        "title": "Make your first level",
+        "doc_type": "tutorial",
+        "body": [
+          "This tutorial walks you through building a one-screen level with the editor.",
+          "",
+          "## Prerequisites",
+          "- The game project open in the editor.",
+          "",
+          "## What to do",
+          "Open the level editor, drag a platform onto the grid, place the start flag on it and press Play.",
+          "",
+          "## Expected result",
+          "The character appears on the platform and can walk to the edge.",
+          "",
+          "## Troubleshooting",
+          "- If the character falls through the platform, check that the platform has a collider."
+        ]
+      }
+    },
+    {
+      "id": "doc-reference-near-miss-table",
+      "kind": "documentation",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["doc-guide-missing-part", "body-metadata-prefix"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A reference page has no steps by design, and a table row that starts with a pipe is not a stamp chain.",
+      "input": {
+        "title": "Configuration keys for the scheduler",
+        "doc_type": "reference",
+        "body": [
+          "| Key | Meaning | Default |",
+          "|---|---|---|",
+          "| `scheduler.poll_interval` | Seconds between checks for new jobs. | `5` |",
+          "| `scheduler.max_attempts` | Attempts per job before it is marked failed. | `3` |"
+        ]
+      }
+    },
+    {
+      "id": "doc-reference-near-miss-long-sentence",
+      "kind": "documentation",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["text-long-sentence"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The sentence is far over 35 words, but reference pages are not checked for sentence length.",
+      "input": {
+        "title": "Export paging behavior",
+        "doc_type": "reference",
+        "body": [
+          "The export currently writes every row of the report to a file, but when the report has more than one page it stops after the first page, so the person who asked for it receives an incomplete file and has to run it again and again until someone notices the problem."
+        ]
+      }
+    },
+    {
+      "id": "doc-ml-guide-train-and-evaluate",
+      "kind": "documentation",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["doc-guide-missing-part", "text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A runnable guide that reports spread over seeds instead of one score.",
+      "input": {
+        "title": "Train and evaluate the reinforcement learning agent",
+        "doc_type": "how-to",
+        "body": [
+          "Use this guide to train the agent on the sample environment and to measure how well it plays. A run takes about 20 minutes on one GPU.",
+          "",
+          "## Prerequisites",
+          "- Python 3.11 and the packages in `requirements.txt`.",
+          "- One GPU with at least 8 GB of memory.",
+          "",
+          "## Steps",
+          "1. Pick a seed. The examples use 7.",
+          "2. Train: `python train.py --seed 7 --steps 200000`.",
+          "3. Evaluate on the held-out episodes: `python evaluate.py --seed 7 --episodes 100`.",
+          "",
+          "## Expected result",
+          "Training writes a model file to `runs/seed-7/`. The evaluation prints the mean score and the spread over the 100 episodes. Scores differ a little between seeds, so report at least three seeds before comparing agents.",
+          "",
+          "## Troubleshooting",
+          "- If training stops with an out-of-memory error, lower the batch size in `config.yaml`.",
+          "- If two runs with the same seed differ, check that no other process shares the GPU."
+        ]
+      }
+    },
+    {
+      "id": "doc-explanation-title-case-heading",
+      "kind": "documentation",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["title-not-sentence-case"],
+      "breaks": ["title-not-sentence-case"],
+      "verdict": "warn",
+      "reason": "Headings and titles use sentence case.",
+      "suggested_fix": "How offline saves work in the game",
+      "input": {
+        "title": "How Offline Saves Work In The Game",
+        "doc_type": "explanation",
+        "body": [
+          "The game writes progress to the device after every level. When a connection is available it compares the local copy with the server copy and keeps the newer one.",
+          "A level that was finished offline therefore counts once, even if the device reconnects several times."
+        ]
+      }
+    },
+    {
+      "id": "doc-claim-without-evidence",
+      "kind": "documentation",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["doc-claim-without-evidence"],
+      "breaks": ["doc-claim-without-evidence"],
+      "verdict": "warn",
+      "reason": "A performance claim and a safety claim with no data, date, test or caveat.",
+      "suggested_fix": "Report the backtest period, the costs assumed, the result before and after costs, and say that it does not predict live results.",
+      "input": {
+        "title": "How the momentum strategy performs",
+        "doc_type": "explanation",
+        "body": [
+          "The new momentum strategy beats the benchmark in every year and is safe to run with real money."
+        ]
+      }
+    },
+    {
+      "id": "doc-claim-near-miss-with-evidence",
+      "kind": "documentation",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["doc-claim-without-evidence"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The numbers are dated and linked to a report and a commit, and the limits are stated.",
+      "input": {
+        "title": "How the momentum strategy performs",
+        "doc_type": "explanation",
+        "body": [
+          "In the backtest from 2015 to 2024 the strategy returned 6.1 percent a year before costs and 4.3 percent a year after costs (report: `docs/reports/momentum-2024.md`, commit 3f2a9c1).",
+          "The test covers one market and does not predict live results."
+        ]
+      }
+    },
+    {
+      "id": "doc-ml-claim-without-evidence",
+      "kind": "documentation",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["doc-claim-without-evidence"],
+      "breaks": ["doc-claim-without-evidence"],
+      "verdict": "warn",
+      "reason": "No metric, data set, date or limit, and 'all customers' is a claim nobody measured.",
+      "suggested_fix": "Report the metric on the held-out set, name the data and date, and say which customers were not measured.",
+      "input": {
+        "title": "Model card for the churn model",
+        "doc_type": "explanation",
+        "body": ["The churn model is accurate and works for all customers."]
+      }
+    },
+    {
+      "id": "doc-ml-claim-near-miss-with-evidence",
+      "kind": "documentation",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["doc-claim-without-evidence"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The result names its data, seed and report, and says what was not measured.",
+      "input": {
+        "title": "Model card for the churn model",
+        "doc_type": "explanation",
+        "body": [
+          "On the held-out test set of 12,000 customers the model reached an accuracy of 0.81 (seed 7, report: `reports/eval-2024-09.md`).",
+          "Results for customers who joined after the data was collected are not measured."
+        ]
+      }
+    },
+    {
+      "id": "doc-changelog-entry",
+      "kind": "documentation",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-vague", "text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A one-word title is normal for a changelog, and each entry says what changed for the user.",
+      "input": {
+        "title": "Changelog",
+        "doc_type": "changelog",
+        "body": [
+          "## 1.4.0",
+          "",
+          "### Added",
+          "- Password reset by email. The link works once and expires after 30 minutes (#231).",
+          "",
+          "### Fixed",
+          "- The sign-in page no longer shows the reset link to people who are already signed in (#236)."
+        ]
+      }
+    }
+  ]
+}

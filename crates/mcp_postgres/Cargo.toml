@@ -1,0 +1,36 @@
+[package]
+name = "factory-mcp_postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The read-only PostgreSQL MCP server (ADR 0021, decision 4), a ring 2 adapter. It may depend on
+# `domain` and nothing else in the workspace (docs/architecture/crate-dependency-rules.json): the
+# redactor it uses by default is `domain::redaction::Redactor`, behind the `Redact` seam.
+
+[lints]
+workspace = true
+
+[dependencies]
+factory-domain.workspace = true
+
+# The tool router and the server handler. Transports are the caller's choice: apps/mcp-postgres
+# adds stdio and Streamable HTTP, the gateway an in-memory one.
+rmcp = { workspace = true, features = ["server", "macros"] }
+
+# The client of the factory's database. The same version `diesel-async` already resolves; used
+# directly because this server returns arbitrary result sets (ADR 0021). `runtime` for
+# `Config::connect`. No TLS, as in the storage crate: a TLS setup is a deployment item.
+tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime"] }
+
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+
+# `rt` to spawn the connection task, `sync` for the connection lock, `time` for the call deadline.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util"] }
+# The client side of the protocol, for the test that drives the server over an in-memory pipe.
+rmcp = { workspace = true, features = ["server", "macros", "client"] }

@@ -1,0 +1,1922 @@
+{
+  "chain": {
+    "entries": 57,
+    "head_hash": "sha256:7e573e4ee54d58271db6ca1eb324cf525d8201846425d1328512c91c77b27d08",
+    "verified_by": "factory_domain::ledger::verify_chain, when the recorder wrote the file"
+  },
+  "entries": [
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate intake-original-preserved reported PASSED for the INTAKE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:8fddaebd3aa93e88842123cba31401417b9eb4e332bc1b76ea0ce4f997a5cca6",
+      "evidence": [
+        {
+          "gate_report_id": "97cb9dc5-f6c8-42b5-b9de-e8fb869e3c82",
+          "gate_report_sha256": "sha256:b0285951192670647f3789dc86308888a3c833ba8e982abb99ab7ef550a51e8d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "entry_id": "b481cce6-696e-4a32-94d5-fa10a35d2b9d",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 1,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": null,
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate intake-outcome reported PASSED for the INTAKE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:99eb2ac6b61f62cc0ee5c6b726c90bbd98c352a4059802d42ef49d7ae517c35d",
+      "evidence": [
+        {
+          "gate_report_id": "e8af62ad-213c-442f-b10f-e8470b70b13a",
+          "gate_report_sha256": "sha256:9fc6228f0956785b009a8032e7ba76499fd9881e6926b8781d0b5663aa97bfa7",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "entry_id": "b0fd1a8a-18f5-4481-8eeb-57f46cf708c8",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 2,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:8fddaebd3aa93e88842123cba31401417b9eb4e332bc1b76ea0ce4f997a5cca6",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate readability-gate reported PASSED for the INTAKE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:9d78ae88deaa043ace747f45a8a66ff086f80cafcca82b4f410c96c2f880e5b6",
+      "evidence": [
+        {
+          "gate_report_id": "1f8f05ad-f6b1-4797-addb-60a4157bc61e",
+          "gate_report_sha256": "sha256:5fcccf055858270327783efa300289f1c25e9bf358e3c7f9f46734f31f615327",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "entry_id": "322ba93c-1d50-4ec5-b037-9e78225dcb31",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 3,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:99eb2ac6b61f62cc0ee5c6b726c90bbd98c352a4059802d42ef49d7ae517c35d",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion original-kept-unchanged is verified by the gate intake-original-preserved."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:fa1fbfdb469f6f7feaa50a9387543d3deb0174ead4980be00421519b94436112",
+      "evidence": [
+        {
+          "gate_report_id": "97cb9dc5-f6c8-42b5-b9de-e8fb869e3c82",
+          "gate_report_sha256": "sha256:b0285951192670647f3789dc86308888a3c833ba8e982abb99ab7ef550a51e8d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a3189f30-2df6-41dd-aad0-2e51dea0a944",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 4,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:9d78ae88deaa043ace747f45a8a66ff086f80cafcca82b4f410c96c2f880e5b6",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion outcome-recorded is verified by the gate intake-outcome."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:450a963e276a4b8a40ee3198ca6cc588eac724fa7196d08fbc8977bdcfdb75a5",
+      "evidence": [
+        {
+          "gate_report_id": "e8af62ad-213c-442f-b10f-e8470b70b13a",
+          "gate_report_sha256": "sha256:9fc6228f0956785b009a8032e7ba76499fd9881e6926b8781d0b5663aa97bfa7",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "13fd7d5c-cff9-40d6-9648-a34002d5bfb5",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 5,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:fa1fbfdb469f6f7feaa50a9387543d3deb0174ead4980be00421519b94436112",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion plain-english is verified by the gate readability-gate."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:e01716d90b7548e5bbad08aab73da48ea29a05877df3f29c2f47ac49ff5ec11a",
+      "evidence": [
+        {
+          "gate_report_id": "1f8f05ad-f6b1-4797-addb-60a4157bc61e",
+          "gate_report_sha256": "sha256:5fcccf055858270327783efa300289f1c25e9bf358e3c7f9f46734f31f615327",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "21ea5852-f854-4978-b040-075787e1ff46",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 6,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:450a963e276a4b8a40ee3198ca6cc588eac724fa7196d08fbc8977bdcfdb75a5",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate repository-map-valid reported PASSED for the REPOSITORY_INTELLIGENCE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:c1aea342fdb5e3ce8c74bb01637b7241ec1d7e1d59c7634eed517d4b4eac1163",
+      "evidence": [
+        {
+          "gate_report_id": "921680fd-b405-4cd9-8e95-73aa97b581b2",
+          "gate_report_sha256": "sha256:7b6d80c3c93345150547f87e9053f65fac3bb344017fab847d20f3afead1dbdf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "entry_id": "3ec35d94-f1c4-4dca-981d-eaf22cefaf38",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 7,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:e01716d90b7548e5bbad08aab73da48ea29a05877df3f29c2f47ac49ff5ec11a",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate context-secret-free reported PASSED for the REPOSITORY_INTELLIGENCE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:438a8d2bbb128163b850df836284e9296de29da95561d70371dd44af0f713b3a",
+      "evidence": [
+        {
+          "gate_report_id": "4dbd1082-d8cc-4de8-bd7b-795b2400f612",
+          "gate_report_sha256": "sha256:7eef70dd21702bf452a618ba8284decbac0ca95d03c3eaffab5f320025268f1d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "entry_id": "6f0a89fc-ec72-41ba-baef-47126e30d299",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 8,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:c1aea342fdb5e3ce8c74bb01637b7241ec1d7e1d59c7634eed517d4b4eac1163",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate baseline-build-and-test reported PASSED for the REPOSITORY_INTELLIGENCE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:b403977a2e589d1cfb1b43dd78ba8765b283caa42e81f99252fc201d1b63c7ff",
+      "evidence": [
+        {
+          "gate_report_id": "ee22396d-417f-46da-a4e5-1aa659431e94",
+          "gate_report_sha256": "sha256:cbeded6389d144f58f586c00319657226a3ae574e77d10a0c921d915df36b543",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "entry_id": "5d011713-a6e8-41ec-9fab-09913323f61a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 9,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:438a8d2bbb128163b850df836284e9296de29da95561d70371dd44af0f713b3a",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion map-is-valid is verified by the gate repository-map-valid."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:6ebd7dfae127b43122c94714604c8d0d26639acb0f6765bcab2d7fcc18440681",
+      "evidence": [
+        {
+          "gate_report_id": "921680fd-b405-4cd9-8e95-73aa97b581b2",
+          "gate_report_sha256": "sha256:7b6d80c3c93345150547f87e9053f65fac3bb344017fab847d20f3afead1dbdf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "7f18cd87-2c57-4a0a-a3d0-606e7a10a11b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 10,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:b403977a2e589d1cfb1b43dd78ba8765b283caa42e81f99252fc201d1b63c7ff",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion context-has-no-secret is verified by the gate context-secret-free."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:c333c59421aaa8a2aa4a1f6a045c6870fe92100d8e47f405a4f046f969a003dc",
+      "evidence": [
+        {
+          "gate_report_id": "4dbd1082-d8cc-4de8-bd7b-795b2400f612",
+          "gate_report_sha256": "sha256:7eef70dd21702bf452a618ba8284decbac0ca95d03c3eaffab5f320025268f1d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "564eeb40-f58c-4ae3-909d-fcc669bd896c",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 11,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:6ebd7dfae127b43122c94714604c8d0d26639acb0f6765bcab2d7fcc18440681",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion baseline-recorded is verified by the gate baseline-build-and-test."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:f2910e631a7f33e2e6586ea905e67966c30220fe92ccd1c3c112449ded756769",
+      "evidence": [
+        {
+          "gate_report_id": "ee22396d-417f-46da-a4e5-1aa659431e94",
+          "gate_report_sha256": "sha256:cbeded6389d144f58f586c00319657226a3ae574e77d10a0c921d915df36b543",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a2d8b24b-144f-432f-998b-9251195e6154",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 12,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:c333c59421aaa8a2aa4a1f6a045c6870fe92100d8e47f405a4f046f969a003dc",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "expert_judgment",
+        "statement": "A person with the role approver approved the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "medium",
+        "rationale": "A named person stands behind this decision; it is not a measurement."
+      },
+      "entry_hash": "sha256:1d04bb73a199cc02135257c398f8911338e10eb4478344f30abde56d567460ba",
+      "evidence": [
+        {
+          "attestor": {
+            "principal_id": "522e7bd8-13fe-42d9-aaef-2960ec09a00c",
+            "role": "approver"
+          },
+          "recorded_at": "2026-10-29T09:01:43.657725Z",
+          "scope": "The person approved the SPECIFICATION stage run after reading the recorded evidence.",
+          "type": "expert_judgment"
+        }
+      ],
+      "metadata": {
+        "entry_id": "0a191e8b-e11e-461e-a7ed-a47aa9db9d93",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.657725Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 13,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:f2910e631a7f33e2e6586ea905e67966c30220fe92ccd1c3c112449ded756769",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-structure reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:7f789799bad9a040132dbbcffe6fb09456ecf3bbdc8c3f33784ac3e5896a0fa7",
+      "evidence": [
+        {
+          "gate_report_id": "837c8655-0c78-459b-b2fc-b7a2af7f9cdd",
+          "gate_report_sha256": "sha256:8256a05929e834cb9702bb1160ac6c01cbf4b48c22c1e4e0171fe63d270e1dcc",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "dfeb036e-cd15-422f-972c-c759a20bfd5b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 14,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:1d04bb73a199cc02135257c398f8911338e10eb4478344f30abde56d567460ba",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-identifiers reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:084f2afa08041d8cc3e4fa8b925c5035f4b2028564054af397b68733f27edb53",
+      "evidence": [
+        {
+          "gate_report_id": "ed7aec2e-1aaa-4969-b687-08626bb9d9b8",
+          "gate_report_sha256": "sha256:62ad173da5edb3916a49419fcb211e11879eac020586e9b2710033c939aac3b8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "cd5d4f88-f8ee-4d3b-81be-cf61dff74e3e",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 15,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:7f789799bad9a040132dbbcffe6fb09456ecf3bbdc8c3f33784ac3e5896a0fa7",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-requirements reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:a8ccf82d3a0074f3378684d097b26647f4a7e90b1f27a7607c6c9a18fb212d37",
+      "evidence": [
+        {
+          "gate_report_id": "d8b3e41a-7426-44e4-a363-8c527c4bfca5",
+          "gate_report_sha256": "sha256:32ba2d40fa68a664adc2edeaa86871cf35c7c50b24ff83d4748947414f1f23d8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "40207ef2-b31b-43f6-aba0-93d6726bdd9c",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 16,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:084f2afa08041d8cc3e4fa8b925c5035f4b2028564054af397b68733f27edb53",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-traceability reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:99387c0d067f3e561cbec84b8fceec8e0e5e124839192ee26032d49c5a7e1d77",
+      "evidence": [
+        {
+          "gate_report_id": "07ccbbeb-8587-4988-8b96-ad15e152db25",
+          "gate_report_sha256": "sha256:7f2aee51653ac47e9db01e6e60774461ee85bb8418c90538d05f7db1e2b3ab86",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "647a5138-4a38-4a20-9160-39d5d7698b0a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 17,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:a8ccf82d3a0074f3378684d097b26647f4a7e90b1f27a7607c6c9a18fb212d37",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-clarity reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:d5ae348dc716517a05ff298e3f8474e32e5377e6c433e75de3dccbec5a505f29",
+      "evidence": [
+        {
+          "gate_report_id": "c34205df-5497-49c4-abbe-89103a57c44f",
+          "gate_report_sha256": "sha256:232a87b40bec7ea58099ece2c5400137d4c27c5c119c713c25374a4a4461a8f4",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "ded1ac08-2fd3-4ec0-9154-1aa45b7a1b79",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 18,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:99387c0d067f3e561cbec84b8fceec8e0e5e124839192ee26032d49c5a7e1d77",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-contradictions reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:ef81ccc4fea7a672b05e545b6770e5ff5c1950586c2276491a899e8a7fe40610",
+      "evidence": [
+        {
+          "gate_report_id": "1d5f1c59-c553-4ca0-822a-20556cb192a7",
+          "gate_report_sha256": "sha256:6764ac69fc9db9072bd6c3496baf23b6c2f3151d114c882cb61ca42145c95a08",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "5fd3d123-2c67-4fa3-afd9-02bb55a279bf",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 19,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:d5ae348dc716517a05ff298e3f8474e32e5377e6c433e75de3dccbec5a505f29",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-safety reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:d592879599a03dc2a8072eea888c32efcc1cb818ebab14fb86ed40532733d3a1",
+      "evidence": [
+        {
+          "gate_report_id": "c8c92a13-1a9c-4b9d-be70-84f73c4a6e34",
+          "gate_report_sha256": "sha256:6b6013e54847e555d24eed4494e15537a774b4deac710d41f1936f672107a7cf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "58d4b284-f21b-4532-9e1d-a906c31e11f9",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 20,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:ef81ccc4fea7a672b05e545b6770e5ff5c1950586c2276491a899e8a7fe40610",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-authorization reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:44f84ae5037f0ba9fb6a2bf161cf3526c6a334a45c41b2689eaee2bdd99ac874",
+      "evidence": [
+        {
+          "gate_report_id": "59e7085d-2170-49f8-9980-3d3bab1df996",
+          "gate_report_sha256": "sha256:a4c484b42d39d3f5bd5275fcea80bbc0054893a7b9eee02a5c7718acd593b9a3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "3257e700-cea6-442d-bd35-46066a5070d3",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 21,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:d592879599a03dc2a8072eea888c32efcc1cb818ebab14fb86ed40532733d3a1",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-checklist reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:827ab3a350963a7f1a8e4d4884908e8c631ac8dd506b0bc7d24dbbc95cec080d",
+      "evidence": [
+        {
+          "gate_report_id": "a87f9824-abb9-4f5c-a877-d944a1bc968d",
+          "gate_report_sha256": "sha256:1885df6baaf8ceac3299dfeba879d5d6873328b443e3683f34fc47d76a121013",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "77b4af5e-086f-4223-99f8-8377e0e9ad91",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 22,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:44f84ae5037f0ba9fb6a2bf161cf3526c6a334a45c41b2689eaee2bdd99ac874",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-artifacts reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:7c993f4bb3fc176e1bbd46601aafcac95b3470eb9cded4b02784183d06dc4402",
+      "evidence": [
+        {
+          "gate_report_id": "354e5baa-6dce-4630-9100-9ad0ea9bb3d4",
+          "gate_report_sha256": "sha256:a4977bc6eabc09d1b0c586b95b2d562f947453232fb34f4523e5223bc2eb043b",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "f5055d19-036b-4eb4-a076-df0d066d636f",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 23,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:827ab3a350963a7f1a8e4d4884908e8c631ac8dd506b0bc7d24dbbc95cec080d",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-review reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:3330cca69437571273ea38b568fdbd4a1a6b7ed3aa9bfa510118a4c5eeca933e",
+      "evidence": [
+        {
+          "gate_report_id": "7314ac7f-86d9-4b14-826d-88e8be26850f",
+          "gate_report_sha256": "sha256:d4eea558aa2377e25c607b4a2bc8dbc02514b88ffb57bb2c0788cffc3a8f46a2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "6511d61e-529c-4216-b280-389f02c01a83",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 24,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:7c993f4bb3fc176e1bbd46601aafcac95b3470eb9cded4b02784183d06dc4402",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate stage_profile_check reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:9a61fe6cd237dd756e2ee7735cbc37551254fe035848d6748cda1a880357ec1c",
+      "evidence": [
+        {
+          "gate_report_id": "1c45f217-c937-450a-a137-283d231cb5b8",
+          "gate_report_sha256": "sha256:6d27bd6043dfe01c19b4002b6d733739b7a8a20491b529e9f2c58c7d672b6f2e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "25deb681-8baf-480e-a9c2-6a480c4bc1ee",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 25,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:3330cca69437571273ea38b568fdbd4a1a6b7ed3aa9bfa510118a4c5eeca933e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-structure is verified by the gate specification-structure."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:dacdfe24062a54e0653e7681544953f21678f501a17481a568d2e4cb56eb9547",
+      "evidence": [
+        {
+          "gate_report_id": "837c8655-0c78-459b-b2fc-b7a2af7f9cdd",
+          "gate_report_sha256": "sha256:8256a05929e834cb9702bb1160ac6c01cbf4b48c22c1e4e0171fe63d270e1dcc",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "0df28cc2-b4b3-4ebd-a68e-1e782f451cad",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 26,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:9a61fe6cd237dd756e2ee7735cbc37551254fe035848d6748cda1a880357ec1c",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-identifiers is verified by the gate specification-identifiers."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:5e06f94a1d15e0ed411d005a1151aca23d3b41d32008a6a340440f53fdcb9320",
+      "evidence": [
+        {
+          "gate_report_id": "ed7aec2e-1aaa-4969-b687-08626bb9d9b8",
+          "gate_report_sha256": "sha256:62ad173da5edb3916a49419fcb211e11879eac020586e9b2710033c939aac3b8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "d7c94930-550c-4eb2-a19d-3835b2fa0fbb",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 27,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:dacdfe24062a54e0653e7681544953f21678f501a17481a568d2e4cb56eb9547",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-requirements is verified by the gate specification-requirements."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:19eed1a1bd12ec0022f0c0014d234d183dcb654eabe3d6f3dcdd4f3a87ba1671",
+      "evidence": [
+        {
+          "gate_report_id": "d8b3e41a-7426-44e4-a363-8c527c4bfca5",
+          "gate_report_sha256": "sha256:32ba2d40fa68a664adc2edeaa86871cf35c7c50b24ff83d4748947414f1f23d8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "c9e31fe5-6c69-47dd-ab1f-dee7182ef192",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 28,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:5e06f94a1d15e0ed411d005a1151aca23d3b41d32008a6a340440f53fdcb9320",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-traceability is verified by the gate specification-traceability."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:b55cd31b9df70d471f9076fc4abff768a2ce767054920eccde627036986a7d18",
+      "evidence": [
+        {
+          "gate_report_id": "07ccbbeb-8587-4988-8b96-ad15e152db25",
+          "gate_report_sha256": "sha256:7f2aee51653ac47e9db01e6e60774461ee85bb8418c90538d05f7db1e2b3ab86",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "f7666578-947a-46e1-97d8-fb5c64cf913a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 29,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:19eed1a1bd12ec0022f0c0014d234d183dcb654eabe3d6f3dcdd4f3a87ba1671",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-clarity is verified by the gate specification-clarity."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:a3f115606145d1b95576a9b09814c1b060c24026ce98e89efbdd0233d0dc8378",
+      "evidence": [
+        {
+          "gate_report_id": "c34205df-5497-49c4-abbe-89103a57c44f",
+          "gate_report_sha256": "sha256:232a87b40bec7ea58099ece2c5400137d4c27c5c119c713c25374a4a4461a8f4",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "f5ed5895-a62f-413e-8950-a9db05636814",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 30,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:b55cd31b9df70d471f9076fc4abff768a2ce767054920eccde627036986a7d18",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-contradictions is verified by the gate specification-contradictions."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:9ea8413e2ea9da6758d220e25fc5dcaa132e0337f6ce5e11922c7b883010eeb3",
+      "evidence": [
+        {
+          "gate_report_id": "1d5f1c59-c553-4ca0-822a-20556cb192a7",
+          "gate_report_sha256": "sha256:6764ac69fc9db9072bd6c3496baf23b6c2f3151d114c882cb61ca42145c95a08",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "319c7f6e-2e7b-411b-8ecd-56f5b96e7805",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 31,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:a3f115606145d1b95576a9b09814c1b060c24026ce98e89efbdd0233d0dc8378",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-safety is verified by the gate specification-safety."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:131a969befe656346f21e11216fd5f865e7978f6116f5707856671f198b31e9e",
+      "evidence": [
+        {
+          "gate_report_id": "c8c92a13-1a9c-4b9d-be70-84f73c4a6e34",
+          "gate_report_sha256": "sha256:6b6013e54847e555d24eed4494e15537a774b4deac710d41f1936f672107a7cf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "23396db9-92a9-4c88-be6b-1278769542db",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 32,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:9ea8413e2ea9da6758d220e25fc5dcaa132e0337f6ce5e11922c7b883010eeb3",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-authorization is verified by the gate specification-authorization."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:c4776d82b210930f7c7597a9a5228b49c59c86c9040a0068841c5263e7f0b8c3",
+      "evidence": [
+        {
+          "gate_report_id": "59e7085d-2170-49f8-9980-3d3bab1df996",
+          "gate_report_sha256": "sha256:a4c484b42d39d3f5bd5275fcea80bbc0054893a7b9eee02a5c7718acd593b9a3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "1753a8c7-87a4-465d-892d-f8074859154b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 33,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:131a969befe656346f21e11216fd5f865e7978f6116f5707856671f198b31e9e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-checklist is verified by the gate specification-checklist."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:06f830f6737342c33930b056efc0425589b94c1432e7a0aa477f049d04b2a86f",
+      "evidence": [
+        {
+          "gate_report_id": "a87f9824-abb9-4f5c-a877-d944a1bc968d",
+          "gate_report_sha256": "sha256:1885df6baaf8ceac3299dfeba879d5d6873328b443e3683f34fc47d76a121013",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "d00a03fb-ed12-4274-a624-3b14f8d7e82a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 34,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:c4776d82b210930f7c7597a9a5228b49c59c86c9040a0068841c5263e7f0b8c3",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-artifacts is verified by the gate specification-artifacts."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:6cd5596900aca5c4df6c4fbd8e17b582ccc5c7440ee85052e953d4e597f84349",
+      "evidence": [
+        {
+          "gate_report_id": "354e5baa-6dce-4630-9100-9ad0ea9bb3d4",
+          "gate_report_sha256": "sha256:a4977bc6eabc09d1b0c586b95b2d562f947453232fb34f4523e5223bc2eb043b",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "140edf1c-67f3-4e55-983a-7a08580e7a99",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 35,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:06f830f6737342c33930b056efc0425589b94c1432e7a0aa477f049d04b2a86f",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-review is verified by the gate specification-review."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:5dd96f3c9dcd6d7ceb891a1d2a989b1e587f2c74a15539f56f9e891e4ad14651",
+      "evidence": [
+        {
+          "gate_report_id": "7314ac7f-86d9-4b14-826d-88e8be26850f",
+          "gate_report_sha256": "sha256:d4eea558aa2377e25c607b4a2bc8dbc02514b88ffb57bb2c0788cffc3a8f46a2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "156bab08-fdda-4307-88c8-2fac7a68a2e1",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 36,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:6cd5596900aca5c4df6c4fbd8e17b582ccc5c7440ee85052e953d4e597f84349",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion stage_profile_check is verified by the gate stage_profile_check."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:24a589957c19c1366a4688019207973b0c37fc9c8bbc97e8531233856303bb0c",
+      "evidence": [
+        {
+          "gate_report_id": "1c45f217-c937-450a-a137-283d231cb5b8",
+          "gate_report_sha256": "sha256:6d27bd6043dfe01c19b4002b6d733739b7a8a20491b529e9f2c58c7d672b6f2e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "d3e0a650-f23d-494a-a827-f60744b7fa0f",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 37,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:5dd96f3c9dcd6d7ceb891a1d2a989b1e587f2c74a15539f56f9e891e4ad14651",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The DOMAIN_DISCOVERY stage was skipped because the rule static-general-software-profile states that it does not apply."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The rule is deterministic and its inputs are recorded in this entry."
+      },
+      "entry_hash": "sha256:ad67b31c417a38da6ac4c38d93b226d47e1de61018f248bb3de523a2cfa91a9e",
+      "evidence": [
+        {
+          "citation": "Skip rule static-general-software-profile states that the DOMAIN_DISCOVERY stage does not apply: Slice 1 does not profile the domain. It resolves one static profile, general-software, so there is no domain to discover.",
+          "retrieved_at": "2026-10-29T09:01:43.965485Z",
+          "sha256": "sha256:7373b72a298dc025411926a018ee9cbbc1543ed617e23ab6cd3166955bf5f100",
+          "type": "source"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a26b6c25-f8e1-4049-8887-dcb16e6820e8",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 38,
+        "stage_run_id": "f5064502-6681-443f-b60b-5fc60712c9ad"
+      },
+      "prev_entry_hash": "sha256:24a589957c19c1366a4688019207973b0c37fc9c8bbc97e8531233856303bb0c",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate architecture-traceability reported PASSED for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:dca02ca44bab8f0b7ad658d6a6f0ae599a9fd8c7b55f05b0a635f625d615616d",
+      "evidence": [
+        {
+          "gate_report_id": "fddda846-2915-42f5-ae55-e867fabd0c02",
+          "gate_report_sha256": "sha256:3d963a886d4891ae0d8e79473bfcb89e5c8b49810b63ca16235f8ac7889d7425",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "695d49be-62c5-4fdd-a081-51ffa7f125ab",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 39,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:ad67b31c417a38da6ac4c38d93b226d47e1de61018f248bb3de523a2cfa91a9e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate architecture-completeness reported PASSED for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:0a84ba3b9f11c5b86c071d0f84a47dfe33c6dcc60524b128279156a726b4fbfc",
+      "evidence": [
+        {
+          "gate_report_id": "a4312545-c09c-4f2c-b71d-dbb96c8a58a2",
+          "gate_report_sha256": "sha256:b6af4f75b4c1e813faf7344b38110610fc34fe680bfeeb3bf79b9df58e57ab6e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "712e6ba1-081d-4395-965d-3ae24b69a468",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 40,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:dca02ca44bab8f0b7ad658d6a6f0ae599a9fd8c7b55f05b0a635f625d615616d",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate architecture-critic reported NOT_APPLICABLE for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:92cb40c379002c6a3fff8f89ec2cc9eb78a215403c518426e9b5b7c577cbf1bb",
+      "evidence": [
+        {
+          "gate_report_id": "887a1730-1f09-4051-ba97-ebc7d3eea737",
+          "gate_report_sha256": "sha256:5f94a2ea1fe5966f6d6bc2f21fada5e96d36cdb7b095ef9d26b6699d426d87fa",
+          "result": "not_run",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "02ca9ec2-ae72-4497-b3f4-5565746f70b9",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 41,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:0a84ba3b9f11c5b86c071d0f84a47dfe33c6dcc60524b128279156a726b4fbfc",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate readability-gate reported PASSED for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:1ffd3ed3f7d1e4cf11d7b1abb8a1222001307f44abb1a49c3c4124fa4a99bf21",
+      "evidence": [
+        {
+          "gate_report_id": "f8be161a-f720-45fc-a55c-e8d67324288c",
+          "gate_report_sha256": "sha256:43cfa7c937ca584d20e5c34a713dd50a8455f620cd4d461561601f285cb58442",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "6e84d495-edea-416f-9a30-ca32d0506d91",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 42,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:92cb40c379002c6a3fff8f89ec2cc9eb78a215403c518426e9b5b7c577cbf1bb",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion every-requirement-has-a-design-element is verified by the gate architecture-traceability."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:1cc205d56a47b3b4d94bbf629c6091039f8adbd8711ef7939c8617deac2e4c71",
+      "evidence": [
+        {
+          "gate_report_id": "fddda846-2915-42f5-ae55-e867fabd0c02",
+          "gate_report_sha256": "sha256:3d963a886d4891ae0d8e79473bfcb89e5c8b49810b63ca16235f8ac7889d7425",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "6800b1c6-6353-4a72-b3e1-5d026e3c535b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 43,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:1ffd3ed3f7d1e4cf11d7b1abb8a1222001307f44abb1a49c3c4124fa4a99bf21",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion the-design-is-complete is verified by the gate architecture-completeness."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:2facb50ac709a0bd27bd5b01852734d9ad852f5746965acc82e5017f8d856845",
+      "evidence": [
+        {
+          "gate_report_id": "a4312545-c09c-4f2c-b71d-dbb96c8a58a2",
+          "gate_report_sha256": "sha256:b6af4f75b4c1e813faf7344b38110610fc34fe680bfeeb3bf79b9df58e57ab6e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "441102fc-72a0-4436-bf05-84272388dbb3",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 44,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:1cc205d56a47b3b4d94bbf629c6091039f8adbd8711ef7939c8617deac2e4c71",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion high-risk-work-had-an-independent-critic is verified by the gate architecture-critic."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:aec83087171d30a7de57974a77f11084dc7260951434784b1a7deebcc16ffe3f",
+      "evidence": [
+        {
+          "gate_report_id": "887a1730-1f09-4051-ba97-ebc7d3eea737",
+          "gate_report_sha256": "sha256:5f94a2ea1fe5966f6d6bc2f21fada5e96d36cdb7b095ef9d26b6699d426d87fa",
+          "result": "not_run",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "9404e1f0-ff96-42bd-94b4-3f11217075e4",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 45,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:2facb50ac709a0bd27bd5b01852734d9ad852f5746965acc82e5017f8d856845",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion plain-english is verified by the gate readability-gate."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:03d1d38adf345c3d361bee622f4526568b69bd366d3e40d3175137d4dc23cced",
+      "evidence": [
+        {
+          "gate_report_id": "f8be161a-f720-45fc-a55c-e8d67324288c",
+          "gate_report_sha256": "sha256:43cfa7c937ca584d20e5c34a713dd50a8455f620cd4d461561601f285cb58442",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "68ea4e63-7f20-497e-a3ee-4fb6c4748c0e",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 46,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:aec83087171d30a7de57974a77f11084dc7260951434784b1a7deebcc16ffe3f",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate plan-metadata-matches reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:a4cb70f278f3aac3293ecf2b41a164c59b93094e5ce698bc24b5a814dc239f7e",
+      "evidence": [
+        {
+          "gate_report_id": "5c126a30-9c5f-4926-8dff-88776eba602f",
+          "gate_report_sha256": "sha256:cf397422cb21bd4f7b6ed68a27e105d9b69ad616c7a9b3990dc86506063ad3d2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "f24aea33-9157-4176-bfb9-e3512ddd049a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 47,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:03d1d38adf345c3d361bee622f4526568b69bd366d3e40d3175137d4dc23cced",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate task-plan-validator reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:07380e6edf430d461e66ddb04024e773568e0af94bc1354f4e4844cc2fa4d1e3",
+      "evidence": [
+        {
+          "gate_report_id": "f48140cc-2d88-4f98-9051-28d513c7c9c5",
+          "gate_report_sha256": "sha256:a27ed79f02b910e0b65adf69cbbcaeb928164424bb2041e772cebe868982837c",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "b0a763c0-c971-4263-a781-13860e520138",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 48,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:a4cb70f278f3aac3293ecf2b41a164c59b93094e5ce698bc24b5a814dc239f7e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate plan-traceability-complete reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:0e7e9fd316d1c1bc3fa48acda5103a9858d79e6311c4d1082caeab5c50eefbe7",
+      "evidence": [
+        {
+          "gate_report_id": "2f6af2ab-acd7-4127-baa2-b8cc30631834",
+          "gate_report_sha256": "sha256:a7f27584a61af3374de50d308ebb2d864e4351fa323fdd7758be1b66a4ce1fe3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "91b64add-9d32-4f6f-9256-33278fa9e2da",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 49,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:07380e6edf430d461e66ddb04024e773568e0af94bc1354f4e4844cc2fa4d1e3",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate readability-gate reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:19bfd68dcd6c7016c5a63eefb51a761cb3eb3e97fc3c2d39976c25567f41da4c",
+      "evidence": [
+        {
+          "gate_report_id": "faeaa99d-e97d-457a-be49-9a172f0888a9",
+          "gate_report_sha256": "sha256:81498507f36c44c24739e764cd7e3118fb5b27689498b76e37286620b9f00dc2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "62541f4d-80a8-4f25-8d26-217fa0aec8f5",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 50,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:0e7e9fd316d1c1bc3fa48acda5103a9858d79e6311c4d1082caeab5c50eefbe7",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion metadata-is-the-factorys-own is verified by the gate plan-metadata-matches."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:65928920b124d966cd1a9e6db96c9efdc4fb7e9388dc41f15e871714ded73dfb",
+      "evidence": [
+        {
+          "gate_report_id": "5c126a30-9c5f-4926-8dff-88776eba602f",
+          "gate_report_sha256": "sha256:cf397422cb21bd4f7b6ed68a27e105d9b69ad616c7a9b3990dc86506063ad3d2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "61f12343-0ac7-4143-a321-ef1e2714c2b6",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 51,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:19bfd68dcd6c7016c5a63eefb51a761cb3eb3e97fc3c2d39976c25567f41da4c",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion the-plan-can-be-run is verified by the gate task-plan-validator."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:7a6410a127b420a827ac84714dc10279eb11e253788d5ef7b9f57b644e5271e2",
+      "evidence": [
+        {
+          "gate_report_id": "f48140cc-2d88-4f98-9051-28d513c7c9c5",
+          "gate_report_sha256": "sha256:a27ed79f02b910e0b65adf69cbbcaeb928164424bb2041e772cebe868982837c",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "94de3775-83da-4830-b543-c8b8ccbfd705",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 52,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:65928920b124d966cd1a9e6db96c9efdc4fb7e9388dc41f15e871714ded73dfb",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion every-requirement-can-be-followed is verified by the gate plan-traceability-complete."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:5facfd715d04be2586c9a5a1de6ef2c9dad58c8836fddb1a94d899ecbd1825a9",
+      "evidence": [
+        {
+          "gate_report_id": "2f6af2ab-acd7-4127-baa2-b8cc30631834",
+          "gate_report_sha256": "sha256:a7f27584a61af3374de50d308ebb2d864e4351fa323fdd7758be1b66a4ce1fe3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "fdc1767b-e9f3-499f-a0f4-1ed4cb869e08",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 53,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:7a6410a127b420a827ac84714dc10279eb11e253788d5ef7b9f57b644e5271e2",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion plain-english is verified by the gate readability-gate."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:030bc962c33adb74f49343a91704adfed4fdfebdc2fa4edc186feeaa32d3f440",
+      "evidence": [
+        {
+          "gate_report_id": "faeaa99d-e97d-457a-be49-9a172f0888a9",
+          "gate_report_sha256": "sha256:81498507f36c44c24739e764cd7e3118fb5b27689498b76e37286620b9f00dc2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a0bafe41-0d71-4035-98b5-1c9934abf175",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 54,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:5facfd715d04be2586c9a5a1de6ef2c9dad58c8836fddb1a94d899ecbd1825a9",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate implementation-scope reported PASSED for the IMPLEMENTATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:f5052bbf9da608807fd4c99614d9ae80b86f7cb77e48a579fc0afd7e98759bf6",
+      "evidence": [
+        {
+          "gate_report_id": "c0fe21b5-c574-4b18-be9a-3d97865290f4",
+          "gate_report_sha256": "sha256:6285df60898e6a8ea3acd526d3c5345636b6de7043fc48d5a4db85421137b7e1",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "entry_id": "61786e2e-93e1-4602-8888-481fad98f351",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:45.302892Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 55,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      "prev_entry_hash": "sha256:030bc962c33adb74f49343a91704adfed4fdfebdc2fa4edc186feeaa32d3f440",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate implementation-commits reported PASSED for the IMPLEMENTATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:618350ab8c5f0286f2294e8e50a5058893bbfbefc34c79ca008c45fcd9561355",
+      "evidence": [
+        {
+          "gate_report_id": "a4c27113-5ceb-404f-abdf-549dc278cec7",
+          "gate_report_sha256": "sha256:ec518b397696e1f74ee1a01ecf457b416673bf2c9da0795bb35031d47ccc3dca",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "entry_id": "8c900fc4-dabc-4ff3-b859-f0962424b8ee",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:45.302892Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 56,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      "prev_entry_hash": "sha256:f5052bbf9da608807fd4c99614d9ae80b86f7cb77e48a579fc0afd7e98759bf6",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate protected-paths-unchanged reported FAILED for the IMPLEMENTATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:7e573e4ee54d58271db6ca1eb324cf525d8201846425d1328512c91c77b27d08",
+      "evidence": [
+        {
+          "gate_report_id": "37bbd297-5766-4c1e-ad43-301499769ed4",
+          "gate_report_sha256": "sha256:97c9a0e78a0f2c9463bd4e6a5f8d425e8f8555ae095770f7c67a79222778e870",
+          "result": "failed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "entry_id": "68a2a8f1-95aa-40b3-92a6-204ae329d417",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:45.302892Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 57,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      "prev_entry_hash": "sha256:618350ab8c5f0286f2294e8e50a5058893bbfbefc34c79ca008c45fcd9561355",
+      "schema_version": 1
+    }
+  ]
+}

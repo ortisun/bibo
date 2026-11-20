@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS original_requests;
+DROP TABLE IF EXISTS jobs;

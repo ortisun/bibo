@@ -1,0 +1,1872 @@
+# =============================================================================
+# policies/security.yaml  -  default-deny security policy for the factory
+# =============================================================================
+# STATUS: DESIGNED. Product code reads this file: `load_policy` in
+# crates/composition/src/startup.rs loads it from the protected checkout, hashes
+# it and builds the policy engine and the redactor from it, for the worker, the
+# API and `factory-cli probe`. The flag `policy.status` below is a label that no
+# code reads or switches on. Flip it to `enforced` only when the negative tests
+# in docs/security/negative-test-catalog.md exist and pass; this comment does not
+# say that they do.
+#
+# Companion documents (the "why" behind each key):
+#   docs/security/threat-model.md              threat IDs (T-nn) and control IDs (C-nn)
+#   docs/security/sandbox-policy.md            container flags, verified against Docker 29.9.2
+#   docs/security/secrets-and-credentials.md   credential handling and redaction
+#   docs/security/negative-test-catalog.md     tests that prove these rules (NT-*)
+#   policies/approval.yaml                     autonomy levels and human gates
+#
+# -----------------------------------------------------------------------------
+# PARSER CONTRACT (for the future Rust policy crate)
+# -----------------------------------------------------------------------------
+# * Plain YAML 1.2 subset: block or flow style, scalars, lists, maps. No anchors, no
+#   aliases, no merge keys (<<), no custom tags, a single document.
+# * Deserialize into typed structs with serde and `#[serde(deny_unknown_fields)]`.
+#   An unknown key is a load error, never silently ignored.
+# * `schema_version` must equal the version the binary supports, otherwise the
+#   factory refuses to start (fail closed).
+# * Every list that grants something is an allowlist. Absence means deny.
+#   Every list that forbids something is a denylist used as a backstop only;
+#   the primary controls are the allowlists and the sandbox itself.
+# * Evaluation order: any matching deny wins over any allow (deny_overrides).
+# * Regex fields use the Rust `regex` crate dialect (RE2-like: no lookaround, no
+#   backreferences). This also bounds matching time (no catastrophic backtracking).
+# * Glob fields use the Rust `globset` crate dialect: `**` crosses directories,
+#   `*` and `?` do not cross `/`, `{a,b}` alternation is allowed.
+# * Durations are integer seconds (`*_s`), sizes are integer megabytes (`*_mb`)
+#   or bytes (`*_bytes`), money is USD as a decimal number (`*_usd`).
+# * The loader computes a SHA-256 over the canonical form of the merged policy.
+#   That `policy_hash` is stored on every job, approval and audit event.
+# * Loading rules: this file is read only from the protected default branch of
+#   the factory configuration source (or a signed release artifact). It is never
+#   read from a feature branch, from a builder workspace, or from the target
+#   repository's working tree. See `policy.project_overrides`.
+# -----------------------------------------------------------------------------
+
+schema_version: 1
+
+policy:
+  id: security
+  version: 1
+  status: designed                  # enum: designed | enforced
+  default_action: deny              # enum: deny   (no other value is valid)
+  conflict_resolution: deny_overrides
+  # Project-local policy (`.factory/` in a target repo, read from the protected
+  # base commit only) may ADD protected paths, ADD forbidden commands, REMOVE
+  # egress hosts and LOWER limits. It may never widen anything. A key that would
+  # widen the central policy is a load error. Widening needs a human decision
+  # recorded under policies/approval.yaml `always_human`.
+  project_overrides: tighten_only   # enum: tighten_only
+  config_source: protected_default_branch   # enum: protected_default_branch | signed_release
+  threats: [T-15, T-04, T-12]
+
+# -----------------------------------------------------------------------------
+# 1. Path matching rules (applies to every path comparison in this file)
+# -----------------------------------------------------------------------------
+matching:
+  # Compare repository-relative POSIX paths after: Unicode NFC normalization,
+  # removal of `.` segments, rejection of `..` segments and of absolute paths,
+  # and rejection of NUL and backslash. Matching is case-insensitive so that
+  # `.GitHub/Workflows` cannot dodge `.github/**` on case-insensitive filesystems.
+  normalization: nfc
+  case_insensitive: true
+  reject_dotdot: true
+  reject_absolute: true
+  reject_nul_and_backslash: true
+  # The decision is taken on the final tree diff computed by trusted git outside
+  # the sandbox (base tree vs head tree), never on a list of files the agent
+  # reports. Renames and copies count as two paths (source and destination).
+  # Mode changes (for example chmod +x) and type changes (file to symlink) count
+  # as modifications. Deletions count.
+  evaluate_on: trusted_tree_diff
+  count_rename_source_and_destination: true
+  mode_and_type_changes_are_modifications: true
+  # Any path component equal to `.git` (case-insensitive, after NFC) is rejected
+  # outright. Gitlink entries (mode 160000) and `.gitmodules` changes are rejected.
+  reject_dot_git_components: true
+  reject_gitlinks: true
+  # Symlinks are allowed in a diff only when the target resolves inside the
+  # workspace after canonicalization. Otherwise the diff is rejected.
+  symlinks: reject_if_target_outside_workspace
+  threats: [T-12, T-15, T-10]
+
+# -----------------------------------------------------------------------------
+# 2. Protected paths (builders cannot change these to make checks pass)
+# -----------------------------------------------------------------------------
+# mode:
+#   deny_write     any add, modify, delete, rename or mode change blocks the job
+#   append_only    new files are allowed; modify, delete, rename of existing files block
+#   additions_only new files are allowed; an existing file may only GAIN lines (its
+#                  diff contains no removed or changed lines); delete and rename block
+#   hidden         not in the checkout at all (sparse exclusion); also denied for read
+#   sensitive      allowed, but triggers the listed semantic checks and extra review
+# When several groups match one path, the most restrictive mode wins, in this
+# order: hidden > deny_write > append_only > additions_only > sensitive.
+# Rust inline tests (`#[cfg(test)]` inside source files) cannot be protected by
+# path; they are covered by `gate_integrity.test_regression`.
+# applies_to: target_repo | factory_repo | both
+# change_requires: all must hold before a change to a deny_write/append_only
+#   path can be accepted. This mirrors the master prompt: the approved
+#   specification explicitly authorizes it AND independent policy review
+#   approves it. `human_approval` is added by this baseline.
+#   `spec_authorization` is a structured field written only by an authenticated
+#   human through the approval flow. It is never parsed from specification prose.
+protected_paths:
+  default_change_requires: [spec_authorization, independent_policy_review, human_approval]
+  groups:
+    - id: ci_workflows
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".github/**"
+        - ".gitlab-ci.yml"
+        - ".circleci/**"
+        - ".buildkite/**"
+        - "azure-pipelines.yml"
+        - "Jenkinsfile"
+        - ".drone.yml"
+        - "bitbucket-pipelines.yml"
+        - "CODEOWNERS"
+        - "docs/CODEOWNERS"
+      reason: "CI definitions and code ownership decide what runs and who reviews."
+      threats: [T-12, T-14]
+
+    - id: gate_and_toolchain_config
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".cargo/**"                    # target runners, rustc wrappers, alternative registries
+        - "rust-toolchain"
+        - "rust-toolchain.toml"
+        - "clippy.toml"
+        - ".clippy.toml"
+        - "rustfmt.toml"
+        - ".rustfmt.toml"
+        - "deny.toml"
+        - "audit.toml"
+        - ".config/nextest.toml"
+        - "Makefile"
+        - "justfile"
+        - "scripts/ci.sh"                # the one entry point every check runs through
+        - "scripts/ci/**"                # step files that scripts/ci.sh loads
+        - "scripts/gates/**"
+        - "tox.ini"
+        - "noxfile.py"
+        - "pytest.ini"
+        - "jest.config.*"
+        - "vitest.config.*"
+        - "playwright.config.*"
+        - ".coveragerc"
+        - "codecov.yml"
+        - ".codecov.yml"
+        - "sonar-project.properties"
+        - ".pre-commit-config.yaml"
+        - ".gitleaks.toml"
+        - ".gitleaksignore"
+        - ".semgrep/**"
+        - ".semgrepignore"
+        - ".npmrc"
+        - ".yarnrc*"
+        - "pip.conf"
+        - ".eslintrc*"
+        - "eslint.config.*"
+        - "tsconfig*.json"
+      reason: "Lint, type, coverage and scanner settings, and the CI entry point (scripts/ci.sh and scripts/ci/), decide what a PASS means."
+      threats: [T-12, T-13]
+
+    - id: factory_config
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".factory/**"
+        - ".specify/**"
+      reason: "Project-local factory configuration and Spec Kit state. Changed only through the specification and configuration stages."
+      threats: [T-12, T-15, T-04]
+
+    - id: agent_instruction_files
+      mode: deny_write
+      applies_to: both
+      globs:
+        - "AGENTS.md"
+        - "CLAUDE.md"
+        - "GEMINI.md"
+        - ".claude/**"
+        - ".codex/**"
+        - ".gemini/**"
+        - ".agents/**"
+        - ".cursor/**"
+        - ".cursorrules"
+        - ".mcp.json"
+        - ".github/copilot-instructions.md"
+      reason: "Files that steer future agent runs. A builder editing them is persistent prompt injection."
+      threats: [T-02, T-04]
+
+    - id: vcs_internals_and_hooks
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".git"
+        - ".git/**"
+        - ".gitmodules"
+        - ".githooks/**"
+        - ".husky/**"
+      reason: "Hooks and submodule pointers run or fetch code on developer machines and on the control plane."
+      threats: [T-10]
+
+    - id: test_fixtures_and_goldens
+      mode: append_only
+      applies_to: both
+      globs:
+        - "tests/fixtures/**"
+        - "tests/golden/**"
+        - "**/__snapshots__/**"
+        - "**/*.snap"
+        - "**/testdata/**"
+        - "**/golden/**"
+      reason: "Existing fixtures and golden files may be added to but not edited or removed to force a pass."
+      threats: [T-12, T-13]
+
+    - id: test_code
+      mode: additions_only
+      applies_to: both
+      globs:
+        - "tests/**"
+        - "**/tests/**"
+        - "**/__tests__/**"
+        - "**/*_test.*"
+        - "**/*.test.*"
+        - "**/*.spec.*"
+        - "**/test_*.py"
+      reason: "Builders add tests; they do not weaken or remove existing ones. Rewrites need spec authorization and independent policy review."
+      threats: [T-12, T-13]
+
+    - id: evaluation_holdouts
+      mode: hidden
+      applies_to: both
+      globs:
+        - "evals/**"
+        - "tests/evals/**"
+        - "tests/holdout/**"
+        - "**/holdout/**"
+        - "**/heldout/**"
+      reason: "Held-out evaluation data must never be visible to builders or reach model context."
+      threats: [T-12, T-13, T-35]
+
+    - id: secret_bearing_files
+      mode: hidden
+      applies_to: both
+      # Every glob starts with `**/` so that it matches at any depth. A glob without it
+      # matches only at the repository root, and `apps/web/.env` or `a/b/.aws/credentials`
+      # would stay readable. `**/` also matches the root, so `.env` itself is still hidden.
+      # Matching ignores letter case and the characters that version control ignores in a
+      # name (section 1).
+      globs:
+        - "**/.env"
+        - "**/.env.*"
+        - "!**/.env.example"             # a leading "!" re-includes; the loader applies it last
+        - "**/.envrc"                    # direnv's file; `.env.*` needs a dot after `env`
+        - "**/*.pem"
+        - "**/*.key"
+        - "**/*.p12"
+        - "**/*.pfx"
+        - "**/id_rsa*"
+        - "**/id_ed25519*"
+        - "**/.netrc"
+        - "**/.pypirc"
+        - "**/.git-credentials"
+        - "**/.aws/**"
+        - "**/.ssh/**"
+        - "**/.docker/config.json"
+        - "**/credentials*.json"
+      reason: "Never mounted, never read into context, never allowed in a diff. Hidden at any depth, not only at the repository root."
+      threats: [T-16, T-19, T-20]
+
+    - id: factory_self_protection
+      mode: deny_write
+      applies_to: factory_repo
+      globs:
+        - "policies/**"
+        - "docs/security/**"
+        - "agents/**"
+        - "workflows/**"
+      reason: "When the factory works on its own repository, its policies, security documents and agent manifests are protected."
+      threats: [T-15, T-12]
+
+    - id: factory_gate_tooling
+      mode: deny_write
+      applies_to: factory_repo
+      # The tooling that decides what a PASS means in the factory's own repository: the xtask
+      # architecture and link checks, the schema validator, the dependency rules they read, the
+      # tools that check the work-package plan, the readability corpus, and the oracle and tool
+      # helpers of the domain tests. A change here moves a gate, so it is a protected change.
+      # In a target repository the same names are ordinary paths (the test directories there
+      # fall under `test_code`).
+      globs:
+        - "xtask/**"
+        - "schemas/validate.sh"
+        - "docs/architecture/crate-dependency-rules.json"
+        - "docs/architecture/tools/**"
+        - "fixtures/readability/**"
+        - "crates/domain/tests/oracle/**"
+        - "crates/domain/tests/tools/**"
+      reason: "When the factory works on its own repository, the tools and test oracles that its gates run are protected, as the CI entry point and the gate configuration are."
+      threats: [T-12, T-13]
+
+  # Allowed to change, but every change runs the listed semantic checks (see
+  # `gate_integrity.semantic_checks`) and requires the listed extra reviewer.
+  sensitive_files:
+    - id: dependency_manifests
+      globs:
+        - "Cargo.toml"
+        - "**/Cargo.toml"
+        - "Cargo.lock"
+        - "package.json"
+        - "**/package.json"
+        - "package-lock.json"
+        - "pnpm-lock.yaml"
+        - "yarn.lock"
+        - "pyproject.toml"
+        - "requirements*.txt"
+        - "uv.lock"
+        - "poetry.lock"
+        - "go.mod"
+        - "go.sum"
+        - "Gemfile"
+        - "Gemfile.lock"
+        - "pom.xml"
+        - "build.gradle*"
+        - "**/*.csproj"
+      checks: [new_dependency, lint_relaxation, test_harness_disabled, build_script_added, registry_or_source_changed]
+      extra_review: [security_reviewer]
+    - id: container_and_infrastructure
+      globs:
+        - "Dockerfile*"
+        - "**/Dockerfile*"
+        - "docker-compose*.yml"
+        - "infra/**"
+        - "**/*.tf"
+        - "k8s/**"
+        - "helm/**"
+        - "scripts/dev-up.sh"            # starts the local services and writes their settings
+        - ".env.example"                 # the template of the settings that dev-up.sh reads
+      checks: [privilege_or_network_widening, secret_in_diff]
+      extra_review: [security_reviewer]
+    - id: security_critical_code
+      # The crates that enforce the policy, redact secrets, read the policy files, run the
+      # egress proxy and the sandbox, or hold a credential. Each path is a real directory
+      # (a test checks it): the policy evaluators and the redactor are inside the domain crate.
+      globs:
+        - "crates/domain/src/policy/**"
+        - "crates/domain/src/redaction/**"
+        - "crates/contracts/**"
+        - "crates/egress/**"
+        - "crates/sandbox/**"
+        - "crates/github/**"
+        - "crates/runtime/**"
+      checks: [secret_in_diff]
+      extra_review: [security_reviewer]
+      applies_to: factory_repo
+    - id: attributes_and_build_scripts
+      globs:
+        - ".gitattributes"
+        - "**/build.rs"
+        - "**/setup.py"
+        - "**/conftest.py"
+      checks: [build_script_added, test_harness_disabled]
+      extra_review: [security_reviewer]
+
+# -----------------------------------------------------------------------------
+# 3. Workspace path access for file tools
+# -----------------------------------------------------------------------------
+path_access:
+  workspace_root: /workspace          # inside the sandbox
+  # A path is writable only if it matches write_allow, matches no deny_write
+  # or append_only-protected existing file, and is not hidden.
+  write_allow: ["**"]                 # tightened per task by the planner (`owned_files`)
+  write_scope_source: task_owned_files    # the Task DAG `owned files/interfaces` narrows write_allow
+  deny_read_globs_ref: protected_paths.groups[secret_bearing_files,evaluation_holdouts]
+  resolve_with: openat2_resolve_beneath    # or O_NOFOLLOW walk; never string checks only
+  follow_symlinks_on_host: false           # control plane readers use NOFOLLOW (verified risk: NT-SBX-09)
+  max_file_bytes: 5242880                  # largest single file the agent may write through tools
+  max_files_changed_per_task: 200
+  max_diff_bytes: 5242880
+  # Filesystem audit walk run by the control plane on the workspace BEFORE any
+  # diff is computed or any file is read. The tree diff alone is not enough:
+  # experiment W3 showed that git silently omits a file written into a
+  # sparse-excluded (hidden) path and ignores a nested `.git` directory.
+  workspace_audit:
+    run: before_ingest
+    walk: no_follow                        # lstat and openat2 RESOLVE_BENEATH style; never follow links
+    reject_any_of:
+      - dot_git_entry_other_than_the_masked_root_entry
+      - non_empty_hidden_path                # any file under a `hidden` protected group
+      - special_files                        # fifo, socket, block device, character device
+      - symlink_with_target_outside_workspace
+      - regular_file_with_link_count_over_1  # possible hardlink to a file outside the job
+      - file_larger_than_max_file_bytes
+      - entry_count_over_200000
+      - path_longer_than_4096_bytes
+      - name_longer_than_255_bytes
+      - name_with_control_characters_or_invalid_utf8
+      - setuid_or_setgid_mode_bits
+    on_reject: fail_job_with_BLOCK_and_audit
+  threats: [T-06, T-10, T-12]
+
+# -----------------------------------------------------------------------------
+# 4. Forbidden command classes (backstop; the sandbox is the primary control)
+# -----------------------------------------------------------------------------
+# Applied by the typed command wrapper to the argv array BEFORE execution.
+# match.executables : basenames (no path separators). Resolution of the real
+#                     binary happens inside the sandbox by absolute path from a
+#                     fixed, read-only PATH.
+# match.argv_any    : exact argv tokens; a rule matches when any token is present.
+# match.argv_regex  : Rust regex applied to the argv joined with single spaces.
+# action            : deny (hard) | require_human (routes to policies/approval.yaml)
+# except_profiles   : optional list of sandbox profiles where the rule does not apply
+# breakglass_tool   : optional id of a tool that is the only sanctioned way around the rule
+forbidden_command_classes:
+  - id: shell_interpreters
+    description: "Shell strings defeat argv-level policy. Use typed commands instead."
+    match: { executables: [sh, bash, zsh, dash, ash, fish, ksh, csh, tcsh, busybox, eval, source] }
+    action: deny
+    breakglass_tool: exec.shell        # disabled; see tools
+  - id: remote_fetch_and_execute
+    description: "Download and run, or pipe a download into an interpreter."
+    match:
+      executables: [curl, wget, fetch, aria2c]
+      argv_regex: ['(?i)\|\s*(sh|bash|zsh|python[0-9.]*|perl|ruby|node)\b']
+    action: deny
+  - id: privilege_escalation
+    match: { executables: [sudo, su, doas, pkexec, setcap, capsh, nsenter, unshare, chroot, mount, umount, pivot_root] }
+    action: deny
+  - id: container_and_orchestrator_tooling
+    match: { executables: [docker, podman, nerdctl, ctr, runc, crictl, kubectl, helm, buildah, skopeo] }
+    action: deny
+  - id: credential_access
+    match:
+      executables: [env, printenv, security, gh, gpg, ssh-add, ssh-keygen, keyctl]
+      argv_regex:
+        - '(?i)/proc/[^ ]*/(environ|mem|maps)'
+        - '(?i)(\.ssh|\.aws|\.config/gh|\.git-credentials|\.netrc|\.docker/config\.json|\.npmrc|\.pypirc|\.cargo/credentials)'
+        - '(?i)credential[.]helper'
+    action: deny
+  - id: network_tools
+    description: "Raw network clients, tunnels and DNS tools. Network is denied anyway; this catches attempts early."
+    match: { executables: [nc, ncat, netcat, socat, telnet, ssh, scp, sftp, rsync, ftp, tftp, nmap, masscan, dig, nslookup, host, ping, traceroute, tcpdump, iptables, nft, ip, ifconfig] }
+    action: deny
+  - id: destructive_filesystem
+    match:
+      executables: [mkfs, shred, wipefs, fdisk, parted, losetup]
+      argv_regex:
+        - '(?i)\brm\b.*\s-[a-z]*r[a-z]*f?\s+(/|~|\$HOME|\*)(\s|$)'
+        - '(?i)\bdd\b.*\bof=/dev/'
+        - '(?i)\bfind\b\s+/\s.*-delete'
+        - '(?i)\bchmod\b\s+-R\s+[0-7]*7[0-7]*\s+/'
+    action: deny
+  - id: vcs_publish_and_history_rewrite
+    description: "Agents never push or rewrite history. The control plane owns every push."
+    match:
+      executables: [git-filter-repo]
+      argv_regex:
+        - '(?i)\bgit\b.*\b(push|remote|filter-branch|filter-repo|reflog\s+expire|gc\s+--prune|clone|fetch|pull|submodule|config|credential|worktree|update-ref|symbolic-ref)\b'
+    action: deny
+  - id: package_publish_and_auth
+    match:
+      argv_regex:
+        - '(?i)\bcargo\b.*\b(publish|login|logout|owner|yank)\b'
+        - '(?i)\b(npm|pnpm|yarn)\b.*\b(publish|login|adduser|token|dist-tag|deprecate|unpublish)\b'
+        - '(?i)\b(twine|poetry)\b.*\b(upload|publish)\b'
+        - '(?i)\b(gem)\b.*\bpush\b'
+      executables: [twine]
+    action: deny
+  - id: spec_kit_out_of_scope
+    description: "Spec Kit is confined to the specification stage and its four skills. These subcommands install, upgrade, reach the network or run the full workflow. The control plane runs `specify init` and `specify integration status --json` on the host; an agent never does."
+    match:
+      executables: [specify]
+      argv_regex:
+        - '(?i)\bspecify\b\s+(init|self|extension|preset|bundle|workflow|mcp)\b'
+        - '(?i)\bspecify\b\s+integration\s+(upgrade|search|list\s+--catalog|install|uninstall)\b'
+    action: deny
+  - id: process_debug_and_injection
+    match: { executables: [gdb, lldb, strace, ltrace, ptrace, perf, bpftrace, bpftool] }
+    action: deny
+  - id: kernel_and_system_state
+    match: { executables: [insmod, rmmod, modprobe, sysctl, mknod, systemctl, service, crontab, at, batch, reboot, shutdown, halt] }
+    action: deny
+  - id: detached_persistence
+    description: "Processes that outlive the tool call. The wrapper also kills the whole process group at call end."
+    match:
+      executables: [nohup, setsid, disown, daemonize, screen, tmux]
+    action: deny
+  - id: install_scripts_outside_fetch
+    description: "Package installs and downloads may run only in the fetch_deps profile. Inside that profile the command sets decide which of them exist: `cargo fetch` and `cargo metadata` for Slice 1, no install, add, update or vendor, and the next class keeps repository code out."
+    match:
+      argv_regex:
+        - '(?i)\b(npm|pnpm|yarn)\b\s+(install|i|add|ci)\b'
+        - '(?i)\bpip[0-9.]*\b\s+(install|download)\b'
+        - '(?i)\bcargo\b\s+(install|add|update|fetch|vendor)\b'
+        - '(?i)\bgo\b\s+(get|install)\b'
+    action: deny
+    except_profiles: [fetch_deps]
+  - id: repository_code_in_fetch_deps
+    description: "The fetch_deps profile downloads and runs no repository code: no build script, procedural macro, test binary, project script or interpreter, because it is the one profile with a network. Applies to fetch_deps only (the other two profiles are excepted)."
+    match:
+      executables: [rustc, node, npx, python, pytest, mypy, ruff]
+      argv_regex:
+        - '(?i)\bcargo\b\s+(build|check|test|clippy|doc|nextest|run|bench|rustc|rustdoc|fix|miri)\b'
+        - '(?i)\b(npm|pnpm|yarn)\b\s+(run|test|pack|exec|start|rebuild)\b'
+        - '(?i)\bgo\b\s+(build|test|vet|run|generate)\b'
+    action: deny
+    except_profiles: [agent, verify]
+
+# -----------------------------------------------------------------------------
+# 5. Tool allowlist (typed tools only; no ambient authority)
+# -----------------------------------------------------------------------------
+# An agent receives a tool only if (a) its manifest lists it in `allowed_tools`
+# AND (b) the policy engine issues a grant for the current stage and task.
+# Agents cannot request or create grants. Grants expire with the task.
+#
+# WHO MEDIATES WHAT (ADR 0005, ADR 0009 item 1). The agent CLI runs INSIDE the
+# `agent` sandbox, behind the model broker. Its own tool calls (shell, file read
+# and write) happen inside the CLI, and the factory does not mediate them. For
+# those calls the controls are the sandbox posture, the read-only protected
+# overlays, the hidden paths, the egress sidecar and broker, the filesystem
+# audit walk and the host-computed diff. This table is enforced as a typed
+# gateway for:
+#   * commands the factory itself runs (verify gates, fetch_deps, version control),
+#   * the host tool bridge, if a human ever chooses it (`host_tool_bridge`,
+#     off in Slice 1), and
+#   * the grants the policy engine turns into CLI permission flags
+#     (`--allowedTools`, `--disallowedTools`, `--tools`) where the agent-runtime
+#     spike proves the installed CLI honors them.
+# Tests that depend on mediation are tagged in the negative test catalog.
+#   risk          low | medium | high
+#   profiles      sandbox profiles in which the tool may run
+#   roles         agent roles (from the agents/ manifests) that may hold it
+#   limits        per-task caps; exceeding a cap fails the call, not the policy
+#   human_gate    none | per_call | per_task (see approval.yaml)
+tools:
+  default_action: deny
+  grant_authority: policy_engine
+  agents_may_self_grant: false
+  never_grantable:
+    - github.write         # the control plane owns every GitHub write
+    - vcs.push
+    - merge
+    - approval.grant
+    - policy.write
+    - tool.grant
+    - secrets.read
+    - docker.any
+    - audit.write
+  # Repeated refused requests are a signal (NT-TOOL-03). Each request for an unknown tool,
+  # a never-grantable tool or a self-grant is refused and audited. The fourth one in a task
+  # sends the stage to a person (NEEDS_HUMAN) instead of being refused again. A project may
+  # lower the number and never raise it.
+  misuse_threshold:
+    max_denied_requests_per_task: 3
+    on_threshold: needs_human
+  entries:
+    - id: fs.read
+      risk: low
+      profiles: [agent, verify]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst, specification_writer, specification_reviewer]
+      args: { path: { kind: workspace_path, access: read } }
+      limits: { max_calls_per_task: 3000, max_result_bytes: 262144, timeout_s: 10 }
+      # The specification roles read the feature directory, and the writer also reads the Spec
+      # Kit templates and the request inputs. The reviewer reads the specification only. Both
+      # match the manifests in agents/ (a test compares them).
+      role_scopes:
+        specification_writer: { paths: ["specs/**", ".specify/**", "inputs/**"] }
+        specification_reviewer: { paths: ["specs/**"] }
+      human_gate: none
+    - id: fs.list
+      risk: low
+      profiles: [agent, verify]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst, specification_writer, specification_reviewer]
+      args: { path: { kind: workspace_path, access: read } }
+      limits: { max_calls_per_task: 1000, max_result_bytes: 131072, timeout_s: 10 }
+      role_scopes:
+        specification_writer: { paths: ["specs/**", ".specify/**", "inputs/**"] }
+        specification_reviewer: { paths: ["specs/**"] }
+      human_gate: none
+    - id: fs.search
+      risk: low
+      profiles: [agent, verify]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, repository_analyst]
+      args: { pattern: { kind: bounded_string, max_len: 512 }, path: { kind: workspace_path, access: read } }
+      limits: { max_calls_per_task: 1000, max_result_bytes: 131072, timeout_s: 20 }
+      human_gate: none
+    - id: fs.write
+      risk: medium
+      profiles: [agent]
+      roles: [builder, integrator, technical_writer, api_documentation, architecture_documentation, operations_writer, specification_writer]
+      args: { path: { kind: workspace_path, access: write }, content: { kind: bounded_string, max_len: 5242880 } }
+      limits: { max_calls_per_task: 500, max_result_bytes: 4096, timeout_s: 10 }
+      # The specification writer writes only what its three Spec Kit skills write (section 14a,
+      # agent_stage_profiles.specification.skills.allowed): the specification, the checklist
+      # files and the active-feature pointer. It does not write the constitution; that is a
+      # protected-path exception a human approves (change_protected_path).
+      role_scopes:
+        specification_writer: { paths: ["specs/*/spec.md", "specs/*/checklists/*.md", ".specify/feature.json"] }
+      human_gate: none
+      notes: "Writes go through path_access and protected_paths. Atomic temp-file plus rename. A role scope narrows further and never widens: a path must pass the scope, the task's owned files and the protected paths."
+    - id: fs.delete
+      risk: medium
+      profiles: [agent]
+      roles: [builder, integrator]
+      args: { path: { kind: workspace_path, access: write } }
+      limits: { max_calls_per_task: 100, max_result_bytes: 1024, timeout_s: 10 }
+      human_gate: none
+    - id: exec.run
+      risk: high
+      profiles: [agent, verify, fetch_deps]
+      roles: [builder, integrator, qa, adversarial_reviewer, specification_writer]
+      args:
+        argv: { kind: argv_array, policy: command_sets }   # array of strings, never one shell string
+        cwd: { kind: workspace_path, access: read }
+        env: { kind: fixed_by_supervisor }                 # agent cannot add environment variables
+      limits: { max_calls_per_task: 300, max_result_bytes: 262144, timeout_s: 600, kill_process_group: true }
+      # The specification writer runs the Spec Kit helper scripts and nothing else: not cargo,
+      # not a package manager, not a shell, and not the helper scripts of the denied skills.
+      role_scopes:
+        specification_writer: { command_sets: [spec_kit_helpers] }
+      human_gate: none
+      notes: "In fetch_deps the commands are chosen by the supervisor after the dependency decision, not requested by an agent. The same wrapper and command_sets apply."
+    - id: exec.shell
+      risk: high
+      enabled: false                                       # breakglass only; enabling is an always_human decision
+      profiles: []
+      roles: []
+      human_gate: per_call
+    - id: vcs.read
+      risk: low
+      description: "status, diff, log, show against the host-side trusted git directory."
+      profiles: [agent]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, adversarial_reviewer]
+      limits: { max_calls_per_task: 200, max_result_bytes: 262144, timeout_s: 20 }
+      human_gate: none
+    - id: vcs.commit
+      risk: medium
+      description: "Control plane commits the workspace to the job branch with a hardened git environment."
+      profiles: [agent]
+      roles: [builder, integrator]
+      limits: { max_calls_per_task: 20, max_result_bytes: 4096, timeout_s: 60 }
+      human_gate: none
+    - id: deps.request
+      risk: medium
+      description: "Typed dependency request. With the agent CLI inside the sandbox this is a field of the agent's structured result, not a mediated call. A human decides every new direct dependency; a fetch_deps run follows only on approval."
+      profiles: [agent]
+      roles: [builder, integrator]
+      args: { ecosystem: { kind: enum, values: [cargo, npm, pip, go] }, name: { kind: bounded_string, max_len: 214 }, version_req: { kind: bounded_string, max_len: 64 }, justification: { kind: bounded_string, max_len: 1000 } }
+      limits: { max_calls_per_task: 10, max_result_bytes: 4096, timeout_s: 10 }
+      human_gate: per_call             # always for a new direct dependency; there is no automatic approval (ADR 0009 item 4)
+    - id: net.fetch
+      risk: high
+      description: "Factory-side fetch through the SSRF guard (see untrusted_content.web_fetch). Never available to builders."
+      profiles: []                     # runs in the control plane gateway, not in a sandbox
+      roles: [research, intake]
+      args: { url: { kind: url, schemes: [https] } }
+      limits: { max_calls_per_task: 30, max_result_bytes: 524288, timeout_s: 20 }
+      human_gate: none
+    - id: spec.read
+      risk: low
+      profiles: [agent, verify]
+      roles: [architect, architecture_critic, planner, builder, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, documentation_planner, technical_writer, documentation_reviewer]
+      limits: { max_calls_per_task: 200, max_result_bytes: 262144, timeout_s: 5 }
+      human_gate: none
+    - id: report.submit
+      risk: low
+      description: "Structured, schema-validated output channel. The only way an agent returns results."
+      profiles: [agent, verify]
+      roles: ["*"]                     # every role; output schema comes from its manifest
+      limits: { max_calls_per_task: 20, max_result_bytes: 524288, timeout_s: 5 }
+      human_gate: none
+    # Gateway tools of the troubleshooter (ADR 0021, Decisions 3 and 6). Each runs in the
+    # troubleshooter's MCP gateway in the control plane, so `profiles` is empty, like net.fetch:
+    # the agent reaches it only through the fixed relay of its sandbox sidecar. Each is read only
+    # and held by the `troubleshooter` role alone. The id is `mcp.<upstream>.<name>`; the gateway
+    # offers it to the agent as `<prefix>_<name>` (datadog_, vm_, pg_) and calls one upstream tool.
+    # policies/troubleshooting.yaml holds that mapping, and its loader refuses a gateway tool that
+    # is not in this table. A gateway run has its own call budget there; the limits here are per
+    # run as well and never above it.
+    - id: mcp.datadog.search_logs
+      risk: low
+      description: "Searches Datadog logs. Gateway tool; upstream `search_datadog_logs` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.analyze_logs
+      risk: low
+      description: "Aggregates Datadog logs. Gateway tool; upstream `analyze_datadog_logs` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_trace
+      risk: low
+      description: "Reads one Datadog trace. Gateway tool; upstream `get_datadog_trace` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_spans
+      risk: low
+      description: "Searches Datadog spans. Gateway tool; upstream `search_datadog_spans` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.aggregate_spans
+      risk: low
+      description: "Aggregates Datadog spans. Gateway tool; upstream `aggregate_spans` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_metric
+      risk: low
+      description: "Reads a Datadog metric series. Gateway tool; upstream `get_datadog_metric` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_metric_context
+      risk: low
+      description: "Reads the tags and metadata of a Datadog metric. Gateway tool; upstream `get_datadog_metric_context` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_metrics
+      risk: low
+      description: "Lists Datadog metrics by name. Gateway tool; upstream `search_datadog_metrics` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_monitors
+      risk: low
+      description: "Searches Datadog monitors and their states. Gateway tool; upstream `search_datadog_monitors` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.search_incidents
+      risk: low
+      description: "Searches Datadog incidents. Gateway tool; upstream `search_datadog_incidents` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.datadog.get_incident
+      risk: low
+      description: "Reads one Datadog incident. Gateway tool; upstream `get_datadog_incident` of datadog."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.query
+      risk: low
+      description: "Runs an instant PromQL or MetricsQL query. Gateway tool; upstream `query` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.query_range
+      risk: low
+      description: "Runs a range PromQL or MetricsQL query. Gateway tool; upstream `query_range` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.labels
+      risk: low
+      description: "Lists label names. Gateway tool; upstream `labels` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.label_values
+      risk: low
+      description: "Lists the values of one label. Gateway tool; upstream `label_values` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.metrics
+      risk: low
+      description: "Lists metric names. Gateway tool; upstream `metrics` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.metrics_metadata
+      risk: low
+      description: "Reads the metadata of metrics. Gateway tool; upstream `metrics_metadata` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.alerts
+      risk: low
+      description: "Lists the alerts of the alerting rules. Gateway tool; upstream `alerts` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.active_queries
+      risk: low
+      description: "Lists the queries VictoriaMetrics is running. Gateway tool; upstream `active_queries` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.victoriametrics.explain_query
+      risk: low
+      description: "Explains how a query is parsed. Gateway tool; upstream `explain_query` of victoriametrics."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.list_relations
+      risk: low
+      description: "Lists the tables and views the observer role can read. Gateway tool; upstream `pg_list_relations` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.describe_relation
+      risk: low
+      description: "Describes the readable columns of one relation. Gateway tool; upstream `pg_describe_relation` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.query
+      risk: medium
+      description: "Runs one read-only query, boxed as a subquery in a read-only transaction. Gateway tool; upstream `pg_query` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.explain
+      risk: low
+      description: "Explains a query without running it (no ANALYZE). Gateway tool; upstream `pg_explain` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.activity
+      risk: low
+      description: "Reads sessions, waits and the oldest transaction. Gateway tool; upstream `pg_activity` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.locks
+      risk: low
+      description: "Reads blocked and blocking sessions. Gateway tool; upstream `pg_locks` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.table_health
+      risk: low
+      description: "Reads dead tuples, vacuum and analyze times and sequential scans. Gateway tool; upstream `pg_table_health` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+    - id: mcp.postgres.factory_health
+      risk: low
+      description: "Runs the fixed factory health checks over the observer columns. Gateway tool; upstream `pg_factory_health` of postgres."
+      profiles: []
+      roles: [troubleshooter]
+      limits: { max_calls_per_task: 60, max_result_bytes: 65536, timeout_s: 20 }
+      human_gate: none
+  threats: [T-06, T-07, T-13]
+
+# -----------------------------------------------------------------------------
+# 6. Typed command wrappers: executables and subcommands agents may run
+# -----------------------------------------------------------------------------
+# Used by `exec.run`. Anything not listed is denied. New toolchains arrive with
+# a domain capability profile that security reviews; the core never hard-codes
+# a language. Rules below are examples for the first supported toolchains.
+#   forced_args     appended by the wrapper regardless of the agent's argv
+#   forbidden_args  any occurrence denies the call
+#   env             the supervisor sets these; the agent cannot override them
+command_sets:
+  default_action: deny
+  executable_match: basename_only     # the field is a bare name; the wrapper resolves it from a fixed read-only PATH
+  sets:
+    - id: rust
+      executables:
+        cargo:
+          # `fetch` is in the list so that the fetch_deps profile can run `cargo fetch`. Outside
+          # that profile the class `install_scripts_outside_fetch` denies it before this list is
+          # read. The caller writes `cargo fetch`; the wrapper adds `--locked` and does not add
+          # an argument the caller already wrote (a second `--locked` is an error in cargo).
+          # Dependency-free fixtures (the Slice 1 command-line tool) need nothing else here.
+          allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit, fetch]
+          forbidden_args: ["--config", "--manifest-path=/", "-Z", "--registry", "--index"]
+          forced_args: { agent: ["--offline", "--locked"], verify: ["--offline", "--locked"], fetch_deps: ["--locked"] }
+          # A forced argument reaches only the subcommands listed for it. `cargo fmt` and
+          # `cargo audit` reject both flags ("unexpected argument '--offline' found", exit 2,
+          # observed for fmt in the pinned verify image), so they receive neither.
+          forced_arg_subcommands:
+            "--offline": [build, check, test, clippy, doc, tree, metadata, nextest, deny]
+            "--locked": [build, check, test, clippy, doc, tree, metadata, nextest, deny, fetch]
+        rustc: { allowed_subcommands: [], forbidden_args: ["-C", "--codegen", "-Z"] }
+        rustfmt: { allowed_subcommands: [] }
+      # Offline by default. The fetch_deps profile is the one place cargo may use the network,
+      # and only through the egress proxy (section 8, profile fetch_deps).
+      env: { CARGO_TERM_COLOR: never, CARGO_NET_OFFLINE: "true", RUST_BACKTRACE: "1" }
+      env_by_profile:
+        fetch_deps: { CARGO_NET_OFFLINE: "false" }
+    - id: node
+      executables:
+        node: { allowed_subcommands: [], forbidden_args: ["--require", "-r", "--import", "--eval", "-e", "--inspect", "--inspect-brk"] }
+        npm: { allowed_subcommands: [test, run, ls, pack], forbidden_args: ["--registry", "--userconfig", "--globalconfig"] }
+        pnpm: { allowed_subcommands: [test, run, ls], forbidden_args: ["--registry"] }
+        npx: { allowed_subcommands: [], forbidden_args: [] }
+      env: { NPM_CONFIG_IGNORE_SCRIPTS: "true", NPM_CONFIG_AUDIT: "false", NPM_CONFIG_FUND: "false", CI: "true" }
+      notes: "npm run is allowed because scripts are repository code running inside the sandbox. Install scripts stay disabled and installs only happen in fetch_deps."
+    - id: python
+      executables:
+        python: { allowed_subcommands: [], forbidden_args: ["-c", "-m pip", "-m ensurepip"] }
+        pytest: { allowed_subcommands: [], forbidden_args: ["-p"] }
+        ruff: { allowed_subcommands: [check, format] }
+        mypy: { allowed_subcommands: [] }
+      env: { PYTHONDONTWRITEBYTECODE: "1", PIP_NO_INDEX: "1", PIP_DISABLE_PIP_VERSION_CHECK: "1" }
+    - id: go
+      executables:
+        go: { allowed_subcommands: [build, test, vet, fmt, list], forbidden_args: ["-toolexec", "-exec", "-overlay"] }
+      env: { GOFLAGS: "-mod=readonly", GOPROXY: "off", GONOSUMDB: "", GOTOOLCHAIN: "local" }
+    - id: spec_kit_helpers
+      # The helper scripts the allowed Spec Kit skills call (integration guide section 11.1). The
+      # name is bare, as for every other set: the supervisor's fixed read-only PATH holds the
+      # hash-checked `.specify/scripts/bash` directory in the specification stage and nowhere
+      # else. A path (`.specify/scripts/bash/x.sh`) is refused as not bare, and an interpreter
+      # (`bash x.sh`) is the forbidden class `shell_interpreters`.
+      # Left out on purpose: setup-plan.sh and setup-tasks.sh belong to the denied plan and tasks
+      # skills, create-new-feature.sh makes a branch and numbers a directory (the factory chooses
+      # the feature directory and never reads the branch, ADR 0006), and common.sh is sourced by
+      # the others and never run.
+      executables:
+        check-prerequisites.sh: { allowed_subcommands: [] }
+        resolve-template.sh: { allowed_subcommands: [] }
+      env: { LC_ALL: "C" }
+      notes: "Held only by the specification_writer role (tools.entries exec.run, role_scopes). Network is off in the agent profile whatever the script does."
+  threats: [T-06, T-13, T-29]
+
+# -----------------------------------------------------------------------------
+# 7. Sandbox requirements (full rationale and experiments: sandbox-policy.md)
+# -----------------------------------------------------------------------------
+# `required` is checked against the CREATED container (docker inspect) before
+# start. Any mismatch aborts the job (fail closed). There is no host-execution
+# fallback if the sandbox cannot start.
+sandbox:
+  runtime: docker                      # enum: docker | podman | gvisor | kata ; only docker was exercised
+  fail_closed: true
+  host_execution_fallback: never
+  required:
+    privileged: false
+    user: numeric_non_root             # uid and gid both >= 10000
+    read_only_rootfs: true
+    cap_drop: [ALL]
+    cap_add: []
+    no_new_privileges: true
+    seccomp: runtime_default_or_stricter   # never "unconfined"
+    apparmor: runtime_default_or_stricter_where_available   # inactive on Docker Desktop; required on the Linux production host
+    pid_mode: private                  # never host
+    ipc_mode: none                     # none or private
+    uts_mode: private
+    network_mode: [none, job_internal] # never host, never default bridge, never container:<id>
+    devices: []
+    extra_sysctls: {}
+    docker_socket_mounted: false
+    log_driver: none                   # supervisor streams stdout and stderr through the redactor
+    init: true
+    image_reference: digest_pinned     # name@sha256:...
+    pull_policy: never                 # images are pre-pulled and verified; a missing image fails the job
+    restart_policy: "no"
+    remove_with_rm_flag: false         # supervisor removes after reading exit code and OOM state
+    environment:                       # checked in `Config.Env` of the created container before start
+      names: allowlist_only            # the supervisor's fixed list; the agent CLI cannot add names
+      forbidden_names: [LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, RUSTFLAGS, RUSTC_WRAPPER, CARGO_BUILD_RUSTC_WRAPPER, NODE_OPTIONS, PYTHONPATH, PYTHONSTARTUP, BASH_ENV, ENV, GIT_SSH_COMMAND, GIT_CONFIG_GLOBAL, GIT_EXEC_PATH]
+      proxy_variables: set_only_by_supervisor_to_the_sidecar_address   # fetch_deps tools need them; no other value is acceptable
+      secret_values_forbidden: true    # no value that matches secrets.patterns or the exact-value registry
+      path: fixed_read_only_path
+  forbidden_mount_sources:
+    - /var/run/docker.sock
+    - /run/docker.sock
+    - /
+    - /etc
+    - /root
+    - /home
+    - /var
+    - /usr
+    - /proc
+    - /sys
+    - /dev                             # except the single /dev/null mask mount below
+  allowed_special_mounts:
+    - { source: /dev/null, target: /workspace/.git, readonly: true, purpose: mask_gitdir_pointer }
+  workspace:
+    mount: plain_worktree_directory    # a directory under the job root; see sandbox-policy.md section 6
+    mask_dot_git: true
+    protected_overlay_readonly: true   # protected_paths with mode deny_write or append_only are re-mounted read-only
+    hidden_paths_strategy: sparse_checkout_exclusion   # hidden files never exist in the worktree (verified, experiment W1)
+    hidden_paths_not_mounted: true
+    vcs_operations_run_on_host: true   # status, diff, commit use a trusted git directory outside every mount
+    host_git_environment:              # required for every host-side git invocation
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+      core_hooksPath: /dev/null
+      core_fsmonitor: "false"
+      safe_directory_wildcard: forbidden   # never set safe.directory=* to silence ownership errors
+      submodule_recursion: never
+    caches: read_only                  # toolchain and dependency caches; written only by fetch_deps
+    cross_job_writable_volumes: false
+    cross_tenant_shared_paths: false
+  profiles:
+    # Limits are DEFAULTS. Projects may lower them. Raising any value above
+    # these numbers is an always_human decision (approval.yaml).
+    fetch_deps:
+      purpose: "Download dependencies with install scripts disabled. Runs no repository code."
+      network: proxied_allowlist       # enum: none | proxied_allowlist | model_broker_only
+      egress_profile: fetch_deps
+      secrets: none
+      workspace: { mode: rw, scope: dependency_directories_only }
+      limits: { cpus: 1.0, memory_mb: 1024, memory_swap_mb: 1024, pids: 128, wall_clock_s: 600, workspace_disk_mb: 4096, tmpfs_mb: 256, nofile: 2048, max_file_mb: 512 }
+      tmpfs_exec: false
+    agent:
+      purpose: "Agent CLI and its tool execution. Reaches only the model broker."
+      network: model_broker_only
+      egress_profile: agent
+      secrets: broker_job_token
+      workspace: { mode: rw, scope: task_owned_files }
+      limits: { cpus: 2.0, memory_mb: 4096, memory_swap_mb: 4096, pids: 256, wall_clock_s: 3600, workspace_disk_mb: 2048, tmpfs_mb: 512, nofile: 4096, max_file_mb: 512 }
+      tmpfs_exec: false
+    verify:
+      purpose: "Trusted build, test and scan gates. Fresh container per gate run."
+      network: none
+      egress_profile: none
+      secrets: none
+      workspace: { mode: rw, scope: build_output_directory_only }   # source tree is mounted read-only
+      limits: { cpus: 4.0, memory_mb: 8192, memory_swap_mb: 8192, pids: 512, wall_clock_s: 1800, workspace_disk_mb: 4096, tmpfs_mb: 512, nofile: 8192, max_file_mb: 1024 }
+      tmpfs_exec: false
+      gate_definitions_from: base_commit_or_central
+      holdouts_mounted: true           # only here, only read-only, never in agent
+    troubleshooter:
+      # ADR 0021 (Decisions 5 and 6). The agent profile's hardening, with no repository: the
+      # workspace is an empty directory mounted read-only, and the agent has no built-in tool.
+      # Two secrets, each a file mounted read-only: the broker job token and the run token of
+      # the MCP gateway. Its sidecar adds one second fixed relay, to the gateway only.
+      purpose: "The troubleshooter's agent run. No repository and no built-in tool. Reaches only the model broker and the MCP gateway."
+      network: model_broker_and_mcp_gateway
+      egress_profile: troubleshooter
+      secrets: broker_job_token_and_mcp_run_token
+      workspace: { mode: ro, scope: empty }
+      limits: { cpus: 1.0, memory_mb: 2048, memory_swap_mb: 2048, pids: 128, wall_clock_s: 1800, workspace_disk_mb: 64, tmpfs_mb: 256, nofile: 1024, max_file_mb: 64 }
+      tmpfs_exec: false
+  watchdog:
+    wall_clock_kill: supervisor        # Docker has no run-time limit flag (verified); supervisor sends kill at the deadline
+    disk_poll_interval_s: 5
+    max_log_bytes: 67108864            # stdout and stderr the supervisor keeps per container; the rest is dropped and counted
+    on_log_cap: stop_capturing_and_mark_truncated   # the container keeps running until its own limits; it is never allowed to fill the host with output
+    on_breach: kill_and_mark_failed
+    record_oom_killed: true
+  threats: [T-08, T-09, T-10, T-11, T-19, T-27]
+
+# -----------------------------------------------------------------------------
+# 8. Egress allowlist (default deny)
+# -----------------------------------------------------------------------------
+# The sandbox has no route to the internet. Allowed traffic goes through the
+# factory egress proxy or the model broker, both on a per-job internal network.
+# Each entry needs an `id`, `host`, `ports`, a `justification` and a `review_by`
+# date. Wildcards are off. Hostnames below are the public endpoints known at
+# design time and MUST be re-verified at integration.
+egress:
+  default_action: deny
+  enforcement: proxy_on_internal_network
+  sandbox_dns: blocked                 # embedded resolver returns SERVFAIL for external names on an internal network (verified)
+  allow_wildcards: false
+  resolve_in_proxy_only: true
+  proxy_rules:
+    reject_resolved_ip_ranges:         # DNS rebinding and internal pivot defense; checked after resolution, on the pinned IP
+      - 127.0.0.0/8
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16                 # link-local, cloud metadata
+      - 100.64.0.0/10
+      - "::1/128"
+      - "fc00::/7"
+      - "fe80::/10"
+    tls: passthrough                   # no interception for package hosts
+    methods_default: [GET, HEAD]
+    max_bytes_per_job: 2147483648      # per-job transfer cap; also the exfiltration rate limit
+    log_every_request: true            # host, port, bytes, job id, to the audit stream
+  never_allow_from_sandbox:            # explicit denials with reasons
+    - { host: github.com, reason: "git push, gist and repository creation are exfiltration channels; the control plane clones and pushes" }
+    - { host: api.github.com, reason: "token theft would become repository write access" }
+    - { host: gist.github.com, reason: "anonymous-style paste channel" }
+    - { host: raw.githubusercontent.com, reason: "arbitrary content fetch; not needed" }
+    - { host: pastebin.com, reason: "paste channel" }
+    - { host: transfer.sh, reason: "file drop channel" }
+  profiles:
+    none:
+      allow: []
+    fetch_deps:
+      allow:
+        - { id: crates_index,    host: index.crates.io,        ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "sparse registry index", review_by: "2027-01-31" }
+        - { id: crates_files,    host: static.crates.io,       ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "crate downloads", review_by: "2027-01-31" }
+        - { id: crates_api,      host: crates.io,              ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "crate metadata API, read by the control plane's registry client for the dependency gates", review_by: "2027-01-31" }
+        - { id: npm_registry,    host: registry.npmjs.org,     ports: [443], methods: [GET, HEAD], ecosystem: npm,   justification: "package metadata and tarballs", review_by: "2027-01-31" }
+        - { id: pypi_index,      host: pypi.org,               ports: [443], methods: [GET, HEAD], ecosystem: pip,   justification: "package index", review_by: "2027-01-31" }
+        - { id: pypi_files,      host: files.pythonhosted.org, ports: [443], methods: [GET, HEAD], ecosystem: pip,   justification: "package files", review_by: "2027-01-31" }
+        - { id: go_proxy,        host: proxy.golang.org,       ports: [443], methods: [GET, HEAD], ecosystem: go,    justification: "module proxy", review_by: "2027-01-31" }
+        - { id: go_sum,          host: sum.golang.org,         ports: [443], methods: [GET, HEAD], ecosystem: go,    justification: "checksum database", review_by: "2027-01-31" }
+    agent:
+      # The agent talks to the factory model broker, not to the provider. The
+      # broker holds the real key and forwards only the listed API paths.
+      allow:
+        # `host` is a placeholder internal name for the per-job sidecar's address; the real name is set by the sandbox crate.
+        - { id: model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay", review_by: "2027-01-31", terminates_tls: true }
+    troubleshooter:
+      # ADR 0021, Decision 5: the troubleshooter reaches its MCP gateway through a second,
+      # fixed relay of its sidecar (no host list, no CONNECT, no DNS). This egress widening was
+      # approved by the owner on 2026-11-20 for this profile only. The security review that
+      # `widening_requires` asks for is STILL OWED. `mcp_gateway` may appear in this profile and
+      # in no other: the policy check refuses it anywhere else.
+      allow:
+        # `host` is a placeholder internal name, like the agent profile's; the real address is the sidecar's alias and second relay port.
+        - { id: troubleshooter_model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay, as for the agent profile", review_by: "2027-01-31", terminates_tls: true }
+        - { id: mcp_gateway, host: mcp-gateway.sandbox.internal, ports: [8444], methods: [POST, GET, DELETE], justification: "the troubleshooter's MCP gateway (Streamable HTTP) through the sidecar's second fixed relay; the gateway holds every upstream credential and allows a fixed list of read tools (ADR 0021)", review_by: "2027-01-31" }
+  broker_upstreams:                    # hosts the BROKER (not the sandbox) may call
+    - { id: anthropic_api, host: api.anthropic.com, paths: ["/v1/messages", "/v1/messages/count_tokens"], justification: "Claude models", review_by: "2027-01-31" }
+    - { id: openai_api,    host: api.openai.com,    paths: ["/v1/responses", "/v1/chat/completions"],    justification: "Codex and OpenAI models", review_by: "2027-01-31" }
+  widening_requires: [human_approval, security_review]
+  threats: [T-11, T-17, T-18]
+
+# -----------------------------------------------------------------------------
+# 9. Secret patterns, redaction and sinks
+# -----------------------------------------------------------------------------
+# `patterns` find unknown secrets. `exact_values` is a runtime registry of the
+# secrets the factory itself issued or loaded (job tokens, webhook secret,
+# database passwords, API keys); it is stronger than any pattern.
+secrets:
+  scanner_regex_dialect: rust_regex
+  patterns:
+    - { id: github_token_classic,   regex: 'ghp_[A-Za-z0-9]{36}\b',                                     action: block }
+    - { id: github_token_prefixed,  regex: 'gh[ousr]_[A-Za-z0-9]{36,255}\b',                            action: block }
+    - { id: github_fine_grained,    regex: 'github_pat_[A-Za-z0-9_]{22,255}\b',                         action: block }
+    - { id: private_key_block,      regex: '-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY(?: BLOCK)?-----',       action: block }
+    - { id: anthropic_api_key,      regex: 'sk-ant-[A-Za-z0-9_-]{20,}\b',                               action: block }
+    - { id: openai_api_key,         regex: '\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}\b',         action: block }
+    - { id: aws_access_key_id,      regex: '(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{16}\b',      action: block }
+    - { id: aws_secret_access_key,  regex: '(?i)aws_?secret_?access_?key["''\s:=]+[A-Za-z0-9/+=]{40}',     action: block }
+    - { id: gcp_api_key,            regex: 'AIza[0-9A-Za-z_-]{35}\b',                                   action: block }
+    - { id: slack_token,            regex: 'xox[abprs]-[A-Za-z0-9-]{10,}\b',                            action: block }
+    - { id: stripe_live_key,        regex: '[rs]k_live_[0-9A-Za-z]{20,}\b',                             action: block }
+    - { id: npm_token,              regex: 'npm_[A-Za-z0-9]{36}\b',                                     action: block }
+    - { id: pypi_token,             regex: 'pypi-AgE[A-Za-z0-9_-]{50,}\b',                              action: block }
+    - { id: crates_io_token,        regex: '\bcio[A-Za-z0-9]{32}\b',                                      action: block, format_status: unverified }
+    - { id: jwt,                    regex: 'eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b', action: block }
+    - { id: authorization_header,   regex: '(?i)\bauthorization:\s*(?:bearer|token|basic)\s+[A-Za-z0-9._~+/=-]{16,}', action: block }
+    - { id: url_with_credentials,   regex: '(?i)(?:[a-z][a-z0-9+.-]*(?::(?:\\?/){2}(?:[^\s:@/\\"'']*:(?:[^\s"\\:]|\\[^\s]|:+(?:[^\s\\:/]|\\[^\s/])|"[^\s,}\]):;<>.]){3,}["'']?(?:@|%40|\\u0040|\\x40|\\u\{40\})(?:(?:\[[^\]\s]*\](?:[a-z0-9._~%:-]|[^\x00-\x7F])*|(?:[a-z0-9._~%:-]|[^\x00-\x7F])+)|/)|(?:[a-z0-9._~%-]|[^\x00-\x7F]){12,}(?:@|%40|\\u0040|\\x40|\\u\{40\})(?:\[[^\]\s]*\](?:[a-z0-9._~%:-]|[^\x00-\x7F])*|(?:[a-z0-9._~%:-]|[^\x00-\x7F])+)|[^\s:@/\\"'']*:[^\s]{3,}["'']?(?:@|%40|\\u0040|\\x40|\\u\{40\})(?:(?:\[[^\]\s]*\](?:[a-z0-9._~%:-]|[^\x00-\x7F])*|(?:[a-z0-9._~%:-]|[^\x00-\x7F])+)|/))|%3A%2F%2F(?:[a-z0-9._~%-]|[^\x00-\x7F])*%3A(?:[a-z0-9._~%-]|[^\x00-\x7F])+%40(?:[a-z0-9._~%-]|[^\x00-\x7F])+)|(?:[a-z0-9._~%-]|[^\x00-\x7F])+:[^\s/\\\"'']{3,}(?:@|%40|\\u0040|\\x40|\\u\{40\})(?:[a-z][a-z0-9+.-]*\([^\s)]*\)|(?:[a-z0-9._~%-]|[^\x00-\x7F])+:[0-9]{1,5}\b|(?:[a-z0-9._~%-]|[^\x00-\x7F])+/))', action: block }
+    - { id: factory_job_token,      regex: 'sfjt_[A-Za-z0-9_-]{32,}\b',                                 action: block }
+    - { id: api_token,              regex: 'sfat_[A-Za-z0-9_-]{43}',                                       action: block }
+    - { id: nats_credentials,       regex: '-----BEGIN (?:NATS )?USER (?:JWT|NKEY SEED)-----',            action: block, format_status: unverified }
+    - { id: generic_assignment,     regex: '(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?key|token)\b\s*[:=]\s*["'']?[^\s"'']{12,}', action: flag }
+  entropy_heuristic:
+    enabled: true
+    min_length: 32
+    min_shannon_bits_per_char: 4.2
+    action: flag                       # flag only; blocking on entropy alone causes false positives
+  exact_values:
+    register_from: [job_tokens, webhook_secret, app_private_key, database_credentials, broker_keys, subscription_token, object_store_keys]
+    min_length: 8
+    encodings: [raw, base64_std, base64_url, base64_no_pad, hex_lower, hex_upper, url_percent, json_escaped]
+    split_detection: sliding_window    # matches across chunk boundaries of streamed output
+  sinks:
+    # What happens when a match is found on each sink class.
+    #   redact : replace with [REDACTED:<id>] and emit a `secret_redacted` audit event
+    #   block  : refuse to write/send; fail the step with BLOCK and emit an audit event
+    logs_and_traces:       { on_match: redact, applies_to: [stdout, stderr, tracing_events, otel_span_attributes, otel_log_records] }
+    domain_events:         { on_match: block,  applies_to: [outbox_payloads, jetstream_messages] }
+    artifacts:             { on_match: block,  applies_to: [content_addressed_artifacts, evidence_manifests] }
+    github_bound_text:     { on_match: block,  applies_to: [pr_title, pr_body, issue_comment, review_comment, commit_message, branch_name, check_run_output, status_description] }
+    diffs_and_files:       { on_match: block,  applies_to: [workspace_diff] }
+    model_context:         { on_match: redact, applies_to: [prompts, tool_results, retrieved_context] }
+    dashboard_and_api:     { on_match: redact, applies_to: [api_responses, dashboard_payloads] }
+  redactor_failure: drop_content_and_fail_step   # never write raw content because the redactor errored
+  never_in_model_context: [github_tokens, app_private_key, webhook_secret, broker_keys, subscription_token, job_tokens, database_credentials, evaluation_holdouts, other_tenant_data, builder_self_justification_for_reviewers]
+  threats: [T-16, T-17, T-18, T-19, T-20]
+
+# -----------------------------------------------------------------------------
+# 10. Credentials (full treatment: secrets-and-credentials.md)
+# -----------------------------------------------------------------------------
+credentials:
+  github_app:
+    # Checked when the App is registered and on every job start. Names follow
+    # GitHub's repository permission names. Each required level is also the most
+    # the App may hold of that permission: an App that holds a required
+    # permission at a higher level is refused like one that holds a forbidden
+    # permission (crates/github/src/permissions.rs, audit_app).
+    permissions_required:
+      metadata: read
+      contents: write
+      pull_requests: write
+      issues: write
+      checks: write
+      statuses: write
+      actions: read
+      # The owner decided on 2026-11-12 that the App may read administration, so
+      # that the protection preflight can read classic branch protection
+      # (GET .../branches/{branch}/protection) next to the rulesets. Read only:
+      # the level above is refused. Only a token minted for that one read
+      # carries it (PermissionSet::protection_reader).
+      administration: read
+    permissions_forbidden:
+      - workflows                      # the App must not be able to edit workflow files
+      - secrets
+      - environments
+      - deployments
+      - pages
+      - packages
+      - repository_hooks
+      - organization_administration
+      - members
+    installation_token:
+      mint: per_job
+      repositories: exactly_one        # narrowed with the `repositories` body parameter
+      permissions: narrowed_per_stage  # read-only for analysis stages; the intake stage asks for `issues: read` and `metadata: read` only (LB-03, crates/github/src/permissions.rs)
+      # Token classes that are not a stage's: `issue_status` and `protection_reader` (see their
+      # notes in crates/github/src/permissions.rs), and since ports v1.3 (ADR 0021, Decision 7)
+      # `troubleshoot_issue`: `issues: write` and `metadata: read`, minted for a troubleshooting
+      # run (not a job) and the configured issue repository only, refused for every job stage,
+      # kept apart from every job's tokens and revoked when the run ends
+      # (PermissionSet::troubleshoot_issue). The App needs no new permission for it.
+      lifetime_s: 3600                 # fixed by GitHub (documented); factory revokes earlier
+      revoke_on_job_end: true          # DELETE /installation/token
+      # LB-04. `revoke_on_job_end` is the end of the JOB (completed, failed, cancelled, rejected).
+      # A job that stays BLOCKED is not over, and it used to keep its read token until GitHub
+      # expired it. After this many seconds blocked, the worker revokes the tokens the job holds
+      # (`crates/composition/src/token_sweep.rs`). The job is not ended: if it is unblocked or
+      # overridden, its next call mints a new token. A job that waits for a person to answer or
+      # approve (WAITING_FOR_HUMAN) keeps its token, and so do paused and active jobs. The bound
+      # runs from the first pass of the worker that saw the job blocked. Between 60 and 86400; the
+      # file is refused otherwise. A token lives `lifetime_s` at most, so a bound at or above that
+      # only ever revokes a token that was minted after the block began.
+      revoke_when_blocked_after_s: 900
+      holders: [control_plane_only]
+      persisted_to_disk: false
+      visible_to_sandbox: false
+      logged: false
+  app_private_key:
+    store: secret_manager
+    consumers: [token_minter]
+    rotation_days: 90
+    overlapping_keys_during_rotation: true
+  webhook_secret:
+    store: secret_manager
+    rotation_days: 180
+    overlapping_secrets_during_rotation: true
+  model_providers:
+    # Owner decision of 2026-11-12 (ADR 0020, which reverses ADR 0009 item 2): the factory runs on
+    # the owner's Claude subscription by default. Two modes, one per deployment:
+    #   subscription : the default. The broker holds the owner's long-lived Claude subscription
+    #                  token (made with `claude setup-token`) and sends it upstream as
+    #                  `Authorization: Bearer`. No provider API key and no provider-side spend
+    #                  limit is required; spend is bounded by the factory's own ceilings (counted at
+    #                  list price, section `budgets`) and by the plan's own limits. Codex is
+    #                  unavailable in this mode: its ChatGPT login is not brokered, and the factory
+    #                  says so by name (BLOCKED) rather than falling back.
+    #   api_key      : the alternative. Provider API keys with a provider-side hard spend limit,
+    #                  held by the broker (`real_keys`), for both providers.
+    # In both modes the sandbox holds only the per-job token, and the real credential stays in
+    # the broker: never in a sandbox, never in a log, never in a command line.
+    mode: subscription                 # enum: subscription | api_key
+    delivery: broker_injected          # the real credential stays in the broker; sandbox gets a per-job token
+    job_token:
+      prefix: sfjt_
+      entropy_bits: 256
+      bound_to: [tenant_id, job_id, stage_run_id]
+      ttl: job_wall_clock_plus_300s
+      scope: [provider, model_allowlist, max_tokens, max_usd]
+      revoked_on: [job_end, budget_exhausted, posture_violation]
+    subscription_token:                # mode subscription only
+      providers: [anthropic]           # the only provider whose subscription the broker relays
+      made_with: claude_setup_token    # a long-lived token, prefix sk-ant-oat01- (secrets.patterns anthropic_api_key matches it)
+      store: secret_manager            # or a secret file of mode 0600 named by broker.upstreams[].key_file
+      held_by: [model_broker]
+      sent_upstream_as: authorization_bearer
+      registered_for_redaction_as: subscription_token
+      provider_side_spend_limit_required: false
+      spend_bounded_by: [factory_budget_ceilings, provider_plan_limits]
+      unavailable_runtimes: [codex-cli]
+      never_in_sandbox: true
+      rotation_days: 180
+    real_keys:                         # mode api_key only
+      store: secret_manager
+      dedicated_per_deployment: true
+      hard_spend_limit_required: true
+      rotation_days: 180
+    # Not needed for the two accepted tools: both can be redirected to the broker and both read the
+    # credential from a file (spike 4.3 and 4.5). It applies only to a future CLI that cannot be.
+    fallback_if_cli_cannot_use_broker: documented_residual_risk   # see secrets-and-credentials.md section 4.4
+  rotation_slas:
+    leaked_or_suspected_hours: 1
+    high_privilege_days: 90
+    standard_days: 180
+  repository_requirements:             # verified at onboarding and at each job start; failure caps the repo at autonomy L0
+    default_branch_protected: true
+    require_pull_request: true
+    required_status_checks_pinned_to_app_id: true
+    app_in_bypass_list: false
+    force_push_disabled: true
+    branch_deletion_disabled: true
+    require_code_owner_review_for_protected_paths: true
+    dismiss_stale_approvals_on_new_commits: true
+    factory_branch_pattern: "factory/*"
+    push_only_to_factory_branch_pattern: true
+    # Threat T-48. The preflight reads the workflow files of the default branch and lists the
+    # ones a factory branch or its pull request would start with a secret, a write token or an
+    # unknown runner in reach. cap_at_l0: such a repository runs at L0, like any other failed
+    # requirement, unless its owner recorded an acknowledgement of exactly those workflows
+    # (worker configuration, github.workflow_exposure_acknowledgements). record_only: the
+    # workflows are named in the audit record and the repository is not capped for them.
+    exposed_workflows: cap_at_l0
+  threats: [T-19, T-24, T-14, T-48]
+
+# -----------------------------------------------------------------------------
+# 11. Webhook intake
+# -----------------------------------------------------------------------------
+webhook:
+  signature:
+    header: X-Hub-Signature-256
+    algorithm: hmac-sha256
+    prefix: "sha256="
+    input: raw_request_body            # computed before any parsing or re-serialization
+    compare: constant_time
+    legacy_sha1_header: ignore         # X-Hub-Signature (SHA-1) is never accepted alone
+  required_headers: [X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256]
+  content_types: [application/json]
+  max_body_bytes: 1048576
+  verify_before_parse: true
+  verify_before_db_access: true
+  dedupe:
+    key: X-GitHub-Delivery
+    store: postgres_unique_constraint
+    retention_days: 30
+    on_duplicate: ack_and_ignore
+  semantic_idempotency:
+    key_fields: [event, action, installation_id, repository_id, subject_node_id, subject_updated_at, sender_id]
+    retention_days: 30
+  payload_is_hint_only: true           # authoritative state is re-fetched from GitHub before acting
+  refetch_before_acting: [issue_state, labels, label_actor_numeric_id, pr_head_sha, branch_protection]   # authority is the named allowlist (approval.yaml), never a GitHub permission
+  tenant_binding: [installation_id, repository_id]   # unknown binding: drop and audit
+  accepted_events:
+    - { event: issues,                 actions: [labeled, edited, closed, reopened, transferred, deleted] }
+    - { event: issue_comment,          actions: [created] }
+    - { event: pull_request,           actions: [synchronize, closed, reopened, edited] }
+    - { event: pull_request_review,    actions: [submitted, dismissed] }
+    - { event: installation,           actions: [created, deleted, suspend, unsuspend] }
+    - { event: installation_repositories, actions: [added, removed] }
+    - { event: ping,                   actions: [] }
+  ignore_senders: [self_app_bot, other_bots_not_on_allowlist]
+  rate_limit: { per_installation_per_minute: 120, per_source_ip_per_minute: 600, on_exceed: reject_429 }
+  respond_within_s: 10                 # acknowledge fast; process asynchronously from the outbox
+  threats: [T-21, T-22, T-23]
+
+# -----------------------------------------------------------------------------
+# 12. Hard budget ceilings (token and cost exhaustion)
+# -----------------------------------------------------------------------------
+# Enforced by the model broker and the scheduler, outside the agent process.
+# Starting values only; tune with measured data. Raising a ceiling is an
+# always_human decision.
+#
+# Rework cap (ADR 0009 item 6). `max_rework_iterations` and
+# `max_documentation_rework_iterations` are CONFIGURABLE VALUES WHOSE DEFAULT IS 2:
+# after two rework rounds the stage goes to a human, who decides. A project
+# policy may lower either value (tighten-only). Raising either above 2 is a
+# widening and needs the `raise_budget_ceiling` human decision in approval.yaml.
+# The engine takes the lower of this value and the ADR 0009 default, and a test
+# in the policy-evaluation work package fails if this file exceeds 2.
+#
+# Turn and tool-call caps. The agent CLI runs inside the sandbox, so the factory
+# does not see individual tool calls. The broker therefore counts MODEL REQUESTS
+# as turns (`turn_accounting`), and that count is the cap. The agent-runtime
+# spike (docs/spikes/agent-runtime.md section 4.7) found that Claude Code 2.1.311
+# does have a turn cap, the hidden `--max-turns` flag and the `CLAUDE_CODE_MAX_TURNS`
+# variable, and that both work. It is a second line, set from `per_task.max_turns`,
+# and the probe tests it by behavior because a hidden flag can vanish. Codex 0.163.0
+# has no turn or budget flag, so only the broker and the supervisor cap it. The
+# `max_tool_calls` value is enforced only for commands the factory itself runs
+# (gates, dependency fetch, version control) and, if the host tool bridge is ever
+# chosen, for bridge tools.
+#
+# Exhaustion (ADR 0010, ADR 0009 item 3). A limit reached sends the work to a
+# person; it does not fail the stage and it does not mark it BLOCKED. BLOCKED
+# stays for gates that cannot run and for violations a deterministic check
+# detects. See `on_exhaustion` below.
+budgets:
+  enforced_by: [model_broker, scheduler]
+  turn_accounting: broker_model_request_count
+  hard_ceilings:
+    per_task:     { max_usd: 8,   max_input_tokens: 4000000,  max_output_tokens: 400000,  max_turns: 60,  max_tool_calls: 1500, max_wall_clock_s: 3600 }
+    per_job:      { max_usd: 25,  max_rework_iterations: 2, max_documentation_rework_iterations: 2, max_wall_clock_s: 14400, max_delegation_depth: 2 }
+    per_repo_day: { max_usd: 100, max_jobs_started: 40 }
+    per_org_day:  { max_usd: 500 }
+  rework:
+    on_cap_reached: human_decides      # the stage goes to WAITING_FOR_HUMAN; no automatic third round
+    project_override: lower_only       # a project policy may set 0, 1 or 2, never more
+    default_rounds: 2
+  concurrency:
+    max_running_jobs_per_repo: 2
+    max_queued_jobs_per_repo: 20
+    max_running_sandboxes_per_host: 8
+  stagnation:
+    window_iterations: 3
+    action_on_no_new_passing_evidence: escalate_needs_human
+  thresholds: { warn_at_fraction: 0.8, stop_at_fraction: 1.0 }
+  # The running stage run goes to WAITING_FOR_HUMAN and the job follows. No new attempt
+  # is leased while the job is not active. The broker revokes the job token, and the
+  # supervisor kills the container, because a CLI retries a refused token for a minute or
+  # more (docs/spikes/agent-runtime.md section 4.7). A person then answers: an org_admin
+  # raises the ceiling (`raise_budget_ceiling`), or the job ends.
+  on_exhaustion: stop_job_revoke_job_token_wait_for_human
+  per_request_caps: { max_input_tokens: 200000, max_output_tokens: 32000 }
+  threats: [T-26]
+
+# -----------------------------------------------------------------------------
+# 13. Gate integrity (no forced passes)
+# -----------------------------------------------------------------------------
+gate_integrity:
+  gate_definition_source: base_commit_or_central   # never the head commit or the builder workspace
+  gate_runner: fresh_verify_container
+  evidence_source: supervisor_observed             # exit code, logs and timing captured by the supervisor, not read from builder-writable files
+  gate_status_values: [PASSED, FAILED, BLOCKED, NOT_APPLICABLE]   # names from the master prompt 10.4
+  review_verdict_values: [PASS, CHANGES_REQUIRED, BLOCK, NEEDS_HUMAN]
+  missing_evidence_is: BLOCKED
+  tool_absent_is: BLOCKED
+  skipped_gate_is: BLOCKED
+  reviewer_verdict_can_override_gate: false
+  reviewer_sees_builder_self_justification: false
+  nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification, stage_profile_check]
+  # Blocks that no override may pass (state machine transition S18, guard G_OVERRIDE_PERMITTED,
+  # `policy_permits_override_for_block_code`). The gate itself may be waived for another reason;
+  # only this gate with this block code may not. A new direct dependency with no recorded decision
+  # blocks `dependency-review` with `policy_unresolvable`. An override would pass the stage without
+  # a decision bound to a package, a version and a checksum, so a person records that decision
+  # (`add_new_direct_dependency`, or `approve_build_code` for build code) and the stage is run
+  # again (`UnblockRerun`, guard alternative "a dependency decision is recorded"). The engine
+  # refuses to build when the first entry is missing, and a project policy may add entries and
+  # never remove one. `code` is a block code of the gate report schema.
+  non_overridable_blocks:
+    - id: dependency-review-policy-unresolvable
+      gate: dependency-review
+      code: policy_unresolvable
+      reason: "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
+    # New build code of the project's own (a build script, a procedural macro, build dependencies)
+    # blocks the gate `build` with the same code. A security approver decides on it with
+    # `approve-project-build-code`, bound to the path and to the hash of the content of each file
+    # (`approve_build_code`), and the stage is run again. A changed script needs a new decision.
+    - id: build-code-policy-unresolvable
+      gate: build
+      code: policy_unresolvable
+      reason: "waits for a security approver's decision on new build code"
+    # An issue on the design track whose design is not approved. Intake reports the gate
+    # `intake-design-approved` as BLOCKED with this code. The design is approved by a person who
+    # holds the designation named in policies/issue-workflow.yaml (`design_approved_by`) applying
+    # the label `design: approved`, which GitHub shows on the issue for everyone. An override would
+    # pass the stage with no such label and leave only an audit record, so the label is the one
+    # way through: the person applies it and the requester applies the factory label again.
+    # The same gate and code also refuse a job whose text is not the title and body of its issue as
+    # the code host shows them now (reason `text_not_the_issue`, DG-3), so that the label that is
+    # read is the label of the issue the words came from. A taken-off label does not leave the
+    # track (DG-2). The delivery stage checks the design again right before it opens the pull
+    # request (DG-8) and stops with a block that names no gate, which no override can pass because
+    # an override needs a stored block to accept. What none of this checks: that the design
+    # document the label stands for is any good. That is the approver's act.
+    - id: intake-design-approved-design-not-approved
+      gate: intake-design-approved
+      code: design_not_approved
+      reason: "waits for a person with the approver designation to apply the label of the approved design; an override would start work with no such label on the issue"
+  evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
+  # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
+  # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),
+  # with the point at which it is checked. A rebase writes new commits, so `rebase` is a
+  # `new_commit`. The approval list in approval.yaml uses the same names without `rebase`.
+  invalidated_by: [new_commit, rebase, base_moved, policy_change, spec_revision, image_change]
+  test_regression:
+    baseline_from: trusted_run_on_base_commit
+    forbid_removed_tests: true
+    forbid_newly_ignored_tests: true
+    forbid_newly_skipped_tests: true
+    forbid_assertion_count_drop: true  # where the framework reports it
+    new_tests_allowed: true
+  flaky_tests:
+    retries_allowed: 1
+    only_for: central_flaky_registry
+    record_every_retry: true
+  semantic_checks:                     # ids referenced by protected_paths.sensitive_files
+    - { id: new_dependency,            blocks_until: human_approval }
+    - { id: lint_relaxation,           description: "lint level lowered, allow attributes added, ignore lists grown", blocks_until: human_approval }
+    - { id: test_harness_disabled,     description: "harness=false, test targets removed, ignore or skip markers, conftest hooks that deselect", blocks_until: human_approval }
+    - { id: build_script_added,        description: "new build.rs, setup.py, postinstall or similar", blocks_until: security_review }
+    - { id: registry_or_source_changed, description: "alternate registry, git or path dependency, patch or replace section", blocks_until: human_approval }
+    - { id: privilege_or_network_widening, description: "privileged, host network, new capabilities, exposed ports in container or IaC changes", blocks_until: security_review }
+    - { id: secret_in_diff,            description: "secrets.patterns match in the diff", blocks_until: never }   # never: always BLOCK
+  merge:
+    require_expected_head_sha: true    # GitHub merge API `sha` parameter
+    rerun_critical_gates_after_sync: true
+    required_checks_pinned_to_app_id: true
+  threats: [T-12, T-13, T-14]
+
+# -----------------------------------------------------------------------------
+# 14. Untrusted content handling and agent runtime hardening
+# -----------------------------------------------------------------------------
+untrusted_content:
+  classes: [issue_text, issue_comment, pr_text, repo_file, commit_message, tool_output, web_content, dependency_text, model_output, specification_text, retrieved_memory]
+  authority_from_content: never        # no text, from any class, grants a tool, a permission or an approval
+  prompt_assembly:
+    untrusted_in_instruction_channel: forbidden
+    wrap_in_data_envelope: true        # typed field with provenance: source, class, hash, fetched_at
+    envelope_delimiter_collision_check: true
+  structured_output:
+    schema_validated: true
+    unknown_fields: reject
+    # A repair is a retry after an invalid output, and it counts as an attempt. A project may
+    # lower this number and never raise it, at most 2 (ADR 0010); the engine refuses a larger
+    # value and the tighten rules treat it as a ceiling. After the last repair the stage goes to
+    # a person, or fails when its contract does not list INVALID_OUTPUT in `retry_on`.
+    bounded_repair_attempts: 2
+    max_output_bytes: 524288
+  injection_signal_detector:
+    enabled: true
+    role: telemetry_and_escalation_only   # never the sole control
+    on_signal: raise_to_needs_human_when_stage_has_write_tools
+  web_fetch:
+    runs_in: control_plane_gateway
+    schemes: [https]
+    resolve_then_pin_ip: true
+    reject_resolved_ip_ranges_ref: egress.proxy_rules.reject_resolved_ip_ranges
+    revalidate_on_redirect: true
+    max_redirects: 3
+    max_bytes: 524288
+    allowed_content_types: [text/html, text/plain, text/markdown, application/json, application/pdf]
+    cookies_and_auth_headers: never
+  specification_authorization:
+    source: structured_field_written_by_authenticated_human
+    parsed_from_prose: never
+  agent_runtimes:
+    # Verified by the agent-runtime spike (docs/spikes/agent-runtime.md section 4) for
+    # Claude Code 2.1.311 and Codex 0.163.0, in the real hardened container profile
+    # against a labelled fake provider, on 2026-10-27. A real provider is not verified.
+    # The adapter capability probe and NT-INJ-07 still run before an adapter is enabled,
+    # and the probe tests behavior, not flag presence: the turn cap of Claude Code is a
+    # hidden flag. Only these two versions are accepted until a probe run proves another.
+    claude_code:
+      # Flags for EVERY stage. `--disable-slash-commands` is NOT in this list: it
+      # disables all skills and commands, which would stop the Spec Kit skills from
+      # resolving. It is applied per stage by `agent_stage_profiles` below: on for
+      # every stage except SPECIFICATION.
+      # `--bare` is NOT in this list and nothing relies on it (spike 4.6). In a hostile
+      # workspace it still honored the `env` block of `.claude/settings.json`, which sent
+      # the model traffic to an attacker host, and it resolves no project or user skills.
+      # What neutralizes the repository's own configuration is `--setting-sources user`
+      # together with `--strict-mcp-config`: the settings source is the user one only, and
+      # the user home is the empty scratch tmpfs (`HOME=/tmp`), so no repository hook,
+      # `env` block, MCP server or CLAUDE.md is read. Those files are also write-denied
+      # (`agent_instruction_files`). `--model` is always given, because the tool's default
+      # is the most expensive model.
+      required_flags:
+        - "--model <the explicit model of the manifest's recommended_models>"
+        - "--max-turns <budgets.hard_ceilings.per_task.max_turns>"
+        - "--setting-sources user"
+        - "--strict-mcp-config"
+        - "--no-session-persistence"
+        - "--settings <factory-generated JSON whose apiKeyHelper is `cat /run/factory/job-token`>"
+      per_stage_flags_ref: agent_stage_profiles
+      # The one setting that stops the background traffic (telemetry and a registry fetch to
+      # api.anthropic.com) is an environment setting, not a flag. `--bare` and the three
+      # DISABLE_* variables do not stop it (spike 4.4). The credential is never in this list.
+      required_environment:
+        - "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+        - "CLAUDE_CODE_MAX_RETRIES=2"
+        - "HOME=/tmp"
+      settings_source: factory_generated_json_via_--settings_and_--setting-sources_user_only
+      # Written with an equals sign: a variadic option swallows the prompt. These are a
+      # filter on what the model may ask for, not a boundary: a nested shell reads a file
+      # that a deny rule protects (spike 4.8). A deny rule path is `./path` (relative) or
+      # `//path` (absolute); `/path` with one slash silently matches nothing.
+      tools_flag: "--tools=, --allowedTools=, --disallowedTools= from the manifest and the grants"
+      # A second line only. The broker counts requests and tokens and the supervisor kills the
+      # container; the tool's own price list means nothing behind a broker (spike 4.7).
+      per_run_budget_flag: "--max-turns (also CLAUDE_CODE_MAX_TURNS) and --max-budget-usd"
+      forbidden_flags_outside_verified_sandbox: [--dangerously-skip-permissions, --allow-dangerously-skip-permissions, "--permission-mode bypassPermissions"]
+      # The helper reads the token file at the fixed path. An environment variable is
+      # forbidden: the shell the model drives sees it, and so does the parent (spike 4.5).
+      auth: apiKeyHelper_reading_/run/factory/job-token_never_an_environment_variable
+    codex_cli:
+      # `-m` is always given (the default is the most expensive model). The provider is a
+      # custom entry, because Codex ignores OPENAI_BASE_URL and its built-in provider tries a
+      # WebSocket first. The entry sets wire_api="responses", supports_websockets=false, the
+      # sidecar's plain-HTTP base_url and auth={command="cat", args=["/run/factory/job-token"]}.
+      # `--disable plugins` and `-c analytics.enabled=false` together stop the traffic to other
+      # hosts; each alone does not (spike 4.4). `--disable unbounded_connection_retries` makes
+      # an unreachable broker end the run, where the default retries forever.
+      # `--ignore-user-config` and `--ignore-rules` do NOT stop AGENTS.md; `project_doc_max_bytes=0`
+      # does (spike 4.6). They stay as harmless extra layers.
+      # Codex's own sandbox cannot start inside the container (no user namespace under the
+      # default seccomp profile), so a `--sandbox` mode runs nothing. The bypass flag is
+      # required, and it is acceptable only because the container is the boundary: it is
+      # forbidden everywhere else. Standard input is closed or /dev/null, because Codex appends
+      # it to the prompt.
+      required_flags:
+        - "-m <the explicit model of the manifest's recommended_models>"
+        - "-c model_provider=\"factory_broker\""
+        - "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}"
+        - "--disable plugins"
+        - "-c analytics.enabled=false"
+        - "-c web_search=\"disabled\""   # Codex 0.163.0 sends a live web search tool by default; the broker refuses it
+        - "--disable unbounded_connection_retries"
+        - "-c project_doc_max_bytes=0"
+        - "--ephemeral"
+        - "--ignore-user-config"
+        - "--ignore-rules"
+        - "--dangerously-bypass-approvals-and-sandbox"
+      forbidden_flags_outside_verified_sandbox: [--dangerously-bypass-approvals-and-sandbox, --dangerously-bypass-hook-trust]
+      env_policy: "the credential is never an environment variable: it is read from /run/factory/job-token by the provider's auth command, because Codex passes its whole environment, a key variable included, to the shell the model drives (spike 4.5)"
+    probe_required_before_enable: true
+    repo_config_files_never_honored: [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex/config.toml", "CLAUDE.md", "AGENTS.md"]
+    instruction_files_are_data: true   # factory-authored instructions are passed explicitly; repo copies are data
+  threats: [T-01, T-02, T-03, T-04, T-05, T-07, T-33]
+
+# -----------------------------------------------------------------------------
+# 14a. Per-stage tool profile for agent CLIs (skills and slash commands)
+# -----------------------------------------------------------------------------
+# Why this exists. Spec Kit 1.1.2 installs ten skills, six of which the factory
+# must never run (master prompt section 4; ADR 0006: "the boundary is one of
+# invocation, not installation"). On Claude Code the skills are slash commands.
+# `--disable-slash-commands` would stop the four allowed ones from resolving, so
+# the control cannot be one flag for every run. The engine picks a profile from
+# the STAGE KIND of the stage run, and the profile fixes the flags and the
+# visible skill set.
+#
+# Selection. The profile is chosen by the workflow engine from the stage kind
+# (names from docs/architecture/state-machine.md). Never by an agent, by
+# repository content, by request text or by a specification.
+#
+# Skill ids. Policy uses the canonical dotted ids (`speckit.specify`). The
+# adapter maps an id to the host spelling by reading `invoke_separator` from
+# `.specify/integration.json` and the sigil from a per-host table (`/` for
+# Claude Code, `$` for Codex); it never hard-codes either. EVERY spelling of a
+# denied id is denied: dotted, hyphenated and with any sigil.
+agent_stage_profiles:
+  selection_authority: engine_from_stage_kind
+  default_profile: no_skills                # a stage kind not named below gets this
+  profiles:
+    - id: no_skills
+      applies_to_stage_kinds: ["*"]         # every agent stage except those named in another profile
+      skills_and_slash_commands: disabled
+      skills_allowed: []
+      claude_code:
+        flags_add: [--disable-slash-commands]
+      codex_cli:
+        # Hidden by overlay, and the bundled skills are switched off with
+        # `-c skills.bundled.enabled=false`. A per-path `-c skills.config=[{path=..., enabled=false}]`
+        # also hides a skill. Both verified (spike 4.6); `codex debug prompt-input` lists what is
+        # visible with no model call.
+        skill_visibility: hidden_by_overlay_and_skills.bundled.enabled=false
+      hide_skill_roots_in_sandbox:          # read-only empty overlays (mechanism verified for both tools, sandbox-policy.md M1)
+        - ".claude/skills"
+        - ".claude/commands"
+        - ".agents/skills"
+      violation: BLOCK
+    - id: specification
+      applies_to_stage_kinds: [SPECIFICATION]
+      skills_and_slash_commands: allowlist_only
+      claude_code:
+        flags_omit: [--disable-slash-commands]
+        # The prompt goes in as one stream-json user message and the tool replays it. The
+        # replayed `user` event (`isReplay: true`) holds `<command-name>` and `<command-args>`,
+        # and it is the only place the stream shows what reached the arguments of the skill
+        # (Claude Code 2.1.325; with the prompt as plain text the stream holds no event for it).
+        # The stage's `skill-arguments-fixed` check reads it and fails closed without it.
+        flags_add: [--input-format=stream-json, --replay-user-messages]
+        # `--setting-sources user` (every stage) hides the project skill root, and `--bare` also
+        # resolves no skill, so the supervisor mounts the four pinned, hash-checked skill
+        # directories read-only in the USER skill root, `~/.claude/skills/speckit-<name>` (the
+        # home is `/tmp`; spike 4.6). The model then sees exactly four skills under their normal
+        # names, and a prompt that starts with `/speckit-specify` expands. The six empty overlays
+        # are the tool to use only where project skills must stay visible. A mount inside the
+        # tmpfs home leaves root-owned parent directories, which Claude Code tolerates and Codex
+        # does not, so nothing is mounted below `~/.codex`.
+        # A `Skill(speckit-plan)` deny rule blocks the model's Skill tool call and does not block a
+        # prompt that begins with the slash command; the adapter writes the prompt, so it is a
+        # second layer.
+        skill_permission_rule: supported_for_the_Skill_tool_not_for_a_typed_slash_command
+      codex_cli:
+        # Six read-only empty overlays over the denied directories under `.agents/skills`, plus
+        # `-c skills.bundled.enabled=false`. A prompt that starts with `$speckit-specify` expands.
+        skill_visibility: allowlist_only_by_overlay_and_skills.bundled.enabled=false
+      skills:
+        deny_wins_over_allow: true
+        allowed:                            # exactly these four, and nothing else (writes follow integration-guide section 8.4)
+          - { id: speckit.constitution, writes: [".specify/memory/constitution.md"], protected_path_exception_required: true }
+          - { id: speckit.specify,      writes: ["specs/*/spec.md", "specs/*/checklists/requirements.md", ".specify/feature.json"] }
+          - { id: speckit.clarify,      writes: ["specs/*/spec.md", "specs/*/checklists/requirements.md"] }
+          - { id: speckit.checklist,    writes: ["specs/*/checklists/*.md"] }
+        denied:                             # installed by `specify init`, never invoked
+          - speckit.plan
+          - speckit.tasks
+          - speckit.analyze
+          - speckit.implement
+          - speckit.converge
+          - speckit.taskstoissues
+      hide_denied_skills_in_sandbox: true   # read-only empty overlays over the six denied skill directories under each host skill root
+      other_project_skills_and_commands: not_honored   # anything in .claude/commands, .claude/skills or .agents/skills outside the four ids does not resolve
+      integrity_before_run:                 # checked on the host, never by the agent
+        integration_status_json: ok
+        recorded_versions_equal_pinned: true
+        extensions_file_absent: true
+        skill_file_hashes_equal_pinned_manifest: true
+      forbidden_artifacts_after_run:        # their presence means a denied skill ran
+        - "specs/*/plan.md"
+        - "specs/*/tasks.md"
+        - "specs/*/research.md"
+        - "specs/*/data-model.md"
+        - "specs/*/quickstart.md"
+        - "specs/*/contracts/**"
+      detection:                            # any one of these is a violation
+        - denied_skill_id_in_cli_event_stream_or_permission_denials
+        - denied_skill_listed_in_cli_init_skills_or_slash_commands   # checkable once the spike proves the event fields
+        - forbidden_artifact_present
+        - skill_not_in_contract_skills_invoked_closed_list
+        - specify_subcommand_outside_the_four_skills                 # see forbidden_command_classes.spec_kit_out_of_scope
+      violation: BLOCK
+      on_violation: [discard_agent_output, audit_forbidden_skill_invoked, mark_stage_BLOCKED]
+  threats: [T-06, T-04, T-15]
+
+# -----------------------------------------------------------------------------
+# 15. Outbound content hygiene (text the factory writes to GitHub)
+# -----------------------------------------------------------------------------
+output_hygiene:
+  applies_to: [pr_title, pr_body, issue_comment, review_comment, commit_message, check_run_output]
+  allow_raw_html: false
+  allow_images_from_domains: []        # none; model-generated image URLs are an exfiltration channel when GitHub fetches them
+  allow_link_domains: [github.com]     # factory-authored links to the same repository only
+  neutralize_user_mentions: true       # write @name as `@name` in code spans unless the mention is factory-generated
+  neutralize_cross_repo_references: true
+  strip_hidden_content: [html_comments, zero_width_characters, bidi_controls]
+  max_body_bytes: 60000
+  secrets_check: secrets.sinks.github_bound_text
+  threats: [T-18]
+
+# -----------------------------------------------------------------------------
+# 16. Supply chain
+# -----------------------------------------------------------------------------
+supply_chain:
+  registries_allowed_ref: egress.profiles.fetch_deps
+  lockfiles: { required: true, frozen_in_gates: true }      # --locked / --frozen-lockfile equivalents
+  # License rule for dependencies. The allow list itself is in deny.toml (a protected path), so there
+  # is one place to read it and one place to change it. A license that is not on that list is denied.
+  # GPL, LGPL, AGPL and unknown licenses are always denied. An "OR" expression passes only through
+  # an alternative that is on the list: r-efi ("MIT OR Apache-2.0 OR LGPL-2.1-or-later") is used under
+  # MIT or Apache-2.0, never under the LGPL option. Adding a license is a change to deny.toml, so it
+  # needs spec authorization, independent policy review and a human, like any protected-path change.
+  licenses: { default: deny_unlisted, always_denied: [GPL, LGPL, AGPL, unknown], allow_list_in: deny.toml }
+  install_scripts: disabled_in_fetch
+  # A new direct dependency ALWAYS needs a human (ADR 0009 item 4). There is no
+  # automatic approval condition: no organization allowlist, no popularity or age
+  # threshold, no "approved before" shortcut. Do not add an `auto_approve_when` key.
+  # "New" means the package name is absent from the resolved lockfile at the base
+  # commit (direct or transitive) as anything but a member of the project, that is, a
+  # package with no source. A name already in that lockfile from a registry or another
+  # source is not new, so this rule does not fire for it; a version change to it is still
+  # a lockfile change and goes through the lockfile, source and scanner checks below. A
+  # member of the project that has the name does not make a registry package of that name
+  # "not new": that is how a dependency confusion looks (review SC-2, SC-3). The engine
+  # reads exactly this wording and refuses to build from another.
+  new_direct_dependency:
+    approval: human_always
+    new_means: name_absent_from_base_commit_lockfile_as_anything_but_a_project_member
+    heuristics_recorded: [registry_existence, first_publish_age_days, download_count, repository_link, typosquat_distance_to_popular_names, license]   # shown to the human; they never approve anything
+    min_first_publish_age_days: 30                          # a younger package needs a security_approver, not an ordinary approver
+  # The audit tool run offline cannot tell how old its advisory database is, so the image
+  # records the date and the gate reads it. A clean audit against a database older than this,
+  # or of unknown age, is BLOCKED. 7 days is the `maximum-db-staleness = "P7D"` that deny.toml
+  # demands of the factory's own CI. The stage reads this value; the composition root may
+  # configure a lower one and never a higher one. A project policy may lower it, never raise it.
+  advisory_database:
+    max_age_days: 7
+  # When the dependency gates (dependency-integrity, dependency-review, dependency-advisories
+  # and sbom) run. They judge a change, and the master prompt asks for dependency, SBOM and
+  # license checks "where applicable". `dependency_files_change` runs them for a change that
+  # touches a dependency file (a lockfile, a manifest, a build configuration, the configuration
+  # of a scanner, a build script) and reports NOT_APPLICABLE otherwise, with nothing read and no
+  # container made. Run on every change, an unrelated change would fail for an advisory
+  # published after the base commit against a package the change never touched, and the
+  # change could not fix it; that judgment belongs to a scheduled scan of the base branch (not
+  # built yet: see the review of the supply chain gates).
+  # `always` is the stricter value. A project policy may move to it and never back, and the
+  # composition root may do the same.
+  dependency_gates:
+    run_when: dependency_files_change
+  scanners: [cargo-deny, cargo-audit, osv-scanner, gitleaks, semgrep]   # applicable subset per ecosystem; tool absence is BLOCKED
+  sbom: { format: cyclonedx, required_for: [release, high_risk_jobs] }
+  images: { pinned_by_digest: true, built_from_source_by_factory: true, rebuild_interval_days: 14, vulnerability_scan: required }
+  ci_actions_pinned_to_commit_sha: true
+  threats: [T-29, T-30]
+
+# -----------------------------------------------------------------------------
+# 17. Tenancy
+# -----------------------------------------------------------------------------
+tenancy:
+  tenant_id_on_every_row: true
+  # Row-level security is part of Slice 1 (ADR 0012); it is not deferred. The tenant setting is
+  # made in every transaction, the system scope has its own role, and two narrow functions
+  # serve the lookups that happen before a tenant is known. NT-TEN-01 has its first pass in Slice 1.
+  database_row_level_security: required
+  object_store: { prefix_per_tenant: true, key_per_tenant: recommended }
+  messaging: { subject_prefix_per_tenant: true, per_tenant_publish_subscribe_permissions: true }
+  sandbox: { shared_between_tenants: never, warm_pool_across_tenants: never, writable_cache_shared: never }
+  model_context: { cross_tenant_retrieval: never }
+  memory_stores: { access_boundary: tenant_and_repository }
+  threats: [T-28]
+
+# -----------------------------------------------------------------------------
+# 18. Audit
+# -----------------------------------------------------------------------------
+audit:
+  append_only: true
+  application_db_role_privileges: [INSERT, SELECT]      # no UPDATE, no DELETE, no TRUNCATE
+  hash_chain: { algorithm: sha256, scope: per_tenant, fields: [prev_hash, canonical_event_json] }
+  server_assigned_timestamp: true                       # database clock, never client time
+  external_anchor: { store: object_store_with_object_lock, interval_minutes: 60, what: chain_head_hash }
+  verification_job_interval_minutes: 60
+  required_event_fields: [event_id, tenant_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, job_id, stage_run_id, correlation_id, created_at, prev_hash, hash]
+  must_record:
+    - webhook_accepted_or_rejected
+    - authorization_decision
+    - tool_grant_issued
+    - tool_call_denied
+    - command_executed
+    - sandbox_created_posture_result_destroyed
+    - egress_request
+    - secret_redacted_or_blocked
+    - protected_path_decision
+    - gate_result
+    - approval_granted_or_rejected
+    - human_override
+    - credential_minted_and_revoked
+    - budget_threshold_crossed
+  separate_from_diagnostic_logs: true
+  sandbox_can_write: false
+  threats: [T-31]

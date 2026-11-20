@@ -1,0 +1,4 @@
+id       = xtask-generated
+title    = Generated test artifacts match their sources (cargo xtask check-generated)
+requires = cargo python3
+run      = cargo xtask check-generated

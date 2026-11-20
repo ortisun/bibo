@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "id": "builder",
+  "version": "1.0.0",
+  "title": "Builder",
+  "description": "Implements one planned task at a time inside an isolated sandbox. It edits only the files the task owns and runs the project's own build and test commands through the typed command wrapper.",
+  "role": "builder",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [
+    {
+      "id": "test-driven-development",
+      "version": "1.0.0"
+    },
+    {
+      "id": "rust",
+      "version": "1.0.0"
+    }
+  ],
+  "allowed_tools": [
+    {
+      "name": "read-file",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "edit-file",
+      "access": "write",
+      "path_scope": [
+        "src/**",
+        "tests/**"
+      ]
+    },
+    {
+      "name": "run-project-command",
+      "access": "execute_sandboxed"
+    }
+  ],
+  "required_evidence": [
+    "unit-test-result",
+    "diff"
+  ],
+  "inputs_schema": {
+    "name": "builder-input",
+    "version": 1,
+    "sha256": "sha256:ea8eb3fecc2320aeecf31727e9fbd2171e6701d6055a247d4d61d4382c7b07f1"
+  },
+  "outputs_schema": {
+    "name": "builder-output",
+    "version": 1,
+    "sha256": "sha256:313b325cf20fe17d354c72d26dfcba3923a23ccf884c5ced779d4e42f681c8fa"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 1800,
+    "max_tokens": 400000,
+    "max_cost_usd": 5,
+    "max_tool_calls": 200,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "**"
+      ],
+      "write": [
+        "src/**",
+        "tests/**"
+      ]
+    },
+    "network": "none",
+    "shell": "sandboxed_typed_wrapper",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet",
+      "tier": "standard"
+    },
+    {
+      "runtime_id": "codex-cli",
+      "tier": "standard"
+    }
+  ],
+  "prompt": {
+    "template_path": "agents/builder/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:22103d3836026a9e38910b068af4615458e410ba89d41bcc0d97fc737b9b85b3"
+  }
+}

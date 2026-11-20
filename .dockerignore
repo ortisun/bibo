@@ -1,0 +1,64 @@
+# The build context of the service images (infra/service-images/Dockerfile) is the repository root.
+#
+# An allow list: everything is left out, then exactly what the two programs need to compile is let
+# back in. Nothing that can hold a secret (infra/compose/secrets, .env files, .git with its history,
+# the Claude and editor folders) is ever sent to the Docker daemon, so none can reach a layer.
+# Inside what is let in, a file or a folder that is named like a credential is left out too, because
+# the build runs every build script of every dependency with the network on and the context is the
+# directory, not git: an untracked `.cargo/credentials.toml` would be read there (DR-7). The names are
+# those the file system audit of the images calls credentials
+# (infra/sandbox-images/tools/fsaudit.py) and a few more.
+# infra/service-images/test.sh --static checks that the first rule is "*", that none of the paths
+# is let back in, and that the lines after the allow list are exactly the ones listed here, in this
+# order. The last rule wins, so a folder is left out after the sources are let back in.
+*
+
+!Cargo.toml
+!Cargo.lock
+!.cargo/
+!crates/
+!apps/
+!xtask/
+!schemas/
+!migrations/
+!docs/database/tests/role_readiness.sql
+# Read at compile time by `crates/workflow/src/gates/readability/catalog.rs` (include_str!).
+!fixtures/readability/rules.json
+
+# Inside what is let in: files that are named like a credential.
+**/.DS_Store
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*secret*
+**/*credential*
+**/id_rsa*
+**/id_dsa*
+**/id_ecdsa*
+**/id_ed25519*
+**/*.p12
+**/*.pfx
+**/*.kdbx
+**/*.jks
+**/*.keystore
+**/.netrc
+**/.npmrc
+**/.pypirc
+**/.git-credentials
+**/.gitconfig
+**/auth.json
+
+# Source files of the programs whose names say "secret" or "credential" because they are the code
+# that handles them (crates/egress/src/http/secret.rs, crates/sandbox/src/workspace/secrets.rs).
+!**/*secret*.rs
+!**/*credential*.rs
+
+# Build output, and folders that hold credentials. After the lines above, so that nothing inside
+# them comes back.
+**/target
+**/.aws
+**/.ssh
+**/.gnupg
+**/.docker
+**/.kube

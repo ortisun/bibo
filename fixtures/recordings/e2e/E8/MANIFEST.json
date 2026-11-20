@@ -1,0 +1,20 @@
+{
+  "files": {
+    "artifacts.json": "sha256:5546cf1b3b31e7f375d672418612a08e273f07d7099a685146636ee52a05645a",
+    "evidence.json": "sha256:2e880cff2e6844c3bb5281ca4802ba28a04ed40759ed13d815f421f356f0832f",
+    "gate-reports/4e36521e-1e4f-439a-8bfa-e0a0683a52bb.0.json": "sha256:6285df60898e6a8ea3acd526d3c5345636b6de7043fc48d5a4db85421137b7e1",
+    "gate-reports/62433df6-0df2-4e5e-8739-410bb57f77d6.0.json": "sha256:b0285951192670647f3789dc86308888a3c833ba8e982abb99ab7ef550a51e8d",
+    "gate-reports/a4054f79-8513-41ef-9fe7-641a47292449.0.json": "sha256:8256a05929e834cb9702bb1160ac6c01cbf4b48c22c1e4e0171fe63d270e1dcc",
+    "gate-reports/be57f5f6-b73e-41c5-8e47-a117d7ec86d9.0.json": "sha256:7b6d80c3c93345150547f87e9053f65fac3bb344017fab847d20f3afead1dbdf",
+    "gate-reports/e9c0bfda-1819-4e50-9523-deaed844853b.0.json": "sha256:3d963a886d4891ae0d8e79473bfcb89e5c8b49810b63ca16235f8ac7889d7425",
+    "gate-reports/f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1.0.json": "sha256:cf397422cb21bd4f7b6ed68a27e105d9b69ad616c7a9b3990dc86506063ad3d2",
+    "ledger.json": "sha256:fe76bfc8cea6a7964c2bf7554cbf8968b015101c6c409339fde9f92238648a1b",
+    "mode.json": "sha256:37b8a4e5bf6d20cac1616d4efcea7309e38a206b77f385690a8eea67276f28cb",
+    "stage-outputs/IMPLEMENTATION-implementation-evidence.json": "sha256:246c2c924b5f0430e9caad15b628e3c94750864df49dd5f570fa84f0e95c4d29",
+    "stage-outputs/IMPLEMENTATION-implementation-result.json": "sha256:5fc3159de82581de1f19ea42d21cb1256f6b4f74b1f2f6dbf85869a4cf2ba2c3",
+    "timeline.api.json": "sha256:aa6647a1d03559c7d2cd497dc7224c35bcdcc3b32e977058253fe889001f3b3b",
+    "timings.json": "sha256:7552f8110d776b2614e6f44e9b030b1f04a2bbbf681c0e3e42e1cb71266b8fd2"
+  },
+  "format": 1,
+  "scenario": "E8"
+}

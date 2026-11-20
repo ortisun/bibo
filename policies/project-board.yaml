@@ -1,0 +1,98 @@
+# =============================================================================
+# policies/project-board.yaml  -  the GitHub Projects board that mirrors the issue labels
+# =============================================================================
+# STATUS: DESIGNED. Only scripts read this file: `scripts/lib/project_board.py` checks it and renders
+# `onboarding/github/project-board-policy.json`, `scripts/install.sh` uses the rendering to map the stages onto a
+# board, and the installed Action uses it to move an issue on the board. The engine does not read it and does not
+# write to a board (ADR 0018). The flag `policy.status` below is a label that no code reads or switches on.
+#
+# The labels of policies/issue-workflow.yaml are the truth. The board is a view of them. A person may drag a
+# card, and the next label change puts the card back where the labels say it belongs.
+#
+# Vocabulary
+#   stage        What a person sees as a column or a Status value. Nine of them.
+#   matches      Names that an existing board may already use for the stage. The installer compares them, after it
+#                lowers the case and drops punctuation and emoji, with the options of the board's field.
+#   fallback     When the board has no option for the stage, the stage of the first fallback that has one. A board
+#                with only Todo, In Progress and Done still shows every issue.
+#   rules        Checked in order. The first rule that fits decides the stage. An issue that fits none is not on a
+#                track, and the Action leaves it alone: it neither adds it to the board nor moves it.
+#   labels_any   The rule fits when the issue carries at least one of these labels.
+#   issue_closed The rule fits when the issue is closed AND carries at least one label of these rules. A closed issue
+#                with none of them is on no track, so closing an issue never puts it on the board by itself.
+#
+# Hard rules, each checked by `scripts/lib/project_board.py check`
+#   1. Every rule names a stage that exists, and every stage is reached by a rule.
+#   2. Every label of the issue workflow, except the trigger, appears in a rule, so a new label cannot be left
+#      without a place on the board.
+#   3. No rule uses the trigger label. The board never reacts to the request itself.
+#   4. Fallbacks name real stages and never loop.
+# =============================================================================
+
+schema_version: 1
+
+policy:
+  id: project-board
+  status: DESIGNED
+
+# The name of the field that this factory creates when a project has no board of its own.
+created_field: Stage
+
+stages:
+  - key: idea
+    title: Idea
+    meaning: "Someone proposed a new solution. Nobody has designed it yet."
+    matches: [idea, ideas, backlog, triage, new, inbox, proposed, icebox]
+    fallback: [ready]
+  - key: designing
+    title: Designing
+    meaning: "A person and EGM are working out the design."
+    matches: [designing, in design, design, discovery, refinement, refining, analysis, planning]
+    fallback: [working]
+  - key: design_review
+    title: Design review
+    meaning: "The design is in review, and its pull request is open."
+    matches: [design review, in design review, review design, spec review]
+    fallback: [in_review, working]
+  - key: ready
+    title: Ready
+    meaning: "The design is approved, or the change is clear. It is ready for the factory."
+    matches: [ready, todo, to do, selected, approved, ready for development, up next, planned]
+    fallback: []
+  - key: working
+    title: Working
+    meaning: "The factory has the request and is working on it."
+    matches: [working, in progress, doing, in development, building, implementing, active]
+    fallback: []
+  - key: needs_person
+    title: Needs a person
+    meaning: "The factory is waiting for a person, or something is blocked or paused."
+    matches: [needs a person, needs attention, waiting, blocked, on hold, needs input, paused, waiting for input]
+    fallback: [working]
+  - key: in_review
+    title: In review
+    meaning: "The factory finished and a draft pull request waits for a person."
+    matches: [in review, review, code review, qa, testing, ready for review, verify]
+    fallback: [working]
+  - key: done
+    title: Done
+    meaning: "The issue is closed."
+    matches: [done, closed, complete, completed, shipped, released, finished, resolved]
+    fallback: []
+  - key: stopped
+    title: Stopped
+    meaning: "The work failed, was cancelled or was rejected. A person decides what happens next."
+    matches: [stopped, cancelled, canceled, won't do, wontfix, rejected, failed, abandoned, declined]
+    fallback: [needs_person]
+
+# Ordered. The first rule that fits decides.
+rules:
+  - { stage: stopped,      labels_any: ["factory: failed", "factory: cancelled", "factory: rejected"] }
+  - { stage: done,         issue_closed: true }
+  - { stage: needs_person, labels_any: ["factory: waiting for a person", "factory: blocked", "factory: paused"] }
+  - { stage: in_review,    labels_any: ["factory: done"] }
+  - { stage: working,      labels_any: ["factory: queued", "factory: working", "factory: stopping"] }
+  - { stage: ready,        labels_any: ["design: approved"] }
+  - { stage: design_review, labels_any: ["design: in review"] }
+  - { stage: designing,    labels_any: ["design: in progress"] }
+  - { stage: idea,         labels_any: ["design: proposed"] }

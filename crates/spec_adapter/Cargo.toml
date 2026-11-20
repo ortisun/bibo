@@ -1,0 +1,35 @@
+[package]
+name = "factory-spec_adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Every external crate below is on the `spec_adapter` allow list in
+# docs/architecture/crate-dependency-rules.json (rule DEP-04). Versions match the other crates so
+# that the workspace builds one copy of each. The crate reads no file, makes no identifier and
+# reads no clock (rule DEP-05): files arrive as bytes through `SpecFileSet`, hashes come from the
+# domain, and the creation date of a specification is the date Spec Kit wrote into it.
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+# The wire format of the contract the crate builds and of the small Spec Kit configuration files
+# it reads.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+# Derive for the closed error enums. Maintained by dtolnay.
+thiserror = "2.0.21"
+# The recognizers of the parser (a heading, a requirement line, a scenario line, a marker). The
+# same features as the domain, so the workspace builds one copy.
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "perf"] }
+
+[dev-dependencies]
+# The labelled fakes: the sandbox, the scripted adversarial runtime and the specification
+# provider. Dev only (rule DEP-03).
+factory-testkit.workspace = true
+# `#[tokio::test]` for the run of a skill through the fake sandbox and runtime. Dev only.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros", "sync", "time"] }
+# The identifier of a job in the tests. The same features as the domain. Dev only.
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }

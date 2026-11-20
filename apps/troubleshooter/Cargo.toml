@@ -1,0 +1,65 @@
+[package]
+name = "factory-troubleshooter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The troubleshooter (ADR 0021): a composition root (ring 3) that watches the factory itself. It
+# runs deterministic probes through its own MCP gateway, starts the troubleshooter agent in its
+# sandbox when a probe trips or the sweep comes due, checks the evidence of the report, and writes
+# triage issues from a closed template. The shared wiring is the composition library (ADR 0015);
+# what is here is the troubleshooter's own scheduling and decisions, and `main`.
+
+[lib]
+name = "factory_troubleshooter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "factory-troubleshooter"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+factory-composition.workspace = true
+factory-contracts.workspace = true
+factory-domain.workspace = true
+factory-github.workspace = true
+factory-mcp_gateway.workspace = true
+factory-mcp_postgres.workspace = true
+factory-observability.workspace = true
+factory-ports.workspace = true
+factory-runtime.workspace = true
+factory-sandbox.workspace = true
+factory-storage.workspace = true
+factory-workflow.workspace = true
+
+# The seam of the agent run is an `#[async_trait]` trait, like the ports. Maintained by dtolnay.
+async-trait = "0.1.92"
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+# The multi-thread runtime: the gateway serves the agent over loopback HTTP while the run waits on
+# the sandbox. `signal` for SIGTERM and SIGINT, `time` for the probe period, `sync` for the agent
+# slot.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "time", "sync", "macros", "signal"] }
+# The HTTP health probe: a blocking GET with rustls only, run under `spawn_blocking`, redirects
+# and proxies off. The same crate, version and features as the composition library, so the
+# resolved tree gains nothing.
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+# The job and attempt ids a run borrows are built from bytes (`Uuid::from_bytes`). No generator
+# feature, as in the composition library (DEP-05).
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# The fake VictoriaMetrics-like MCP server of the end-to-end tests, served over loopback HTTP.
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+# The database test server of the storage crate is included with `#[path]` and needs these.
+diesel = { version = "2.3.14", default-features = false, features = ["postgres_backend"] }
+diesel-async = { version = "0.9.2", default-features = false, features = ["postgres", "deadpool"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "time", "sync", "macros", "signal", "net", "test-util"] }

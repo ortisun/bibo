@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "task_id": "add-json-output-formatter",
+  "summary": "Added the --json flag and a formatter that prints the three counts as one JSON object.",
+  "files_changed": [
+    "src/main.rs",
+    "src/output.rs",
+    "tests/json_output.rs"
+  ],
+  "commands_run": [
+    {
+      "argv": [
+        "cargo",
+        "test"
+      ]
+    }
+  ],
+  "tests_added": [
+    "json_output_prints_three_counts",
+    "json_output_for_an_empty_file"
+  ],
+  "dependency_requests": [],
+  "ignored_instructions": []
+}

@@ -1,0 +1,3863 @@
+{
+ "schema_version": 1,
+ "catalog": "docs/security/negative-test-catalog.md",
+ "work_packages": "docs/architecture/work-packages.json",
+ "recorded": "2026-10-29",
+ "findings": [],
+ "audit_events": [
+  {
+   "type": "webhook_accepted_or_rejected",
+   "owner": "s1-apps-composition",
+   "production": "api",
+   "source": "apps/api/src/webhook.rs",
+   "token": "webhook_accepted_or_rejected.granted | webhook_accepted_or_rejected.denied",
+   "note": "The API writes an accepted delivery as webhook_accepted_or_rejected.granted and a rejected one (a bad signature, or a sender who may not ask) as webhook_accepted_or_rejected.denied. A repeat and an unbound installation keep their own names (webhook.duplicate_delivery, webhook.unbound): they are neither an acceptance nor a rejection of the delivery. The database trigger of the API login allows both required names."
+  },
+  {
+   "type": "authorization_decision",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/admission.rs",
+   "token": "AuditKind::AuthorizationDecision",
+   "note": "Admission, the human decision and the intake stage."
+  },
+  {
+   "type": "tool_grant_issued",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/scheduler/claim.rs",
+   "token": "AuditKind::ToolGrantIssued",
+   "note": "One record for each attempt the engine claims."
+  },
+  {
+   "type": "tool_call_denied",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::ToolCallDenied",
+   "note": "One record for each denial the runtime reports. Finding F-1: denials of a run whose report is rejected as invalid are dropped."
+  },
+  {
+   "type": "command_executed",
+   "owner": "s1-trusted-gates-and-validation",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/sandbox_audit.rs",
+   "token": "AuditKind::CommandExecuted",
+   "note": "The engine wraps the sandbox a stage uses and writes one record for each command the sandbox ran, from the result the supervisor returned: the program (file name only), the exit code, the signal, whether it timed out, was killed for memory or had its output cut, and how long it ran. Arguments are not recorded. At most 256 commands of an attempt get a record each; a record says how many more ran."
+  },
+  {
+   "type": "sandbox_created_posture_result_destroyed",
+   "owner": "s1-sandbox-adapter",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/sandbox_audit.rs",
+   "token": "AuditKind::SandboxCreatedPostureResultDestroyed",
+   "note": "The same wrapper writes the lifecycle from what the provider returned: granted when a session came back (its posture matched), denied when the provider refused or failed (a posture mismatch lists the differing parts), ended when the sandbox was removed."
+  },
+  {
+   "type": "egress_request",
+   "owner": "s1-egress-and-broker",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::EgressRequest",
+   "note": "The engine settles the job token of an attempt and writes one summary record with the counts the broker metered (requests, input and output tokens, cost). One row for each token and not one for each request, so a loop on a model cannot fill the log; the broker keeps its own line for each request and each refusal in its stream. Requests the broker refused before forwarding are not in the usage the port returns, so they are not in the summary."
+  },
+  {
+   "type": "secret_redacted_or_blocked",
+   "owner": "s1-redaction",
+   "production": "handler",
+   "source": "crates/workflow/src/stages/implementation/run.rs",
+   "token": "AuditKind::SecretRedactedOrBlocked",
+   "note": "Written by the stage handlers that scan a change."
+  },
+  {
+   "type": "protected_path_decision",
+   "owner": "s1-stage-implementation-and-review",
+   "production": "handler",
+   "source": "crates/workflow/src/stages/implementation/run.rs",
+   "token": "AuditKind::ProtectedPathDecision",
+   "note": "Written by the stage handlers that take a change in."
+  },
+  {
+   "type": "gate_result",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/gate.rs",
+   "token": "AuditKind::GateResult",
+   "note": "One record for each gate the engine evaluates."
+  },
+  {
+   "type": "approval_granted_or_rejected",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/decide.rs",
+   "token": "AuditKind::ApprovalGrantedOrRejected",
+   "note": "Written when a person decides."
+  },
+  {
+   "type": "human_override",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/decide.rs",
+   "token": "AuditKind::HumanOverride",
+   "note": "Written when a person overrides a block."
+  },
+  {
+   "type": "credential_minted_and_revoked",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::CredentialMintedAndRevoked",
+   "note": "The job token of an attempt, at its start and its end."
+  },
+  {
+   "type": "budget_threshold_crossed",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::BudgetThresholdCrossed",
+   "note": "Written at 80 and 100 percent of the ceiling."
+  }
+ ],
+ "mutation_runs": [
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-a-repeated-key",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_repeated_key_is_refused_even_when_one_spelling_is_escaped",
+    "held_documents_that_two_readers_could_read_differently_are_refused",
+    "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-an-image-by-address",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "content_the_provider_would_fetch_is_refused",
+    "held_property_no_accepted_body_holds_a_key_a_tag_or_an_address_the_oracle_does_not_allow",
+    "held_server_side_features_stay_out_whatever_the_spelling",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-an-unlisted-field",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "held_an_escaped_key_is_checked_as_the_key_it_spells",
+    "held_documents_that_two_readers_could_read_differently_are_refused",
+    "held_property_no_accepted_body_holds_a_key_a_tag_or_an_address_the_oracle_does_not_allow",
+    "held_server_side_features_stay_out_whatever_the_spelling",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+    "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field",
+    "provider_side_tools_and_remote_servers_are_refused_with_their_class"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-an-unlisted-tool-type",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_tagged_object_takes_only_a_listed_tag_and_the_fields_of_that_variant",
+    "content_the_provider_would_fetch_is_refused",
+    "egr_1_openai_server_tools_and_remote_mcp_do_not_cross_the_broker",
+    "held_an_escaped_key_is_checked_as_the_key_it_spells",
+    "held_property_no_accepted_body_holds_a_key_a_tag_or_an_address_the_oracle_does_not_allow",
+    "held_server_side_features_stay_out_whatever_the_spelling",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+    "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field",
+    "provider_side_tools_and_remote_servers_are_refused_with_their_class"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "do-not-count-failed-attempts",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_count_tokens_call_never_changes_the_record_of_the_turns",
+    "a_looping_client_is_stopped_at_the_ceiling_with_a_recorded_reason",
+    "a_provider_error_is_passed_on_and_counted_as_a_request_with_no_cost",
+    "a_provider_that_rejects_the_brokers_key_or_redirects_is_not_passed_on_as_such",
+    "a_request_cap_refuses_the_next_request_and_revokes_the_token",
+    "a_stream_cut_before_its_usage_report_is_charged_the_worst_case_for_one_request",
+    "a_valid_token_is_admitted_and_counted_and_a_garbage_credential_is_unknown",
+    "an_answer_that_ended_the_turn_is_recorded_for_both_providers_and_both_shapes",
+    "failed_and_abandoned_requests_still_count_and_an_unread_answer_is_charged_in_full",
+    "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
+    "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+    "negative_nt_bud_07_failed_attempts_are_counted_per_attempt",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "non_streamed_answers_and_the_token_count_route_are_metered_too",
+    "streamed_usage_of_both_providers_is_metered_and_the_events_are_passed_on",
+    "the_http_listener_passes_the_broker_contract",
+    "the_key_is_not_in_a_response_even_when_a_cap_stops_the_job"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "forward-the-beta-header-unchanged",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_claude_request_reaches_the_provider_with_the_real_key_and_with_nothing_else_of_the_sandbox",
+    "held_beta_header_variants_never_enable_a_provider_side_feature",
+    "negative_nt_sbx_17_only_the_recorded_betas_and_the_beta_query_cross",
+    "the_recorded_betas_pass_and_unknown_well_formed_ones_are_dropped"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "forward-the-body-without-the-schema",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "egr_1_openai_server_tools_and_remote_mcp_do_not_cross_the_broker",
+    "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "forward-the-provider-request-ids",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "held_the_answer_headers_are_a_closed_set_even_for_a_hostile_provider",
+    "negative_nt_sbx_17_the_answer_headers_are_a_closed_set",
+    "real_key_never_leaves_the_broker"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "ignore-the-cost-ceiling",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_looping_client_is_stopped_at_the_ceiling_with_a_recorded_reason",
+    "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client",
+    "revoke_for_job_and_metering_through_the_core",
+    "revoke_for_job_and_metering_through_the_http_listener",
+    "the_http_listener_passes_the_broker_contract",
+    "the_real_broker_passes_the_broker_contract"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "ignore-the-expiry",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "an_expired_token_and_a_revoked_token_are_refused_with_401",
+    "the_http_listener_passes_the_broker_contract",
+    "the_real_broker_passes_the_broker_contract"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "ignore-the-request-cap",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_request_cap_refuses_the_next_request_and_revokes_the_token",
+    "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+    "the_key_is_not_in_a_response_even_when_a_cap_stops_the_job"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "revoke-for-job-revokes-one-token",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "revoke_for_job_and_metering_through_the_core",
+    "revoke_for_job_and_metering_through_the_http_listener",
+    "the_http_listener_passes_the_broker_contract",
+    "the_real_broker_passes_the_broker_contract"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-ignores-the-byte-quota",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap",
+    "the_byte_quota_applies_in_broker_mode_too"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-matches-a-host-by-suffix",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "lookalikes_userinfo_literals_ports_and_malformed_targets_are_refused_with_a_reason"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-resolves-a-name-from-the-sandbox",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_request_through_the_relay_reaches_the_broker_and_the_provider_sees_only_the_real_key",
+    "whatever_the_sandbox_asks_for_the_relay_connects_to_the_broker_only_and_resolves_nothing"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-resolves-before-the-allowlist",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
+    "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+    "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-skips-the-resolved-range-check",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "connect_mode_with_the_system_resolver_refuses_a_name_that_resolves_to_loopback",
+    "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+    "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked",
+    "one_refused_address_in_an_answer_refuses_the_name"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "accept a comment marker written by anyone",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_reporting"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "accept a delivery that has only the legacy SHA-1 header",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+    "the_github_verifier_passes_the_webhook_contract"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "follow a next link to any host",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_link_to_another_host_is_never_followed"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "identify a person by the login and not by the numeric id",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author",
+    "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person",
+    "negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "ignore the replay table",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_delivery_is_recorded_once_and_a_replay_is_a_repeat_by_id_by_body_and_by_meaning"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "let a stage that may not write get the write credential",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "open the pull request as a ready one",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "the_github_change_host_passes_the_whole_change_host_contract",
+    "the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "print a header value (the request wrapper shows its headers)",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "wire::tests::a_request_prints_no_header_value_and_no_body"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "print a token (the token wrapper shows its text)",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "token::tests::a_bearer_and_a_live_token_print_nothing_of_the_token"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "report BLOCKED as success",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "changes::tests::a_gate_that_did_not_run_is_never_a_success",
+    "gate_outcomes_reach_the_code_host_as_check_conclusions_and_blocked_is_never_success"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "skip the head commit in the body tag",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "the_body_tag_covers_the_head_commit_so_a_push_makes_a_stale_manifest_conflict"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "skip the signature comparison",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+    "the_github_verifier_passes_the_webhook_contract"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "use an over-broad token without looking",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-bidi-file-name",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_name_that_hides_or_reorders_text_is_unsafe_in_every_script"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-container-that-is-never-stopped-for-an-unmeasured-disk",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "failed_measurements_in_a_running_container_kill_after_the_limit_and_never_count_as_zero",
+    "sbx_3_a_disk_that_keeps_failing_to_be_measured_ends_the_attempt_as_a_resource_failure"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-deny-list-spelling",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "held_the_spellings_docker_accepts_for_a_weaker_container_are_refused",
+    "namespaces_of_the_host_or_of_another_container_are_denied_for_every_namespace_flag",
+    "sbx_1_the_deny_list_reads_the_spellings_docker_accepts"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-failed-disk-measurement-as-zero",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "sbx_3_a_disk_that_keeps_failing_to_be_measured_ends_the_attempt_as_a_resource_failure"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-limit-of-zero",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_limit_must_be_a_number_above_zero",
+    "held_the_spellings_docker_accepts_for_a_weaker_container_are_refused",
+    "sbx_1_the_deny_list_reads_the_spellings_docker_accepts"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-mount-key-in-another-case",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_mount_is_read_with_its_aliases_and_checked_by_what_it_mounts"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-mount-of-a-sensitive-tree",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_bind_mount_that_the_factory_does_not_provision_is_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-name-that-ends-in-a-blank",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "names_that_print_blank_or_as_another_name_are_refused",
+    "rr_13_names_that_print_as_blank_or_as_another_name_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-negative-ulimit",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "rr_12_weakening_values_of_the_flags_the_builder_uses_are_refused",
+    "the_weakening_values_of_the_flags_the_builder_uses_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-seccomp-colon-option",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_security_option_is_read_as_key_and_value_with_either_separator",
+    "held_the_spellings_docker_accepts_for_a_weaker_container_are_refused",
+    "sbx_1_the_deny_list_reads_the_spellings_docker_accepts",
+    "weakening_values_of_allowed_flags_are_found"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-source-outside-the-allowlist",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_bind_mount_that_the_factory_does_not_provision_is_refused",
+    "a_mount_key_in_another_case_does_not_hide_the_source_and_the_last_one_wins",
+    "rr_11_a_bind_mount_of_the_runtime_socket_or_a_home_directory_is_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-tag-character-name",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_name_that_hides_or_reorders_text_is_unsafe_in_every_script",
+    "legitimate_names_in_any_script_are_not_unsafe"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-tmpfs-with-exec",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "the_weakening_values_of_the_flags_the_builder_uses_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-variation-selector-with-no-base",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "names_that_print_blank_or_as_another_name_are_refused",
+    "rr_13_names_that_print_as_blank_or_as_another_name_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "init-switched-off",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "rr_12_weakening_values_of_the_flags_the_builder_uses_are_refused",
+    "the_weakening_values_of_the_flags_the_builder_uses_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "the-first-mount-source-wins",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_mount_is_read_with_its_aliases_and_checked_by_what_it_mounts",
+    "a_mount_key_in_another_case_does_not_hide_the_source_and_the_last_one_wins"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-bot-is-not-a-bot",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_09_the_factorys_own_events_and_other_bots_events_are_ignored"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-bot-may-hold-a-designation",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation",
+    "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-claim-has-no-lock-and-no-version-guard",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-delivery-that-fails-verification-is-acknowledged",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_01"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-deny-write-path-may-be-written",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_gate_03_deleting_a_protected_file_is_refused_too",
+    "negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs",
+    "negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not",
+    "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
+    "negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage",
+    "negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate",
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+    "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
+    "negative_nt_pol_04_a_protected_change_needs_all_three_elements",
+    "negative_nt_pol_04_a_protected_group_beats_write_allow"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-failing-gate-does-not-stop-an-approval",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_01_a_failing_gate_refuses_approval_and_nothing_reaches_the_host",
+    "negative_nt_mrg_01_a_gate_that_is_not_clear_refuses_the_approval"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-forbidden-argument-is-allowed",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_tool_05_argument_injection_is_denied_by_forbidden_args"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-forbidden-command-class-denies-nothing",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied",
+    "negative_nt_tool_02_forbidden_command_class_matrix"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-key-file-in-a-directory-of-another-user-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-key-file-of-another-user-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_key_file_must_belong_to_the_user_the_process_runs_as"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-key-in-a-directory-others-can-write-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "in_production_a_key_in_a_directory_others_can_write_is_refused"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-moved-head-is-not-noticed",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record",
+    "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-moved-ledger-does-not-stop-an-approval",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-parent-component-is-not-refused",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-previous-key-never-ends",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-privileged-container-is-not-refused",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-renewal-ignores-the-epoch",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing",
+    "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-renewal-ignores-the-lapse",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing",
+    "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-renewal-ignores-the-owner",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing",
+    "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-rotation-from-a-key-to-itself-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "rotated_from_refuses_a_previous_key_equal_to_the_current_one"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-rotation-to-the-same-key-is-accepted",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_rotation_by_files_accepts_the_previous_key_and_nothing_older",
+    "from_bytes_refuses_a_previous_key_equal_to_the_current_one"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-second-claimant-is-not-told-it-lost",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-secret-file-may-be-read-by-group-and-others",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why",
+    "held_the_key_file_is_checked_for_mode_link_size_and_kind"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-stale-binding-does-not-stop-an-approval",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-widening-of-a-switch-counts-as-a-tightening",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_pol_02_each_widening_is_refused_and_names_its_key",
+    "negative_nt_pol_02_tightenings_are_accepted",
+    "negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "an-agent-may-grant-itself-a-tool",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks",
+    "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "an-app-with-a-forbidden-permission-gets-a-token",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "an-expired-allowlist-entry-still-grants",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "data-lines-are-not-quoted",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it",
+    "negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template_wrote_them",
+    "negative_nt_inj_02_envelope_hardening",
+    "negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope",
+    "negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "markdown-bound-for-github-is-sent-as-written",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "production-keeps-a-previous-key-with-no-end",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-api-writes-the-old-webhook-name",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_aud_03_the_api_writes_a_webhook_under_the_required_type_name"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-budget-threshold-is-never-recorded",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "every_required_event_type",
+    "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-builder-report-is-stored-as-written",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+    "negative_nt_sec_01_composed_canaries_in_the_repository_the_builder_report_and_refused_requests_leave_none_in_any_sink"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-egress-allowlist-matches-any-host",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-engine-does-not-write-command-executed",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id",
+    "negative_nt_aud_03_the_engine_writes_the_sandbox_lifecycle_the_commands_and_the_egress_summary",
+    "negative_nt_aud_03_the_facts_of_an_attempt_name_who_wrote_them"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-inspect-does-not-read-the-privileged-flag",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-job-token-is-accepted-by-the-webhook-endpoint",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_04_composed_a_job_token_is_refused_by_every_operation_of_the_api_and_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-test-constructor-accepts-the-same-key-twice",
+   "date": "2026-11-03",
+   "result": "CAUGHT",
+   "failed": [
+    "a_short_key_and_a_repeated_key_are_refused",
+    "held_a_rotation_to_the_same_key_is_refused"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-text-bound-for-github-is-not-checked-for-a-secret",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-workspace-lets-any-edit-in",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture",
+    "negative_nt_gate_03_the_builder_edits_ci_and_gate_files",
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+    "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-workspace-skips-the-secret-scan",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_sink",
+    "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
+    "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused"
+   ]
+  }
+ ],
+ "rows": [
+  {
+   "id": "NT-AUD-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_aud_01",
+     "file": "crates/storage/tests/audit.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUD-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_matrix_lists_an_owner_for_every_type_the_policy_requires",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_types_the_scenario_scripts_are_the_types_the_engine_does_not_write",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_engine_writes_the_sandbox_lifecycle_the_commands_and_the_egress_summary",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_facts_of_an_attempt_name_who_wrote_them",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_api_writes_a_webhook_under_the_required_type_name",
+     "file": "apps/api/tests/negative_composed.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-budget-threshold-is-never-recorded",
+     "catches": [
+      "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-api-writes-the-old-webhook-name",
+     "catches": [
+      "negative_nt_aud_03_the_api_writes_a_webhook_under_the_required_type_name"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-engine-does-not-write-command-executed",
+     "catches": [
+      "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id",
+      "negative_nt_aud_03_the_engine_writes_the_sandbox_lifecycle_the_commands_and_the_egress_summary",
+      "negative_nt_aud_03_the_facts_of_an_attempt_name_who_wrote_them"
+     ]
+    }
+   ],
+   "note": "Covered: a scripted scenario for each of the fourteen required types in which the engine itself writes the sandbox lifecycle, each command and the egress summary from the results of the attempt (only the two types a stage handler writes, and the one the API writes, are scripted), every record checked for actor, policy hash and correlation id, and the owner matrix below, which the checker compares with the sources. Every type has a correct producer. The webhook type is produced by the API under the required name; the API test of the composed rig checks the name. Finding F-2 is closed."
+  },
+  {
+   "id": "NT-AUTHZ-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation",
+     "file": "crates/domain/tests/policy/authority.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person",
+     "file": "crates/github/tests/negative_authz.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author",
+     "file": "crates/github/tests/negative_authz.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_the_label_of_someone_who_is_not_on_the_allowlist_is_refused",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_a_label_applied_by_nobody_authorizes_nothing",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_removing_a_person_from_the_allowlist_takes_effect_at_once",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_a_person_listed_without_the_requester_designation_is_refused",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_admission_refuses_a_requester_who_is_not_listed",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "identify a person by the login and not by the numeric id",
+     "catches": [
+      "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author",
+      "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-bot-may-hold-a-designation",
+     "catches": [
+      "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-expired-allowlist-entry-still-grants",
+     "catches": [
+      "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_authz_02_a_command_comment_arrives_with_its_authors_numeric_id",
+     "file": "crates/github/tests/negative_authz.rs"
+    },
+    {
+     "name": "negative_nt_authz_02_an_unauthorized_command_is_audited_and_gets_no_reply",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_authz_02_a_sender_who_may_not_decide_is_refused_without_a_reply",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUTHZ-05",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_05_the_stage_refuses_an_edited_request_nobody_confirmed",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-06",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_else_is_reachable",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "use an over-broad token without looking",
+     "catches": [
+      "negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_else_is_reachable",
+      "negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-07",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "let a stage that may not write get the write credential",
+     "catches": [
+      "negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request",
+      "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_authz_08",
+     "file": "apps/api/tests/webhook.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUTHZ-09",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_authz_09_an_app_that_lacks_a_required_permission_is_capped",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-app-with-a-forbidden-permission-gets-a-token",
+     "catches": [
+      "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-BUD-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    },
+    {
+     "name": "negative_nt_bud_01_a_run_over_its_limit_is_not_retried",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "ignore-the-cost-ceiling",
+     "catches": [
+      "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-BUD-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_bud_03_a_repeated_failure_asks_a_person_after_one_round",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    }
+   ],
+   "control_off": [],
+   "note": "Covered: the engine detects stagnation and escalates to a person. Not covered (gap, needs a decision): a turn cap on the agent tool, because neither accepted CLI has a turn cap flag and only the broker request count could supply one."
+  },
+  {
+   "id": "NT-BUD-07",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    },
+    {
+     "name": "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    },
+    {
+     "name": "negative_nt_bud_07_failed_attempts_are_counted_per_attempt",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "do-not-count-failed-attempts",
+     "catches": [
+      "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
+      "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+      "negative_nt_bud_07_failed_attempts_are_counted_per_attempt"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "ignore-the-request-cap",
+     "catches": [
+      "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-GATE-01",
+   "status": "proven_on_double",
+   "tests": [
+    {
+     "name": "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_01_a_new_test_file_and_an_appended_test_pass_the_path_rule",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_01_a_changed_removed_deleted_or_renamed_test_is_blocked_by_its_group",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture"
+     ]
+    }
+   ],
+   "note": "The only control-off variant, `the-workspace-lets-any-edit-in`, edits the workspace double of the test kit (`crates/testkit/src/workspace.rs`). The product applies the path rules when it takes a change in (`crates/sandbox/src/workspace/ingest.rs`, step 5) and again in the validation stage (`crates/workflow/src/gates/scope/`), and no variant removes either. The sandbox crate has tests of the product rule (`crates/sandbox/tests/workspace/`), and they are not tests of this row."
+  },
+  {
+   "id": "NT-GATE-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_02_a_test_removed_or_ignored_inside_a_source_file_is_found_at_the_source",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_02_skip_xfail_and_focus_markers_in_new_files_are_found",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_02_a_test_missing_from_the_run_of_the_candidate_is_found_by_the_baseline",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_02_a_test_that_passed_before_and_is_ignored_now_is_found_by_the_baseline",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_gate_03_the_builder_edits_ci_and_gate_files",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_03_deleting_a_protected_file_is_refused_too",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_03_a_held_out_test_a_fixture_and_the_project_policy_cannot_be_edited",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_gate_03_the_builder_edits_ci_and_gate_files"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs",
+      "negative_nt_gate_03_deleting_a_protected_file_is_refused_too"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-GATE-04",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
+      "negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not",
+      "negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-GATE-05",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_gate_05_the_builders_gate_files_do_not_change_what_runs",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_05_a_test_target_without_the_harness_is_found",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-GATE-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_06_a_forged_report_does_not_hide_a_failing_test",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_06_a_forged_summary_with_exit_code_zero_is_not_accepted",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_07_a_missing_build_tool_blocks_the_checks_that_need_it",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_missing_diagram_parser_is_blocked_and_never_passed",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_test_command_that_is_not_found_is_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_scanner_missing_from_the_image_is_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_tests_that_collect_zero_tests_are_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_gate_that_times_out_is_blocked_and_so_is_one_that_is_killed",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_cut_test_output_is_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_daemon_that_is_down_blocks_the_stage_run_and_nothing_runs",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_gate_without_a_report_blocks_whatever_the_rest_says",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_08_the_holdout_is_invisible_to_the_agent_and_present_in_verify",
+     "file": "crates/sandbox/tests/workspace/behavior.rs"
+    },
+    {
+     "name": "negative_nt_gate_08_the_holdout_is_read_only_in_verify_and_a_clean_run_ingests",
+     "file": "crates/sandbox/tests/workspace/docker.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "note": "Covered: sandbox, prompts and sinks. Not covered (gap, Slice 4): held-out evaluation data in the evals component, which does not exist yet."
+  },
+  {
+   "id": "NT-GATE-10",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_10_evidence_for_one_commit_does_not_count_for_another",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_10_a_changed_policy_or_image_makes_the_evidence_stale",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_10_a_test_that_fails_once_and_is_not_in_the_flaky_registry_is_failed",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_10_a_registry_flake_gets_one_recorded_retry_and_no_more",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template_wrote_them",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_the_corpus_has_forty_distinct_payloads_in_ten_categories_and_encodings_decode",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_part_b_the_commands_run_inside_a_real_agent_sandbox",
+     "file": "crates/workflow/tests/security/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template_wrote_them"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+      "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+      "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-egress-allowlist-matches-any-host",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+      "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog"
+     ]
+    }
+   ],
+   "parts_blocked": [
+    {
+     "part": "B",
+     "kind": "docker",
+     "reason": "The commands of the issue run by docker exec in a hardened agent sandbox (FX-EXEC) need the Docker daemon. The engine-level part runs: the model obeys, the policy denies, the stage refuses, no sink holds a canary."
+    },
+    {
+     "part": "C",
+     "kind": "live_provider",
+     "reason": "A real agent CLI driven by a scripted provider needs an installed CLI and the agent image."
+    }
+   ],
+   "note": "The sandbox, the code host and the model are labelled fakes in the engine-level tests. The rig's path rules are those of the fixture repository; the policy denial of every other protected path is checked against the real path policy."
+  },
+  {
+   "id": "NT-INJ-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction",
+     "file": "crates/spec_adapter/tests/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_02_envelope_hardening",
+     "file": "crates/workflow/tests/prompts/negative.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_02_envelope_hardening"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-INJ-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_03_part_b_the_commands_run_inside_a_real_agent_sandbox",
+     "file": "crates/workflow/tests/security/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+      "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+      "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+      "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-egress-allowlist-matches-any-host",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+     ]
+    }
+   ],
+   "parts_blocked": [
+    {
+     "part": "B",
+     "kind": "docker",
+     "reason": "FX-EXEC against the hostile fixture repository needs the Docker daemon."
+    },
+    {
+     "part": "C",
+     "kind": "live_provider",
+     "reason": "A real CLI driven by a scripted provider needs an installed CLI and the agent image."
+    }
+   ]
+  },
+  {
+   "id": "NT-INJ-04",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_composed_a_job_token_is_refused_by_every_operation_of_the_api_and_changes_nothing",
+     "file": "apps/api/tests/negative_composed.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_part_c_the_forwarded_request_keeps_the_output_in_a_tool_result_part",
+     "file": "crates/workflow/tests/security/negative.rs",
+     "needs": [
+      "live_provider"
+     ]
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-agent-may-grant-itself-a-tool",
+     "catches": [
+      "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-job-token-is-accepted-by-the-webhook-endpoint",
+     "catches": [
+      "negative_nt_inj_04_composed_a_job_token_is_refused_by_every_operation_of_the_api_and_changes_nothing"
+     ]
+    }
+   ],
+   "parts_blocked": [
+    {
+     "part": "C",
+     "kind": "live_provider",
+     "reason": "BLOCKED until a real runtime and a key exist (work package s0-agent-runtime-spike has run, but no key or installed CLI is available here)."
+    }
+   ],
+   "note": "The B and S parts: refusals, grants, approvals, audit and the data envelope (the workflow target), and the composed part: a job token of a running job is presented to every operation of apps/api/openapi.json, enumerated from the document, in seven places a credential can sit; each answer is the answer of a request with no credential, the operations that need a credential refuse it, and a digest of every row of every table but the audit log is the same before and after, and the audit log gained one row for each refused webhook delivery and nothing else. The broker is not an operation of the API: it accepts the job token by design, and its own tests are in the egress crate. Part C needs a real runtime and a key."
+  },
+  {
+   "id": "NT-INJ-06",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_inj_06_a_reviewer_pass_does_not_override_a_failed_gate",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate",
+     "file": "crates/workflow/tests/implementation/review.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-INJ-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_inj_07_claude_code_ignores_the_repositorys_hooks_servers_settings_and_instructions",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    },
+    {
+     "name": "negative_nt_inj_07_codex_ignores_the_repositorys_provider_and_instruction_files",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-LSE-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    },
+    {
+     "name": "negative_nt_lse_01_a_stale_worker_makes_no_commit",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-LSE-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    },
+    {
+     "name": "negative_nt_lse_02_a_renewal_presented_by_another_tenant_changes_nothing",
+     "file": "crates/storage/tests/claims_and_leases.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-claim-has-no-lock-and-no-version-guard",
+     "catches": [
+      "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-renewal-ignores-the-epoch",
+     "catches": [
+      "negative_nt_lse_02_a_renewal_at_another_epoch_changes_nothing",
+      "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-renewal-ignores-the-lapse",
+     "catches": [
+      "negative_nt_lse_02_a_renewal_of_a_lapsed_lease_changes_nothing",
+      "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-renewal-ignores-the-owner",
+     "catches": [
+      "negative_nt_lse_02_a_renewal_in_the_name_of_another_worker_changes_nothing",
+      "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-second-claimant-is-not-told-it-lost",
+     "catches": [
+      "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+     ]
+    }
+   ],
+   "note": "A hundred interleavings of two workers on one stage run on PostgreSQL (one winner, the other told it lost, one live lease row, the lease owned by the winner) and a renewal with the wrong owner, the wrong epoch, another tenant and after the lease lapsed. The four fences of a renewal were in one test, so a break was caught by the whole function and a fence the function did not reach was not seen (F-4); each fence has a test of its own now, and the break that removes it is caught by the test of that fence. Two things are not shown by a break, and are said so: the tenant filter of the renewal and the row-level security of the table refuse the same renewal, so removing the filter alone changes nothing (the security of the rows is held by `tenant_isolation.rs`); and the claim is held by a lock, a version guard in the update, an early check and the unique index of the live attempt, each behind the next, so only the pair of lock and guard is removed together, which the hundred interleavings catch. The separate property that a stale worker changes nothing after takeover is NT-LSE-01."
+  },
+  {
+   "id": "NT-LSE-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_lse_03_a_retry_after_a_lost_answer_makes_one_pull_request",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_retry_after_a_lost_answer_posts_one_comment_per_key",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_reporting",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_replayed_command_is_applied_once_and_answered_once",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_retry_between_push_and_open_makes_one_pull_request",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "accept a comment marker written by anyone",
+     "catches": [
+      "negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_reporting"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-MRG-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_01_a_failing_gate_refuses_approval_and_nothing_reaches_the_host",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_mrg_01_a_gate_that_is_not_clear_refuses_the_approval",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-failing-gate-does-not-stop-an-approval",
+     "catches": [
+      "negative_nt_mrg_01_a_failing_gate_refuses_approval_and_nothing_reaches_the_host",
+      "negative_nt_mrg_01_a_gate_that_is_not_clear_refuses_the_approval"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-MRG-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_02_missing_or_blocked_evidence_never_passes_a_stage",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    },
+    {
+     "name": "negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    },
+    {
+     "name": "negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    },
+    {
+     "name": "negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-moved-ledger-does-not-stop-an-approval",
+     "catches": [
+      "negative_nt_mrg_02_an_approval_after_the_ledger_moved_is_refused_as_evidence_moved"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-stale-binding-does-not-stop-an-approval",
+     "catches": [
+      "negative_nt_mrg_02_an_approval_that_saw_something_other_than_the_request_holds_is_refused_as_such"
+     ]
+    }
+   ],
+   "note": "An approval by a person who saw something other than the pull request now is refused by two checks of the judge: what the person saw is compared with what the request holds (the binding), and then with the world as it is now (the head, the tree, the base and the ledger of evidence). A person who saw an old head fails both, so the break of the first was MISSED while its filter ran only the engine scenarios. The two tests added ask for the refusal that names the binding, part by part, and for the one that names the ledger, each with the other check left nothing to refuse. The first break was called `stale-evidence-does-not-stop-an-approval` and described the wrong comparison; it is now `a-stale-binding-does-not-stop-an-approval`, and the ledger has its own."
+  },
+  {
+   "id": "NT-MRG-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_mrg_03_the_second_approver_alone_does_not_pass_a_critical_change",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-moved-head-is-not-noticed",
+     "catches": [
+      "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval",
+      "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-MRG-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_05_there_is_no_verb_for_merge_deploy_or_ready",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-06",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-bot-may-hold-a-designation",
+     "catches": [
+      "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-MRG-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_runs_at_l0",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_mrg_07_the_app_holding_workflows_is_refused_and_nothing_is_pushed",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_08_the_pull_request_stays_a_draft",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_01_a_checkout_inside_a_job_workspace_is_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_link_into_an_untrusted_place_is_resolved_and_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_policy_file_that_is_a_symbolic_link_is_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_missing_policy_is_an_error_and_there_is_no_default",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_only_the_two_fixed_file_names_are_read",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_file_that_wants_a_signed_release_is_refused_from_the_branch_source",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_the_loader_never_reads_the_environment",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_pol_02_each_widening_is_refused_and_names_its_key",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    },
+    {
+     "name": "negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    },
+    {
+     "name": "negative_nt_pol_02_tightenings_are_accepted",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    },
+    {
+     "name": "negative_nt_pol_02_approval_tightenings_are_accepted",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-widening-of-a-switch-counts-as-a-tightening",
+     "catches": [
+      "negative_nt_pol_02_each_widening_is_refused_and_names_its_key",
+      "negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too",
+      "negative_nt_pol_02_tightenings_are_accepted"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-POL-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_03_control_the_unchanged_files_load_from_a_temporary_checkout",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_unknown_key_is_refused_at_any_depth_and_named",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_wrong_schema_version_is_refused_before_anything_else",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_duplicate_key_is_refused_with_its_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_anchor_an_alias_and_a_merge_key_are_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_wrong_type_is_refused_with_the_key_path_and_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_invalid_regex_is_refused_with_its_key_and_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_invalid_glob_is_refused_with_its_key_and_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_missing_default_action_is_refused_and_so_is_any_other_value",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_identifiers_must_be_unique_and_references_must_resolve",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_the_wrong_file_is_refused_by_its_id",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_file_over_the_size_limit_is_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-04",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
+     "file": "crates/domain/tests/policy/authority.rs"
+    },
+    {
+     "name": "negative_nt_pol_04_a_protected_group_beats_write_allow",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_pol_04_a_protected_change_needs_all_three_elements",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_pol_04_a_tool_allowed_in_a_profile_but_never_grantable_is_denied",
+     "file": "crates/domain/tests/policy/tools.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
+      "negative_nt_pol_04_a_protected_group_beats_write_allow",
+      "negative_nt_pol_04_a_protected_change_needs_all_three_elements"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-POL-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_05_an_issue_body_that_asks_for_another_skill_cannot_select_one",
+     "file": "crates/spec_adapter/tests/negative.rs"
+    },
+    {
+     "name": "negative_nt_pol_05_specification_text_that_claims_authorization_grants_nothing",
+     "file": "crates/spec_adapter/tests/negative.rs"
+    },
+    {
+     "name": "negative_nt_pol_05_a_writer_that_arrives_approved_is_refused",
+     "file": "crates/workflow/tests/specification/negative.rs"
+    },
+    {
+     "name": "negative_nt_pol_05_text_that_claims_authorization_grants_nothing",
+     "file": "crates/workflow/tests/specification/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_08_the_specification_stage_may_run_four_skills_in_any_spelling_and_no_others",
+     "file": "crates/domain/tests/policy/tools.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start",
+     "file": "crates/sandbox/tests/scripted.rs"
+    },
+    {
+     "name": "negative_nt_sbx_01_a_container_the_policy_allows_is_started_after_the_inspect",
+     "file": "crates/sandbox/tests/scripted.rs"
+    },
+    {
+     "name": "negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile",
+     "file": "crates/ports/src/sandbox.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-privileged-container-is-not-refused",
+     "catches": [
+      "negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-inspect-does-not-read-the-privileged-flag",
+     "catches": [
+      "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start"
+     ]
+    }
+   ],
+   "note": "A privileged container is refused in layers: the rules a spec is held to in the port, before any container is made; the arguments the supervisor builds; and the look at the container after it was created. The scripted test sees the last, and the break of the first was MISSED because the filter ran only the scripted test. `negative_nt_sbx_01_a_privileged_spec_is_refused_by_the_port_rules_in_every_profile` holds the first on its own, and each layer has its own break. The layer of the arguments is held by the break test `break_a_privileged_container_is_caught_before_the_start` of the sandbox crate, which needs Docker and did not run here."
+  },
+  {
+   "id": "NT-SBX-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_02_each_bad_runtime_value_keeps_the_workload_from_starting",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_03_the_verify_profile_has_no_network",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_04_an_agent_on_its_job_network_reaches_no_other_job_no_external_address_and_no_metadata_address",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-05",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_the_allowed_host_works_in_every_spelling_of_its_name",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_other_methods_and_plain_proxying_are_refused",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "sidecar-ignores-the-byte-quota",
+     "catches": [
+      "negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "sidecar-resolves-before-the-allowlist",
+     "catches": [
+      "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
+      "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+      "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "sidecar-skips-the-resolved-range-check",
+     "catches": [
+      "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+      "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-SBX-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_06_read_only_root_tmpfs_capabilities_and_masked_paths_hold",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_07_resource_limits_are_in_effect_and_a_memory_hog_is_killed",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    },
+    {
+     "name": "negative_nt_sbx_07_the_disk_poll_kills_a_writer_that_passes_its_cap",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_08_the_supervisor_kills_the_container_at_the_wall_clock",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_09_a_real_sandbox_plants_hostile_entries_and_the_audit_rejects_them",
+     "file": "crates/sandbox/tests/workspace/docker.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sbx_09_every_hostile_entry_is_rejected_with_its_reason",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    },
+    {
+     "name": "negative_nt_sbx_09_a_link_to_a_host_canary_is_never_read",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    },
+    {
+     "name": "negative_nt_sbx_09_an_archive_entry_that_escapes_and_a_tar_bomb_are_refused",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-10",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_10_hostile_git_configuration_runs_nothing_on_the_host",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-11",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_11_the_mount_points_exist_and_a_hidden_write_fails_the_job",
+     "file": "crates/sandbox/tests/workspace/behavior.rs"
+    },
+    {
+     "name": "negative_nt_sbx_11_moving_a_protected_directory_is_not_stopped_inside_and_is_blocked_at_ingestion",
+     "file": "crates/sandbox/tests/workspace/docker.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-12",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_12_no_daemon_socket_is_reachable_and_none_can_be_mounted",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-13",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_13_the_job_token_is_a_file_and_no_other_credential_is_anywhere",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-SBX-14",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_14_a_stopped_daemon_a_missing_image_and_a_skeleton_sidecar_run_nothing",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sbx_14_a_stopped_daemon_a_bad_catalog_and_a_failed_sidecar_run_nothing",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-17",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_history_blocks_of_a_long_session_pass",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_beta_headers_that_enable_provider_side_tools_refuse_the_request",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_only_the_recorded_betas_and_the_beta_query_cross",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_the_answer_headers_are_a_closed_set",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-a-repeated-key",
+     "catches": [
+      "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-an-image-by-address",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-an-unlisted-field",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+      "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+      "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-an-unlisted-tool-type",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+      "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+      "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "do-not-count-failed-attempts",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "forward-the-beta-header-unchanged",
+     "catches": [
+      "negative_nt_sbx_17_only_the_recorded_betas_and_the_beta_query_cross"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "forward-the-body-without-the-schema",
+     "catches": [
+      "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused",
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+      "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "forward-the-provider-request-ids",
+     "catches": [
+      "negative_nt_sbx_17_the_answer_headers_are_a_closed_set"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-SEC-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+     "file": "crates/workflow/tests/security/negative_sec.rs"
+    },
+    {
+     "name": "negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_sink",
+     "file": "crates/workflow/tests/security/negative_sec.rs"
+    },
+    {
+     "name": "negative_nt_sec_01_composed_a_full_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+     "file": "apps/api/tests/negative_composed.rs"
+    },
+    {
+     "name": "negative_nt_sec_01_composed_canaries_in_the_repository_the_builder_report_and_refused_requests_leave_none_in_any_sink",
+     "file": "apps/api/tests/negative_composed.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_sink"
+     ]
+    },
+    {
+     "kind": "break_test",
+     "file": "apps/api/tests/negative_composed.rs",
+     "name": "break_a_canary_in_a_pull_request_comment_is_found_by_the_sweep",
+     "catches": [
+      "negative_nt_sec_01_composed_canaries_in_the_repository_the_builder_report_and_refused_requests_leave_none_in_any_sink"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-builder-report-is-stored-as-written",
+     "catches": [
+      "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+      "negative_nt_sec_01_composed_canaries_in_the_repository_the_builder_report_and_refused_requests_leave_none_in_any_sink"
+     ]
+    }
+   ],
+   "note": "Covered: a canary of 21 classes planted in the repository, the request, the environment the model reads and the output of commands, and four ways for the model to leak it, swept in the audit log, the outbox, the ledger, every stored artifact, the prompts and the log lines (the workflow target); and the composed run through the real API, engine and stage handlers on PostgreSQL, with a canary of every class in the text of the issue, the repository files, the reports of the builder and the reviewer and the requests the API refuses, swept in the answers of the API, the error bodies, the pull request description and comments of the code host, the audit log, the outbox, the ledger, a dump of every table, the artifacts, the prompts, the log lines and the recording. Red today: the composed test with the issue text and the reviewer report (findings F-6 and F-7); the composed test without them passes. Not covered: the standard output of a command in the composed run, because the fake sandbox stores it without the redaction the real adapter applies (that adapter is tested in the sandbox crate); NATS messages and memory stores, which do not exist (Slice 2 and Slice 4)."
+  },
+  {
+   "id": "NT-SEC-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_02_a_token_split_over_two_writes_is_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_terminal_codes_between_the_characters_do_not_hide_a_token",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_control_bytes_between_the_characters_do_not_hide_a_token",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_a_coloured_token_is_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_zero_width_characters_between_the_characters_do_not_hide_a_token",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_every_encoding_of_a_registered_secret_is_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_encodings_mixed_with_invisible_characters_are_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_an_unknown_random_string_is_flagged_and_not_blocked",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_ordinary_text_with_the_word_password_is_untouched",
+     "file": "crates/domain/tests/redaction.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent",
+     "file": "crates/github/tests/negative_text.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-text-bound-for-github-is-not-checked-for-a-secret",
+     "catches": [
+      "negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-SEC-04",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_sec_04_a_body_over_the_length_cap_is_refused_and_not_cut",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_sec_04_hostile_text_does_not_reach_the_pull_request",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_04_a_linked_image_and_a_lone_backtick_do_not_reach_the_pull_request",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "markdown-bound-for-github-is-sent-as-written",
+     "catches": [
+      "negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-SEC-05",
+   "status": "proven_on_double",
+   "tests": [
+    {
+     "name": "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_a_token_in_source_blocks_the_change_and_its_text_is_never_kept",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_a_private_key_in_documentation_blocks_the_change",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_secret_bearing_files_are_hidden_paths_that_no_change_may_add",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_only_the_lines_the_change_adds_are_scanned",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_a_file_that_cannot_be_scanned_in_full_is_not_a_clean_file",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
+      "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused"
+     ]
+    }
+   ],
+   "note": "The only control-off variant, `the-workspace-skips-the-secret-scan`, edits the workspace double of the test kit (`crates/testkit/src/workspace.rs`). The product scans a change for secrets when it takes it in (`crates/sandbox/src/workspace/ingest.rs`, step 6) and again in the secret scan gate (`crates/workflow/src/gates/scope/secrets.rs`), and no variant removes either. No test under `crates/sandbox/tests` expects the refusal `SecretFound`, so a variant aimed at the product ingestion would have no test to fail today."
+  },
+  {
+   "id": "NT-SEC-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_07_secret_bearing_files_are_not_read_and_nothing_secret_reaches_context",
+     "file": "crates/workflow/tests/intake_repo/repo_intel.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_09_the_adapter_starts_no_process_and_prints_no_credential",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_sec_09_the_recorded_processes_hold_no_secret_and_start_no_shell",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sec_09_no_argument_or_environment_holds_the_job_token",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-10",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_10_tokens_are_revoked_when_a_job_succeeded_failed_was_cancelled_or_was_orphaned",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_sec_10_a_running_job_keeps_its_tokens_through_the_sweep",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_sec_10_a_revocation_that_fails_is_kept_and_retried",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-11",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_11_model_context_exclusions",
+     "file": "crates/workflow/tests/prompts/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_11_reviewer_inputs_hold_no_builder_justification",
+     "file": "crates/workflow/tests/prompts/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_01_nothing_is_fetched_before_the_decision",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_package_no_one_knows_goes_to_a_security_approver_and_nothing_is_fetched",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_decision_for_another_version_starts_nothing",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_name_absent_from_the_registry_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_package_first_published_three_days_ago_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_near_miss_of_a_popular_name_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_name_equal_to_an_internal_package_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_unknown_registry_facts_are_treated_as_the_worst_case",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_an_ordinary_package_still_needs_a_human",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_well_known_popular_package_new_to_the_repository_needs_a_human",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_name_on_the_organization_list_but_absent_from_the_lockfile_is_new",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_control_a_name_already_in_the_base_lockfile_asks_nobody",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_no_registry_fact_approves_anything",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_the_policy_has_no_automatic_approval_key",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_the_facts_the_human_sees_are_recorded",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_login_is_not_an_identity",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_an_approval_is_bound_to_the_exact_name_version_and_checksum",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_02_a_build_script_and_an_install_script_never_run_in_the_fetch_profile",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_02_the_policy_denies_repository_code_and_installs_in_the_fetch_profile",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_02_a_build_script_runs_only_in_the_verify_sandbox_which_has_no_network",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_03_a_tampered_lockfile_fails_the_gate_and_makes_no_container",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_git_dependency_and_a_patch_section_fail_the_gate",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_lockfile_source_edit_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_lockfile_checksum_edit_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_git_dependency_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_path_dependency_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_lockfile_package_with_no_source_and_no_manifest_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_patch_section_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_replace_section_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_an_alternate_registry_in_the_build_configuration_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_an_alternate_registry_in_a_dependency_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_the_hostile_fixture_build_configuration_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_05_an_image_that_is_listed_but_not_on_this_host_is_refused",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sup_05_a_tag_an_unknown_digest_or_a_missing_image_is_refused",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TEN-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_ten_01",
+     "file": "crates/storage/tests/tenant_isolation.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TEN-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_ten_05",
+     "file": "apps/api/tests/http_api.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied",
+     "file": "crates/domain/tests/policy/commands.rs"
+    },
+    {
+     "name": "negative_nt_tool_01_shell_metacharacters_are_literals_and_a_payload_runs_unprivileged",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-TOOL-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_tool_02_forbidden_command_class_matrix",
+     "file": "crates/domain/tests/policy/commands.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_tool_02_forbidden_command_class_matrix"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-TOOL-03",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused",
+     "file": "crates/domain/tests/policy/tools.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-agent-may-grant-itself-a-tool",
+     "catches": [
+      "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-TOOL-04",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_tool_04_path_policy_refuses_traversal_encoding_and_hidden_files",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_tool_04_writes_outside_the_writable_mounts_and_protected_paths_are_refused",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason",
+     "file": "crates/domain/tests/policy/paths.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-parent-component-is-not-refused",
+     "catches": [
+      "negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason"
+     ]
+    }
+   ],
+   "note": "The refusal of a path made of `..` is made by two checks: the one that names a parent component, and the one that refuses every component of dots and blanks. A test that asks only whether the path was refused cannot see the first gone, so `negative_nt_tool_04_each_traversal_shape_is_refused_for_its_own_reason` asks for the reason and the rule that is audited (`reject_dotdot`), and a component of dots that is not `..` for its own (`normalization`). The break was MISSED until that test existed (its filter ran only the test that asks whether the path was refused). The part that runs inside the container needs Docker and did not run."
+  },
+  {
+   "id": "NT-TOOL-05",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_tool_05_argument_injection_is_denied_by_forbidden_args",
+     "file": "crates/domain/tests/policy/commands.rs"
+    },
+    {
+     "name": "negative_nt_tool_05_argument_injection_changes_nothing_outside_the_sandbox",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-argument-is-allowed",
+     "catches": [
+      "negative_nt_tool_05_argument_injection_is_denied_by_forbidden_args"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-TOOL-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_06_the_tools_environment_is_the_adapters_list_and_nothing_the_repository_or_agent_wrote",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_06_a_container_created_with_a_loader_variable_is_not_a_target",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_06_hostile_request_values_never_become_environment_names",
+     "file": "crates/runtime/tests/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_07_a_run_that_outlasts_its_deadline_is_interrupted_and_reports_what_it_has",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    },
+    {
+     "name": "negative_nt_tool_07_a_background_child_in_its_own_session_dies_with_the_container",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    },
+    {
+     "name": "negative_nt_tool_07_a_flood_of_output_is_cut_at_the_cap_and_the_run_still_ends",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ],
+     "ran": {
+      "on": "2026-10-29",
+      "result": "PASSED",
+      "with": "Docker server 29.9.2 on the machine of the review, the factory-sandbox images present, one run of nextest with the nine row filters"
+     }
+    }
+   ],
+   "control_off": [],
+   "note": "The tests need the Docker daemon and ran against it on 2026-10-29: they passed. They are not run on a machine without the daemon, where they are BLOCKED and never passed. No control-off variant exists for this row yet."
+  },
+  {
+   "id": "NT-TOOL-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_09_the_valid_document_is_accepted_so_the_rejections_below_mean_something",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_an_unknown_field_is_rejected_and_named",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_wrong_types_are_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_nesting_10000_deep_is_rejected_before_parsing",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_a_10_mb_body_is_rejected_for_its_size_without_being_read",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_invalid_utf8_is_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_a_traversal_path_is_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_duplicate_keys_and_trailing_data_are_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_messages_never_echo_what_the_document_said",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_a_value_that_is_too_deep_is_refused_by_the_port_without_recursion",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_the_port_refuses_a_large_value",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_every_valid_example_fits_the_default_limits",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_any_body_over_the_limit_is_too_large",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_nesting_is_refused_exactly_beyond_the_limit",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_arbitrary_bytes_never_panic",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_well_formed_documents_pass_the_pre_parse_checks",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WEB-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_web_05",
+     "file": "apps/api/tests/http_api.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WH-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_wh_01",
+     "file": "apps/api/tests/webhook.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-delivery-that-fails-verification-is-acknowledged",
+     "catches": [
+      "negative_nt_wh_01"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-WH-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_wh_02",
+     "file": "apps/api/tests/webhook.rs"
+    },
+    {
+     "name": "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    },
+    {
+     "name": "negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "skip the signature comparison",
+     "catches": [
+      "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+      "negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "accept a delivery that has only the legacy SHA-1 header",
+     "catches": [
+      "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+      "negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-WH-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_wh_03_the_raw_body_decides_and_the_body_is_read_only_after_it",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WH-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_wh_04",
+     "file": "apps/api/tests/webhook.rs"
+    }
+   ],
+   "control_off": [],
+   "note": "Covered: one job and one outbox row for fifty concurrent deliveries of one signed request. Not covered (gap, Slice 2): publishing to NATS and the idempotent consumer."
+  },
+  {
+   "id": "NT-WH-06",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "identify a person by the login and not by the numeric id",
+     "catches": [
+      "negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-WH-09",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_wh_09_the_factorys_own_events_and_other_bots_events_are_ignored",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-bot-is-not-a-bot",
+     "catches": [
+      "negative_nt_wh_09_the_factorys_own_events_and_other_bots_events_are_ignored"
+     ]
+    }
+   ]
+  }
+ ],
+ "rows_outside_p0": [
+  {
+   "id": "NT-KEY-01",
+   "owner": {
+    "wp": "s1-apps-composition",
+    "crate": "composition"
+   },
+   "priority": "P1",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "held_the_key_file_is_checked_for_mode_link_size_and_kind",
+     "file": "crates/composition/tests/security_rereview/signing.rs"
+    },
+    {
+     "name": "held_a_rotation_to_the_same_key_is_refused",
+     "file": "crates/composition/tests/security_rereview/signing.rs"
+    },
+    {
+     "name": "rr_5_a_key_with_no_entropy_is_refused",
+     "file": "crates/composition/tests/security_rereview/signing.rs"
+    },
+    {
+     "name": "a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why",
+     "file": "crates/composition/tests/external_world.rs"
+    },
+    {
+     "name": "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "in_production_a_key_in_a_directory_others_can_write_is_refused",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_key_file_must_belong_to_the_user_the_process_runs_as",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_key_file_that_group_or_others_can_read_is_refused",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_rotation_by_files_accepts_the_previous_key_and_nothing_older",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_short_key_and_a_repeated_key_are_refused",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "from_bytes_refuses_a_previous_key_equal_to_the_current_one",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "rotated_from_refuses_a_previous_key_equal_to_the_current_one",
+     "file": "crates/composition/src/decision_signing.rs"
+    },
+    {
+     "name": "a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root",
+     "file": "crates/composition/src/decision_signing.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-key-file-in-a-directory-of-another-user-is-accepted",
+     "catches": [
+      "a_key_file_must_belong_to_the_owner_of_its_directory_or_the_directory_to_root"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-key-file-of-another-user-is-accepted",
+     "catches": [
+      "a_key_file_must_belong_to_the_user_the_process_runs_as"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-key-in-a-directory-others-can-write-is-accepted",
+     "catches": [
+      "in_production_a_key_in_a_directory_others_can_write_is_refused"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-previous-key-never-ends",
+     "catches": [
+      "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-rotation-from-a-key-to-itself-is-accepted",
+     "catches": [
+      "rotated_from_refuses_a_previous_key_equal_to_the_current_one"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-rotation-to-the-same-key-is-accepted",
+     "catches": [
+      "a_rotation_by_files_accepts_the_previous_key_and_nothing_older",
+      "from_bytes_refuses_a_previous_key_equal_to_the_current_one"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-secret-file-may-be-read-by-group-and-others",
+     "catches": [
+      "held_the_key_file_is_checked_for_mode_link_size_and_kind",
+      "a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "production-keeps-a-previous-key-with-no-end",
+     "catches": [
+      "the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-test-constructor-accepts-the-same-key-twice",
+     "catches": [
+      "a_short_key_and_a_repeated_key_are_refused",
+      "held_a_rotation_to_the_same_key_is_refused"
+     ]
+    }
+   ],
+   "note": "Added for finding F-5, and its breaks completed in the revision after. Every check of a secret key file has a test and a break: the mode (`a-secret-file-may-be-read-by-group-and-others`); the owner of the file, the owner of its directory, and a directory above it that others can write; the end of a previous key, and a previous key with no end in production; and the refusal of a previous key equal to the current one, which is written in three constructors (`from_bytes`, `rotated_from`, `fixed_for_tests`) and has one test and one break for each. The break that removes it from `from_bytes` was MISSED because the only test ran through `fixed_for_tests`, the second copy. The rule about the owner of the directory is a function of two owners, `goes_with_its_directory`, because a test cannot make a file that belongs to another user. The owner and directory checks are written for the decision signing key files; the other secret files get the mode, kind, size and link check only."
+  }
+ ]
+}

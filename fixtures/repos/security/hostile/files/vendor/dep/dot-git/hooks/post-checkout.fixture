@@ -1,0 +1,2 @@
+#!/bin/sh
+touch @@MARKER_DIR@@/git-hook-post-checkout

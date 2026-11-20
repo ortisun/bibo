@@ -1,0 +1,61 @@
+{
+  "base_commit": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+  "fake": true,
+  "head_commit": "17b2fc7f3f7ee7ee6276ec57d1c8574f6848e02a",
+  "kind": "implementation-evidence",
+  "refusal": {
+    "code": "protected-path-changed",
+    "paths": [
+      {
+        "path": ".github/workflows/ci.yml",
+        "rule": "deny_write"
+      }
+    ],
+    "task": "read-json-option"
+  },
+  "rework_round": null,
+  "tasks": [
+    {
+      "built_on": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+      "changes": [
+        {
+          "kind": "modified",
+          "path": "src/lib.rs"
+        }
+      ],
+      "commit": "17b2fc7f3f7ee7ee6276ec57d1c8574f6848e02a",
+      "diff_stats": {
+        "additions": 142,
+        "deletions": 91
+      },
+      "key": "write-json-formatter",
+      "reported_by_builder": {
+        "commands": [
+          {
+            "argv": [
+              "cargo",
+              "test",
+              "--locked",
+              "--lib"
+            ],
+            "exit_code": 0
+          }
+        ],
+        "ignored_instructions": [],
+        "note": "These are the builder's own statements. They are not evidence.",
+        "tests_added": [
+          "fr_001_the_json_text_has_the_three_keys_in_order",
+          "fr_001_an_empty_text_gives_zero_counts_in_json",
+          "fr_004_the_json_text_holds_the_object_and_no_other_text",
+          "sc_001_the_json_counts_are_the_plain_counts"
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "cost_micro_usd": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "requests": 0
+  }
+}

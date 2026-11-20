@@ -1,0 +1,12 @@
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 28, "t_ms": 129464}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.github.com", "qtype": 28, "t_ms": 129466}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.github.com", "qtype": 1, "t_ms": 129467}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 1, "t_ms": 129468}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.github.com", "t_ms": 129468}
+{"client": "10.77.55.4", "first_bytes": 1542, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "chatgpt.com", "t_ms": 129469}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 28, "t_ms": 129482}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 1, "t_ms": 129483}
+{"client": "10.77.55.4", "first_bytes": 1542, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "chatgpt.com", "t_ms": 129484}
+{"client": "10.77.55.4", "kind": "dns", "name": "ab.chatgpt.com", "qtype": 1, "t_ms": 129493}
+{"client": "10.77.55.4", "kind": "dns", "name": "ab.chatgpt.com", "qtype": 28, "t_ms": 129494}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "ab.chatgpt.com", "t_ms": 129495}

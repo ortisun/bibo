@@ -1,0 +1,512 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "title-shape-two-characters",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["title-schema-shape"],
+      "breaks": ["title-schema-shape"],
+      "verdict": "block",
+      "reason": "Two characters is below the three-character minimum that the schema allows.",
+      "suggested_fix": "Write a short sentence that names the outcome, for example 'Show an error when the upload fails'.",
+      "input": {
+        "title": "Ok"
+      }
+    },
+    {
+      "id": "title-shape-trailing-space",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-schema-shape"],
+      "breaks": ["title-schema-shape"],
+      "verdict": "block",
+      "reason": "The trailing space fails the schema pattern. The author fixes it, the gate does not trim it.",
+      "suggested_fix": "Remove the trailing space.",
+      "input": {
+        "title": "Add password reset support "
+      }
+    },
+    {
+      "id": "title-shape-over-100-characters",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-schema-shape", "title-too-long"],
+      "breaks": ["title-schema-shape"],
+      "verdict": "block",
+      "reason": "107 characters is over the schema limit of 100, so this is a block and not the length warning.",
+      "suggested_fix": "Cut the title to one clause, for example 'Show a clear message when an avatar upload is too large'.",
+      "input": {
+        "title": "Show a clear error message on the account settings page when a profile avatar upload is over the size limit"
+      }
+    },
+    {
+      "id": "title-shape-exactly-100-characters",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "tags": ["boundary"],
+      "exercises": ["title-schema-shape", "title-too-long"],
+      "breaks": ["title-too-long"],
+      "verdict": "warn",
+      "reason": "100 characters is allowed by the schema but above the 90-character warning line.",
+      "suggested_fix": "Shorten the title and move the detail into the body.",
+      "input": {
+        "title": "Show a clear error message on the account settings page when an avatar upload is over the size limit"
+      }
+    },
+    {
+      "id": "title-shape-exactly-90-characters",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "tags": ["boundary"],
+      "exercises": ["title-too-long"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "90 characters is the longest title that raises no warning.",
+      "input": {
+        "title": "Show a clear message on the settings page when an avatar image is over the file size limit"
+      }
+    },
+    {
+      "id": "title-shape-95-characters",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-too-long"],
+      "breaks": ["title-too-long"],
+      "verdict": "warn",
+      "reason": "95 characters is above the 90-character warning line and below the schema limit.",
+      "suggested_fix": "Shorten the title to one clause, for example 'Show a clear message when an avatar upload is too large'.",
+      "input": {
+        "title": "Show a clear error message on the settings page when the avatar upload is larger than the limit"
+      }
+    },
+    {
+      "id": "title-prefix-bracket-tag",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["title-opaque-prefix"],
+      "breaks": ["title-opaque-prefix"],
+      "verdict": "block",
+      "reason": "A leading bracketed tag is a taxonomy label, not part of the outcome.",
+      "suggested_fix": "Fix the login timeout on slow networks",
+      "input": {
+        "title": "[BUG] Login fails on slow networks"
+      }
+    },
+    {
+      "id": "title-prefix-ticket-code-colon",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-opaque-prefix"],
+      "breaks": ["title-opaque-prefix"],
+      "verdict": "block",
+      "reason": "A work item code in front of the title duplicates what metadata already holds.",
+      "suggested_fix": "Add password reset support",
+      "input": {
+        "title": "WI-0192: Add password reset support"
+      }
+    },
+    {
+      "id": "title-prefix-near-miss-hyphenated-term",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-opaque-prefix"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A hyphenated technical term at the start is not an identifier followed by a separator.",
+      "input": {
+        "title": "OIDC-based login for the admin console"
+      }
+    },
+    {
+      "id": "title-prefix-near-miss-trailing-issue-number",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-opaque-prefix"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A native issue number at the end is a reference, not a prefix.",
+      "input": {
+        "title": "Fix login redirect after password reset (#123)"
+      }
+    },
+    {
+      "id": "title-label-pipe",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-machine-label"],
+      "breaks": ["title-machine-label"],
+      "verdict": "block",
+      "reason": "A pipe separates a role label from the title. The schema also rejects any pipe.",
+      "suggested_fix": "Add login endpoint",
+      "input": {
+        "title": "Add login endpoint | backend"
+      }
+    },
+    {
+      "id": "title-label-agent-tag-after-words",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-machine-label"],
+      "breaks": ["title-machine-label"],
+      "verdict": "block",
+      "reason": "A role tag appended to a readable title is still machine bookkeeping.",
+      "suggested_fix": "Add login endpoint",
+      "input": {
+        "title": "Add login endpoint [AGENT:BACKEND]"
+      }
+    },
+    {
+      "id": "title-label-no-ordinary-word",
+      "kind": "title",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["title-machine-label"],
+      "breaks": ["title-machine-label"],
+      "verdict": "block",
+      "reason": "The title is one code and has no ordinary word.",
+      "suggested_fix": "Describe the runbook, for example 'Document how to retrain the agent after a data change'.",
+      "input": {
+        "title": "DRL-RUNBOOK-REV2"
+      }
+    },
+    {
+      "id": "title-label-near-miss-optional-brackets",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["title-machine-label"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Brackets with mixed-case text and no colon are ordinary prose.",
+      "input": {
+        "title": "Handle [Optional] fields in the parser"
+      }
+    },
+    {
+      "id": "title-label-near-miss-role-word",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-machine-label"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The word role is ordinary prose. Only an upper-case ROLE or AGENT stamp with a separator is a label.",
+      "input": {
+        "title": "Add a role picker to the team settings page"
+      }
+    },
+    {
+      "id": "title-label-near-miss-the-word-pipe",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["title-machine-label"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The word pipe is fine. Only the pipe character is blocked.",
+      "input": {
+        "title": "Explain how the shell pipe operator works"
+      }
+    },
+    {
+      "id": "title-vague-fix-the-bugs",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "Only generic words, so nothing says which bugs or what behavior changes.",
+      "suggested_fix": "Name the bug, for example 'Fix the crash when saving an empty profile'.",
+      "input": {
+        "title": "Fix the bugs"
+      }
+    },
+    {
+      "id": "title-vague-misc-changes",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "A bucket title that cannot be verified.",
+      "suggested_fix": "Split the work into tasks that each name one outcome.",
+      "input": {
+        "title": "Misc changes"
+      }
+    },
+    {
+      "id": "title-vague-near-miss-specific-docs",
+      "kind": "title",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["title-vague"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Starts with the vague pair 'update documentation' but names the document, so the deterministic rule passes.",
+      "input": {
+        "title": "Update documentation for the restore procedure"
+      }
+    },
+    {
+      "id": "title-vague-near-miss-status-word-inside",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-vague"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "'task complete' appears inside a real feature title and does not start it.",
+      "input": {
+        "title": "Allow users to mark a task complete"
+      }
+    },
+    {
+      "id": "title-vague-near-miss-version-number",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["title-vague"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A version number after a product name is not a placeholder like 'part 3'.",
+      "input": {
+        "title": "Support Python 3"
+      }
+    },
+    {
+      "id": "title-type-conventional-commit",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-type-tag"],
+      "breaks": ["title-type-tag"],
+      "verdict": "warn",
+      "reason": "A commit-style type and scope in front of the title.",
+      "suggested_fix": "Add OpenID Connect login",
+      "input": {
+        "title": "feat(auth): add OpenID Connect login"
+      }
+    },
+    {
+      "id": "title-type-caps-word-colon",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-type-tag"],
+      "breaks": ["title-type-tag"],
+      "verdict": "warn",
+      "reason": "A priority word with a colon is metadata in the title.",
+      "suggested_fix": "Restore the login page",
+      "input": {
+        "title": "URGENT: restore the login page"
+      }
+    },
+    {
+      "id": "title-type-fix-colon",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-type-tag"],
+      "breaks": ["title-type-tag"],
+      "verdict": "warn",
+      "reason": "A type word and a colon turn the title into a label.",
+      "suggested_fix": "Fix the password reset email that is not sent",
+      "input": {
+        "title": "Fix: password reset email is not sent"
+      }
+    },
+    {
+      "id": "title-type-near-miss-colon-inside",
+      "kind": "title",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["title-type-tag"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A colon inside the title, not after a leading type word, is ordinary punctuation.",
+      "input": {
+        "title": "Explain the retry fix: when it applies"
+      }
+    },
+    {
+      "id": "title-type-near-miss-leading-verb",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-type-tag"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A leading verb without a colon is a normal title.",
+      "input": {
+        "title": "Fix the login redirect after a password reset"
+      }
+    },
+    {
+      "id": "title-case-all-capitals",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-not-sentence-case"],
+      "breaks": ["title-not-sentence-case"],
+      "verdict": "warn",
+      "reason": "Every word is in capitals.",
+      "suggested_fix": "Add password reset support",
+      "input": {
+        "title": "ADD PASSWORD RESET SUPPORT"
+      }
+    },
+    {
+      "id": "title-case-every-word-capitalised",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-not-sentence-case"],
+      "breaks": ["title-not-sentence-case"],
+      "verdict": "warn",
+      "reason": "Title Case instead of sentence case.",
+      "suggested_fix": "Add password reset support",
+      "input": {
+        "title": "Add Password Reset Support"
+      }
+    },
+    {
+      "id": "title-case-near-miss-product-names",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-not-sentence-case"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Product names are capitalised but the long words are not.",
+      "input": {
+        "title": "Add GitHub App installation tokens"
+      }
+    },
+    {
+      "id": "title-case-near-miss-allowed-acronyms",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-not-sentence-case", "text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Widely understood names are capitalised, the rest is sentence case.",
+      "input": {
+        "title": "Add support for OAuth and OIDC"
+      }
+    },
+    {
+      "id": "title-punctuation-period",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-trailing-punctuation"],
+      "breaks": ["title-trailing-punctuation"],
+      "verdict": "warn",
+      "reason": "Titles do not end with a period.",
+      "suggested_fix": "Add password reset support",
+      "input": {
+        "title": "Add password reset support."
+      }
+    },
+    {
+      "id": "title-punctuation-ellipsis",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-trailing-punctuation"],
+      "breaks": ["title-trailing-punctuation"],
+      "verdict": "warn",
+      "reason": "An ellipsis suggests unfinished text.",
+      "suggested_fix": "Add password reset support",
+      "input": {
+        "title": "Add password reset support..."
+      }
+    },
+    {
+      "id": "title-punctuation-near-miss-version",
+      "kind": "title",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["title-trailing-punctuation"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The final character is a digit. A dot inside a version number is fine.",
+      "input": {
+        "title": "Add support for version 2.0"
+      }
+    },
+    {
+      "id": "title-punctuation-near-miss-question",
+      "kind": "title",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["title-trailing-punctuation"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A question mark is allowed for a question title.",
+      "input": {
+        "title": "Why does the scheduler stop after a restart?"
+      }
+    },
+    {
+      "id": "title-outcome-improve-the-module",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "tags": ["vague-title"],
+      "exercises": ["title-lacks-concrete-outcome", "title-vague"],
+      "breaks": ["title-lacks-concrete-outcome"],
+      "verdict": "warn",
+      "reason": "Well formed and not caught by the deterministic rules, but it does not say what gets better.",
+      "suggested_fix": "Name the behavior, for example 'Lock an account after five failed sign-in attempts'.",
+      "input": {
+        "title": "Improve the authentication module"
+      }
+    },
+    {
+      "id": "title-outcome-rework-the-dashboard",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-lacks-concrete-outcome"],
+      "breaks": ["title-lacks-concrete-outcome"],
+      "verdict": "warn",
+      "reason": "'Rework' names an activity, not a result.",
+      "suggested_fix": "Say what users can do afterwards, for example 'Let users filter the dashboard by date'.",
+      "input": {
+        "title": "Rework the dashboard"
+      }
+    },
+    {
+      "id": "title-outcome-near-miss-specific-behavior",
+      "kind": "title",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-lacks-concrete-outcome"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Names the trigger and the visible result.",
+      "input": {
+        "title": "Show an error message when the login password is wrong"
+      }
+    }
+  ]
+}

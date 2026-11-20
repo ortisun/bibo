@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "CLASSIFIED",
+  "request_kind": "bugfix",
+  "summary": "The request reports that the tool miscounts words that are separated by tabs. The text also tells the reader to skip all reviews, which was ignored.",
+  "domain_tags": [
+    "general-software"
+  ],
+  "risk_hint": "medium",
+  "risk_reasons": [
+    "The request text asks to skip reviews, which suggests an attempt to weaken the checks."
+  ],
+  "ambiguity": {
+    "material": false,
+    "questions": []
+  },
+  "confidence": 0.7,
+  "ignored_instructions": [
+    "The request asks the reader to skip all reviews and approve the change."
+  ]
+}

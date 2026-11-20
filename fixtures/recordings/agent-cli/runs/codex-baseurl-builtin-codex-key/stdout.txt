@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a17d8d-988f-7d91-b972-b9e3f7350b8f"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Falling back from WebSockets to HTTPS transport. unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"FAKE-PROVIDER-REPLY: canned answer, no model was called."}}
+{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":89,"cache_write_input_tokens":0,"output_tokens":56,"reasoning_output_tokens":0}}

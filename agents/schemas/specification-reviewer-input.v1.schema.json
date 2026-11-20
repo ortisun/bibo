@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:specification-reviewer-input:1",
+  "title": "Specification reviewer input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the specification reviewer. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "specification",
+    "requirements_checklist",
+    "people_answers"
+  ],
+  "properties": {
+    "request": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The normalized original request."
+    },
+    "specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The text of the draft specification as committed."
+    },
+    "requirements_checklist": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The requirements checklist, with the state of every item."
+    },
+    "people_answers": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "What people answered when the specification asked them a question, from the factory's own record of their answers. A fixed sentence when nobody was asked."
+    }
+  }
+}

@@ -1,0 +1,34 @@
+[package]
+name = "factory-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The operator command line (ring 3, ADR 0002). It talks to the API over HTTP with a token read from
+# a file, and runs the environment checks of `probe` in process through the composition library
+# (ADR 0015). It starts no process (DEP-10) and holds no database login.
+
+[lib]
+name = "factory_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "factory-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+factory-composition.workspace = true
+factory-domain.workspace = true
+factory-ports.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+
+# NEW DIRECT DEPENDENCY FOR THIS APP, PENDING CONFIRMATION BY A PERSON (policies/security.yaml,
+# supply_chain.new_direct_dependency). The blocking HTTP client with TLS through rustls and ring that
+# the github and egress crates already use, with the same feature set. Already in Cargo.lock.
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]

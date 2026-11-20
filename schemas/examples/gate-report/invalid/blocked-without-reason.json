@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "gate_report_id": "018f3a80-2d33-7b55-8c66-7d8e9fa0b1c4",
+    "gate_id": "secret-scan",
+    "gate_version": "1.0.0",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21",
+    "execution_mode": "production",
+    "trusted_definition": {
+      "source": "central_config",
+      "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+      "definition_sha256": "sha256:a4996a52070adbb34af917e1c6ba21688db286cd5255a221e21a0da80dc107f0"
+    }
+  },
+  "title": "Secret scan could not run",
+  "outcome": "BLOCKED",
+  "reason": "The secret scanner is not installed in the sandbox image, so the scan did not run. A scan that did not run cannot count as a pass.",
+  "started_at": "2026-10-27T09:16:32Z",
+  "finished_at": "2026-10-27T09:16:33Z",
+  "environment": {
+    "fidelity": "real",
+    "executor_kind": "sandbox_command",
+    "sandbox": {
+      "sandbox_id": "sbx-7f3a92",
+      "image_digest": "sha256:6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d",
+      "os": "linux",
+      "arch": "aarch64",
+      "network": "none"
+    },
+    "tool_versions": []
+  },
+  "commands": [
+    {
+      "argv": [
+        "secret-scanner",
+        "--version"
+      ],
+      "executed": true,
+      "exit_code": 127,
+      "timed_out": false,
+      "started_at": "2026-10-27T09:16:32Z",
+      "finished_at": "2026-10-27T09:16:33Z",
+      "stdout": {
+        "sha256": "sha256:7cc4f43fca3a38e9a1e4320da365a87b6cb88ea4ca45ddf1822576c3e16383a5",
+        "media_type": "text/plain",
+        "size_bytes": 0
+      },
+      "stderr": {
+        "sha256": "sha256:f8fe7e62b98d23b61a0066ce95fdf5b86b900f516f09874000faa9fa48daddcb",
+        "media_type": "text/plain",
+        "size_bytes": 38
+      }
+    }
+  ],
+  "evidence_hash": "sha256:b371afbed6328e32990a17cf4d1e9668fbe9e23e550bdbcc5091c18c58b1d0a0",
+  "baseline_comparison": {
+    "delta": "not_compared"
+  }
+}

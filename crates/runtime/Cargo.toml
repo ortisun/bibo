@@ -1,0 +1,36 @@
+[package]
+name = "factory-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# `runtime` is an adapter crate (ring 2). The reference for its dependencies is the `runtime` entry of
+# docs/architecture/crate-dependency-rules.json. Every crate below is on that list. The versions are
+# the ones already in Cargo.lock, all MIT or Apache-2.0, and they pass `cargo deny`.
+#
+# The crate starts no process: it builds command lines and runs them through `SandboxSession`
+# (ST-03). `async-trait` is not on the list, so the port traits are implemented with the signatures
+# the macro would write (see `src/future.rs`).
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+
+# Reads the tool's event streams and writes the small JSON documents the tools take.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+
+thiserror = "2.0.21"
+tracing = "0.1.44"
+
+# `time` bounds the per-call waits in the supervision code, `sync` guards the probe cache and `rt`
+# is the runtime the futures run on. No `process`: this crate never starts a program.
+tokio = { version = "1.54.1", default-features = false, features = ["time", "sync", "rt"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# The tests implement port traits with `#[async_trait]`. Dev dependencies are outside rule DEP-04.
+async-trait = "0.1.92"
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }

@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "spec_id": "018f3a7e-7a10-7e20-8b30-1c4d5e6f7a81",
+    "spec_version": 1,
+    "status": "approved",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "execution_mode": "production",
+    "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+    "created_at": "2026-10-27T08:50:00Z",
+    "approved_at": "2026-10-27T08:58:30Z",
+    "approved_by": {
+      "principal_id": "018f3a00-0000-7000-8000-00000000a001",
+      "role": "approver",
+      "basis": "human_decision"
+    }
+  },
+  "title": "Add a JSON output option to the word count tool",
+  "summary": "Users of the word count command line tool want to read its results from scripts. The tool should print the line, word and character counts as a JSON object when asked, and keep its current output otherwise.",
+  "requirements": [
+    {
+      "id": "FR-001",
+      "statement": "When the --json flag is given, the tool MUST print the line, word and character counts as one JSON object on standard output.",
+      "priority": "P1",
+      "user_story_ref": "US1",
+      "acceptance_scenario_ids": [
+        "AS-001",
+        "AS-002"
+      ]
+    },
+    {
+      "id": "FR-002",
+      "statement": "When the --json flag is not given, the tool MUST keep its current plain-text output unchanged.",
+      "priority": "P1",
+      "user_story_ref": "US1",
+      "acceptance_scenario_ids": [
+        "AS-003"
+      ]
+    },
+    {
+      "id": "FR-003",
+      "statement": "When the input file cannot be read, the tool MUST write an error message to standard error and exit with a non-zero status, with or without the --json flag.",
+      "priority": "P2",
+      "user_story_ref": "US2",
+      "acceptance_scenario_ids": [
+        "AS-004"
+      ]
+    }
+  ],
+  "acceptance_scenarios": [
+    {
+      "id": "AS-001",
+      "user_story_ref": "US1",
+      "given": "A text file with 3 lines, 7 words and 31 characters.",
+      "when": "The user runs the tool with the --json flag and the file path.",
+      "then": "Standard output contains one JSON object with the keys lines, words and characters set to 3, 7 and 31.",
+      "requirement_ids": [
+        "FR-001"
+      ]
+    },
+    {
+      "id": "AS-002",
+      "user_story_ref": "US1",
+      "given": "An empty text file.",
+      "when": "The user runs the tool with the --json flag and the file path.",
+      "then": "Standard output contains one JSON object with all three counts set to 0.",
+      "requirement_ids": [
+        "FR-001"
+      ]
+    },
+    {
+      "id": "AS-003",
+      "user_story_ref": "US1",
+      "given": "The same text file as in the first scenario.",
+      "when": "The user runs the tool without the --json flag.",
+      "then": "Standard output is byte-for-byte identical to the output of the previous release.",
+      "requirement_ids": [
+        "FR-002"
+      ]
+    },
+    {
+      "id": "AS-004",
+      "user_story_ref": "US2",
+      "given": "A path that does not exist.",
+      "when": "The user runs the tool with the --json flag and that path.",
+      "then": "Standard output is empty, standard error explains that the file could not be read, and the exit status is not zero.",
+      "requirement_ids": [
+        "FR-003"
+      ]
+    }
+  ],
+  "nonfunctional_requirements": [
+    {
+      "id": "SC-001",
+      "statement": "The tool produces JSON output for a 10 MB text file in under 2 seconds on the reference machine.",
+      "metric": {
+        "name": "wall_time",
+        "target": 2,
+        "unit": "seconds"
+      }
+    }
+  ],
+  "risks": [
+    {
+      "id": "RISK-001",
+      "description": "Scripts may already parse the plain-text output, so any change to it would break them.",
+      "likelihood": "medium",
+      "impact": "high",
+      "mitigation": "The plain-text output stays byte-for-byte identical and a regression test compares it with a stored sample."
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q-001",
+      "question": "Should the JSON keys appear in a fixed documented order?",
+      "blocking": false,
+      "status": "answered",
+      "answer": "Yes. The order is lines, words, characters and it is documented.",
+      "source_marker": "NEEDS CLARIFICATION"
+    }
+  ],
+  "constraints": [
+    {
+      "id": "C-001",
+      "kind": "technical",
+      "description": "The tool must not add third-party dependencies for JSON output."
+    }
+  ],
+  "out_of_scope": [
+    "Machine-readable output formats other than JSON.",
+    "Counting several files in one run."
+  ],
+  "provenance": {
+    "spec_kit": {
+      "cli_version": "1.1.2",
+      "integration": "claude",
+      "skills_invoked": [
+        "specify",
+        "clarify",
+        "checklist"
+      ]
+    },
+    "host_runtime": {
+      "adapter": "claude-code-cli",
+      "adapter_version": "2.1.311",
+      "fidelity": "real"
+    },
+    "artifacts": [
+      {
+        "role": "specification",
+        "path": "specs/001-json-output/spec.md",
+        "sha256": "sha256:2c4bb9213f94f1060a920e811038368e0af5dd22c7fb16277c2932c880c83d5c"
+      },
+      {
+        "role": "requirements_checklist",
+        "path": "specs/001-json-output/checklists/requirements.md",
+        "sha256": "sha256:6da624dba5235ba1f3901c904a78ea41debbfb0d8a488aeba7063dba508d9211"
+      },
+      {
+        "role": "constitution",
+        "path": ".specify/memory/constitution.md",
+        "sha256": "sha256:eb9a7650cd532b61ca9fec0cf82924c7ba7390bfc898e2d45bc067967b989cc5"
+      }
+    ],
+    "source_request": {
+      "sha256": "sha256:1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047",
+      "language": "pt-BR"
+    },
+    "feature_directory": "specs/word-count-json-output"
+  }
+}

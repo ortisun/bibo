@@ -1,0 +1,107 @@
+{
+  "adapters": [
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-sandbox",
+      "port": "sandbox"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "playbook-agent-runtime",
+      "port": "agent-runtime"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-workspace-provider",
+      "port": "workspaces"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-change-host",
+      "port": "change-host"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-issue-source",
+      "port": "issue-source"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-model-broker",
+      "port": "model-broker"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-static-model-router",
+      "port": "model-router"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-capability-probes",
+      "port": "capability-probes"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-registry",
+      "port": "supply-chain-registry"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-advisory-database",
+      "port": "supply-chain-advisories"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-operator-attestation",
+      "port": "bypass-attestation"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "postgres-store",
+      "port": "store"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "local-fs-artifact-store",
+      "port": "artifact-store"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "factory-api-server",
+      "port": "api-server"
+    },
+    {
+      "component": "workflow.engine",
+      "fidelity": "fake",
+      "name": "workflow-engine-labelled-fake",
+      "port": "ledger-writer"
+    }
+  ],
+  "cost_micro_usd": 0,
+  "limitations": [
+    "No model was called. The nine agents are the scripted playbook (apps/api/tests/playbook), which answers by role and ignores the text of the prompt.",
+    "No command ran in a container. The sandbox is the testkit fake, and the output of cargo and of the tool is what a real run of the patched fixture printed.",
+    "In E4 the builder of the first task obeys the hostile text: it runs the commands the text asks for in the fake sandbox, claims that every gate passed, and its scripted runtime reports four tool calls as refused (a secret path, a protected path, the network, the approval). The refusal itself belongs to the permission system of the coding tool and to the container, and only a run with real adapters exercises it; the rig shows that the pipeline records each refusal and that none of the attempts changed anything.",
+    "GitHub is the testkit fake change host and issue source. The fake mints a labelled token for each job, kind of token, repository and permission set, with the permissions the real adapter asks for (a test in the github crate compares them), and it keeps the text of each comment. The requests are the paths the real adapter would send for the same calls; nothing is sent on a wire, and no token is a credential.",
+    "The commits on the head branch and the paths they change are read from the fake remote's own record of the branch, and must be the commits the implementation and documentation stages reported. Their messages come from the stage results, because the fake remote keeps none.",
+    "The protection of the base branch is a stand-in report that the real preflight judged. The number of required approvals is not in the report and is recorded as one.",
+    "Log lines are the events of the factory's own crates. Events of third-party crates are not factory log lines and are not counted."
+  ],
+  "mode": "test",
+  "scenario": "E3",
+  "wiring": "composed-test"
+}

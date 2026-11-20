@@ -1,0 +1,57 @@
+{
+  "additions": 124,
+  "base_commit": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+  "changes": [
+    {
+      "kind": "modified",
+      "path": "CHANGELOG.md"
+    },
+    {
+      "kind": "modified",
+      "path": "README.md"
+    }
+  ],
+  "code_head": "7dc386e27d39cf7a7335246d590a15ffe1838829",
+  "deletions": 107,
+  "fake": true,
+  "head_commit": "383df8b89555c04caa53e4ed8010a0dcf83e39a9",
+  "kind": "documentation-result",
+  "out_of_scope": [],
+  "refusal": null,
+  "reported": {
+    "claims": [
+      {
+        "claim": "With the --json option the program prints one JSON object with the keys lines, words and characters, in that order.",
+        "evidence_path": "tests/json_output.rs"
+      },
+      {
+        "claim": "A file that cannot be read gives no output and exit status 1, with and without the --json option.",
+        "evidence_path": "tests/json_output.rs"
+      }
+    ],
+    "files_written": [
+      "README.md",
+      "CHANGELOG.md"
+    ],
+    "ignored_instructions": [],
+    "plan_coverage": [
+      {
+        "plan_item": "usage-json",
+        "status": "covered"
+      },
+      {
+        "plan_item": "changelog-entry",
+        "status": "covered"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "spent": {
+    "cost_micro_usd": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "requests": 0
+  },
+  "unresolved_claims": [],
+  "writer_ran": true
+}

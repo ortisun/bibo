@@ -1,0 +1,1775 @@
+//! The loopback end-to-end run: the REAL worker, started from a configuration file in which every
+//! external endpoint is a loopback fake, over a real PostgreSQL, judged from the outside.
+//!
+//! `scripts/e2e.sh` scenarios E3 to E9 run the pipeline with test doubles, and `apps/api/tests/
+//! live_run.rs` proves the real adapters in a rig that copies the worker's assembly. This file
+//! starts the binary itself (`factory-worker`, `FACTORY_CONFIG`), so the path from the file to the
+//! adapters to the stage runs to the events to GitHub is the one a deployment takes. Only the other
+//! side of each adapter is a fake: FX-GH for GitHub, a refusing server for the model providers and
+//! another for the registry. Nothing here touched real GitHub, real providers or real keys. See
+//! `docs/reports/real-adapter-loopback-e2e.md`.
+//!
+//! What the judgments read is what the fake GitHub received, and what the run left in PostgreSQL
+//! (jobs, stage runs, audit, outbox, ledger), the artifact store and the worker's logs. They never
+//! read the worker's memory.
+//!
+//! The checks are pure functions of an [`Observed`] value, so each deliberate break below runs the
+//! same checks against a wiring that was damaged on purpose, and against evidence that was
+//! doctored, and requires a complaint that names the broken fact.
+//!
+//! What needs a sandbox is not here: the classifier of the intake stage runs in a Docker container
+//! of the pinned `agent` image. The scenarios that reach that point stop at it with a named cause.
+//! `the_worker_probes_both_agent_tools_in_a_real_container_when_it_starts` is the one test here that
+//! needs the images; it is ignored in the default suite and panics with `BLOCKED:` where they are
+//! missing, which is never a pass. The whole job, to a draft pull request, is
+//! `apps/api/tests/live_run.rs`, and it is `BLOCKED` in the same way.
+
+mod support;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use factory_domain::ids::JobId;
+use factory_testkit::fx::canary::{Canary, CanarySet, Sweeper};
+use factory_testkit::fx::github::{AppConfig, AuthSummary, MintRecord, TokenView};
+use factory_testkit::fx::sinks::{SinkCollector, SinkKind};
+use serde_json::Value;
+use support::loopback::*;
+
+/// The name of the repository as an installation token is narrowed to it.
+const REPO_NAME: &str = "word-count";
+
+// ---- what a run is judged on ---------------------------------------------------------------
+
+/// Everything the judgments read, collected after a run.
+struct Observed {
+    job: String,
+    job_status: String,
+    job_correlation: String,
+    /// Stage kind and its status.
+    stages: BTreeMap<String, String>,
+    /// `METHOD /route/template` of each request the fake GitHub received, and how many.
+    routes: BTreeMap<String, usize>,
+    /// The same, for the requests it answered with a success.
+    done: BTreeMap<String, usize>,
+    comments: Vec<String>,
+    labels: Vec<String>,
+    mints: Vec<MintRecord>,
+    tokens: Vec<TokenView>,
+    /// Every request that carried an installation token, in order.
+    token_uses: Vec<TokenUse>,
+    merges: usize,
+    pulls: usize,
+    pushes: usize,
+    permission_lookups: usize,
+    provider_hits: Vec<String>,
+    registry_hits: Vec<String>,
+    audit: Vec<Value>,
+    outbox: Vec<Value>,
+    ledger_entries: usize,
+    ledger_problem: Option<String>,
+    /// Where a credential was found, with no value.
+    leaks: Vec<String>,
+    /// What the security policy says about the App's permissions.
+    required: BTreeMap<String, String>,
+    forbidden: Vec<String>,
+}
+
+fn level(text: &str) -> u8 {
+    match text {
+        "read" => 1,
+        "write" => 2,
+        "admin" => 3,
+        _ => 0,
+    }
+}
+
+/// The routes an intake that ends at a refusal or at the sandbox may use, and nothing else.
+const INTAKE_ROUTES: [&str; 12] = [
+    "GET /app",
+    "POST /app/installations/{id}/access_tokens",
+    "DELETE /installation/token",
+    "GET /repos/{owner}/{repo}",
+    "GET /repos/{owner}/{repo}/issues/{number}",
+    "GET /repos/{owner}/{repo}/issues/{number}/events",
+    "GET /repos/{owner}/{repo}/issues/{number}/comments",
+    "POST /repos/{owner}/{repo}/issues/{number}/comments",
+    // The one read of GraphQL: the time the body of an issue with the approving label was last
+    // edited (DR-1). The worker makes it for an approved design, and only then.
+    "POST /graphql",
+    // The two reads of the workflow check of the protection preflight (threat T-48) that only it
+    // makes: the commit at the tip of the default branch, and the files of `.github/workflows` at
+    // that commit. The check also reads the repository for the name of its default branch. Only the
+    // workflow read class may make them; see `judge_common`.
+    BRANCH_ROUTE,
+    CONTENTS_ROUTE,
+    // The read of classic branch protection of the default branch, which the protection
+    // preflight makes next to the rulesets (the owner's decision of 2026-11-12). Only the
+    // protection read class may make it; see `judge_common`.
+    PROTECTION_ROUTE,
+];
+
+const BRANCH_ROUTE: &str = "GET /repos/{owner}/{repo}/branches/{branch}";
+const PROTECTION_ROUTE: &str = "GET /repos/{owner}/{repo}/branches/{branch}/protection";
+const CONTENTS_ROUTE: &str = "GET /repos/{owner}/{repo}/contents/{path}";
+/// What a token may always do: give itself up.
+const REVOKE_ROUTE: &str = "DELETE /installation/token";
+/// The read of the repository, which names its default branch.
+const REPOSITORY_ROUTE: &str = "GET /repos/{owner}/{repo}";
+
+/// The permissions of the token that reads the workflow files before a job is admitted. The owner
+/// accepted this third class on 2026-11-12, as an amendment to LB-03: it reads contents, so the
+/// judgment holds it to the repository, the branch and the contents routes, and to paths under
+/// `.github/workflows`.
+const WORKFLOW_READ_CLASS: [(&str, &str); 2] = [("contents", "read"), ("metadata", "read")];
+
+/// The permissions of the token that reads classic branch protection before a job is admitted.
+/// The owner allowed the App `administration: read` on 2026-11-12 for this read; the judgment
+/// holds this fourth class to the protection route alone, and refuses that route to every other
+/// token.
+const PROTECTION_READ_CLASS: [(&str, &str); 2] = [("administration", "read"), ("metadata", "read")];
+
+/// One request that carried an installation token.
+#[derive(Clone)]
+struct TokenUse {
+    token_id: u64,
+    route: String,
+    path: String,
+}
+
+/// Whether the path of a request to the contents route is the workflow directory or a file in it.
+fn is_under_the_workflow_directory(path: &str) -> bool {
+    let directory = format!("/repos/{REPO}/contents/.github/workflows");
+    let inside = path == directory
+        || path
+            .strip_prefix(&directory)
+            .is_some_and(|rest| rest.starts_with('/'));
+    inside
+        && !path
+            .split('/')
+            .any(|part| part == ".." || part == "%2e%2e" || part == "%2E%2E")
+}
+
+async fn observe(lab: &Lab, job: JobId, issue: u64) -> Observed {
+    let mut routes = BTreeMap::new();
+    let mut done = BTreeMap::new();
+    let mut token_uses = Vec::new();
+    for request in lab.fake.requests() {
+        if let AuthSummary::InstallationToken { token_id } = &request.auth {
+            token_uses.push(TokenUse {
+                token_id: *token_id,
+                route: request.route.clone(),
+                path: request.path.clone(),
+            });
+        }
+        if request.status < 300 {
+            *done.entry(request.route.clone()).or_insert(0) += 1;
+        }
+        *routes.entry(request.route).or_insert(0) += 1;
+    }
+    let stages = lab
+        .stage_runs(job)
+        .await
+        .iter()
+        .map(|run| {
+            (
+                run["stage_kind"].as_str().unwrap_or_default().to_owned(),
+                run["status"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let correlation = lab
+        .deployment
+        .db
+        .text(&format!(
+            "SELECT correlation_id::text FROM jobs WHERE id = '{}'",
+            job.as_uuid()
+        ))
+        .await
+        .unwrap_or_default();
+    let policies = factory_composition::startup::load_policy(&lab.protected, &[]).expect("policy");
+    let app = &policies.security.credentials.github_app;
+    let (ledger_entries, ledger_problem) = lab.ledger_check(job).await;
+    Observed {
+        job: job.as_uuid().to_string(),
+        job_status: lab.job_status(job).await,
+        job_correlation: correlation,
+        stages,
+        routes,
+        done,
+        comments: lab.fake.comments(REPO, issue),
+        labels: lab.fake.labels_of(REPO, issue),
+        mints: lab.fake.mints(),
+        tokens: lab.fake.tokens(),
+        token_uses,
+        merges: lab.fake.merge_attempts().len(),
+        pulls: lab.fake.pull_numbers(REPO).len(),
+        pushes: lab.fake.pushes().len(),
+        permission_lookups: lab.fake.permission_lookups().len(),
+        provider_hits: lab.provider_seen.all(),
+        registry_hits: lab.registry_seen.all(),
+        audit: lab.audit(job).await,
+        outbox: lab.outbox(job).await,
+        ledger_entries,
+        ledger_problem,
+        leaks: lab.credential_leaks(issue).await,
+        required: app.permissions_required.clone(),
+        forbidden: app.permissions_forbidden.clone(),
+    }
+}
+
+// ---- the judgments --------------------------------------------------------------------------
+
+/// What every run on the intake path must satisfy whatever the issue was.
+///
+/// Some of these checks hold in every scenario of this file whether or not the gate works, because
+/// no scenario goes far enough to do the thing: nothing merges, opens a pull request or pushes, no
+/// request reaches a model provider or a registry, and no later stage starts, since each run ends at
+/// a refusal or at an agent image that the test removed on purpose (DR-8). They are not evidence
+/// that the gate holds those back. They are here so that a run that does one of them is seen, and
+/// `break_what_the_judgments_hold_true_by_construction_is_seen_when_it_really_happens` makes each
+/// really happen, through the real fakes and the real database, and shows the complaint. What does
+/// discriminate is the text of the comment and the audit lines of the refusal and the pass.
+fn judge_common(o: &Observed, ledger_expected: bool) -> Vec<String> {
+    let mut problems = Vec::new();
+    // Nothing that publishes, merges or pushes. These are separate facts, so each is reported.
+    if o.merges != 0 {
+        problems.push(format!("a merge was attempted {} time(s)", o.merges));
+    }
+    if o.pulls != 0 {
+        problems.push(format!("{} pull request(s) exist", o.pulls));
+    }
+    if o.pushes != 0 {
+        problems.push(format!("{} branch change(s) were pushed", o.pushes));
+    }
+    if o.permission_lookups != 0 {
+        problems.push(
+            "the collaborator-permission endpoint was used; the allowlist decides, not GitHub roles"
+                .to_owned(),
+        );
+    }
+    // Exactly the routes of the path, and no other.
+    let allowed: BTreeSet<&str> = INTAKE_ROUTES.into_iter().collect();
+    for route in o.routes.keys() {
+        if !allowed.contains(route.as_str()) {
+            problems.push(format!(
+                "GitHub received a request on a route the path never uses: {route}"
+            ));
+        }
+    }
+    // Tokens: each narrowed to the one repository, with permissions the policy lists and none it
+    // forbids, and none above what the policy requires.
+    if o.mints.is_empty() {
+        problems.push(
+            "no installation token was requested, so nothing could have read the issue".to_owned(),
+        );
+    }
+    for mint in &o.mints {
+        match &mint.requested_repositories {
+            Some(repositories) if repositories.len() == 1 && repositories[0] == REPO_NAME => {}
+            other => problems.push(format!(
+                "token {} was not narrowed to the one repository: asked for {other:?}",
+                mint.token_id
+            )),
+        }
+        if mint.granted_repositories != [REPO.to_owned()] {
+            problems.push(format!(
+                "token {} covers {:?}, not the one repository",
+                mint.token_id, mint.granted_repositories
+            ));
+        }
+        match &mint.requested_permissions {
+            None => problems.push(format!(
+                "token {} asked for no permission list, which means all of the App's",
+                mint.token_id
+            )),
+            Some(permissions) => {
+                // LB-03, exactly: the token that reads the issue holds `issues: read` and
+                // `metadata: read`, and the token of a reply holds `issues: write` and
+                // `metadata: read`. A wider token that is still under the ceilings of the policy
+                // (`contents: read` put back, for instance) is a complaint. The third class reads
+                // the workflow files for the protection preflight (T-48) and holds `contents: read`
+                // and `metadata: read` with no `issues`; where it may be used is judged below. The
+                // fourth reads classic branch protection and holds `administration: read` and
+                // `metadata: read` and nothing else; it too is held to its route below.
+                let shape: Vec<(&str, &str)> = permissions
+                    .iter()
+                    .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
+                    .collect();
+                if shape != [("issues", "read"), ("metadata", "read")]
+                    && shape != [("issues", "write"), ("metadata", "read")]
+                    && shape != WORKFLOW_READ_CLASS
+                    && shape != PROTECTION_READ_CLASS
+                {
+                    problems.push(format!(
+                        "token {} has {permissions:?}, which is not the intake read class (issues: read, metadata: read), the reply class (issues: write, metadata: read), the workflow read class (contents: read, metadata: read) or the protection read class (administration: read, metadata: read)",
+                        mint.token_id
+                    ));
+                }
+                for (name, wanted) in permissions {
+                    if o.forbidden.iter().any(|f| f == name) {
+                        problems.push(format!(
+                            "token {} holds the forbidden permission {name}",
+                            mint.token_id
+                        ));
+                    }
+                    match o.required.get(name) {
+                        Some(ceiling) if level(wanted) <= level(ceiling) => {}
+                        _ => problems.push(format!(
+                            "token {} asked for {name}: {wanted}, above what the policy grants the App",
+                            mint.token_id
+                        )),
+                    }
+                }
+                // A token that writes carries nothing else of value: issues, and metadata to read.
+                if permissions.values().any(|l| level(l) >= 2)
+                    && permissions.iter().any(|(name, l)| {
+                        !(name == "metadata" && l == "read") && !(name == "issues" && l == "write")
+                    })
+                {
+                    problems.push(format!(
+                        "token {} can write and carries more than issues: write and metadata: read: {permissions:?}",
+                        mint.token_id
+                    ));
+                }
+            }
+        }
+    }
+    // The amendment to LB-03: the token that can read contents reaches the repository (for the name
+    // of the default branch), the tip of that branch and the workflow directory, and nothing else;
+    // and no other token reaches the branch or the contents.
+    let workflow_readers: BTreeSet<u64> = o
+        .mints
+        .iter()
+        .filter(|mint| {
+            mint.requested_permissions.as_ref().is_some_and(|p| {
+                p.iter()
+                    .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
+                    .eq(WORKFLOW_READ_CLASS)
+            })
+        })
+        .map(|mint| mint.token_id)
+        .collect();
+    for used in &o.token_uses {
+        let reads_files = used.route == BRANCH_ROUTE || used.route == CONTENTS_ROUTE;
+        if workflow_readers.contains(&used.token_id) {
+            if !reads_files && used.route != REVOKE_ROUTE && used.route != REPOSITORY_ROUTE {
+                problems.push(format!(
+                    "token {} is of the workflow read class and was used on {}, which is not one of its routes",
+                    used.token_id, used.route
+                ));
+            }
+            if used.route == CONTENTS_ROUTE && !is_under_the_workflow_directory(&used.path) {
+                problems.push(format!(
+                    "token {} read {}, which is not under .github/workflows",
+                    used.token_id, used.path
+                ));
+            }
+        } else if reads_files {
+            problems.push(format!(
+                "token {} is not of the workflow read class and was used on {}",
+                used.token_id, used.route
+            ));
+        }
+    }
+    // The owner's decision of 2026-11-12: the token that can read administration reaches the
+    // classic protection of the branch and nothing else (it may give itself up); and no other
+    // token reaches that route.
+    let protection_readers: BTreeSet<u64> = o
+        .mints
+        .iter()
+        .filter(|mint| {
+            mint.requested_permissions.as_ref().is_some_and(|p| {
+                p.iter()
+                    .map(|(name, wanted)| (name.as_str(), wanted.as_str()))
+                    .eq(PROTECTION_READ_CLASS)
+            })
+        })
+        .map(|mint| mint.token_id)
+        .collect();
+    for used in &o.token_uses {
+        let reads_protection = used.route == PROTECTION_ROUTE;
+        if protection_readers.contains(&used.token_id) {
+            if !reads_protection && used.route != REVOKE_ROUTE {
+                problems.push(format!(
+                    "token {} is of the protection read class and was used on {}, which is not its route",
+                    used.token_id, used.route
+                ));
+            }
+        } else if reads_protection {
+            problems.push(format!(
+                "token {} is not of the protection read class and was used on {}",
+                used.token_id, used.route
+            ));
+        }
+    }
+    for token in &o.tokens {
+        if token.uses_after_revoke != 0 {
+            problems.push(format!(
+                "token {} was used {} time(s) after it was revoked",
+                token.id, token.uses_after_revoke
+            ));
+        }
+    }
+    // The model providers and the registry were never asked: no sandbox ran, so no agent did.
+    if !o.provider_hits.is_empty() {
+        problems.push(format!(
+            "the model-provider fake received {:?}",
+            o.provider_hits
+        ));
+    }
+    if !o.registry_hits.is_empty() {
+        problems.push(format!("the registry fake received {:?}", o.registry_hits));
+    }
+    // Later stages never started.
+    for (kind, status) in &o.stages {
+        if kind != "INTAKE" && status != "PENDING" {
+            problems.push(format!(
+                "the stage {kind} is {status}, but intake did not pass"
+            ));
+        }
+    }
+    if o.stages.len() != 13 {
+        problems.push(format!("the job has {} stage runs, not 13", o.stages.len()));
+    }
+    // Events and evidence carry the job's correlation id, and the ledger chain verifies.
+    for (name, rows) in [("audit", &o.audit), ("outbox", &o.outbox)] {
+        if rows.is_empty() {
+            problems.push(format!("the {name} of the job is empty"));
+        }
+        for row in rows {
+            if row["correlation_id"] != Value::String(o.job_correlation.clone()) {
+                problems.push(format!(
+                    "a {name} row does not carry the job's correlation id: {row}"
+                ));
+            }
+        }
+    }
+    let events: Vec<&str> = o
+        .outbox
+        .iter()
+        .filter_map(|r| r["event_type"].as_str())
+        .collect();
+    if events.first() != Some(&"job.admitted") {
+        problems.push(format!(
+            "the job's events do not start with job.admitted: {events:?}"
+        ));
+    }
+    // A gate that ran leaves ledger entries. A stage that stopped before any gate (a sandbox that
+    // could not be made) leaves its cause in the audit log and nothing in the ledger.
+    if ledger_expected && o.ledger_entries == 0 {
+        problems.push("the evidence ledger of the job is empty".to_owned());
+    }
+    if let Some(problem) = &o.ledger_problem {
+        problems.push(format!("the ledger chain does not verify: {problem}"));
+    }
+    // No credential anywhere.
+    for leak in &o.leaks {
+        problems.push(format!("a credential was found: {leak}"));
+    }
+    problems
+}
+
+/// An issue that intake refused: one answer on the issue, a blocked job, and no status written.
+fn judge_refusal(o: &Observed, reason: &str) -> Vec<String> {
+    let mut problems = judge_common(o, true);
+    if o.job_status != "BLOCKED" {
+        problems.push(format!("the job is {}, not BLOCKED", o.job_status));
+    }
+    if o.stages.get("INTAKE").map(String::as_str) != Some("BLOCKED") {
+        problems.push(format!(
+            "the INTAKE stage run is {:?}, not BLOCKED",
+            o.stages.get("INTAKE")
+        ));
+    }
+    if o.comments.len() != 1 {
+        problems.push(format!(
+            "the person got {} comment(s) on the issue, not exactly one",
+            o.comments.len()
+        ));
+    }
+    if !o
+        .comments
+        .iter()
+        .any(|c| c.contains("design is not approved") || c.contains("`design: approved`"))
+    {
+        problems.push("the comment does not tell the person the design is not approved".to_owned());
+    }
+    if o.comments.iter().any(|c| c.contains("factory: ")) {
+        problems.push("a status comment was written for an issue intake refused".to_owned());
+    }
+    if o.labels.iter().any(|l| l.starts_with("factory: ")) {
+        problems.push(format!(
+            "a status label was written for an issue intake refused: {:?}",
+            o.labels
+        ));
+    }
+    let reasons: Vec<String> = o
+        .audit
+        .iter()
+        .filter(|r| r["action"] == "authorization_decision.denied")
+        .map(|r| r["reason"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    if !reasons
+        .iter()
+        .any(|r| r.contains("DESIGN_NOT_APPROVED") && r.contains(reason))
+    {
+        problems.push(format!(
+            "no audit record denies the design with the reason {reason}: {reasons:?}"
+        ));
+    }
+    // The only writes to GitHub are the one comment, and the only calls made are the intake's.
+    if o.done
+        .get("POST /repos/{owner}/{repo}/issues/{number}/comments")
+        .copied()
+        != Some(1)
+    {
+        problems.push("the answer was not posted exactly once".to_owned());
+    }
+    let events: Vec<&str> = o
+        .outbox
+        .iter()
+        .filter_map(|r| r["event_type"].as_str())
+        .collect();
+    if events.last() != Some(&"job.blocked") || !events.contains(&"stage_run.blocked") {
+        problems.push(format!(
+            "the job's events do not end in a block: {events:?}"
+        ));
+    }
+    problems
+}
+
+/// An approved design that stops at the sandbox: the gate passed and the image was not there.
+fn judge_gate_passed_then_sandbox(o: &Observed) -> Vec<String> {
+    judge_reached_the_sandbox(o, true)
+}
+
+/// An issue that reached the sandbox. `on_the_track` says whether it was on the design track, so
+/// that the gate judged it, or was a small change that the gate does not touch.
+fn judge_reached_the_sandbox(o: &Observed, on_the_track: bool) -> Vec<String> {
+    let mut problems = judge_common(o, false);
+    if o.job_status != "BLOCKED" {
+        problems.push(format!(
+            "the job is {}, not BLOCKED at the sandbox",
+            o.job_status
+        ));
+    }
+    let actions: Vec<(String, String)> = o
+        .audit
+        .iter()
+        .map(|r| {
+            (
+                r["action"].as_str().unwrap_or_default().to_owned(),
+                r["reason"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let gate_passed = actions.iter().any(|(a, r)| {
+        a == "authorization_decision.granted"
+            && r.starts_with("design gate passed")
+            && r.contains("approver designation")
+    });
+    if on_the_track && !gate_passed {
+        problems.push(format!(
+            "no audit record says the design gate passed for an approver: {actions:?}"
+        ));
+    }
+    // The gate says, for an issue off the track, that its rule does not apply. That is not a
+    // judgment. Any other record that names the gate is one (it passed or refused the issue).
+    if !on_the_track
+        && actions
+            .iter()
+            .any(|(_, r)| r.contains("design gate") && !r.contains("so the rule does not apply"))
+    {
+        problems.push(format!(
+            "the design gate judged an issue that is not on the design track: {actions:?}"
+        ));
+    }
+    // DG-3: for every job, on the track or off it, the text the job carries is compared with the
+    // live issue before the gate goes on, and the result is on the audit record.
+    if !actions
+        .iter()
+        .any(|(_, r)| r.contains("text of the job compared with the live issue: same"))
+    {
+        problems.push(format!(
+            "no audit record says the text of the job was compared with the live issue and found the same: {actions:?}"
+        ));
+    }
+    if !actions.iter().any(|(a, r)| {
+        a.starts_with("sandbox_created_posture_result_destroyed")
+            && r.contains("the image is not on this host")
+    }) {
+        problems.push(format!(
+            "the stop at the sandbox is not recorded with its cause: {actions:?}"
+        ));
+    }
+    // LB-02: the person is told once that the factory stopped, with the closed template of the
+    // environment notice. The text holds nothing of the error.
+    let notice = "The factory accepted this issue and checked its design, and then stopped before it could start the work.";
+    if o.comments.len() != 1 || !o.comments[0].starts_with(notice) {
+        problems.push(format!(
+            "the issue should have exactly the environment notice, and it has {:?}",
+            o.comments
+        ));
+    }
+    // The status step writes nothing before the intake stage has passed (ADR 0017, STS-1), so the
+    // label is not there, and the notice is the only post.
+    if o.labels.iter().any(|l| l.starts_with("factory: ")) {
+        problems.push(format!(
+            "a status label was written before intake passed: {:?}",
+            o.labels
+        ));
+    }
+    let posts = o
+        .routes
+        .get("POST /repos/{owner}/{repo}/issues/{number}/comments")
+        .copied()
+        .unwrap_or(0);
+    if posts != 1 {
+        problems.push(format!(
+            "the notice should be posted once, not {posts} times"
+        ));
+    }
+    problems
+}
+
+// ---- the worlds -------------------------------------------------------------------------
+
+fn design_issue(lab: &Lab, label: &str, applied_by: Person) -> u64 {
+    let number = lab.fake.add_issue(
+        REPO,
+        "Add a --json flag",
+        "Please add a --json flag to the word count tool so other programs can read the counts.",
+        REQUESTER.login,
+        &["factory"],
+    );
+    lab.fake.label_issue(REPO, number, label, applied_by.login);
+    number
+}
+
+/// Waits until the intake stage run is no longer waiting or running, then a little longer, so that
+/// a write that should not happen has time to show.
+async fn settle(lab: &mut Lab, job: JobId, what: &str) {
+    lab.wait_for(what, 60, async |lab: &Lab| {
+        let runs = lab.stage_runs(job).await;
+        let intake = runs.iter().find(|r| r["stage_kind"] == "INTAKE")?;
+        let status = intake["status"].as_str()?;
+        (!matches!(status, "PENDING" | "READY" | "RUNNING")
+            && lab.job_status(job).await == "BLOCKED")
+            .then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+}
+
+/// A catalog in which the agent image is a digest that no host has. The sandbox then stops the
+/// stage on a host that has the real images as well as on one that has not.
+fn catalog_without_the_agent_image(dir: &Path) -> PathBuf {
+    let root = support::deployment::repository_root();
+    let text = std::fs::read_to_string(root.join("infra/sandbox-images/images.json"))
+        .expect("the catalog");
+    let mut catalog: Value = serde_json::from_str(&text).expect("a JSON catalog");
+    let absent = format!("sha256:{}", random_hex(32));
+    let agent = &mut catalog["platforms"]["linux/arm64"]["images"]["agent"];
+    agent["digest"] = Value::String(absent.clone());
+    agent["image_id"] = Value::String(absent.clone());
+    agent["reference"] = Value::String(format!("factory-sandbox/agent@{absent}"));
+    let path = dir.join("images-without-the-agent.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&catalog).expect("json"))
+        .expect("a catalog file");
+    path
+}
+
+fn without_the_agent_image(text: String) -> String {
+    // The deployment directory is the parent of the artifact root the configuration names.
+    let marker = "artifacts: { root: ";
+    let start = text.find(marker).expect("the artifacts root") + marker.len();
+    let end = start
+        + text[start..]
+            .find("/artifacts }")
+            .expect("the end of the root");
+    let dir = PathBuf::from(&text[start..end]);
+    let catalog = catalog_without_the_agent_image(&dir);
+    let root = support::deployment::repository_root();
+    text.replace(
+        &format!("{}/infra/sandbox-images/images.json", root.display()),
+        &catalog.display().to_string(),
+    )
+}
+
+async fn run_refused(
+    label: &str,
+    by: Person,
+    options: Options,
+    env: &[(&str, &str)],
+) -> (Lab, JobId, u64) {
+    let mut lab = Lab::start(options).await;
+    let issue = design_issue(&lab, label, by);
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(env);
+    settle(&mut lab, job, "intake to refuse the issue").await;
+    (lab, job, issue)
+}
+
+// ---- the scenarios ----------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_design_issue_without_approval_is_refused_through_the_real_adapters() {
+    let (mut lab, job, issue) =
+        run_refused("design: in review", REQUESTER, Options::default(), &[]).await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    assert!(problems.is_empty(), "{problems:#?}");
+    // The worker was started from the file and stops when it is asked to.
+    assert_eq!(lab.stop_worker(), Some(0), "{}", lab.logs().1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_design_approved_by_a_person_who_is_not_an_approver_is_refused() {
+    // The requester applies `design: approved`. The allowlist lists them as a requester only.
+    let (lab, job, issue) =
+        run_refused("design: approved", REQUESTER, Options::default(), &[]).await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_applied_by_an_approver");
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_design_approved_by_an_approver_passes_the_gate_and_stops_at_the_sandbox_with_a_named_cause()
+ {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(without_the_agent_image)),
+        ..Options::default()
+    })
+    .await;
+    let issue = design_issue(&lab, "design: approved", APPROVER);
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(&mut lab, job, "intake to reach the sandbox").await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_gate_passed_then_sandbox(&observed);
+    assert!(problems.is_empty(), "{problems:#?}");
+    assert_eq!(lab.stop_worker(), Some(0), "{}", lab.logs().1);
+}
+
+/// A small change: no design label was ever applied. The gate does not touch it, the person is not
+/// answered, and the stage goes on to the sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issue_off_the_design_track_is_not_touched_by_the_gate_and_stops_at_the_sandbox() {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(without_the_agent_image)),
+        ..Options::default()
+    })
+    .await;
+    let issue = lab.fake.add_issue(
+        REPO,
+        "Add a --json flag",
+        "Please add a --json flag to the word count tool so other programs can read the counts.",
+        REQUESTER.login,
+        &["factory"],
+    );
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(&mut lab, job, "intake to reach the sandbox").await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_reached_the_sandbox(&observed, false);
+    assert!(problems.is_empty(), "{problems:#?}");
+    // The same evidence judged as an issue on the track is rejected: the two judgments differ.
+    assert!(!judge_reached_the_sandbox(&observed, true).is_empty());
+}
+
+// ---- deliberate breaks ----------------------------------------------------------------------
+
+/// Break 1: the GitHub adapter is pointed at the wrong base URL (the registry fake's). The worker
+/// cannot read the issue, so nobody is answered. The judgment of a refusal must complain.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_the_github_adapter_at_the_wrong_base_url_is_caught() {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(|text| {
+            // The registry fake is a different server on another port.
+            let github = text
+                .lines()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix("api_base_url: '")
+                        .map(|r| r.trim_end_matches('\'').to_owned())
+                })
+                .expect("the GitHub base URL");
+            let registry = text
+                .split("registry: { base_url: '")
+                .nth(1)
+                .and_then(|r| r.split('\'').next())
+                .expect("the registry URL")
+                .to_owned();
+            text.replace(&github, &registry)
+        })),
+        ..Options::default()
+    })
+    .await;
+    let issue = design_issue(&lab, "design: in review", REQUESTER);
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    // The intake cannot finish; give it time to try, then look.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    assert!(
+        problems.iter().any(|p| p.contains("not exactly one")),
+        "{problems:#?}"
+    );
+    assert!(
+        problems.iter().any(|p| p.contains("the job is")),
+        "{problems:#?}"
+    );
+    assert!(
+        !observed.registry_hits.is_empty()
+            && problems
+                .iter()
+                .any(|p| p.contains("the registry fake received")),
+        "the adapter's requests went to the wrong server and the judgment says so: {problems:#?}"
+    );
+    assert_eq!(lab.fake.requests().len(), 0, "GitHub received nothing");
+}
+
+/// Break 2: the App lacks the permission to write issues. The answer cannot be posted. The
+/// judgment must complain that the person got no comment.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_an_app_without_the_issues_write_permission_is_caught() {
+    let mut lab = Lab::start(Options::default()).await;
+    lab.fake
+        .set_app(AppConfig::factory_default().without_permission("issues"));
+    let issue = design_issue(&lab, "design: in review", REQUESTER);
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    // The worker did ask for a token and GitHub did refuse it: the empty issue is not a worker that
+    // never ran.
+    assert!(
+        lab.fake
+            .requests()
+            .iter()
+            .any(|r| r.status >= 400 && r.route == "POST /app/installations/{id}/access_tokens"),
+        "no token request was refused: {:?}",
+        lab.fake
+            .requests()
+            .iter()
+            .map(|r| (&r.route, r.status))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        problems.iter().any(|p| p.contains("got 0 comment(s)")),
+        "the missing scope is caught as a missing answer: {problems:#?}"
+    );
+    let _ = lab.stop_worker();
+}
+
+/// Break 3: the design gate's policy file is gone from the protected checkout. The gate fails
+/// closed: even an issue approved by an approver is not let through, and the person is told so.
+/// The test waits for the stage to be blocked and reads what the person was told, the cause on
+/// the record and the state of the job, so that a worker that died at its first claim does not
+/// satisfy it (DR-8).
+#[tokio::test(flavor = "multi_thread")]
+async fn break_a_missing_design_policy_stops_even_an_approved_issue_and_is_caught() {
+    let mut lab = Lab::start(Options {
+        checkout: Some(Box::new(|protected| {
+            std::fs::remove_file(protected.join("policies/issue-workflow.yaml"))
+                .expect("a policy file");
+        })),
+        ..Options::default()
+    })
+    .await;
+    let issue = design_issue(&lab, "design: approved", APPROVER);
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(&mut lab, job, "intake to be blocked for the missing policy").await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_gate_passed_then_sandbox(&observed);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("no audit record says the design gate passed")),
+        "{problems:#?}"
+    );
+    let (_, stderr) = lab.logs();
+    assert!(
+        stderr.contains("NOT READY"),
+        "the worker says the gate cannot judge: {stderr}"
+    );
+    // The person is told, the cause is on the record, and the job is blocked.
+    assert_eq!(observed.job_status, "BLOCKED", "{}", lab.logs().1);
+    assert_eq!(observed.comments.len(), 1, "{:?}", observed.comments);
+    assert!(
+        observed.comments[0]
+            .starts_with("The factory did not start work on this issue because it could not check whether the design is approved."),
+        "{:?}",
+        observed.comments
+    );
+    assert!(
+        observed.audit.iter().any(|r| r["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("design gate could not judge issue")),
+        "the record names the cause"
+    );
+    assert!(observed.labels.iter().all(|l| !l.starts_with("factory: ")));
+    let _ = lab.stop_worker();
+}
+
+/// Break 4: the allowlist does not list the approver. The gate bites: the same issue that passed
+/// is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_an_approver_missing_from_the_allowlist_is_refused_and_caught() {
+    let mut lab = Lab::start(Options {
+        checkout: Some(Box::new(|protected| {
+            let path = protected.join("allowlist/allowlist.yaml");
+            let text = std::fs::read_to_string(&path).expect("the allowlist");
+            // Two header lines and the requester's entry of four lines; the approver's follows.
+            let mut kept: String = text.lines().take(6).collect::<Vec<_>>().join("\n");
+            kept.push('\n');
+            std::fs::write(path, kept).expect("the allowlist");
+        })),
+        ..Options::default()
+    })
+    .await;
+    let issue = design_issue(&lab, "design: approved", APPROVER);
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(&mut lab, job, "intake to refuse").await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_gate_passed_then_sandbox(&observed);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("no audit record says the design gate passed")),
+        "{problems:#?}"
+    );
+    let refusal = judge_refusal(&observed, "not_applied_by_an_approver");
+    assert!(
+        refusal.is_empty(),
+        "the same run is a clean refusal: {refusal:#?}"
+    );
+}
+
+// ---- the judgments are shown to bite ------------------------------------------------------------
+
+async fn clean_refusal() -> (Lab, Observed) {
+    let (lab, _job, _issue, observed) = clean_refusal_of_a_job().await;
+    (lab, observed)
+}
+
+async fn clean_refusal_of_a_job() -> (Lab, JobId, u64, Observed) {
+    let (lab, job, issue) =
+        run_refused("design: in review", REQUESTER, Options::default(), &[]).await;
+    let observed = observe(&lab, job, issue).await;
+    assert_eq!(
+        judge_refusal(&observed, "not_approved"),
+        Vec::<String>::new()
+    );
+    (lab, job, issue, observed)
+}
+
+/// Sends one request to a loopback fake, as any client would, and reads the answer.
+fn call(address: std::net::SocketAddr, method: &str, path: &str) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).expect("a connection");
+    stream
+        .write_all(
+            format!("{method} {path} HTTP/1.1\r\nHost: loopback\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                .as_bytes(),
+        )
+        .expect("a request");
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+}
+
+/// What the judgments hold true by construction is seen when it really happens (DR-8). In every
+/// other scenario of this file nothing merges, pushes, opens a pull request, asks a model provider
+/// or a registry, or starts a later stage, so the checks for them pass whether or not the gate
+/// works. Here a clean refusal is followed by each of those, done through the real fakes and the
+/// real database, and the observer that the scenarios use sees it and the judgment complains. A
+/// check wired to nothing would stay silent and fail here.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_what_the_judgments_hold_true_by_construction_is_seen_when_it_really_happens() {
+    let (lab, job, issue, honest) = clean_refusal_of_a_job().await;
+    assert!(judge_refusal(&honest, "not_approved").is_empty());
+    let find = |problems: &[String], needle: &str| {
+        assert!(
+            problems.iter().any(|p| p.contains(needle)),
+            "expected a complaint containing {needle:?}, got {problems:#?}"
+        );
+    };
+    // A branch change on the code host.
+    lab.fake.push_commit(REPO, "factory/stray-branch");
+    // A call to the merge endpoint.
+    let merge = factory_testkit::fx::http::HttpRequest {
+        method: "PUT".to_owned(),
+        target: format!("/repos/{REPO}/pulls/1/merge"),
+        version: "HTTP/1.1".to_owned(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        peer: "127.0.0.1:1".parse().expect("an address"),
+    };
+    let _ = lab.fake.handle(&merge);
+    // A request to a model provider and one to a registry.
+    call(lab.provider_addr(), "POST", "/v1/messages");
+    call(lab.registry_addr(), "GET", "/api/v1/crates/serde");
+    // A later stage that started.
+    lab.deployment
+        .db
+        .run(&format!(
+            "UPDATE stage_runs SET status = 'READY', version = version + 1 WHERE job_id = '{}' AND stage_kind = 'SPECIFICATION'",
+            job.as_uuid()
+        ))
+        .await;
+    let seen = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&seen, "not_approved");
+    find(&problems, "branch change(s) were pushed");
+    find(&problems, "a merge was attempted");
+    find(&problems, "route the path never uses");
+    find(&problems, "model-provider fake received");
+    find(&problems, "registry fake received");
+    find(
+        &problems,
+        "the stage SPECIFICATION is READY, but intake did not pass",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn break_doctored_evidence_is_caught_by_each_judgment() {
+    let (_lab, honest) = clean_refusal().await;
+    let find = |problems: Vec<String>, needle: &str| {
+        assert!(
+            problems.iter().any(|p| p.contains(needle)),
+            "expected a complaint containing {needle:?}, got {problems:#?}"
+        );
+    };
+    // A merge call.
+    let mut o = honest.clone_view();
+    o.merges = 1;
+    find(judge_refusal(&o, "not_approved"), "merge was attempted");
+    // A pull request, a push, a collaborator-permission lookup.
+    let mut o = honest.clone_view();
+    o.pulls = 1;
+    o.pushes = 1;
+    o.permission_lookups = 1;
+    let problems = judge_refusal(&o, "not_approved");
+    find(problems.clone(), "pull request(s) exist");
+    find(problems.clone(), "pushed");
+    find(problems, "collaborator-permission");
+    // A route the path never uses.
+    let mut o = honest.clone_view();
+    o.routes.insert(
+        "PUT /repos/{owner}/{repo}/pulls/{number}/merge".to_owned(),
+        1,
+    );
+    find(
+        judge_refusal(&o, "not_approved"),
+        "route the path never uses",
+    );
+    // A token that is not narrowed, and one that holds a forbidden permission or asks for more
+    // than the policy grants.
+    let mut o = honest.clone_view();
+    o.mints[0].requested_repositories = None;
+    find(
+        judge_refusal(&o, "not_approved"),
+        "not narrowed to the one repository",
+    );
+    let mut o = honest.clone_view();
+    o.mints[0].requested_repositories = Some(vec![REPO_NAME.to_owned(), "other".to_owned()]);
+    find(
+        judge_refusal(&o, "not_approved"),
+        "not narrowed to the one repository",
+    );
+    // `administration` is required at `read` since the owner's decision of 2026-11-12, and `read`
+    // is its ceiling: a token that asks for `write` asks for more than the policy grants.
+    let mut o = honest.clone_view();
+    o.mints[0]
+        .requested_permissions
+        .as_mut()
+        .expect("permissions")
+        .insert("administration".to_owned(), "write".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "asked for administration: write, above what the policy grants the App",
+    );
+    // A permission the policy still forbids is caught by name.
+    let mut o = honest.clone_view();
+    o.mints[0]
+        .requested_permissions
+        .as_mut()
+        .expect("permissions")
+        .insert("organization_administration".to_owned(), "read".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "forbidden permission organization_administration",
+    );
+    let mut o = honest.clone_view();
+    o.mints[1]
+        .requested_permissions
+        .as_mut()
+        .expect("permissions")
+        .insert("contents".to_owned(), "write".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "can write and carries more",
+    );
+    // LB-03: the read token has `contents: read` again. It is under the ceilings of the policy and
+    // so passes the checks above; the exact shape of the intake token is what refuses it.
+    let mut o = honest.clone_view();
+    o.mints[0]
+        .requested_permissions
+        .as_mut()
+        .expect("permissions")
+        .insert("contents".to_owned(), "read".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "not the intake read class",
+    );
+    // The amendment to LB-03. The token of the workflow read class is used on a route that is not
+    // one of its own (it reads an issue); it reads a file outside `.github/workflows`, plainly and by climbing out of
+    // the directory; and a token of another class reads a file.
+    let reader = honest
+        .mints
+        .iter()
+        .find(|mint| {
+            mint.requested_permissions
+                .as_ref()
+                .is_some_and(|p| p.contains_key("contents"))
+        })
+        .expect("the run read the workflow files, so it minted a token that can")
+        .token_id;
+    let other = honest
+        .mints
+        .iter()
+        .find(|mint| {
+            mint.requested_permissions
+                .as_ref()
+                .is_some_and(|p| p.contains_key("issues"))
+        })
+        .expect("a token that reads the issue")
+        .token_id;
+    let mut o = honest.clone_view();
+    o.token_uses.push(TokenUse {
+        token_id: reader,
+        route: "GET /repos/{owner}/{repo}/issues/{number}".to_owned(),
+        path: format!("/repos/{REPO}/issues/1"),
+    });
+    find(judge_refusal(&o, "not_approved"), "not one of its routes");
+    for outside in [
+        format!("/repos/{REPO}/contents/src/main.rs"),
+        format!("/repos/{REPO}/contents/.github/workflows-old/ci.yml"),
+        format!("/repos/{REPO}/contents/.github/workflows/../../src/main.rs"),
+        format!("/repos/{REPO}/contents/.github"),
+    ] {
+        let mut o = honest.clone_view();
+        o.token_uses.push(TokenUse {
+            token_id: reader,
+            route: CONTENTS_ROUTE.to_owned(),
+            path: outside,
+        });
+        find(
+            judge_refusal(&o, "not_approved"),
+            "not under .github/workflows",
+        );
+    }
+    let mut o = honest.clone_view();
+    o.token_uses.push(TokenUse {
+        token_id: other,
+        route: CONTENTS_ROUTE.to_owned(),
+        path: format!("/repos/{REPO}/contents/.github/workflows"),
+    });
+    find(
+        judge_refusal(&o, "not_approved"),
+        "is not of the workflow read class",
+    );
+    // The owner's decision of 2026-11-12. The token of the protection read class is used on a
+    // route that is not its own (it reads an issue, and it reads the workflow files); a token of
+    // another class reads classic protection; and the protection read token asks for one
+    // permission more than its class.
+    let protection_reader = honest
+        .mints
+        .iter()
+        .find(|mint| {
+            mint.requested_permissions
+                .as_ref()
+                .is_some_and(|p| p.contains_key("administration"))
+        })
+        .expect("the run read classic protection, so it minted a token that can")
+        .token_id;
+    assert!(
+        honest
+            .token_uses
+            .iter()
+            .any(|used| used.token_id == protection_reader && used.route == PROTECTION_ROUTE),
+        "the honest run read classic protection with its own token"
+    );
+    for (route, path) in [
+        (
+            "GET /repos/{owner}/{repo}/issues/{number}".to_owned(),
+            format!("/repos/{REPO}/issues/1"),
+        ),
+        (
+            CONTENTS_ROUTE.to_owned(),
+            format!("/repos/{REPO}/contents/.github/workflows"),
+        ),
+        (REPOSITORY_ROUTE.to_owned(), format!("/repos/{REPO}")),
+    ] {
+        let mut o = honest.clone_view();
+        o.token_uses.push(TokenUse {
+            token_id: protection_reader,
+            route,
+            path,
+        });
+        find(
+            judge_refusal(&o, "not_approved"),
+            "is of the protection read class and was used on",
+        );
+    }
+    for intruder in [reader, other] {
+        let mut o = honest.clone_view();
+        o.token_uses.push(TokenUse {
+            token_id: intruder,
+            route: PROTECTION_ROUTE.to_owned(),
+            path: format!("/repos/{REPO}/branches/main/protection"),
+        });
+        find(
+            judge_refusal(&o, "not_approved"),
+            "is not of the protection read class",
+        );
+    }
+    let mut o = honest.clone_view();
+    o.mints
+        .iter_mut()
+        .find(|mint| mint.token_id == protection_reader)
+        .and_then(|mint| mint.requested_permissions.as_mut())
+        .expect("the protection read token")
+        .insert("contents".to_owned(), "read".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "or the protection read class",
+    );
+    // A second comment (a duplicate answer), a status label and a status comment on a refused issue.
+    let mut o = honest.clone_view();
+    o.comments.push("another".to_owned());
+    find(judge_refusal(&o, "not_approved"), "not exactly one");
+    let mut o = honest.clone_view();
+    o.labels.push("factory: working".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "status label was written",
+    );
+    // A later stage that started anyway.
+    let mut o = honest.clone_view();
+    o.stages
+        .insert("SPECIFICATION".to_owned(), "RUNNING".to_owned());
+    find(judge_refusal(&o, "not_approved"), "intake did not pass");
+    // A request that reached a model provider.
+    let mut o = honest.clone_view();
+    o.provider_hits.push("POST /v1/messages".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "model-provider fake received",
+    );
+    // A row without the job's correlation id, a broken ledger and a leak.
+    let mut o = honest.clone_view();
+    o.outbox[0]["correlation_id"] =
+        Value::String("00000000-0000-0000-0000-000000000000".to_owned());
+    find(judge_refusal(&o, "not_approved"), "correlation id");
+    let mut o = honest.clone_view();
+    o.ledger_problem = Some("a link is broken".to_owned());
+    find(
+        judge_refusal(&o, "not_approved"),
+        "ledger chain does not verify",
+    );
+    let mut o = honest.clone_view();
+    o.leaks.push("token in stderr".to_owned());
+    find(judge_refusal(&o, "not_approved"), "a credential was found");
+}
+
+/// The credential sweep is not a formality: a token planted in each kind of sink is found.
+#[tokio::test(flavor = "multi_thread")]
+async fn break_the_credential_sweep_finds_a_token_planted_in_a_log_an_audit_row_and_an_artifact() {
+    let (lab, job, issue) =
+        run_refused("design: in review", REQUESTER, Options::default(), &[]).await;
+    let token = lab
+        .fake
+        .minted_secrets()
+        .first()
+        .expect("a minted token")
+        .value()
+        .to_owned();
+    let mut sweeper = Sweeper::new(&CanarySet::generate());
+    sweeper.add(&Canary::custom("planted-token", &token));
+    let sinks = SinkCollector::new();
+    sinks.record(
+        SinkKind::Stderr,
+        "worker",
+        format!("{{\"message\":\"retrying with {token}\"}}"),
+    );
+    sinks.record(
+        SinkKind::AuditRow,
+        "audit_events",
+        format!("{{\"reason\":\"used {token}\"}}"),
+    );
+    sinks.record(SinkKind::Artifact, "artifact", token.as_bytes());
+    let report = sinks.sweep(&sweeper);
+    assert_eq!(report.hits.len(), 3, "{:?}", report.hits);
+    // And the same sweep of the real run, with the same canary, is clean.
+    let observed = observe(&lab, job, issue).await;
+    assert!(observed.leaks.is_empty(), "{:?}", observed.leaks);
+}
+
+/// The same refusal with the worker's log filter at `trace`. A credential that only a verbose log
+/// would carry (a header of a request, a token in a retry message) would be found here. The worker
+/// and the libraries it links write almost nothing more at `trace` (six lines in all in the run this
+/// was written from), so this shows that the filter is no way to a credential and nothing more.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_leaves_no_credential_with_the_log_filter_at_trace() {
+    let (mut lab, job, issue) = run_refused(
+        "design: in review",
+        REQUESTER,
+        Options::default(),
+        &[("FACTORY_LOG", "trace")],
+    )
+    .await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    assert!(problems.is_empty(), "{problems:#?}");
+    let (_, stderr) = lab.logs();
+    println!("TRACE-LOG lines {}", stderr.lines().count());
+    assert!(stderr.contains("worker loop started"), "{stderr}");
+    let _ = lab.stop_worker();
+}
+
+/// LB-05: the worker used to warn on every start that no secret of the kind `webhook_secret` was
+/// registered, a kind that the API holds and the worker never does. A warning that is always there
+/// is ignored on the day it matters. The worker starts here with GitHub configured and no webhook
+/// secret, as a worker does, and its log has no such line.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_worker_does_not_warn_about_a_secret_kind_it_never_holds() {
+    let mut lab = Lab::start(Options::default()).await;
+    lab.spawn_worker(&[]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let (stdout, stderr) = lab.logs();
+        if stdout.contains("worker loop started") || stderr.contains("worker loop started") {
+            break;
+        }
+        assert!(
+            lab.worker_ended().is_none() && std::time::Instant::now() < deadline,
+            "the worker did not reach its loop: {stderr}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (stdout, stderr) = lab.logs();
+    let _ = lab.stop_worker();
+    let all = format!("{stdout}\n{stderr}");
+    assert!(
+        !all.contains("no secret of a kind the policy lists is registered"),
+        "the worker warned about a kind it does not hold: {all}"
+    );
+    assert!(!all.contains("webhook_secret"), "{all}");
+}
+
+/// GitHub fails the way it does: a token request answered 502, the issue read answered 429 with a
+/// `Retry-After`, and the one comment post answered 502. The test doubles never fail like this. The
+/// adapter retries the first two inside the call; the failed post fails the attempt, and the engine
+/// runs it again. The person is answered exactly once.
+#[tokio::test(flavor = "multi_thread")]
+async fn transient_github_failures_are_retried_and_the_person_is_answered_exactly_once() {
+    let mut lab = Lab::start(Options::default()).await;
+    let issue = design_issue(&lab, "design: in review", REQUESTER);
+    lab.fake.fail_next(
+        "POST /app/installations/{id}/access_tokens",
+        502,
+        "Bad Gateway",
+    );
+    lab.fake
+        .rate_limit_next("GET /repos/{owner}/{repo}/issues/{number}", 1);
+    lab.fake.fail_next(
+        "POST /repos/{owner}/{repo}/issues/{number}/comments",
+        502,
+        "Bad Gateway",
+    );
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(
+        &mut lab,
+        job,
+        "intake to refuse the issue after the failures",
+    )
+    .await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    assert!(problems.is_empty(), "{problems:#?}");
+    let statuses: Vec<u16> = lab.fake.requests().iter().map(|r| r.status).collect();
+    for failed in [502, 429] {
+        assert!(
+            statuses.contains(&failed),
+            "the fault {failed} never happened: {statuses:?}"
+        );
+    }
+    let events: Vec<&str> = observed
+        .outbox
+        .iter()
+        .filter_map(|r| r["event_type"].as_str())
+        .collect();
+    assert!(
+        events.contains(&"attempt.failed"),
+        "the failed attempt is in the events: {events:?}"
+    );
+    assert_eq!(observed.comments.len(), 1);
+}
+
+// ---- the real start-up probe ----------------------------------------------------------------
+
+/// The scenarios above declare the capabilities of the agent tools (`declare_capabilities`), as the
+/// local profile allows, because the real probe runs both tools in a container of the agent image.
+/// Without the image the probe cannot run, and the worker must say so and not start. This is the
+/// one place where the real-adapter path differs most from the declared one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_must_probe_its_tools_is_blocked_and_says_why_when_the_agent_image_is_missing()
+ {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(|text| {
+            without_the_agent_image(text.replace("runtimes: { declare_capabilities: true }\n", ""))
+        })),
+        ..Options::default()
+    })
+    .await;
+    assert!(
+        !std::fs::read_to_string(&lab.deployment.config_path)
+            .expect("config")
+            .contains("declare_capabilities"),
+        "the configuration still declares the capabilities"
+    );
+    lab.spawn_worker(&[]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = lab.worker_ended() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker neither started nor stopped"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let (_, stderr) = lab.logs();
+    assert_eq!(status.code(), Some(3), "{stderr}");
+    let blocked: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("BLOCKED: "))
+        .collect();
+    assert!(
+        blocked
+            .iter()
+            .any(|l| l.starts_with("BLOCKED: CapabilityProbes: runtimes: ")),
+        "the BLOCKED line names the port and the key: {blocked:?}"
+    );
+    println!("BLOCKED-LINES {blocked:#?}");
+    assert!(stderr.contains("BLOCKED is not a pass"), "{stderr}");
+    // It claimed no work and spoke to nobody.
+    assert_eq!(
+        lab.fake.requests().len(),
+        0,
+        "GitHub was not asked anything"
+    );
+    assert!(lab.provider_seen.all().is_empty() && lab.registry_seen.all().is_empty());
+}
+
+// ---- where the Docker daemon is (LB-01) ------------------------------------------------------------
+
+/// Adds keys to the `sandbox` table of the configuration the deployment wrote.
+fn with_sandbox_keys(text: String, keys: &str) -> String {
+    // The rig ends the table with the remote it adds: `remote: { directory: <dir>/remote } }`.
+    let marker = "/remote } }";
+    assert!(
+        text.contains(marker),
+        "the sandbox table of the rig changed"
+    );
+    text.replace(marker, &format!("/remote }}, {keys} }}"))
+}
+
+/// Waits for the worker to end and returns its exit code and the text it printed on standard error.
+async fn wait_for_the_end(lab: &mut Lab) -> (Option<i32>, String) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = lab.worker_ended() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker neither started nor stopped"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    (status.code(), lab.logs().1)
+}
+
+/// The probe makes an agent sandbox, which is the first thing that asks the daemon anything. With
+/// `sandbox.docker_host` on a socket nobody listens on, the daemon does not answer and the worker
+/// says so; before the key existed the client ran with an empty environment and always used the
+/// default socket, whatever the operator had set. The worker's own environment names the real
+/// socket here, to show that it is the key that decides and not the environment.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_docker_host_of_the_configuration_decides_which_daemon_the_worker_asks() {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(|text| {
+            with_sandbox_keys(
+                text.replace("runtimes: { declare_capabilities: true }\n", ""),
+                "docker_host: 'unix:///nonexistent/docker.sock'",
+            )
+        })),
+        ..Options::default()
+    })
+    .await;
+    lab.spawn_worker(&[("DOCKER_HOST", "unix:///var/run/docker.sock")]);
+    let (code, stderr) = wait_for_the_end(&mut lab).await;
+    assert_eq!(code, Some(3), "{stderr}");
+    assert!(
+        stderr.contains("BLOCKED: CapabilityProbes: runtimes: the Docker daemon does not answer"),
+        "the worker asked a daemon at the address of the key and found none: {stderr}"
+    );
+    assert_eq!(
+        lab.fake.requests().len(),
+        0,
+        "GitHub was not asked anything"
+    );
+}
+
+/// A value the parser refuses stops the worker at start with the code for a bad configuration, and
+/// the line names the key. Nothing else is started: no database connection is needed to say it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_docker_value_stops_the_worker_at_start_and_names_the_key() {
+    // Directories with content (DR-6): a context that names a daemon, a `contexts` entry and a
+    // credential helper each stop the start, and the line names the key and the way through.
+    let directories: Vec<std::path::PathBuf> = [
+        ("context", "config.json", r#"{"currentContext":"remote"}"#),
+        ("entry", "contexts/meta/0a1b/meta.json", "{}"),
+        ("helper", "config.json", r#"{"credsStore":"desktop"}"#),
+    ]
+    .iter()
+    .map(|(label, name, content)| {
+        let directory = std::env::temp_dir().join(format!(
+            "loopback-docker-config-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let file = directory.join(name);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("a folder");
+        std::fs::write(&file, content).expect("a file");
+        directory
+    })
+    .collect();
+    let mut cases: Vec<(String, &str)> = vec![
+        // A daemon on another machine, without the explicit flag.
+        (
+            "docker_host: 'tcp://10.0.0.5:2375'".to_owned(),
+            "sandbox.docker_host",
+        ),
+        // A transport the worker cannot use.
+        (
+            "docker_host: 'ssh://operator@127.0.0.1'".to_owned(),
+            "sandbox.docker_host",
+        ),
+        // A relative directory.
+        ("docker_config: .docker".to_owned(), "sandbox.docker_config"),
+        // A directory that is not there: found when the providers are built, before any claim.
+        (
+            "docker_config: /nonexistent/factory-docker-config".to_owned(),
+            "sandbox.docker_config",
+        ),
+    ];
+    for directory in &directories {
+        cases.push((
+            format!("docker_config: {}", directory.display()),
+            "sandbox.allow_docker_config_contexts",
+        ));
+    }
+    for (keys, key) in cases {
+        let for_config = keys.clone();
+        let mut lab = Lab::start(Options {
+            config: Some(Box::new(move |text| with_sandbox_keys(text, &for_config))),
+            ..Options::default()
+        })
+        .await;
+        lab.spawn_worker(&[]);
+        let (code, stderr) = wait_for_the_end(&mut lab).await;
+        assert!(
+            matches!(code, Some(1 | 2)),
+            "{keys}: a start-up refusal, not a start and not BLOCKED: {code:?} {stderr}"
+        );
+        assert!(
+            stderr.contains(key),
+            "{keys}: the line names {key}: {stderr}"
+        );
+        assert!(!stderr.contains("BLOCKED"), "{keys}: {stderr}");
+        assert_eq!(lab.fake.requests().len(), 0, "{keys}: GitHub was not asked");
+    }
+    for directory in &directories {
+        let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
+// ---- what needs the Docker daemon and the pinned images -------------------------------------------
+
+/// The cross-process lock of the real-Docker tests that make a network, shared with the sandbox,
+/// runtime and live-run tests, so that they wait for each other.
+#[allow(dead_code)]
+#[path = "../../../crates/sandbox/tests/support/docker_lock.rs"]
+mod docker_lock;
+
+/// The reference of an image of the catalog, or a `BLOCKED:` panic when the catalog does not name
+/// it, says it is not ready, or this host does not have it. Images are never pulled.
+fn require_image(kind: &str) -> String {
+    let root = support::deployment::repository_root();
+    let text = std::fs::read_to_string(root.join("infra/sandbox-images/images.json"))
+        .expect("the catalog");
+    let catalog: Value = serde_json::from_str(&text).expect("a JSON catalog");
+    let entry = &catalog["platforms"]["linux/arm64"]["images"][kind];
+    let reference = entry["reference"]
+        .as_str()
+        .unwrap_or_else(|| panic!("BLOCKED: the catalog names no {kind} image"));
+    assert!(
+        entry["status"] == "ready",
+        "BLOCKED: the {kind} image is not ready in the catalog"
+    );
+    let found = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", reference])
+        .output()
+        .is_ok_and(|out| out.status.success());
+    assert!(
+        found,
+        "BLOCKED: the image {reference} is not on this host (images are never pulled), so the {kind} sandbox cannot be made"
+    );
+    reference.to_owned()
+}
+
+/// The worker started from the file, with the capabilities of its agent tools probed in a real
+/// container of the real `agent` image, behind the real egress sidecar, as a deployment does.
+/// The probe asks no model anything, so the provider fake must see no request.
+///
+/// **Not run on a host without the images, and not run by this work at all:** this host has none,
+/// so the test ends at the first line below with `BLOCKED:`, which is never a pass. The part after
+/// the check was written from `apps/api/tests/live/mod.rs` (which has run the same probe against the
+/// images) and has not been run.
+///
+/// ```text
+/// cargo nextest run -p factory-worker --run-ignored only --test loopback_e2e
+/// ```
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the Docker daemon, the pinned images and the shared network lock; see the head of the test"]
+async fn the_worker_probes_both_agent_tools_in_a_real_container_when_it_starts() {
+    use factory_testkit::fx::docker::DockerGuard;
+    let docker = DockerGuard::from_environment();
+    let scope = docker.require_or_block();
+    let verify = require_image("verify");
+    let _agent = require_image("agent");
+    let _sidecar = require_image("egress-sidecar");
+    // Waits for the machine's lock for five minutes at most, so that nextest's limit of ten minutes
+    // for a test is never what ends the wait.
+    let _lock = docker_lock::DockerLock::acquire_at(
+        &docker_lock::default_lock_path(),
+        Duration::from_secs(300),
+    )
+    .unwrap_or_else(|waited| panic!("{waited}"));
+    // Where the host is, as a container on the default bridge sees it. The sidecar is the one
+    // container with a way out, and the worker's broker is the only place it relays to.
+    let [label_key, label_value] = scope.label_args();
+    let resolved = scope
+        .cli()
+        .run(&[
+            "run",
+            "--rm",
+            "--pull=never",
+            &label_key,
+            &label_value,
+            &verify,
+            "getent",
+            "hosts",
+            "host.docker.internal",
+        ])
+        .unwrap_or_else(|error| panic!("BLOCKED: the docker client could not run: {error}"));
+    assert!(
+        resolved.success(),
+        "BLOCKED: host.docker.internal does not resolve in the verify image"
+    );
+    let host_ip = resolved
+        .stdout
+        .split_whitespace()
+        .next()
+        .expect("an address")
+        .to_owned();
+    let run = scope.label().value().to_owned();
+
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(move |text| {
+            let port = text
+                .split("listen: '127.0.0.1:")
+                .nth(1)
+                .and_then(|rest| rest.split('\'').next())
+                .expect("the broker port")
+                .to_owned();
+            text.replace("runtimes: { declare_capabilities: true }\n", "")
+                .replace(&format!("listen: '127.0.0.1:{port}'"), &format!("listen: '0.0.0.0:{port}'"))
+                .replace(
+                    "/remote } }",
+                    &format!(
+                        "/remote }}, labels: {{ factory.test: 'true', factory.test.owner: loopback-e2e, factory.test.run: '{run}' }}, sidecar_command: [--mode, broker, --listen, '0.0.0.0:8443', --upstream, '{host_ip}:{port}', --job, loopback-e2e] }}"
+                    ),
+                )
+        })),
+        ..Options::default()
+    })
+    .await;
+    lab.spawn_worker(&[]);
+    lab.wait_for(
+        "the worker to start its loop after the probe",
+        180,
+        async |lab: &Lab| lab.logs().1.contains("worker loop started").then_some(()),
+    )
+    .await;
+    let (_, stderr) = lab.logs();
+    assert!(!stderr.contains("BLOCKED"), "{stderr}");
+    assert!(
+        lab.provider_seen.all().is_empty(),
+        "a version probe asks no model: {:?}",
+        lab.provider_seen.all()
+    );
+    assert_eq!(lab.stop_worker(), Some(0), "{}", lab.logs().1);
+}
+
+impl Observed {
+    fn clone_view(&self) -> Self {
+        Self {
+            job: self.job.clone(),
+            job_status: self.job_status.clone(),
+            job_correlation: self.job_correlation.clone(),
+            stages: self.stages.clone(),
+            routes: self.routes.clone(),
+            done: self.done.clone(),
+            comments: self.comments.clone(),
+            labels: self.labels.clone(),
+            mints: self.mints.clone(),
+            tokens: self.tokens.clone(),
+            token_uses: self.token_uses.clone(),
+            merges: self.merges,
+            pulls: self.pulls,
+            pushes: self.pushes,
+            permission_lookups: self.permission_lookups,
+            provider_hits: self.provider_hits.clone(),
+            registry_hits: self.registry_hits.clone(),
+            audit: self.audit.clone(),
+            outbox: self.outbox.clone(),
+            ledger_entries: self.ledger_entries,
+            ledger_problem: self.ledger_problem.clone(),
+            leaks: self.leaks.clone(),
+            required: self.required.clone(),
+            forbidden: self.forbidden.clone(),
+        }
+    }
+}

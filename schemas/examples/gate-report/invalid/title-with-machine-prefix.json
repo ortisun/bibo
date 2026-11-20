@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "gate_report_id": "018f3a80-1c22-7a44-9b55-6c7d8e9fa0b3",
+    "gate_id": "build-and-unit-tests",
+    "gate_version": "1.0.0",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21",
+    "attempt_id": "018f3a7f-0a11-7f33-b2c4-5d6e7f809a12",
+    "execution_mode": "production",
+    "trusted_definition": {
+      "source": "protected_base_branch",
+      "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+      "definition_sha256": "sha256:a4996a52070adbb34af917e1c6ba21688db286cd5255a221e21a0da80dc107f0"
+    }
+  },
+  "title": "GATE-17 | BUILD | P1: run tests",
+  "outcome": "PASSED",
+  "reason": "The project built and all 42 unit tests passed in a fresh sandbox created from the job commit.",
+  "started_at": "2026-10-27T09:15:02Z",
+  "finished_at": "2026-10-27T09:16:31.250Z",
+  "environment": {
+    "fidelity": "real",
+    "executor_kind": "sandbox_command",
+    "sandbox": {
+      "sandbox_id": "sbx-7f3a91",
+      "image_digest": "sha256:6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d",
+      "os": "linux",
+      "arch": "aarch64",
+      "network": "none"
+    },
+    "tool_versions": [
+      {
+        "tool": "cargo",
+        "version": "1.98.0"
+      },
+      {
+        "tool": "rustc",
+        "version": "1.98.0"
+      }
+    ]
+  },
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--locked"
+      ],
+      "cwd": "/workspace",
+      "executed": true,
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-10-27T09:15:02Z",
+      "finished_at": "2026-10-27T09:15:40Z",
+      "stdout": {
+        "sha256": "sha256:74c653f42c9f83c705c407c02f194fc34f15d75d306cd317c6a4f4c0b0713b8d",
+        "media_type": "text/plain",
+        "size_bytes": 2048
+      },
+      "stderr": {
+        "sha256": "sha256:303a6f83dc4e88f3b8c44b0eac83550ad964733c2b2bee609ed49999665288ad",
+        "media_type": "text/plain",
+        "size_bytes": 512
+      }
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "cwd": "/workspace",
+      "executed": true,
+      "exit_code": 0,
+      "timed_out": false,
+      "started_at": "2026-10-27T09:15:41Z",
+      "finished_at": "2026-10-27T09:16:31.250Z",
+      "stdout": {
+        "sha256": "sha256:c5b46d7ca1db66091ac0febad508b743de6a84ef3f0c5fd69f610b1dd41c60bb",
+        "media_type": "text/plain",
+        "size_bytes": 4096
+      },
+      "stderr": {
+        "sha256": "sha256:e0cb97b80e63d023af4835b37e893ccfb6d65d0233c553bb739f5309afe3d608",
+        "media_type": "text/plain",
+        "size_bytes": 0
+      }
+    }
+  ],
+  "evidence_hash": "sha256:f46413546b49a12b2eb6ec29a33c7e41fb245bbc9b6cfd8d06b3394e3e434c78",
+  "baseline_comparison": {
+    "baseline_commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+    "delta": "none"
+  }
+}

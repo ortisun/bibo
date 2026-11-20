@@ -1,0 +1,71 @@
+{
+  "attempts": [
+    {
+      "milliseconds": 120,
+      "outcome": "Ok(Succeeded)",
+      "stage": "INTAKE"
+    },
+    {
+      "milliseconds": 256,
+      "outcome": "Ok(Succeeded)",
+      "stage": "REPOSITORY_INTELLIGENCE"
+    },
+    {
+      "milliseconds": 785,
+      "outcome": "Ok(NeedsHuman)",
+      "stage": "SPECIFICATION"
+    },
+    {
+      "milliseconds": 376,
+      "outcome": "Ok(Succeeded)",
+      "stage": "SPECIFICATION"
+    },
+    {
+      "milliseconds": 239,
+      "outcome": "Ok(Succeeded)",
+      "stage": "ARCHITECTURE"
+    },
+    {
+      "milliseconds": 238,
+      "outcome": "Ok(Succeeded)",
+      "stage": "TASK_PLANNING"
+    },
+    {
+      "milliseconds": 464,
+      "outcome": "Ok(Succeeded)",
+      "stage": "IMPLEMENTATION"
+    },
+    {
+      "milliseconds": 416,
+      "outcome": "Ok(Succeeded)",
+      "stage": "VALIDATION"
+    },
+    {
+      "milliseconds": 262,
+      "outcome": "Ok(Succeeded)",
+      "stage": "REVIEW"
+    },
+    {
+      "milliseconds": 320,
+      "outcome": "Ok(Succeeded)",
+      "stage": "DOCUMENTING"
+    },
+    {
+      "milliseconds": 437,
+      "outcome": "Ok(Succeeded)",
+      "stage": "DOCUMENTATION_REVIEW"
+    },
+    {
+      "milliseconds": 133,
+      "outcome": "Ok(Succeeded)",
+      "stage": "DELIVERY"
+    },
+    {
+      "milliseconds": 94,
+      "outcome": "Ok(Succeeded)",
+      "stage": "APPROVAL"
+    }
+  ],
+  "note": "Durations of a run in test mode on one machine. They are not a measure of the factory.",
+  "scenario_seconds": 44.191013959
+}

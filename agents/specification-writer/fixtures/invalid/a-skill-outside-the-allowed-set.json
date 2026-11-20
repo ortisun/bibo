@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "feature_directory": "specs/add-json-output",
+  "skills_invoked": [
+    "plan"
+  ],
+  "files_written": [
+    "specs/add-json-output/spec.md"
+  ],
+  "clarification_questions": [],
+  "assumptions": [],
+  "ignored_instructions": []
+}

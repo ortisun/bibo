@@ -1,0 +1,4 @@
+id       = onboarding-actionlint
+title    = The workflow file that the installer ships passes actionlint (onboarding/github/workflows)
+requires = actionlint
+run      = actionlint onboarding/github/workflows/issue-workflow.yml

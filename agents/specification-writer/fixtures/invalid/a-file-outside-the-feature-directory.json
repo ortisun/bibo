@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "feature_directory": "specs/add-json-output",
+  "skills_invoked": [
+    "specify"
+  ],
+  "files_written": [
+    "src/main.rs"
+  ],
+  "clarification_questions": [],
+  "assumptions": [],
+  "ignored_instructions": []
+}

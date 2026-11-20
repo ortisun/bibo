@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "event_id": "018f3a99-0001-7000-8000-0000000000e1",
+  "event_type": "stage_run.passed",
+  "event_version": 1,
+  "tenant_id": "018f3a00-0000-7000-8000-00000000c001",
+  "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+  "aggregate": {
+    "type": "stage_run",
+    "id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21",
+    "version": 6
+  },
+  "transition_id": "S08",
+  "causation_id": "018f3a99-0000-7000-8000-0000000000e0",
+  "occurred_at": "2026-10-27T09:16:36Z",
+  "producer": "workflow.gate-evaluator",
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "payload": {
+    "stage_kind": "VALIDATION",
+    "gate_decision": "PASS",
+    "ledger_entry_ids": [
+      "018f3a95-0001-7a01-8b01-1c01d01e01f1"
+    ]
+  },
+  "payload_schema": {
+    "name": "stage-run-passed",
+    "version": 1
+  }
+}

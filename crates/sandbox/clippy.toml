@@ -1,0 +1,9 @@
+# The sandbox crate is the only crate that may start a host process, and only from
+# `src/process.rs`, behind the `ProcessRunner` port (rules DEP-10 and ST-03). `cargo xtask
+# check-architecture` scans the source for this. These two bans are the same rule at compile time:
+# a call anywhere else in the crate fails `cargo clippy -D warnings`. `src/process.rs` allows the
+# one call it needs, with the reason written next to it.
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "Start a process only in src/process.rs, through the ProcessRunner port." },
+    { path = "tokio::process::Command::new", reason = "Start a process only in src/process.rs, through the ProcessRunner port." },
+]

@@ -1,0 +1,966 @@
+{
+  "schema_version": 1,
+  "title": "Cargo workspace dependency rules",
+  "description": "Source of truth for which workspace crates may depend on which. docs/architecture/overview.md renders its crate graph from this file. The xtask architecture check (work package s0-workspace-skeleton) reads it, runs cargo metadata, and fails the build on any edge, kind or external dependency that this file does not allow. See ADR 0002.",
+  "package_prefix": "factory-",
+  "rings": [
+    {
+      "ring": 0,
+      "name": "Domain",
+      "rule": "Pure model, state machines and contract types. No I/O, no clock, no randomness, no async runtime."
+    },
+    {
+      "ring": 1,
+      "name": "Ports",
+      "rule": "Trait definitions the inner code needs from the outside. Depends on domain only. No I/O."
+    },
+    {
+      "ring": 2,
+      "name": "Application and adapters",
+      "rule": "Application crates hold use cases and depend on domain and ports. Adapter crates implement ports and depend on domain and ports. Neither kind depends on the other, and no crate in this ring depends on a peer."
+    },
+    {
+      "ring": 3,
+      "name": "Composition roots",
+      "rule": "Binaries, and the one composition library they share (ADR 0015). The only place where adapters are chosen and wired to use cases. The library has no main and only binaries may depend on it."
+    }
+  ],
+  "crates": [
+    {
+      "name": "domain",
+      "ring": 0,
+      "layer": "domain",
+      "path": "crates/domain",
+      "slice": 0,
+      "depends_on": [],
+      "dev_depends_on": [],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "serde_jcs",
+        "uuid[std]",
+        "time[]",
+        "thiserror",
+        "sha2",
+        "hex",
+        "semver",
+        "regex",
+        "globset"
+      ],
+      "responsibility": "Identifiers, value objects, the Job, StageRun, Attempt and TaskNode state machines, guards, contract types that mirror schemas/, the ledger chain hash, policy evaluation (the 'policy crate' in docs/security is this module until its extraction trigger fires), secret redaction, assurance-level derivation."
+    },
+    {
+      "name": "ports",
+      "ring": 1,
+      "layer": "ports",
+      "path": "crates/ports",
+      "slice": 0,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "uuid",
+        "time",
+        "unicode-normalization"
+      ],
+      "responsibility": "Outbound traits and their closed error enums: Clock, IdGenerator, CancelSignal, Store with SystemTx and Tx and their parts, ArtifactStore, SandboxProvider, SandboxSession, WorkspaceProvider, Workspace, JobRepo, AgentRuntime, ModelRouter, ModelBroker, AgentRegistry, OutputValidator, SpecificationProvider, IssueSource, ChangeHost, IssueStatusWriter (v1.2), WebhookVerifier and ProcessRunner. Also the pure checks that every adapter and fake must share: the sandbox spec validation and posture comparison, the path rules, and the protection preflight."
+    },
+    {
+      "name": "workflow",
+      "ring": 2,
+      "layer": "application",
+      "path": "crates/workflow",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "uuid",
+        "time",
+        "futures-util",
+        "tokio[sync,time,rt,macros]"
+      ],
+      "responsibility": "The durable engine and all stage handlers: admission, scheduling, leases, retries, gate evaluation, rework routing, human decisions, plus the modules listed under deferred crates."
+    },
+    {
+      "name": "spec_adapter",
+      "ring": 2,
+      "layer": "application",
+      "path": "crates/spec_adapter",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "pulldown-cmark",
+        "regex"
+      ],
+      "responsibility": "Anti-corruption layer for GitHub Spec Kit. Drives the four allowed skills, reads the produced files, and returns a SpecificationContract. The only crate that knows Spec Kit's file layout."
+    },
+    {
+      "name": "storage",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/storage",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "diesel",
+        "diesel-async",
+        "diesel_migrations",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio",
+        "uuid",
+        "time",
+        "sha2",
+        "hex",
+        "serde_jcs",
+        "async-trait",
+        "rustix[std,fs]"
+      ],
+      "external_allow_notes": {
+        "async-trait": "Added by s1-xtask-extensions, which now enforces the allow list for adapters. storage implements port traits declared with #[async_trait], so it cannot implement them without the crate; ports and testkit already list it.",
+        "rustix": "Added by s1-xtask-extensions. The local-filesystem ArtifactStore refuses a symbolic link at every step of a path with openat and no-follow flags. rustix is the safe binding (the workspace forbids unsafe code) and the only way to do that without a race between the check and the use. Features std and fs only."
+      },
+      "responsibility": "PostgreSQL implementation of Store (Diesel, async), outbox writes, evidence ledger with hash chain, lease compare-and-swap, local-filesystem content-addressed ArtifactStore."
+    },
+    {
+      "name": "runtime",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/runtime",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[process,io-util,time,sync,rt]"
+      ],
+      "responsibility": "AgentRuntime adapters for the Claude Code and Codex command line tools. Builds argument vectors from a closed allow list (bypass flags only for a verified sandbox target), probes capabilities, starts the tool inside the sandbox through SandboxSession, parses output, maps failures to a closed error set, and supports a later host tool bridge as a hardening option."
+    },
+    {
+      "name": "sandbox",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/sandbox",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[process,fs,io-util,time,sync,rt]",
+        "tempfile",
+        "rustix[std,process]"
+      ],
+      "responsibility": "SandboxProvider and WorkspaceProvider over the Docker command line and host-side git. Three network profiles (fetch_deps, agent behind a per-job egress sidecar, verify with no network), the posture verifier that inspects a created container before it starts, the supervisor that enforces wall-clock and disk limits, redacted log streaming, the janitor, and the workspace side: mirror, sparse worktree, masked .git, host-side git with a fixed environment, the no-follow audit walk and the tree diff. The only crate that starts containers or runs git.",
+      "external_allow_notes": {
+        "rustix": "Added at integration of s1-sandbox-adapter. The ProcessRunner contract requires that a command that times out or is cancelled ends its whole process group, not only the direct child, so no stray process keeps running. Sending a signal to a process group has no safe route in the standard library, and the workspace forbids unsafe code, so the crate uses rustix with the std and process features only. The storage adapter already uses the same release (with fs). Decided by the lead, pending architect confirmation; if declined, GroupGuard falls back to a direct-child kill and the group postcondition of the contract is not met."
+      }
+    },
+    {
+      "name": "github",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/github",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio",
+        "hmac",
+        "sha2",
+        "subtle",
+        "hex",
+        "async-trait",
+        "ring",
+        "ureq[rustls]"
+      ],
+      "responsibility": "IssueSource, ChangeHost and IssueStatusWriter against the GitHub REST API as a GitHub App: signs the App JWT, mints per-job, per-stage installation tokens narrowed to one repository (and a separate issues-write token for the status label and comment), revokes them, verifies webhook signatures, deduplicates deliveries, checks the repository protection preflight, writes only sanitized text. Merging is not implemented.",
+      "external_allow_notes": {
+        "ring": "RS256 signing of the App JWT and the TLS crypto provider, so one crypto library does both jobs. Chosen in s1-github-adapter over rsa (RUSTSEC-2023-0071, an unfixed timing side channel that cargo deny rejects), over jsonwebtoken with aws-lc-rs (a second crypto stack) and over the openssl command line (DEP-10 allows only docker and git to be started). Signing sits behind the JwtSigner trait so a signing service can replace it. cargo deny and cargo audit pass with the unchanged deny.toml. A new direct dependency needs a human decision: applied by the lead at integration, pending confirmation by the project owner.",
+        "ureq": "Blocking HTTP client with rustls only, behind the transport trait, so tests use plain HTTP over loopback to the fake GitHub server and production uses TLS. Same decision record as ring.",
+        "async-trait": "The adapter implements port traits that are declared with async_trait, as the storage adapter does."
+      }
+    },
+    {
+      "name": "contracts",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/contracts",
+      "slice": 0,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "jsonschema",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "saphyr-parser",
+        "regex[std,unicode-perl]",
+        "globset",
+        "serde_jcs"
+      ],
+      "external_allow_notes": {
+        "saphyr-parser": "Added by s1-xtask-extensions. It replaces the free-text entry for a maintained YAML parser: work package s0-contracts-and-registry chose it (pure safe Rust, YAML 1.2) and the evidence is in the crate documentation, module yaml.",
+        "regex": "Added by s1-xtask-extensions. The regular expression dialect the policy file names, for the schema pattern keyword and to check that every policy regex compiles. Features std and unicode-perl only.",
+        "globset": "Added by s1-xtask-extensions. The glob dialect the policy file names, used only to check that every glob compiles.",
+        "serde_jcs": "Added by s1-xtask-extensions. RFC 8785 canonical JSON, the input to the policy hash; the same crate domain uses for the ledger chain."
+      },
+      "responsibility": "Embeds schemas/, implements OutputValidator, loads and validates agent manifests, domain capability profiles and policy files."
+    },
+    {
+      "name": "egress",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/egress",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[net,io-util,time,sync,rt,macros]",
+        "ring",
+        "httparse",
+        "ureq[rustls]"
+      ],
+      "responsibility": "The model broker and the egress relay. The broker holds the real provider keys, issues and revokes per-job tokens, forwards only allowed API paths, and meters usage against the job ceiling. The relay is the per-job sidecar: exact-host allowlist, rejection of private and metadata address ranges after resolution, pinned connections and a byte quota. Implements ModelBroker.",
+      "external_allow_notes": {
+        "ring": "Digest of the token hash and of the bodies (sha2 is avoided so one crypto library serves the crate), and the TLS crypto provider of the upstream client. Same decision record as the GitHub adapter; cargo deny and cargo audit pass. Applied by the lead at integration, pending confirmation by the project owner.",
+        "httparse": "Parses the HTTP/1 request head on the broker listener, with strict limits. Small, widely used, no unsafe code of ours.",
+        "ureq": "Blocking HTTP client with rustls only, for the upstream call to the model provider, with redirects and proxies off. Same decision record as the GitHub adapter."
+      }
+    },
+    {
+      "name": "observability",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/observability",
+      "slice": 0,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "tracing",
+        "tracing-subscriber",
+        "tracing-opentelemetry",
+        "opentelemetry",
+        "opentelemetry_sdk",
+        "opentelemetry-otlp"
+      ],
+      "responsibility": "Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming."
+    },
+    {
+      "name": "composition",
+      "ring": 3,
+      "layer": "composition",
+      "path": "crates/composition",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports",
+        "workflow",
+        "spec_adapter",
+        "storage",
+        "runtime",
+        "sandbox",
+        "github",
+        "contracts",
+        "egress",
+        "observability"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[rt,time,sync,macros,signal]",
+        "time[std]",
+        "uuid[std]",
+        "hmac",
+        "sha2",
+        "subtle",
+        "ureq[rustls]"
+      ],
+      "external_allow_notes": {
+        "ureq": "The package registry client (crates_io): the dependency gate asks the crates.io API about a package that a change adds. Blocking HTTP client with rustls only, run under spawn_blocking, redirects and proxies off, the address from the configuration. The same crate, version and features as the github and egress adapters (same decision record as the GitHub adapter), so the resolved dependency tree gains nothing.",
+        "hmac": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
+        "sha2": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
+        "subtle": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
+        "tokio": "The engine's futures are not Send, so the binaries run on the current-thread runtime (rt). time is for the production Ticker, sync for the shutdown channel, macros for select!, signal for SIGTERM and SIGINT. These are the features the worker used before the extraction; nothing was added.",
+        "time": "OffsetDateTime::now_utc for the real Clock. The std feature is the only one.",
+        "uuid": "Identifiers are built from 16 random bytes read from the operating system with Builder::from_random_bytes. No generator feature (v4, v7) is on, because DEP-05 keeps them away from the inner crates that share the one uuid."
+      },
+      "responsibility": "The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library)."
+    },
+    {
+      "name": "mcp_postgres",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/mcp_postgres",
+      "slice": 3,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "rmcp[server,macros]",
+        "tokio-postgres[runtime]",
+        "tokio[rt,sync,time]",
+        "serde",
+        "serde_json"
+      ],
+      "external_allow_notes": {
+        "rmcp": "ADR 0021: the official Rust SDK of the Model Context Protocol, 3.11.0, Apache-2.0, new direct dependency approved by the owner on 2026-11-20. This crate needs the tool router and the server handler only; the transports are chosen by the binary (stdio, Streamable HTTP) and by the gateway (in memory). Its server feature turns on uuid/v4 in the whole workspace; see source_scans.dep_05.resolved_features.",
+        "tokio-postgres": "ADR 0021, decision 4: the server returns arbitrary result sets, which Diesel cannot map. 0.7.18, the version diesel-async already resolves, so nothing new enters Cargo.lock for it. runtime only (Config::connect over TCP or a Unix socket), no TLS feature: the connection is made with NoTls, as the storage crate does."
+      },
+      "responsibility": "The read-only PostgreSQL MCP server (ADR 0021, decision 4): eight tools (pg_list_relations, pg_describe_relation, pg_query, pg_explain, pg_activity, pg_locks, pg_table_health, pg_factory_health) over one connection of a factory_observer login. Every call runs in BEGIN READ ONLY ... ROLLBACK with local timeouts; free SQL is wrapped as a subquery and sent with the extended protocol; rows, bytes and calls are capped; every string is redacted through an injected Redact seam. Depends on no other ring 2 crate; served in process by the troubleshooter's gateway and as apps/mcp-postgres."
+    },
+    {
+      "name": "mcp_gateway",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/mcp_gateway",
+      "slice": 3,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "rmcp[server,client,transport-streamable-http-server,transport-streamable-http-client-reqwest,reqwest-tls-no-provider]",
+        "reqwest[rustls-no-provider]",
+        "rustls[ring,std,tls12]",
+        "webpki-roots",
+        "ring",
+        "base64[std]",
+        "axum[http1,tokio]",
+        "tokio[rt,sync,time,net,io-util]",
+        "tokio-util",
+        "serde",
+        "serde_json",
+        "serde_jcs",
+        "thiserror"
+      ],
+      "external_allow_notes": {
+        "rmcp": "ADR 0021, approved by the owner on 2026-11-20. server and transport-streamable-http-server for the gateway's own MCP server; client, transport-streamable-http-client-reqwest and reqwest-tls-no-provider for the Streamable HTTP client to Datadog and VictoriaMetrics, and the client side of the in-memory pipe to an in-process server. The client features widen the approved feature set; the owner should confirm. Not transport-io (DEP-05).",
+        "reqwest": "0.13.5, the release already in Cargo.lock (opentelemetry-otlp) and the one rmcp's client transport needs. rustls-no-provider (public feature) so the gateway hands reqwest a rustls configuration it builds itself (ring, Mozilla roots). The feature also brings rustls-platform-verifier and its platform crates into Cargo.lock although the gateway never uses that verifier; the alternative was reqwest's private __rustls feature.",
+        "rustls": "0.23.46, already in Cargo.lock through ureq, with ring as the provider: the TLS stack of the GitHub adapter, the broker and the CLI.",
+        "webpki-roots": "The Mozilla roots, already in Cargo.lock and approved for the GitHub adapter on 2026-10-27 (CDLA-Permissive-2.0).",
+        "ring": "The operating system random source for the 256-bit run token, as the broker does, and the rustls crypto provider. 0.17.14, already in Cargo.lock.",
+        "base64": "0.22.1, already in Cargo.lock. base64url without padding for the run token.",
+        "axum": "The same version and features as apps/api and apps/mcp-postgres: the HTTP server under the Streamable HTTP service and the run token check.",
+        "tokio-util": "0.7.20, already resolved by rmcp: the cancellation token its Streamable HTTP server takes, to end every session at shutdown.",
+        "serde_jcs": "RFC 8785 canonical JSON for the argument digest and the run record, as domain uses it for the ledger."
+      },
+      "responsibility": "The troubleshooter's MCP gateway (ADR 0021, decision 3): one MCP server over Streamable HTTP, on a loopback address by default or on one bridge address with allow_non_loopback_listen (never an unspecified address, the run token always required), that the troubleshooter agent reaches as its only MCP server. Lists exactly the allowlisted tools of policies/troubleshooting.yaml that their upstream offers, refuses every other tool and reports upstream tools not on the allowlist (T-51); checks a random per-run bearer token; limits calls per run and per 10 seconds, the call deadline, result bytes (with a truncation marker) and the run wall clock; redacts every result through an injected Redact seam, with the upstream credentials and run tokens registered by exact value; records every call (call-N ids shared with the control-plane probe calls) as a typed run record and canonical JSON. Upstreams behind the Upstream trait: Streamable HTTP clients for Datadog and VictoriaMetrics with credentials from mode 0600 files, and an in-process adapter over any rmcp server. Depends on no other ring 2 crate; apps/troubleshooter wires mcp_postgres in."
+    },
+    {
+      "name": "testkit",
+      "ring": 2,
+      "layer": "test-support",
+      "path": "crates/testkit",
+      "slice": 0,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "async-trait",
+        "serde_json",
+        "tokio"
+      ],
+      "responsibility": "Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeModelBroker, FakeChangeHost, FakeWorkspaceProvider, FakeJobRepo, FakeSpecificationProvider, ScriptedProcessRunner and FakeWebhookVerifier, with FakeRemote shared by the workspace and change host fakes. Every fake reports fidelity fake. Also the shared contract suites and the register that shows every check can fail. May appear only in dev-dependencies."
+    }
+  ],
+  "apps": [
+    {
+      "name": "api",
+      "path": "apps/api",
+      "slice": 1,
+      "responsibility": "HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints.",
+      "external_dependencies": [
+        "axum[http1,tokio]",
+        "hyper[server,http1]",
+        "hyper-util[server,http1,tokio,service]",
+        "http-body-util",
+        "tower[util]",
+        "tokio[rt,rt-multi-thread,net,time,sync,macros,signal]",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "uuid[std]"
+      ],
+      "external_dependencies_notes": {
+        "axum": "NEW DIRECT DEPENDENCY, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). The master prompt and the overview name Axum on Tokio for the API. 0.8.9, MIT. Routing by method and path only: no JSON, form, query or websocket extractor, so an error answer never carries a library message. It adds axum 0.8.9 (MIT), axum-core 0.5.6 (MIT), matchit 0.8.4 (MIT and BSD-3-Clause) and mime 0.3.17 (MIT or Apache-2.0) to Cargo.lock; every other crate it needs was already there through reqwest and tower-http. cargo deny passes with the unchanged deny.toml.",
+        "hyper": "NEW DIRECT DEPENDENCY, pending confirmation. 1.12.0, MIT. Already in Cargo.lock (through reqwest). The API serves its own connections so that the header read timeout, the limit on open connections and the TCP peer address are under its control; axum::serve offers none of them.",
+        "hyper-util": "NEW DIRECT DEPENDENCY, pending confirmation. 0.1.21, MIT. Already in Cargo.lock. TokioIo and TokioTimer for hyper's server connection.",
+        "http-body-util": "NEW DIRECT DEPENDENCY, pending confirmation. 0.1.5, MIT. Already in Cargo.lock. Limited, the body reader with a hard size limit.",
+        "tower": "NEW DIRECT DEPENDENCY, pending confirmation. 0.5.3, MIT. Already in Cargo.lock. ServiceExt::oneshot, the interface between the router and the connection.",
+        "tokio": "DEP-05 resolved features: rt-multi-thread and net are enabled by this app. Both are already in the allowed list in source_scans.dep_05.resolved_features, so no change is needed there."
+      }
+    },
+    {
+      "name": "worker",
+      "path": "apps/worker",
+      "slice": 1,
+      "responsibility": "Runs the engine loop in one process: claim, execute stage handlers, sweep leases and deadlines, supervise sandboxes, and host the model broker listener in Slice 1. Single concurrency in Slice 1."
+    },
+    {
+      "name": "cli",
+      "path": "apps/cli",
+      "slice": 1,
+      "responsibility": "Operator command line and HTTP client of the API: health, submit, status, timeline, approve, reject, rework, pause, resume, cancel, approve-dependency, approve-build-code, probe. Holds no database login: every command but probe goes to the API over HTTP, and probe runs the start-up checks that need no credential.",
+      "external_dependencies": [
+        "ureq[rustls]",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "NEW DIRECT DEPENDENCY FOR THIS APP, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). 3.5.0, MIT or Apache-2.0, with default features off and rustls only: the same crate and the same feature set the github and egress crates already use, so nothing is new to Cargo.lock. The command talks to the API over HTTP with a token read from a file (https, or http to a loopback address; no redirects, no proxy, a 30 second timeout). It starts no process (DEP-10): probe runs the composition start-up checks in process and lists the rest as BLOCKED."
+      }
+    },
+    {
+      "name": "egress-sidecar",
+      "path": "apps/egress-sidecar",
+      "slice": 1,
+      "responsibility": "The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential."
+    },
+    {
+      "name": "mcp-postgres",
+      "path": "apps/mcp-postgres",
+      "slice": 3,
+      "responsibility": "Serves crates/mcp_postgres for an engineer's Claude Code: stdio by default, or Streamable HTTP on a loopback address behind a bearer token read from a mode 0600 file. Connection settings from a JSON file or the environment, the password from a file only. Refuses to serve with a login that is a superuser, bypasses row-level security, or belongs to a group other than factory_observer. Starts no process.",
+      "external_dependencies": [
+        "rmcp[server,transport-streamable-http-server]",
+        "axum[http1,tokio]",
+        "tokio[rt,rt-multi-thread,net,time,sync,macros,signal,io-util]",
+        "serde",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "rmcp": "ADR 0021, approved by the owner on 2026-11-20. transport-streamable-http-server for HTTP. Not transport-io: it would turn on tokio/io-std in the whole workspace, which the DEP-05 limit for the inner crates does not allow, so stdio is bridged to the server through a tokio duplex pipe and two threads (std::io::stdin and stdout) instead.",
+        "axum": "The same version and features as apps/api, already in Cargo.lock: the HTTP server under the Streamable HTTP service and the bearer check."
+      }
+    },
+    {
+      "name": "troubleshooter",
+      "path": "apps/troubleshooter",
+      "slice": 3,
+      "responsibility": "The troubleshooter (ADR 0021): watches the factory itself. Runs the deterministic probes of policies/troubleshooting.yaml through its own MCP gateway (crates/mcp_gateway, with crates/mcp_postgres in process) and a direct HTTP health GET; when a probe trips past its cool-down or the sweep is due, and the day caps allow, runs the troubleshooter agent once in its sandbox with the broker it hosts; refuses a report that fails health-findings v1 or cites a call the gateway did not record as ok for the same tool; writes triage issues from the closed domain template through TriageIssueWriter, one per fingerprint, one seen-again comment a day, under the day cap. One instance is active at a time (a PostgreSQL advisory lock). Its rows are the four troubleshooting_* tables (migration 2026-11-20-003000).",
+      "external_dependencies": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[rt,rt-multi-thread,time,sync,macros,signal]",
+        "ureq[rustls]",
+        "uuid[std]"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "The HTTP health probe: the same crate, version and features as the composition library, so Cargo.lock gains nothing.",
+        "uuid": "The job and attempt ids a run borrows for the sandbox and the broker token are built from bytes; no generator feature (DEP-05)."
+      }
+    }
+  ],
+  "tooling": [
+    {
+      "name": "xtask",
+      "path": "xtask",
+      "slice": 0,
+      "responsibility": "Cargo xtask binary that runs the architecture checks. Not part of the product. May use std and serde_json only."
+    }
+  ],
+  "rules": [
+    {
+      "id": "DEP-01",
+      "statement": "A library crate depends only on workspace crates listed in its depends_on. Any other workspace edge fails the build.",
+      "enforced_by": "xtask check-architecture, from cargo metadata"
+    },
+    {
+      "id": "DEP-02",
+      "statement": "No crate depends on a crate in the same or a higher ring, except that ports depends on domain.",
+      "enforced_by": "xtask check-architecture"
+    },
+    {
+      "id": "DEP-03",
+      "statement": "Only dev-dependencies may name testkit.",
+      "enforced_by": "xtask check-architecture, from the dependency kind in cargo metadata"
+    },
+    {
+      "id": "DEP-04",
+      "statement": "Rings 0 and 1 and the application crates use only the external crates in external_allow. Adding one needs an architect-reviewed change to this file.",
+      "enforced_by": "xtask check-architecture"
+    },
+    {
+      "id": "DEP-05",
+      "statement": "domain, ports, workflow and spec_adapter contain no call to the clock, the filesystem, the network or process spawning. The clock comes from the Clock port.",
+      "enforced_by": "clippy disallowed-methods and disallowed-types in each crate's clippy.toml, verified with cargo clippy -D warnings"
+    },
+    {
+      "id": "DEP-06",
+      "statement": "No crate uses unsafe code.",
+      "enforced_by": "workspace lint unsafe_code = forbid"
+    },
+    {
+      "id": "DEP-07",
+      "statement": "Third-party licenses and advisories pass policy.",
+      "enforced_by": "cargo deny check"
+    },
+    {
+      "id": "DEP-08",
+      "statement": "Binaries and the composition library are the only crates that depend on more than one adapter.",
+      "enforced_by": "xtask check-architecture"
+    },
+    {
+      "id": "DEP-09",
+      "statement": "Store::begin_system is called only from the workflow crate, and ChangeHost has no method whose name starts with merge. The sources of the Spec Kit layout (.specify, speckit) appear only in spec_adapter, its fixtures and documentation.",
+      "enforced_by": "xtask check-architecture, by source scan"
+    },
+    {
+      "id": "DEP-10",
+      "statement": "Only the sandbox crate spawns docker or git. Only the runtime crate spawns an agent command line tool. No crate spawns a shell. The set of allowed spawned binaries is docker and git.",
+      "enforced_by": "xtask check-architecture by source scan, plus the process spawn recorder in the end-to-end tests (negative test ST-03 and FX-SPAWN)"
+    },
+    {
+      "id": "DEP-11",
+      "statement": "The composition library (layer composition, ring 3, ADR 0015) may be depended on by binaries in apps/ only; no crate in rings 0 to 2 may depend on it. It has no binary target and defines no function named main.",
+      "enforced_by": "xtask check-architecture, from cargo metadata (the edge and the targets) and by source scan (main)"
+    }
+  ],
+  "source_scans": {
+    "description": "The lists that the source scans of xtask check-architecture use. They were constants in the xtask sources; a reviewer now changes them here. Every crate named below must be in crates or apps, or the check stops. Crate names are the names in this file, without the package prefix.",
+    "generated_artifacts": [
+      {
+        "name": "the schema and example index of the domain tests",
+        "check": [
+          "python3",
+          "-I",
+          "crates/domain/tests/tools/gen_example_index.py",
+          "--check"
+        ],
+        "regenerate": "python3 -I crates/domain/tests/tools/gen_example_index.py"
+      },
+      {
+        "name": "the ledger chain fixture, against the independent Python oracle",
+        "check": [
+          "python3",
+          "-I",
+          "crates/domain/tests/oracle/ledger_chain_oracle.py",
+          "--check"
+        ],
+        "regenerate": "python3 -I crates/domain/tests/oracle/ledger_chain_oracle.py"
+      }
+    ],
+    "st_01": {
+      "skipped_directories": [
+        ".git",
+        "target",
+        "node_modules"
+      ],
+      "prose_extensions": [
+        "md",
+        "txt",
+        "rst",
+        "lock"
+      ]
+    },
+    "dep_04": {
+      "registries": [
+        "registry+https://github.com/rust-lang/crates.io-index",
+        "sparse+https://index.crates.io/"
+      ],
+      "path_exceptions": []
+    },
+    "dep_05": {
+      "inner_crates": [
+        "domain",
+        "ports",
+        "workflow",
+        "spec_adapter"
+      ],
+      "forbidden_lint_allows": [
+        "clippy::disallowed_methods",
+        "clippy::disallowed_types",
+        "clippy::all",
+        "warnings"
+      ],
+      "resolved_features": [
+        {
+          "package": "time",
+          "allowed": [
+            "alloc",
+            "macros",
+            "std"
+          ],
+          "reason": "ADR 0011: the inner crates read the time from the Clock port. The std feature of time provides OffsetDateTime::now_utc, and Cargo unifies features across the workspace. The diesel crate, which the storage adapter needs, depends on time with its default features (std, macros), so those resolve for domain and ports as well and cannot be removed while diesel is in the workspace graph. The guard is therefore the clippy ban on time::OffsetDateTime::now_utc and now_local in every inner crate, which this same rule requires and which a test proves fires. A new feature such as local-offset (it provides now_local) still fails here. Decided at integration, pending architect confirmation. The resolved feature set is read from cargo metadata, not from the domain manifest."
+        },
+        {
+          "package": "uuid",
+          "allowed": [
+            "rng",
+            "std",
+            "v4"
+          ],
+          "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates. Since ADR 0021 the rmcp crate (server feature) depends on uuid with v4, and Cargo unifies it into the one uuid the inner crates see, so v4 and rng resolve for them and cannot be removed while rmcp is in the workspace graph. As for time, the guard is therefore the clippy ban on uuid::Uuid::new_v4 and every other generator in the clippy.toml of each inner crate, which DEP-05 requires. Any other generator feature (v1, v3, v5, v6, v7, v8, fast-rng) still fails here. Decided with ADR 0021, pending architect confirmation."
+        },
+        {
+          "package": "tokio",
+          "allowed": [
+            "fs",
+            "io-util",
+            "macros",
+            "net",
+            "process",
+            "rt",
+            "rt-multi-thread",
+            "signal",
+            "sync",
+            "test-util",
+            "time"
+          ],
+          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. signal is enabled by apps/worker so that SIGTERM and SIGINT drain the loop instead of abandoning a lease; it adds no crate to Cargo.lock and workflow has no path to it. fs resolves since ADR 0021: rmcp's Streamable HTTP client over reqwest (crates/mcp_gateway) depends on reqwest with its stream feature, which enables tokio/fs, and cannot be removed while that client is in the workspace graph. As for net and process, the guard is the DEP-05 ban on tokio::fs paths in the clippy.toml of every inner crate. Decided with ADR 0021, pending architect confirmation. A new feature (full, or any other) appearing in this set needs an architect-reviewed change here."
+        }
+      ]
+    },
+    "dep_09": {
+      "begin_system_function": "begin_system",
+      "begin_system_crate": "workflow",
+      "spec_kit_crate": "spec_adapter",
+      "spec_kit_terms": [
+        ".specify",
+        "speckit"
+      ],
+      "spec_kit_public_names": [
+        "SpecKitConfig",
+        "SpecKitProvider"
+      ],
+      "change_host_trait": "ChangeHost",
+      "forbidden_method_prefixes": [
+        "merge",
+        "ready",
+        "undraft"
+      ]
+    },
+    "dep_10": {
+      "spawn_file": "crates/sandbox/src/process.rs",
+      "spawn_paths": [
+        "std::process::Command",
+        "std::process::Child",
+        "std::process::Stdio",
+        "std::os::unix::process",
+        "std::os::windows::process",
+        "tokio::process"
+      ],
+      "shells": [
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "fish",
+        "ksh",
+        "csh",
+        "tcsh",
+        "cmd",
+        "powershell",
+        "pwsh"
+      ],
+      "programs": [
+        {
+          "crate": "sandbox",
+          "programs": [
+            "docker",
+            "git"
+          ]
+        },
+        {
+          "crate": "runtime",
+          "programs": [
+            "claude",
+            "codex"
+          ]
+        }
+      ]
+    },
+    "st_04": {
+      "verifier_crate": "sandbox",
+      "verifier_prefix": "posture",
+      "dangerous_strings": [
+        "--privileged",
+        "--cap-add",
+        "seccomp=unconfined",
+        "apparmor=unconfined",
+        "docker.sock"
+      ],
+      "host_namespace_flags": [
+        "--network",
+        "--net",
+        "--pid"
+      ]
+    },
+    "st_05": {
+      "verbs": [
+        "merge",
+        "deploy"
+      ],
+      "fragments": [
+        "publish_release",
+        "release_publish"
+      ],
+      "route_segments": [
+        "merge",
+        "merges",
+        "deploy",
+        "deployments"
+      ],
+      "workflow_file_words": [
+        "deploy",
+        "merge",
+        "publish"
+      ]
+    },
+    "st_07": {
+      "conventions": "docs/observability/conventions.md",
+      "skip_crates": [
+        "observability"
+      ]
+    },
+    "st_09": {
+      "crates": [
+        "sandbox",
+        "runtime",
+        "spec_adapter",
+        "workflow"
+      ],
+      "ingestion_crate": "sandbox",
+      "ingestion_dir": "src/workspace/",
+      "calls": [
+        "fs::read(",
+        "fs::read_to_string(",
+        "fs::read_dir(",
+        "fs::metadata(",
+        "fs::symlink_metadata(",
+        "fs::canonicalize(",
+        "fs::read_link(",
+        "fs::exists(",
+        "File::open(",
+        "OpenOptions::new("
+      ],
+      "methods": [
+        ".read_dir(",
+        ".metadata(",
+        ".symlink_metadata(",
+        ".canonicalize(",
+        ".read_link(",
+        ".exists()",
+        ".try_exists()",
+        ".is_file()",
+        ".is_dir()",
+        ".is_symlink()"
+      ]
+    },
+    "st_13": [
+      {
+        "name": "TenantScope::new",
+        "allowed_crates": [
+          "workflow",
+          "storage",
+          "testkit",
+          "composition",
+          "api",
+          "worker"
+        ]
+      },
+      {
+        "name": "SystemScope::engine",
+        "allowed_crates": [
+          "workflow"
+        ]
+      },
+      {
+        "name": "PlatformScope::receiver",
+        "allowed_crates": [
+          "api"
+        ]
+      },
+      {
+        "name": "ResolvedPrincipal",
+        "allowed_crates": [
+          "storage",
+          "testkit"
+        ]
+      },
+      {
+        "name": "ResolvedRepository",
+        "allowed_crates": [
+          "storage",
+          "testkit"
+        ]
+      },
+      {
+        "name": "IngestedChange::new",
+        "allowed_crates": [
+          "sandbox",
+          "testkit"
+        ]
+      },
+      {
+        "name": "StatusLabel::forged_for_negative_tests",
+        "any_use": true,
+        "allowed_crates": [
+          "testkit"
+        ]
+      }
+    ],
+    "st_14": {
+      "crate": "workflow",
+      "names": [
+        "MeteringOps"
+      ]
+    }
+  },
+  "deferred": [
+    {
+      "name": "repository_intel",
+      "slice": 3,
+      "interim_home": "module workflow::stages::repo_intel",
+      "extract_when": "A syntax-tree or symbol-graph index brings heavy parser dependencies, or a second consumer outside workflow needs it.",
+      "why_deferred": "Slice 1 needs language detection, build and test command discovery, CODEOWNERS, protected paths and an ADR and docs inventory. That is a few hundred lines over the bounded repository reader, with no heavy dependency."
+    },
+    {
+      "name": "planner",
+      "slice": 3,
+      "interim_home": "module workflow::stages::{architecture, planning}",
+      "extract_when": "Incremental replanning, the critic loop and the Team Composer arrive, or the DAG validator gains a second consumer.",
+      "why_deferred": "Slice 1 has one planner call and one pure DAG validator. Both depend on the same ports as every other stage handler."
+    },
+    {
+      "name": "quality",
+      "slice": 3,
+      "interim_home": "module workflow::gates",
+      "extract_when": "The gate catalog needs tool-specific dependencies (static analysis, mutation, fuzzing) or domain-pack gates.",
+      "why_deferred": "Slice 1 gates are commands run in the sandbox from trusted definitions plus pure evaluators of their reports."
+    },
+    {
+      "name": "documentation",
+      "slice": 4,
+      "interim_home": "modules workflow::stages::{documenting, documentation_review} and workflow::gates::docs",
+      "extract_when": "Domain documentation packs and the documentation DAG are built.",
+      "why_deferred": "The stage exists as first-class stage kinds in the state machine from Slice 1. Its code does not need its own crate yet."
+    },
+    {
+      "name": "policy",
+      "slice": 4,
+      "interim_home": "module domain::policy for pure evaluation, loaders in contracts",
+      "extract_when": "The policy language needs its own parser or engine, or a consumer outside workflow appears.",
+      "why_deferred": "Policy evaluation is a pure function of typed facts. The YAML files are owned elsewhere and loaded by contracts."
+    },
+    {
+      "name": "events",
+      "slice": 2,
+      "interim_home": "outbox rows written by storage in Slice 1; no relay",
+      "extract_when": "Slice 2 adds the outbox relay to NATS JetStream and idempotent consumers.",
+      "why_deferred": "Slice 1 has no event consumer. The outbox table is written from day one so nothing needs retrofitting."
+    },
+    {
+      "name": "evals",
+      "slice": 4,
+      "interim_home": "none",
+      "extract_when": "The evaluation harness is built.",
+      "why_deferred": "Nothing to evaluate before a real end-to-end run exists."
+    },
+    {
+      "name": "domain_registry, capabilities, team_composer, toolchain_registry, research, experiment_tracking, artifact_catalog, validation_profiles, worker_capabilities",
+      "slice": 3,
+      "interim_home": "contracts loaders and domain::capability types",
+      "extract_when": "Dynamic team composition and open-world domain discovery are implemented.",
+      "why_deferred": "Slice 1 resolves one static profile (general-software). The schemas exist so the registries can be added without changing orchestration code."
+    },
+    {
+      "name": "apps/dashboard",
+      "slice": 4,
+      "interim_home": "CLI timeline and status commands",
+      "extract_when": "Slice 4.",
+      "why_deferred": "Not part of the end-to-end proof."
+    },
+    {
+      "name": "apps/scheduler",
+      "slice": 2,
+      "interim_home": "the engine loop inside apps/worker",
+      "extract_when": "Slice 2 separates scheduling from execution and adds multiple workers. The model broker listener may move to its own binary at the same time.",
+      "why_deferred": "One process is enough to prove the end-to-end path. Leases and fencing are built in Slice 1 so the split is a deployment change."
+    }
+  ]
+}

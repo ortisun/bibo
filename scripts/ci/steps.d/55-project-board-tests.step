@@ -1,0 +1,4 @@
+id       = project-board-tests
+title    = The board mapping adapts to existing boards, never changes a field, and keeps the credential to the board calls (scripts/tests/test_project_board.py)
+requires = uv python3
+run      = uv run --no-project --with pyyaml==6.0.3 python -I scripts/tests/test_project_board.py

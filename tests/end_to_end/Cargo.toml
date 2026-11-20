@@ -1,0 +1,56 @@
+[package]
+name = "factory-e2e"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "The end-to-end acceptance harness: scenarios, assertions A1 to A14 and a runner."
+
+# A standalone cargo project, not a member of the factory workspace. The root manifest lists its
+# members by name (`xtask`, `crates/*`, `apps/*`), and this package belongs to the QA work package
+# `s1-fixture-and-e2e-harness`, which does not own the root manifest. The empty table below makes
+# this directory its own workspace root. To bring it into the factory workspace, delete the table
+# and add `tests/end_to_end` to the members of the root manifest.
+#
+# The composition package calls the library with its real wiring through a path dependency:
+#   factory-e2e = { path = "../../tests/end_to_end", default-features = false }
+[workspace]
+
+[lib]
+name = "factory_e2e"
+path = "src/lib.rs"
+
+[[bin]]
+name = "e2e"
+path = "src/bin/e2e.rs"
+
+[features]
+# The scripted wiring: the real workflow engine over the testkit fakes, the fake GitHub server
+# and the scripted adversarial runtime. It is the stand-in for the composition roots until they
+# exist. The testkit appears only here, as the rules for test doubles require. A caller that brings
+# its own wiring turns it off with `default-features = false`.
+default = ["scripted"]
+scripted = ["dep:factory-ports", "dep:factory-testkit", "dep:tokio", "dep:async-trait", "dep:tracing"]
+
+[dependencies]
+# Contract types and their rules (the evidence ledger chain, the manifest, the specification, the
+# task graph, the gate report) and the hash type.
+factory-domain = { path = "../../crates/domain" }
+# The readability gate that checks every human-facing artifact (assertion A8), and, with the
+# scripted wiring, the engine.
+factory-workflow = { path = "../../crates/workflow" }
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std", "float_roundtrip"] }
+
+factory-ports = { path = "../../crates/ports", optional = true }
+factory-testkit = { path = "../../crates/testkit", optional = true }
+async-trait = { version = "0.1.92", optional = true }
+tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "rt", "macros"], optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,0 +1,151 @@
+# =============================================================================
+# policies/issue-workflow.yaml  -  the GitHub issue workflow
+# =============================================================================
+# STATUS: DESIGNED, pending confirmation by the architect. Three kinds of reader use this
+# file. The scripts: `scripts/lib/issue_workflow.py` checks it and renders
+# `onboarding/github/issue-workflow.json`, and `scripts/install.sh` creates the labels from
+# that rendering. The worker: it loads the file with the strict policy loader
+# (`PolicyLoader::load_issue_workflow`) and writes one `factory: <state>` label and one
+# status comment for each job (ADR 0017). And the intake stage of the engine: it loads the file
+# again for every attempt and refuses an issue on the design track whose design is not approved
+# (section `intake_requirements`, ADR 0016). If the file cannot be loaded, intake refuses every
+# issue and says why; the label writing alone degrades and the jobs go on. The value
+# `policy.status` below is a label that no code switches on.
+#
+# What this file decides
+#   * Which labels an issue carries as it moves from an idea to a delivered pull request.
+#   * Who may write each label. A label namespace has exactly one writer.
+#   * Which moves between design states are legal.
+#   * Which job state of the engine shows as which factory label.
+#
+# What this file does NOT decide
+#   * Who may ask the factory to work. That is `intake` in policies/approval.yaml: the
+#     person who applies the trigger label must be on the requester allowlist, matched by
+#     numeric user id. A label alone is never authorization, and nothing here changes it.
+#   * Whether a design is good. A person approves a design by merging its pull request.
+#
+# Hard rules, each checked by `scripts/lib/issue_workflow.py check`
+#   1. The trigger label is outside both namespaces, and no automation may apply or
+#      remove it. A template that applied it would let a low-privilege author start work.
+#   2. A namespace is written by one party only: `design:` by people, `factory:` by the
+#      factory's GitHub App. An edit by anyone else is reverted.
+#   3. Every state of the engine's job machine (docs/architecture/state-machine.json)
+#      has exactly one factory label.
+#   4. Labels are plain English, at most 50 characters, with a description of at most 100.
+# =============================================================================
+
+schema_version: 1
+
+policy:
+  id: issue-workflow
+  status: designed
+
+# The label whose application by an authorized person starts a job. It must equal
+# `intake.trigger_label` in policies/approval.yaml and `github.factory_label` in the
+# configuration. `scripts/lib/issue_workflow.py check` compares the first two.
+trigger:
+  label: factory
+  color: "1d76db"
+  description: "Ask the factory to work on this issue. Only a named requester can apply it."
+
+namespaces:
+  design:
+    prefix: "design: "
+    written_by: people
+  factory:
+    prefix: "factory: "
+    written_by: factory
+
+# -----------------------------------------------------------------------------
+# The design track. A person and EGM work out a new solution here, before the
+# factory sees the issue. An issue that is a small, clear change does not enter
+# the track: it was never given a `design:` label. The track is sticky. Once an issue
+# has had a `design:` label, taking the label off does not leave the track: the
+# engine reads the events of the issue and still needs `design: approved`, applied
+# by an approver (section `intake_requirements`).
+# -----------------------------------------------------------------------------
+design_track:
+  # An issue with no design label may take one of these first. A template applies
+  # `proposed`. A person who already holds a brief may start at `in progress`.
+  start_states: [proposed, in progress]
+  states:
+    - name: proposed
+      color: "c5def5"
+      description: "A new solution was proposed. Nobody has worked out the design yet."
+    - name: in progress
+      color: "bfd4f2"
+      description: "A person and EGM are working out requirements and trade-offs."
+    - name: in review
+      color: "84b6eb"
+      description: "The design is in review: fresh EGM reviewers and a design pull request."
+    - name: approved
+      color: "0e8a16"
+      description: "The design pull request was merged. The design is the agreed source for the work."
+  transitions:
+    - { from: proposed, to: in progress }
+    - { from: in progress, to: in review }
+    - { from: in review, to: in progress }     # changes were asked for
+    - { from: in review, to: approved }
+    - { from: approved, to: in progress }      # the design was reopened
+  # Moving to `approved` is refused unless the issue names a design document that
+  # exists on the default branch. A document on the default branch got there through
+  # a merged pull request, which is the human approval.
+  approval_requires:
+    design_document:
+      issue_body_field: "Design document"
+      path_glob: "docs/designs/*.md"
+
+# -----------------------------------------------------------------------------
+# The factory track. The factory writes one label per issue, from the state of the
+# job. Nobody else may. The map must name every job state and no other.
+# -----------------------------------------------------------------------------
+factory_track:
+  states:
+    - { job_state: RECEIVED,          name: queued,               color: "ededed", description: "The factory accepted the request and has not started." }
+    - { job_state: ACTIVE,            name: working,              color: "fbca04", description: "The factory is working on this issue." }
+    - { job_state: WAITING_FOR_HUMAN, name: waiting for a person, color: "d93f0b", description: "The factory needs a person to answer or decide." }
+    - { job_state: PAUSED,            name: paused,               color: "d4c5f9", description: "An operator paused the work." }
+    - { job_state: BLOCKED,           name: blocked,              color: "b60205", description: "A check could not run, or something is missing. See the comment." }
+    - { job_state: CANCELLING,        name: stopping,             color: "cccccc", description: "The work is being stopped." }
+    - { job_state: COMPLETED,         name: done,                 color: "0e8a16", description: "The work finished and a draft pull request is ready for review." }
+    - { job_state: FAILED,            name: failed,               color: "b60205", description: "The work failed. See the comment for the reason." }
+    - { job_state: CANCELLED,         name: cancelled,            color: "cccccc", description: "An operator cancelled the work." }
+    - { job_state: REJECTED,          name: rejected,             color: "e99695", description: "An approver rejected the result." }
+
+# -----------------------------------------------------------------------------
+# What the engine checks when the trigger label is applied. ENFORCED by the intake stage
+# (ADR 0016). The labels are read from GitHub again at intake; the webhook payload is not used.
+# -----------------------------------------------------------------------------
+intake_requirements:
+  # An issue that carries any label that reads as `design:` at the start (any letter case, with
+  # or without the space after the colon, and with hidden or look-alike characters allowed in the
+  # first seven characters) is on the design track. So is an issue that ever carried one: the
+  # events of the issue are read, and a label that was applied and taken off keeps the issue on
+  # the track. It needs the label of this state, `design: approved`, and no other design label,
+  # before a job may start, and an approver must have applied it. An issue that was never given
+  # such a label is a small, clear change and is not touched by this rule.
+  design_track_requires: approved
+  # The factory designation that the person who applied the `design: approved` label must hold on
+  # the protected allowlist (policies/approval.yaml, `roles`). It is matched by numeric GitHub user
+  # id and never by a GitHub role, and an entry narrowed to other repositories does not count. It
+  # cannot be `requester` or `operator`. PENDING CONFIRMATION BY THE ARCHITECT: `approver` is the
+  # engineer's default (ADR 0016), as the defaults of ADR 0009 and ADR 0014 are.
+  design_approved_by: approver
+  # DG-9, DR-4. The most replies the factory posts on one issue about the design, counted over the
+  # window, with a cap for each KIND of reply so that one kind cannot use up the room of another:
+  # `refusal` is the answer of the design gate at intake; `withdrawal` is the stop before the pull
+  # request opens (DG-8); `environment` is the notice that the place where the tools run is not
+  # available (LB-02). A reply is a comment with a hidden marker of the factory's own and a hidden
+  # family word of its kind; the adapter counts the App's own comments in a bounded look at the
+  # thread (a fixed small number of pages of 100 comments, only the comments written or changed
+  # within the window), so the count does not depend on how long the thread is, and a thread with
+  # more comments in the window than the look holds gets no reply at all, which the audit record
+  # says. When a cap is reached the factory posts nothing more of that kind on that issue and
+  # writes an audit record instead. A missing key, zero, or a number outside the range is a load
+  # error (and the gate then refuses every issue): there is no default and no way to read "0" as
+  # "no limit". Each cap is 1..100 replies and the window 1..168 hours. The blocks, the labels and
+  # the audit records are not affected by a cap: only the comment is.
+  design_refusal_cap_per_issue: 3
+  design_withdrawal_cap_per_issue: 2
+  design_environment_cap_per_issue: 2
+  design_reply_window_hours: 24

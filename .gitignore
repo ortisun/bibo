@@ -1,0 +1,22 @@
+# Local agent harness state. The Spec Kit skills for Codex are the one tracked exception: the integration guide
+# (docs/spec-kit/integration-guide.md, section 11.9) and the pin in crates/spec_adapter/src/pinned.rs name them, and the
+# worker refuses to start when one differs. Anything else under .agents/ stays local.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/speckit-*/
+
+# Build and tooling output
+target/
+# The factory's own pinned tools, installed by scripts/setup-tools.sh
+.tools/
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# Isolated worktrees created for parallel agents
+.claude/worktrees/

@@ -1,0 +1,1259 @@
+{
+  "audit": [
+    {
+      "action": "webhook.accepted",
+      "actor": "anonymous:webhook",
+      "correlation_id": "1002bfdd-5355-44b3-97bd-4a39aca52ae2",
+      "detail": "The delivery was verified and recorded.",
+      "seq": 1,
+      "subject": "delivery 0190a3b2-7c4d-4e5f-8a6b-0000000000e6"
+    },
+    {
+      "action": "webhook_accepted_or_rejected.denied",
+      "actor": "anonymous:webhook",
+      "correlation_id": "efcc5ebc-240e-4d83-8774-aadfc037009a",
+      "detail": "A label from a sender who is not an authorized requester was refused.",
+      "seq": 2,
+      "subject": "rejection repository=e993fd1c-9df2-49d6-b3e9-6ee136c8e0dd issue=12 sender=1004 delivery=0190a3b2-7c4d-4e5f-8a6b-0000000000e6 allowlist=sha256:a4635f084dbffe0645c22cd8e00d0e419aa317978c0aa1cd25fcfcb0577ceee3 at=2026-10-29T09:01:33.891589Z"
+    },
+    {
+      "action": "intake.rejected",
+      "actor": "system:worker.intake",
+      "correlation_id": "efcc5ebc-240e-4d83-8774-aadfc037009a",
+      "detail": "unauthorized_actor: the sender of the label is not an authorized requester.",
+      "seq": 3,
+      "subject": "request=66d5715c-3e85-4157-b1ad-b81d66bab869 issue=org/repo-0#12 sender=1004 delivery=0190a3b2-7c4d-4e5f-8a6b-0000000000e6 allowlist=sha256:a4635f084dbffe0645c22cd8e00d0e419aa317978c0aa1cd25fcfcb0577ceee3 reply=posted"
+    }
+  ],
+  "contracts": {
+    "evidence_manifest": null,
+    "gate_reports": [],
+    "specification": null,
+    "stored_hashes": {},
+    "task_dag": null
+  },
+  "documents": [],
+  "facts": {
+    "delivery_id": "0190a3b2-7c4d-4e5f-8a6b-0000000000e6",
+    "issue_text": "--json",
+    "jobs_listed": 0,
+    "outbox_rows": 0,
+    "payload_login": "outsider-one",
+    "sender_github_id": 1004
+  },
+  "github": {
+    "base_branch": "main",
+    "base_sha_after": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+    "base_sha_before": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+    "changed_paths": [],
+    "check_runs": [],
+    "comments": [
+      "The factory did not start work on this issue. You are not on the list of people who may ask for this. If you think this is a mistake, ask the person who manages the factory for this repository."
+    ],
+    "head_commits": [],
+    "head_files": {},
+    "protection": {
+      "allow_deletions": false,
+      "allow_force_pushes": false,
+      "app_may_bypass": false,
+      "dismiss_stale_reviews": true,
+      "enforce_admins": true,
+      "require_code_owner_review": true,
+      "require_pull_request": true,
+      "required_approvals": 1,
+      "required_checks": [
+        {
+          "context": "factory-validation",
+          "pinned_to_app": true
+        },
+        {
+          "context": "factory-review",
+          "pinned_to_app": true
+        }
+      ]
+    },
+    "pull_requests": [],
+    "repository": "org/repo-0",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/repos/org/repo-0/issues/12/comments"
+      },
+      {
+        "method": "POST",
+        "path": "/repos/org/repo-0/issues/12/comments"
+      }
+    ],
+    "tokens": [
+      {
+        "id": "fake-token-1",
+        "permissions": {
+          "contents": "read",
+          "issues": "write",
+          "metadata": "read",
+          "pull_requests": "read"
+        },
+        "repositories": [
+          "org/repo-0"
+        ]
+      }
+    ]
+  },
+  "job": {
+    "correlation_id": "none",
+    "id": "none",
+    "issue_number": 12,
+    "requester": "human:92415bc1-97f1-4dba-85ad-6f3783b7c12a",
+    "status": "NONE"
+  },
+  "ledger": [],
+  "mode": "test",
+  "scenario": "E6",
+  "source_language": "en",
+  "stage_runs": [],
+  "telemetry": {
+    "correlated": [
+      {
+        "correlation_id": null,
+        "label": "event 467 (factory_composition::intake_rejections: a label from someone who may not ask was answered)",
+        "source": "log"
+      }
+    ],
+    "spans": [
+      {
+        "attempt_id": null,
+        "id": "1",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "2",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "e9bb63a5-d02a-4560-b724-d21bda2d653f"
+      },
+      {
+        "attempt_id": "32dde3b4-1517-40aa-8ec1-4272d3715f03",
+        "id": "3",
+        "name": "factory.attempt",
+        "parent_id": "2",
+        "stage_run_id": "e9bb63a5-d02a-4560-b724-d21bda2d653f"
+      },
+      {
+        "attempt_id": "32dde3b4-1517-40aa-8ec1-4272d3715f03",
+        "id": "4",
+        "name": "factory.agent",
+        "parent_id": "3",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "5",
+        "name": "factory.gate",
+        "parent_id": "3",
+        "stage_run_id": "e9bb63a5-d02a-4560-b724-d21bda2d653f"
+      },
+      {
+        "attempt_id": null,
+        "id": "6",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "03fd75fe-0cf1-4b0f-98f5-73ce314ecfe8"
+      },
+      {
+        "attempt_id": "ee1d3a00-8c19-4c3a-b645-487d7705745d",
+        "id": "7",
+        "name": "factory.attempt",
+        "parent_id": "6",
+        "stage_run_id": "03fd75fe-0cf1-4b0f-98f5-73ce314ecfe8"
+      },
+      {
+        "attempt_id": null,
+        "id": "8",
+        "name": "factory.gate",
+        "parent_id": "7",
+        "stage_run_id": "03fd75fe-0cf1-4b0f-98f5-73ce314ecfe8"
+      },
+      {
+        "attempt_id": null,
+        "id": "9",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "10",
+        "name": "factory.attempt",
+        "parent_id": "9",
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "11",
+        "name": "factory.agent",
+        "parent_id": "10",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "12",
+        "name": "factory.agent",
+        "parent_id": "10",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "13",
+        "name": "factory.agent",
+        "parent_id": "10",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "14",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "15",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "16",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": "a4d0f53d-ea2c-44c2-91a0-64471e3f6cf8",
+        "id": "17",
+        "name": "factory.attempt",
+        "parent_id": "16",
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": null,
+        "id": "18",
+        "name": "factory.gate",
+        "parent_id": "17",
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": null,
+        "id": "19",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "5d5c72c3-bf24-4e4e-978c-5babf3fca07f"
+      },
+      {
+        "attempt_id": "bed66f6b-b52a-45b7-b8a8-a94d020cb91e",
+        "id": "20",
+        "name": "factory.attempt",
+        "parent_id": "19",
+        "stage_run_id": "5d5c72c3-bf24-4e4e-978c-5babf3fca07f"
+      },
+      {
+        "attempt_id": "bed66f6b-b52a-45b7-b8a8-a94d020cb91e",
+        "id": "21",
+        "name": "factory.agent",
+        "parent_id": "20",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "22",
+        "name": "factory.gate",
+        "parent_id": "20",
+        "stage_run_id": "5d5c72c3-bf24-4e4e-978c-5babf3fca07f"
+      },
+      {
+        "attempt_id": null,
+        "id": "23",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "8aa7821a-2c82-43c3-b6eb-a19699c112fa"
+      },
+      {
+        "attempt_id": "bd62f83e-7c0c-41e9-baca-35b3f472d824",
+        "id": "24",
+        "name": "factory.attempt",
+        "parent_id": "23",
+        "stage_run_id": "8aa7821a-2c82-43c3-b6eb-a19699c112fa"
+      },
+      {
+        "attempt_id": "bd62f83e-7c0c-41e9-baca-35b3f472d824",
+        "id": "25",
+        "name": "factory.agent",
+        "parent_id": "24",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "26",
+        "name": "factory.gate",
+        "parent_id": "24",
+        "stage_run_id": "8aa7821a-2c82-43c3-b6eb-a19699c112fa"
+      },
+      {
+        "attempt_id": null,
+        "id": "27",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "03680ae7-4e2f-425a-845e-985f6c73e265"
+      },
+      {
+        "attempt_id": "db9bad2a-0d46-4857-9109-07868902fd4b",
+        "id": "28",
+        "name": "factory.attempt",
+        "parent_id": "27",
+        "stage_run_id": "03680ae7-4e2f-425a-845e-985f6c73e265"
+      },
+      {
+        "attempt_id": "db9bad2a-0d46-4857-9109-07868902fd4b",
+        "id": "29",
+        "name": "factory.agent",
+        "parent_id": "28",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "db9bad2a-0d46-4857-9109-07868902fd4b",
+        "id": "30",
+        "name": "factory.agent",
+        "parent_id": "28",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "31",
+        "name": "factory.gate",
+        "parent_id": "28",
+        "stage_run_id": "03680ae7-4e2f-425a-845e-985f6c73e265"
+      },
+      {
+        "attempt_id": null,
+        "id": "32",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "2874a4a6-740b-4547-8143-3bcd3a3e23b0"
+      },
+      {
+        "attempt_id": "fd3b765d-5ebe-4914-9cc4-3b0bf373818e",
+        "id": "33",
+        "name": "factory.attempt",
+        "parent_id": "32",
+        "stage_run_id": "2874a4a6-740b-4547-8143-3bcd3a3e23b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "34",
+        "name": "factory.gate",
+        "parent_id": "33",
+        "stage_run_id": "2874a4a6-740b-4547-8143-3bcd3a3e23b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "35",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "58636989-d638-47d7-ae7d-ce376acc9685"
+      },
+      {
+        "attempt_id": "e15ca5ad-9d46-4bb4-aa99-b8bc0163b69a",
+        "id": "36",
+        "name": "factory.attempt",
+        "parent_id": "35",
+        "stage_run_id": "58636989-d638-47d7-ae7d-ce376acc9685"
+      },
+      {
+        "attempt_id": "e15ca5ad-9d46-4bb4-aa99-b8bc0163b69a",
+        "id": "37",
+        "name": "factory.agent",
+        "parent_id": "36",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "38",
+        "name": "factory.gate",
+        "parent_id": "36",
+        "stage_run_id": "58636989-d638-47d7-ae7d-ce376acc9685"
+      },
+      {
+        "attempt_id": null,
+        "id": "39",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "9992c757-4299-4b3f-9750-7f2ad59fe3e3"
+      },
+      {
+        "attempt_id": "7233c47d-884c-4ca1-930e-ac4dc5a60eef",
+        "id": "40",
+        "name": "factory.attempt",
+        "parent_id": "39",
+        "stage_run_id": "9992c757-4299-4b3f-9750-7f2ad59fe3e3"
+      },
+      {
+        "attempt_id": null,
+        "id": "41",
+        "name": "factory.gate",
+        "parent_id": "40",
+        "stage_run_id": "9992c757-4299-4b3f-9750-7f2ad59fe3e3"
+      },
+      {
+        "attempt_id": null,
+        "id": "42",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a01e8f0b-b55d-49c2-b1c9-3a94fcab5bd3"
+      },
+      {
+        "attempt_id": "52f68914-246e-4dcc-84dc-fe4021816953",
+        "id": "43",
+        "name": "factory.attempt",
+        "parent_id": "42",
+        "stage_run_id": "a01e8f0b-b55d-49c2-b1c9-3a94fcab5bd3"
+      },
+      {
+        "attempt_id": "52f68914-246e-4dcc-84dc-fe4021816953",
+        "id": "44",
+        "name": "factory.agent",
+        "parent_id": "43",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "45",
+        "name": "factory.gate",
+        "parent_id": "43",
+        "stage_run_id": "a01e8f0b-b55d-49c2-b1c9-3a94fcab5bd3"
+      },
+      {
+        "attempt_id": null,
+        "id": "46",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "39e622a5-210b-4382-b7c7-0020ffc1e474"
+      },
+      {
+        "attempt_id": "3ba64cce-94e9-40a5-b268-05aa5105447a",
+        "id": "47",
+        "name": "factory.attempt",
+        "parent_id": "46",
+        "stage_run_id": "39e622a5-210b-4382-b7c7-0020ffc1e474"
+      },
+      {
+        "attempt_id": null,
+        "id": "48",
+        "name": "factory.gate",
+        "parent_id": "47",
+        "stage_run_id": "39e622a5-210b-4382-b7c7-0020ffc1e474"
+      },
+      {
+        "attempt_id": null,
+        "id": "49",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "50",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "51",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "af0ec16c-30f2-4e19-8227-e5acfbe03ed2"
+      },
+      {
+        "attempt_id": "666f5f62-2196-4016-9764-2a45a997dd1f",
+        "id": "52",
+        "name": "factory.attempt",
+        "parent_id": "51",
+        "stage_run_id": "af0ec16c-30f2-4e19-8227-e5acfbe03ed2"
+      },
+      {
+        "attempt_id": "666f5f62-2196-4016-9764-2a45a997dd1f",
+        "id": "53",
+        "name": "factory.agent",
+        "parent_id": "52",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "54",
+        "name": "factory.gate",
+        "parent_id": "52",
+        "stage_run_id": "af0ec16c-30f2-4e19-8227-e5acfbe03ed2"
+      },
+      {
+        "attempt_id": null,
+        "id": "55",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "0d343ad5-0d68-4d80-8727-df9109bb1f25"
+      },
+      {
+        "attempt_id": "5991c6e4-c0df-4b94-8dd3-16f5d234bc60",
+        "id": "56",
+        "name": "factory.attempt",
+        "parent_id": "55",
+        "stage_run_id": "0d343ad5-0d68-4d80-8727-df9109bb1f25"
+      },
+      {
+        "attempt_id": null,
+        "id": "57",
+        "name": "factory.gate",
+        "parent_id": "56",
+        "stage_run_id": "0d343ad5-0d68-4d80-8727-df9109bb1f25"
+      },
+      {
+        "attempt_id": null,
+        "id": "58",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "59",
+        "name": "factory.attempt",
+        "parent_id": "58",
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "60",
+        "name": "factory.agent",
+        "parent_id": "59",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "61",
+        "name": "factory.agent",
+        "parent_id": "59",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "62",
+        "name": "factory.agent",
+        "parent_id": "59",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "63",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "64",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "65",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": "b1b981dc-0411-46e1-abbb-cc401d94d9c8",
+        "id": "66",
+        "name": "factory.attempt",
+        "parent_id": "65",
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": null,
+        "id": "67",
+        "name": "factory.gate",
+        "parent_id": "66",
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": null,
+        "id": "68",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "bb66daed-9dd4-4118-9631-323bae13f712"
+      },
+      {
+        "attempt_id": "d961c5ba-940a-4d00-a509-1d92d1c7c659",
+        "id": "69",
+        "name": "factory.attempt",
+        "parent_id": "68",
+        "stage_run_id": "bb66daed-9dd4-4118-9631-323bae13f712"
+      },
+      {
+        "attempt_id": "d961c5ba-940a-4d00-a509-1d92d1c7c659",
+        "id": "70",
+        "name": "factory.agent",
+        "parent_id": "69",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "71",
+        "name": "factory.gate",
+        "parent_id": "69",
+        "stage_run_id": "bb66daed-9dd4-4118-9631-323bae13f712"
+      },
+      {
+        "attempt_id": null,
+        "id": "72",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "7b3a7875-46cd-4eb7-a23a-0a7c5c484a1d"
+      },
+      {
+        "attempt_id": "25c02c24-1f24-4842-a91c-f9a2d0c3ee2d",
+        "id": "73",
+        "name": "factory.attempt",
+        "parent_id": "72",
+        "stage_run_id": "7b3a7875-46cd-4eb7-a23a-0a7c5c484a1d"
+      },
+      {
+        "attempt_id": "25c02c24-1f24-4842-a91c-f9a2d0c3ee2d",
+        "id": "74",
+        "name": "factory.agent",
+        "parent_id": "73",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "75",
+        "name": "factory.gate",
+        "parent_id": "73",
+        "stage_run_id": "7b3a7875-46cd-4eb7-a23a-0a7c5c484a1d"
+      },
+      {
+        "attempt_id": null,
+        "id": "76",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "de14c496-f5d6-439e-b6ec-ad422933e0d8"
+      },
+      {
+        "attempt_id": "6c377f49-9c78-4d26-9788-6f78fa279551",
+        "id": "77",
+        "name": "factory.attempt",
+        "parent_id": "76",
+        "stage_run_id": "de14c496-f5d6-439e-b6ec-ad422933e0d8"
+      },
+      {
+        "attempt_id": "6c377f49-9c78-4d26-9788-6f78fa279551",
+        "id": "78",
+        "name": "factory.agent",
+        "parent_id": "77",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "6c377f49-9c78-4d26-9788-6f78fa279551",
+        "id": "79",
+        "name": "factory.agent",
+        "parent_id": "77",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "80",
+        "name": "factory.gate",
+        "parent_id": "77",
+        "stage_run_id": "de14c496-f5d6-439e-b6ec-ad422933e0d8"
+      },
+      {
+        "attempt_id": null,
+        "id": "81",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "edf5a093-e2f1-429f-92e2-ca1c5b85deea"
+      },
+      {
+        "attempt_id": "c72f6693-ffdd-466a-a91c-3a41f15fc5d3",
+        "id": "82",
+        "name": "factory.attempt",
+        "parent_id": "81",
+        "stage_run_id": "edf5a093-e2f1-429f-92e2-ca1c5b85deea"
+      },
+      {
+        "attempt_id": null,
+        "id": "83",
+        "name": "factory.gate",
+        "parent_id": "82",
+        "stage_run_id": "edf5a093-e2f1-429f-92e2-ca1c5b85deea"
+      },
+      {
+        "attempt_id": null,
+        "id": "84",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "0a78dff7-7728-4b17-a7d4-6623b2a6cb14"
+      },
+      {
+        "attempt_id": "130002d3-b7f1-4429-8385-820cd5ee70ff",
+        "id": "85",
+        "name": "factory.attempt",
+        "parent_id": "84",
+        "stage_run_id": "0a78dff7-7728-4b17-a7d4-6623b2a6cb14"
+      },
+      {
+        "attempt_id": "130002d3-b7f1-4429-8385-820cd5ee70ff",
+        "id": "86",
+        "name": "factory.agent",
+        "parent_id": "85",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "87",
+        "name": "factory.gate",
+        "parent_id": "85",
+        "stage_run_id": "0a78dff7-7728-4b17-a7d4-6623b2a6cb14"
+      },
+      {
+        "attempt_id": null,
+        "id": "88",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "16a165d0-a807-477e-add3-17ba0d9b3331"
+      },
+      {
+        "attempt_id": "ab791463-f1ce-4c01-b2d3-37c77f7d897f",
+        "id": "89",
+        "name": "factory.attempt",
+        "parent_id": "88",
+        "stage_run_id": "16a165d0-a807-477e-add3-17ba0d9b3331"
+      },
+      {
+        "attempt_id": "ab791463-f1ce-4c01-b2d3-37c77f7d897f",
+        "id": "90",
+        "name": "factory.agent",
+        "parent_id": "89",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "91",
+        "name": "factory.gate",
+        "parent_id": "89",
+        "stage_run_id": "16a165d0-a807-477e-add3-17ba0d9b3331"
+      },
+      {
+        "attempt_id": null,
+        "id": "92",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "bd204225-033d-490d-9473-39fb1e3e0d18"
+      },
+      {
+        "attempt_id": "decd5da4-de31-490f-8a56-8ec6fb348e4b",
+        "id": "93",
+        "name": "factory.attempt",
+        "parent_id": "92",
+        "stage_run_id": "bd204225-033d-490d-9473-39fb1e3e0d18"
+      },
+      {
+        "attempt_id": "decd5da4-de31-490f-8a56-8ec6fb348e4b",
+        "id": "94",
+        "name": "factory.agent",
+        "parent_id": "93",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "95",
+        "name": "factory.gate",
+        "parent_id": "93",
+        "stage_run_id": "bd204225-033d-490d-9473-39fb1e3e0d18"
+      },
+      {
+        "attempt_id": null,
+        "id": "96",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "ac005144-6445-4d39-94b6-26b478bf377e"
+      },
+      {
+        "attempt_id": "db6a33f7-143f-44e7-83d2-b3eba3b9bfca",
+        "id": "97",
+        "name": "factory.attempt",
+        "parent_id": "96",
+        "stage_run_id": "ac005144-6445-4d39-94b6-26b478bf377e"
+      },
+      {
+        "attempt_id": null,
+        "id": "98",
+        "name": "factory.gate",
+        "parent_id": "97",
+        "stage_run_id": "ac005144-6445-4d39-94b6-26b478bf377e"
+      },
+      {
+        "attempt_id": null,
+        "id": "99",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1cca8013-47b6-40a5-bf3e-fcb057584999"
+      },
+      {
+        "attempt_id": "2e556050-f332-4c4e-a165-004f24691d05",
+        "id": "100",
+        "name": "factory.attempt",
+        "parent_id": "99",
+        "stage_run_id": "1cca8013-47b6-40a5-bf3e-fcb057584999"
+      },
+      {
+        "attempt_id": null,
+        "id": "101",
+        "name": "factory.gate",
+        "parent_id": "100",
+        "stage_run_id": "1cca8013-47b6-40a5-bf3e-fcb057584999"
+      },
+      {
+        "attempt_id": null,
+        "id": "102",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "103",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "104",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "105",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "106",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "107",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "108",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1fc331d1-6e26-4bbc-ac6b-dd70da3fb92f"
+      },
+      {
+        "attempt_id": "990d378e-4668-404f-a457-149219b44684",
+        "id": "109",
+        "name": "factory.attempt",
+        "parent_id": "108",
+        "stage_run_id": "1fc331d1-6e26-4bbc-ac6b-dd70da3fb92f"
+      },
+      {
+        "attempt_id": "990d378e-4668-404f-a457-149219b44684",
+        "id": "110",
+        "name": "factory.agent",
+        "parent_id": "109",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "111",
+        "name": "factory.gate",
+        "parent_id": "109",
+        "stage_run_id": "1fc331d1-6e26-4bbc-ac6b-dd70da3fb92f"
+      },
+      {
+        "attempt_id": null,
+        "id": "112",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "9aca92d1-b102-4784-8123-59266393809c"
+      },
+      {
+        "attempt_id": "1a75bf4c-09b1-4201-b3db-750ab2e6edd3",
+        "id": "113",
+        "name": "factory.attempt",
+        "parent_id": "112",
+        "stage_run_id": "9aca92d1-b102-4784-8123-59266393809c"
+      },
+      {
+        "attempt_id": null,
+        "id": "114",
+        "name": "factory.gate",
+        "parent_id": "113",
+        "stage_run_id": "9aca92d1-b102-4784-8123-59266393809c"
+      },
+      {
+        "attempt_id": null,
+        "id": "115",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "116",
+        "name": "factory.attempt",
+        "parent_id": "115",
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "117",
+        "name": "factory.agent",
+        "parent_id": "116",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "118",
+        "name": "factory.agent",
+        "parent_id": "116",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "119",
+        "name": "factory.agent",
+        "parent_id": "116",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "120",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "121",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "122",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": "ab5ec72c-0a40-4faa-af86-205a5115e502",
+        "id": "123",
+        "name": "factory.attempt",
+        "parent_id": "122",
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": null,
+        "id": "124",
+        "name": "factory.gate",
+        "parent_id": "123",
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": null,
+        "id": "125",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a8e5ed9e-b980-45b3-b0ef-ddb019ae99fe"
+      },
+      {
+        "attempt_id": "bff7b052-a1ae-4b27-9a2d-d6b53a6bc19a",
+        "id": "126",
+        "name": "factory.attempt",
+        "parent_id": "125",
+        "stage_run_id": "a8e5ed9e-b980-45b3-b0ef-ddb019ae99fe"
+      },
+      {
+        "attempt_id": "bff7b052-a1ae-4b27-9a2d-d6b53a6bc19a",
+        "id": "127",
+        "name": "factory.agent",
+        "parent_id": "126",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "128",
+        "name": "factory.gate",
+        "parent_id": "126",
+        "stage_run_id": "a8e5ed9e-b980-45b3-b0ef-ddb019ae99fe"
+      },
+      {
+        "attempt_id": null,
+        "id": "129",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "7bfeec19-69ae-499f-89d5-2b514afe5c1b"
+      },
+      {
+        "attempt_id": "75dfd067-246a-4717-90a5-ea723a607410",
+        "id": "130",
+        "name": "factory.attempt",
+        "parent_id": "129",
+        "stage_run_id": "7bfeec19-69ae-499f-89d5-2b514afe5c1b"
+      },
+      {
+        "attempt_id": "75dfd067-246a-4717-90a5-ea723a607410",
+        "id": "131",
+        "name": "factory.agent",
+        "parent_id": "130",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "132",
+        "name": "factory.gate",
+        "parent_id": "130",
+        "stage_run_id": "7bfeec19-69ae-499f-89d5-2b514afe5c1b"
+      },
+      {
+        "attempt_id": null,
+        "id": "133",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "77d4d87f-4c15-4d04-9515-3f2e82cd223e"
+      },
+      {
+        "attempt_id": "eeadfdf1-1ccb-420d-a58b-17c21c5e359b",
+        "id": "134",
+        "name": "factory.attempt",
+        "parent_id": "133",
+        "stage_run_id": "77d4d87f-4c15-4d04-9515-3f2e82cd223e"
+      },
+      {
+        "attempt_id": "eeadfdf1-1ccb-420d-a58b-17c21c5e359b",
+        "id": "135",
+        "name": "factory.agent",
+        "parent_id": "134",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "eeadfdf1-1ccb-420d-a58b-17c21c5e359b",
+        "id": "136",
+        "name": "factory.agent",
+        "parent_id": "134",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "137",
+        "name": "factory.gate",
+        "parent_id": "134",
+        "stage_run_id": "77d4d87f-4c15-4d04-9515-3f2e82cd223e"
+      },
+      {
+        "attempt_id": null,
+        "id": "138",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a051d985-5560-417e-8db6-2f32c2a695b0"
+      },
+      {
+        "attempt_id": "ab50dc05-2636-4199-9d57-47e305c373f7",
+        "id": "139",
+        "name": "factory.attempt",
+        "parent_id": "138",
+        "stage_run_id": "a051d985-5560-417e-8db6-2f32c2a695b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "140",
+        "name": "factory.gate",
+        "parent_id": "139",
+        "stage_run_id": "a051d985-5560-417e-8db6-2f32c2a695b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "141",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "ae668145-19ba-4ec2-8ab3-1d06c73800b7"
+      },
+      {
+        "attempt_id": "73944163-810d-414d-99e3-9f6eaebe7f0f",
+        "id": "142",
+        "name": "factory.attempt",
+        "parent_id": "141",
+        "stage_run_id": "ae668145-19ba-4ec2-8ab3-1d06c73800b7"
+      },
+      {
+        "attempt_id": "73944163-810d-414d-99e3-9f6eaebe7f0f",
+        "id": "143",
+        "name": "factory.agent",
+        "parent_id": "142",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "144",
+        "name": "factory.gate",
+        "parent_id": "142",
+        "stage_run_id": "ae668145-19ba-4ec2-8ab3-1d06c73800b7"
+      },
+      {
+        "attempt_id": null,
+        "id": "145",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "95e88aea-39d8-423a-8de6-e571936ad208"
+      },
+      {
+        "attempt_id": "f2b8e63a-2c5d-4d00-a963-4874d3459b92",
+        "id": "146",
+        "name": "factory.attempt",
+        "parent_id": "145",
+        "stage_run_id": "95e88aea-39d8-423a-8de6-e571936ad208"
+      },
+      {
+        "attempt_id": "f2b8e63a-2c5d-4d00-a963-4874d3459b92",
+        "id": "147",
+        "name": "factory.agent",
+        "parent_id": "146",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "148",
+        "name": "factory.gate",
+        "parent_id": "146",
+        "stage_run_id": "95e88aea-39d8-423a-8de6-e571936ad208"
+      },
+      {
+        "attempt_id": null,
+        "id": "149",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "2cea3dde-9903-41ae-a69b-eac5cea5fff4"
+      },
+      {
+        "attempt_id": "f361d43f-5131-463a-8561-e95f601b5d59",
+        "id": "150",
+        "name": "factory.attempt",
+        "parent_id": "149",
+        "stage_run_id": "2cea3dde-9903-41ae-a69b-eac5cea5fff4"
+      },
+      {
+        "attempt_id": "f361d43f-5131-463a-8561-e95f601b5d59",
+        "id": "151",
+        "name": "factory.agent",
+        "parent_id": "150",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "152",
+        "name": "factory.gate",
+        "parent_id": "150",
+        "stage_run_id": "2cea3dde-9903-41ae-a69b-eac5cea5fff4"
+      },
+      {
+        "attempt_id": null,
+        "id": "153",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "44db6b79-3e4b-4b3b-a46d-a206032769d9"
+      },
+      {
+        "attempt_id": "09545f85-7c3e-4b3e-9a46-58bbb1b9ad67",
+        "id": "154",
+        "name": "factory.attempt",
+        "parent_id": "153",
+        "stage_run_id": "44db6b79-3e4b-4b3b-a46d-a206032769d9"
+      },
+      {
+        "attempt_id": null,
+        "id": "155",
+        "name": "factory.gate",
+        "parent_id": "154",
+        "stage_run_id": "44db6b79-3e4b-4b3b-a46d-a206032769d9"
+      },
+      {
+        "attempt_id": null,
+        "id": "156",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "c88a3c66-d3b1-4c62-a49a-e7c9b4b3ff2c"
+      },
+      {
+        "attempt_id": "bcc15741-9685-4d82-b5e6-e586836240b4",
+        "id": "157",
+        "name": "factory.attempt",
+        "parent_id": "156",
+        "stage_run_id": "c88a3c66-d3b1-4c62-a49a-e7c9b4b3ff2c"
+      },
+      {
+        "attempt_id": null,
+        "id": "158",
+        "name": "factory.gate",
+        "parent_id": "157",
+        "stage_run_id": "c88a3c66-d3b1-4c62-a49a-e7c9b4b3ff2c"
+      },
+      {
+        "attempt_id": null,
+        "id": "159",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "160",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "161",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      }
+    ]
+  },
+  "timeline": [],
+  "usage": {
+    "budget_micro_usd": 0,
+    "calls_after_exhaustion": 0,
+    "total_micro_usd": 0
+  },
+  "wiring": "composed-test"
+}

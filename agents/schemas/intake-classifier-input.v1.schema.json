@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:intake-classifier-input:1",
+  "title": "Intake classifier input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the intake classifier. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request"
+  ],
+  "properties": {
+    "request": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The normalized request: its title and body."
+    }
+  }
+}

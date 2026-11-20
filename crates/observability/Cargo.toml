@@ -1,0 +1,68 @@
+[package]
+name = "factory-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# External dependencies are limited to the `observability` entry of
+# docs/architecture/crate-dependency-rules.json. Versions are pinned here, not in the workspace
+# root, and the reasons are recorded in docs/observability/conventions.md.
+#
+# The four OpenTelemetry crates are pinned with `=` because they are 0.x crates that must move
+# together: tracing-opentelemetry 0.34 requires opentelemetry ^0.33, and the SDK and exporter
+# are released in step with the API crate. A bump is a deliberate change to all of them at once.
+[dependencies]
+# The one redactor (`domain::redaction`) and the identifier and trace context types (ADR 0013).
+# `domain` is the only workspace crate this one may depend on (docs/architecture/
+# crate-dependency-rules.json).
+factory-domain.workspace = true
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+    "std",
+    "registry",
+    "fmt",
+    "json",
+    "env-filter",
+] }
+# The `metrics` feature adds the layer that turns `tracing` events such as
+# `monotonic_counter.<name> = 1` into OpenTelemetry instruments. Crates that may only depend on
+# `tracing` (workflow, runtime, sandbox) use it to record metrics.
+tracing-opentelemetry = { version = "0.34.0", default-features = false, features = ["metrics"] }
+opentelemetry = { version = "=0.33.1", default-features = false, features = [
+    "trace",
+    "metrics",
+    "internal-logs",
+] }
+# `internal-logs` makes the SDK report export failures through `tracing`, so a dead collector is
+# visible in the diagnostic log instead of silent. `spec_unstable_metrics_views` is needed for
+# `Stream::with_allowed_attribute_keys`, which the metric views use to drop any label that is
+# not on a metric's list. The name says the specification part is not final, so an upgrade of
+# the SDK must re-run the cardinality tests.
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = [
+    "trace",
+    "metrics",
+    "internal-logs",
+    "spec_unstable_metrics_views",
+] }
+# OTLP over HTTP with protobuf bodies and a blocking HTTP client. The batch span processor and
+# the periodic metric reader run on their own threads, so no async runtime is needed here and
+# the crate does not name `tokio` as a direct dependency.
+opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = [
+    "http-proto",
+    "reqwest-blocking-client",
+    "trace",
+    "metrics",
+    "internal-logs",
+] }
+
+[dev-dependencies]
+# In-memory span and metric exporters for tests, so no unit test needs a network.
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = [
+    "trace",
+    "metrics",
+    "testing",
+] }
+
+[lints]
+workspace = true

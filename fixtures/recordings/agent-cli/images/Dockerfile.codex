@@ -1,0 +1,36 @@
+# Scratch image for the agent runtime spike: Codex from the official npm release channel.
+# Labelled scratch: it is not the production sandbox image (work package s1-sandbox-images owns that).
+#
+# Build (the only step that needs the network):
+#   docker build -f Dockerfile.codex -t ars-codex:0.163.0 <empty directory>
+#
+# npm's launcher script needs Node, but the native binary does not. The image holds only the native
+# files of the linux-arm64 platform package. The expected SHA-512 is the dist.integrity value that the
+# npm registry lists for @openai/codex@0.163.0-linux-arm64. A mismatch stops the build.
+ARG BASE=alpine@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+
+FROM ${BASE} AS fetch
+RUN apk add --no-cache curl openssl tar
+ARG CODEX_VERSION=0.163.0
+ARG CODEX_TRIPLE=aarch64-unknown-linux-musl
+ARG CODEX_INTEGRITY=sha512-IH2/R+4OarjGvsAf1ll3fdyLwrPgYLl3uzp6u9CyD9sj2Lw+ViDSe3QBZVHdcHJs0eIiZFg6Wprcuy4CRZaUGw==
+RUN curl -fsSL -o /codex.tgz "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-arm64.tgz" \
+ && actual="sha512-$(openssl dgst -sha512 -binary /codex.tgz | openssl base64 -A)" \
+ && test "$actual" = "${CODEX_INTEGRITY}" \
+ && mkdir /pkg && tar -xzf /codex.tgz -C /pkg \
+ && mkdir -p /out/bin /out/codex-resources /out/codex-path \
+ && cp "/pkg/package/vendor/${CODEX_TRIPLE}/bin/codex" /out/bin/codex \
+ && cp "/pkg/package/vendor/${CODEX_TRIPLE}/bin/codex-code-mode-host" /out/bin/codex-code-mode-host \
+ && cp "/pkg/package/vendor/${CODEX_TRIPLE}/codex-resources/bwrap" /out/codex-resources/bwrap \
+ && cp "/pkg/package/vendor/${CODEX_TRIPLE}/codex-path/rg" /out/codex-path/rg \
+ && cp "/pkg/package/vendor/${CODEX_TRIPLE}/codex-package.json" /out/codex-package.json
+
+FROM ${BASE}
+RUN apk add --no-cache bash ca-certificates \
+ && addgroup -g 10001 agent \
+ && adduser -D -u 10001 -G agent -h /home/agent agent
+COPY --from=fetch /out /opt/codex
+ENV PATH=/opt/codex/codex-path:/opt/codex/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER 10001:10001
+WORKDIR /workspace
+ENTRYPOINT ["/opt/codex/bin/codex"]

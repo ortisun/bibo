@@ -1,0 +1,1 @@
+$.gates[0].argv: 'cargo build --locked' is not of type 'array'

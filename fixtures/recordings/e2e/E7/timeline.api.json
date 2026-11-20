@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "action": "job.received_from_webhook",
+      "at": "2026-10-29T09:01:40.52882Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T09:01:40.660887Z",
+      "event": "job.admitted",
+      "kind": "transition",
+      "reason": null,
+      "transition": "J01"
+    },
+    {
+      "action": "authorization_decision.granted",
+      "at": "2026-10-29T09:01:40.674241Z",
+      "decision": "allow",
+      "kind": "audit"
+    }
+  ],
+  "job_id": "4f3221a3-818d-4af4-8f3b-fbc2c697c2b9",
+  "truncated": false
+}

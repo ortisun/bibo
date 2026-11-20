@@ -1,0 +1,4 @@
+id       = xtask-invariants
+title    = Every state machine invariant INV-01 to INV-11 has a named test (cargo xtask check-invariants)
+requires = cargo
+run      = cargo xtask check-invariants

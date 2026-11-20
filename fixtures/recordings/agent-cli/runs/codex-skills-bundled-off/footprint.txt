@@ -1,0 +1,11 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+3 /home/agent/.codex/.sandbox_migration
+36 /home/agent/.codex/installation_id
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=14438400
+pids.peak=22
+memory.max=4294967296
+pids.max=256

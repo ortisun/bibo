@@ -1,0 +1,6 @@
+# The allowlist of the local stack: put allowlist.yaml here. It names the people the factory serves and the
+# designation each holds (the format is in crates/composition/README.md). It is mounted read-only into the api and
+# the worker as allowlist/allowlist.yaml of their protected checkout. It is a deployment decision, not source, so
+# Git ignores it. In production the allowlist lives in the protected branch, not here.
+*
+!.gitignore

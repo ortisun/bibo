@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "id": "architect",
+  "version": "1.0.0",
+  "title": "Architect",
+  "description": "Turns a frozen specification into a design that a builder can implement, and maps every requirement to a design element. It reads the repository with read-only tools and writes nothing.",
+  "role": "architect",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "fs.read",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.list",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.search",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "specification-artifact-hash"
+  ],
+  "inputs_schema": {
+    "name": "architect-input",
+    "version": 1,
+    "sha256": "sha256:b9b0b0911cdb619194905d57a3dd89e96c3f2262e20ecec93c23e47f3bde50dd"
+  },
+  "outputs_schema": {
+    "name": "architecture-design",
+    "version": 1,
+    "sha256": "sha256:4a5a1e8d82dbc27dd2353590d117cdeab2767f720eb96ed6833c0f67647b029d"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 900,
+    "max_tokens": 250000,
+    "max_cost_usd": 4,
+    "max_tool_calls": 80,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "**"
+      ],
+      "write": []
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "A design for a small change is within what the starting model can do."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use for a change that touches several modules or when the design check fails twice. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "architect-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/architect/prompt.md",
+    "template_version": "1.1.0",
+    "template_sha256": "sha256:1eb34ac611dd6368baf25594b54e811a493e06ce769a26289ab116c8a6589c0a"
+  }
+}

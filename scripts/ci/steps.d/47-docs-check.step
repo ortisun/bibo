@@ -1,0 +1,4 @@
+id       = docs-check
+title    = The factory documents pass their own checks: links, runnable examples, command names, configuration keys, walkthrough citations, readability (scripts/docs-check.sh)
+requires = cargo python3
+run      = scripts/docs-check.sh

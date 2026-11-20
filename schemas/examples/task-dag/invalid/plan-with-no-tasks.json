@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "plan_id": "018f3a7e-b001-7a10-8c20-2d3e4f5a6b01",
+    "plan_version": 1,
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "execution_mode": "production",
+    "spec_ref": {
+      "spec_id": "018f3a7e-7a10-7e20-8b30-1c4d5e6f7a81",
+      "spec_version": 1,
+      "sha256": "sha256:baf140c9dd2a28aed50ca11af81b4c5da75f95b60b9600081b4d8d746ec7bcf7"
+    },
+    "architecture_ref": {
+      "sha256": "sha256:4ca303a3bf7ddf7be8652031ff027f351973a205cddafbffa580750f61bc93ce"
+    },
+    "created_at": "2026-10-27T09:02:00Z"
+  },
+  "title": "Plan for adding JSON output to the word count tool",
+  "summary": "Three tasks: add the JSON output path behind the flag, cover the error path with a test, and document the new flag. The output formatting task comes first because the other two depend on it.",
+  "critical_path": [
+    "add-json-output-formatter",
+    "cover-unreadable-file-error",
+    "document-json-flag"
+  ],
+  "rollback_note": "Revert the job branch. No data or configuration is changed outside the repository.",
+  "tasks": []
+}

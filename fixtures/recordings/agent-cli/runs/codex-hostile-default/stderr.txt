@@ -1,0 +1,8 @@
+Reading additional input from stdin...
+2026-10-27T13:37:25.061274Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:37:25.067142Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:37:25.259307Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:37:25.663943Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:37:26.463141Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:37:28.237469Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:37:31.401620Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses

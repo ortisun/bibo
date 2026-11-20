@@ -1,0 +1,198 @@
+[
+  {
+    "claim": {
+      "assurance_level": "IMPLEMENTED",
+      "kind": "measured_fact",
+      "statement": "The change adds a --json flag. Résumé: “quoted” text, a back\\slash, a tab\tinside, an emoji 🚀 and a slash / too."
+    },
+    "confidence": {
+      "level": "high",
+      "rationale": "The diff was read in full and every changed file belongs to the task."
+    },
+    "entry_hash": "sha256:2a2bf8a969f26dcdf782b9d369b0795e2e107927be2b0b64e5f89bf32f26394e",
+    "evidence": [
+      {
+        "commit_sha": "1a954628a960aaef81d7b2d4521929579f3541e6",
+        "line_end": 64,
+        "line_start": 1,
+        "path": "src/output.rs",
+        "type": "code_location"
+      },
+      {
+        "description": "The diff of the change against the base commit.",
+        "media_type": "text/x-diff",
+        "sha256": "sha256:f46413546b49a12b2eb6ec29a33c7e41fb245bbc9b6cfd8d06b3394e3e434c78",
+        "type": "artifact"
+      }
+    ],
+    "metadata": {
+      "attempt_id": "018f3a7f-0a11-7f33-b2c4-5d6e7f809a12",
+      "entry_id": "018f3a95-0001-7a01-8b01-1c01d01e01f1",
+      "execution_mode": "production",
+      "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+      "recorded_at": "2026-10-27T09:16:35.250Z",
+      "recorded_by": {
+        "component": "workflow.gate-evaluator",
+        "fidelity": "real"
+      },
+      "sequence": 1,
+      "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21"
+    },
+    "prev_entry_hash": null,
+    "schema_version": 1
+  },
+  {
+    "claim": {
+      "kind": "assumption",
+      "statement": "Line one of the assumption.\nLine two: people run the tool on a UTF-8 terminal."
+    },
+    "confidence": {
+      "level": "medium",
+      "rationale": "The README says so, but nobody ran the tool on another terminal."
+    },
+    "entry_hash": "sha256:1e0053ccc2a826ccec5bbfe0a1b8cd050cf79b6ef5c9db4772cced214fe41f6f",
+    "evidence": [
+      {
+        "citation": "Project README, the section on supported terminals.",
+        "retrieved_at": "2026-10-27T09:10:00.5Z",
+        "type": "source",
+        "url": "https://example.org/readme?x=1&y=2",
+        "version": "v1"
+      }
+    ],
+    "metadata": {
+      "entry_id": "018f3a95-0002-7a02-8b02-1c02d02e02f2",
+      "execution_mode": "production",
+      "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+      "recorded_at": "2026-10-27T09:16:36Z",
+      "recorded_by": {
+        "component": "workflow.planner",
+        "fidelity": "real"
+      },
+      "sequence": 2,
+      "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21"
+    },
+    "prev_entry_hash": "sha256:2a2bf8a969f26dcdf782b9d369b0795e2e107927be2b0b64e5f89bf32f26394e",
+    "schema_version": 1
+  },
+  {
+    "claim": {
+      "assurance_level": "VERIFIED_IN_SANDBOX",
+      "kind": "measured_fact",
+      "statement": "The project builds and its 42 unit tests pass in a fresh sandbox created from the job commit."
+    },
+    "confidence": {
+      "level": "high",
+      "rationale": "The gate ran the project's own commands from a trusted definition in a sandbox."
+    },
+    "entry_hash": "sha256:f19946ca3e502d65e3c63f74b9bdbfde3d3935131bb1ba89b7bece17a33c34c7",
+    "evidence": [
+      {
+        "gate_report_id": "018f3a80-1c22-7a44-9b55-6c7d8e9fa0b3",
+        "gate_report_sha256": "sha256:f46413546b49a12b2eb6ec29a33c7e41fb245bbc9b6cfd8d06b3394e3e434c78",
+        "result": "passed",
+        "test_name": "output::json_flag_prints_one_object",
+        "type": "test"
+      },
+      {
+        "span_id": "00f067aa0ba902b7",
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "type": "trace"
+      }
+    ],
+    "metadata": {
+      "attempt_id": "018f3a7f-0a11-7f33-b2c4-5d6e7f809a12",
+      "entry_id": "018f3a95-0003-7a03-8b03-1c03d03e03f3",
+      "execution_mode": "production",
+      "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+      "recorded_at": "2026-10-27T09:16:37Z",
+      "recorded_by": {
+        "component": "workflow.gate-evaluator",
+        "fidelity": "real"
+      },
+      "sequence": 3,
+      "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21"
+    },
+    "prev_entry_hash": "sha256:1e0053ccc2a826ccec5bbfe0a1b8cd050cf79b6ef5c9db4772cced214fe41f6f",
+    "schema_version": 1
+  },
+  {
+    "claim": {
+      "kind": "simulation_result",
+      "statement": "A simulated run of the tool printed one JSON object for each input file."
+    },
+    "confidence": {
+      "level": "low",
+      "rationale": "A simulation stands in for the real sandbox and proves little on its own."
+    },
+    "entry_hash": "sha256:9b46d6c83a4ab84c388a593927f1a242b1d05c9d1312c8a9e4f3e1472504587c",
+    "evidence": [
+      {
+        "experiment_id": "json-flag-replay",
+        "run_ids": [
+          "018f3a95-0a01-7a01-8b01-1c01d01e0aa1"
+        ],
+        "seeds": [
+          42,
+          9007199254740991,
+          -7
+        ],
+        "type": "experiment"
+      }
+    ],
+    "metadata": {
+      "entry_id": "018f3a95-0004-7a04-8b04-1c04d04e04f4",
+      "execution_mode": "test",
+      "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+      "recorded_at": "2026-10-27T09:16:38.123456789Z",
+      "recorded_by": {
+        "component": "testkit.fake-sandbox",
+        "fidelity": "simulated"
+      },
+      "sequence": 4,
+      "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21"
+    },
+    "prev_entry_hash": "sha256:f19946ca3e502d65e3c63f74b9bdbfde3d3935131bb1ba89b7bece17a33c34c7",
+    "schema_version": 1
+  },
+  {
+    "claim": {
+      "kind": "expert_judgment",
+      "statement": "The reviewer accepts the residual risk and withdraws the earlier assumption and the simulation."
+    },
+    "confidence": {
+      "level": "medium",
+      "rationale": "Judged by a person.\u001fThe separator before this sentence is a control character."
+    },
+    "entry_hash": "sha256:eb0e010c5713c20334ad9813c4d2ea52cc2fd72dd80eeca1f6471a677f5cc30f",
+    "evidence": [
+      {
+        "attestor": {
+          "principal_id": "018f3a00-0000-7000-8000-00000000a001",
+          "role": "approver"
+        },
+        "recorded_at": "2026-10-27T09:16:38Z",
+        "scope": "The residual risk of the JSON output change, as described in the review.",
+        "type": "expert_judgment"
+      }
+    ],
+    "invalidates": [
+      "018f3a95-0002-7a02-8b02-1c02d02e02f2",
+      "018f3a95-0004-7a04-8b04-1c04d04e04f4"
+    ],
+    "metadata": {
+      "entry_id": "018f3a95-0005-7a05-8b05-1c05d05e05f5",
+      "execution_mode": "production",
+      "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+      "recorded_at": "2026-10-27T09:16:39Z",
+      "recorded_by": {
+        "component": "workflow.human-decision",
+        "fidelity": "real"
+      },
+      "sequence": 5,
+      "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21"
+    },
+    "prev_entry_hash": "sha256:9b46d6c83a4ab84c388a593927f1a242b1d05c9d1312c8a9e4f3e1472504587c",
+    "schema_version": 1
+  }
+]

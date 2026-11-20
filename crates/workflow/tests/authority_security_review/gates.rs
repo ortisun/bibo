@@ -1,0 +1,228 @@
+//! Attacks on the approval binding and on the host-side gates.
+
+use factory_domain::policy::paths::DiffEntry;
+use factory_domain::vocabulary::RiskTier;
+use factory_ports::githost::PullRequestRef;
+use factory_ports::paths::{BranchName, RepoRef};
+use factory_ports::workspace::ChangeKind;
+use factory_workflow::gates::scope::{FileChange, build_code, lint, protected, weakening};
+use factory_workflow::stages::approval::{Outcome, Refusal, ServiceError};
+
+use crate::approval_rig::{Rig, policy};
+
+// ---- AUT-1: the pull request's own base branch is never compared -------------------------------
+
+/// FIXED (AUT-1). The approval was bound to the base *commit* only; nothing read which branch the
+/// pull request targets. Anyone with write access could retarget the draft after the request was
+/// made, and an approver who followed the procedure recorded an approval for a pull request that
+/// merged elsewhere. The judge now compares the branch (`Live::pr_base`) and refuses with the
+/// distinct code `base_retargeted`.
+#[tokio::test]
+async fn aut_1_an_approval_is_refused_when_the_pull_request_targets_another_base_branch() {
+    let rig = Rig::new(RiskTier::Low).await;
+    // Someone with write access moves the draft from `main` to `release` after the request was
+    // stored. The commit the request names as the base is untouched.
+    rig.host
+        .retarget(&BranchName::new("release").expect("a branch"));
+    let result = rig.approve().await;
+    assert!(
+        matches!(result, Err(ServiceError::Refused(Refusal::BaseRetargeted))),
+        "the approval was applied for a pull request whose base is no longer the one shown: {result:?}"
+    );
+    assert_eq!(Refusal::BaseRetargeted.code(), "base_retargeted");
+}
+
+/// FIXED (AUT-2). A person pushes to the branch after the request was made. The service used to
+/// read the tree of the new head from the job's object store before it judged; that store has never
+/// seen a commit someone else pushed, so the answer was "unavailable", the hook retried twenty
+/// times and gave up, and `Refusal::HeadMoved` (with the invalidation of the approvals on record)
+/// was unreachable. The tree is now read only for the head that was shown.
+#[tokio::test]
+async fn aut_2_a_head_pushed_by_someone_else_is_refused_as_a_moved_head() {
+    let rig = Rig::new(RiskTier::Low).await;
+    let moved = rig.push_foreign_commit();
+    assert_ne!(moved.as_str(), rig.request.pr_head.as_str());
+    let result = rig.approve().await;
+    assert!(
+        matches!(result, Err(ServiceError::Refused(Refusal::HeadMoved))),
+        "expected a refusal for the moved head, got {result:?}"
+    );
+}
+
+/// Control for the test above: with the pull request where it was, the same approval applies.
+#[tokio::test]
+async fn held_aut_1_the_same_approval_applies_when_nothing_moved() {
+    let rig = Rig::new(RiskTier::Low).await;
+    let result = rig.approve().await;
+    assert!(matches!(result, Ok(Outcome::Applied { .. })), "{result:?}");
+}
+
+/// The pull request's head branch and number are the ones in the request: a pull request that is
+/// not the one the factory opened cannot be approved by naming another number.
+#[tokio::test]
+async fn held_a_request_for_another_pull_request_number_reads_nothing() {
+    let rig = Rig::new(RiskTier::Low).await;
+    let scope = factory_ports::githost::GitScope {
+        tenant: rig.w.tenant,
+        job: rig.job,
+        stage: factory_domain::vocabulary::StageKind::Approval,
+        repo: RepoRef::parse("example-org/fixture").expect("a repo"),
+    };
+    let other = PullRequestRef {
+        repo: RepoRef::parse("example-org/fixture").expect("a repo"),
+        number: rig.request.pull_request + 7,
+    };
+    use factory_ports::githost::ChangeHost as _;
+    assert!(rig.host.pull_request_state(&scope, &other).await.is_err());
+}
+
+// ---- AUT-4 and AUT-5: semantic checks the policy names and the code does not have --------------
+
+fn modified(path: &str, before: &str, after: &str) -> FileChange {
+    FileChange {
+        path: path.to_owned(),
+        kind: ChangeKind::Modified,
+        before: Some(before.as_bytes().to_vec()),
+        after: Some(after.as_bytes().to_vec()),
+        readable: true,
+    }
+}
+
+/// FIXED (AUT-4). `policies/security.yaml` `gate_integrity.semantic_checks` lists
+/// `lint_relaxation` ("lint level lowered, allow attributes added, ignore lists grown", blocks until
+/// a human approves) and no host-side rule read a lint attribute. A crate-level `#![allow(warnings)]`
+/// outranks the `-D warnings` of the lint command, so the lint gate, which reads only the exit code,
+/// reported PASSED for code that has warnings. `lint::relaxed` now reads the change on the host and
+/// the lint gate fails (see `validation::negative_gate::aut_4_*` for the whole stage).
+#[test]
+fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
+    let before = "pub fn one() {}\n";
+    for added in [
+        "#![allow(warnings)]\npub fn one() {}\n",
+        "#![allow(clippy::all)]\npub fn one() {}\n",
+        "#![allow(unused)]\npub fn one() {}\n",
+    ] {
+        let found = lint::relaxed(&[modified("src/lib.rs", before, added)]);
+        assert!(!found.is_empty(), "no host-side rule saw {added:?}");
+        assert_eq!(found[0].check, "lint-relaxed");
+    }
+    // The same change without the attribute is clean.
+    assert!(
+        lint::relaxed(&[modified(
+            "src/lib.rs",
+            before,
+            "pub fn one() {}\npub fn two() {}\n"
+        )])
+        .is_empty()
+    );
+}
+
+/// The same policy list names `build_script_added` ("new build.rs, setup.py, postinstall",
+/// blocks until a security review), and `**/build.rs` is in the `sensitive_files` group that
+/// carries it. A new `build.rs` runs arbitrary code at build time in every gate, and in every
+/// build after the merge. The path check allows the file (sensitive files are allowed to change)
+/// and nothing consumes the "sensitive" hit at gate time: the tier at approval comes from the
+/// architect's design (see AUT-10 in the review).
+#[test]
+fn aut_5_a_new_build_script_is_blocked_until_a_security_review() {
+    let diff = [DiffEntry::Added {
+        path: "build.rs".to_owned(),
+    }];
+    let refused = protected::check(&policy().paths, &diff);
+    let content = weakening::weakened(&[FileChange {
+        path: "build.rs".to_owned(),
+        kind: ChangeKind::Added,
+        before: None,
+        after: Some(b"fn main() { println!(\"cargo:rerun-if-changed=build.rs\"); }\n".to_vec()),
+        readable: true,
+    }]);
+    // The rule of `scope::build_code` (AUT-5): the path gate allows the file, as it should,
+    // and the new build code is held for a security approver before any command builds it. The
+    // validation stage turns the hit into a BLOCKED `build` gate
+    // (`validation::negative_gate::aut_5_*`).
+    let build_code = build_code::added(&[FileChange {
+        path: "build.rs".to_owned(),
+        kind: ChangeKind::Added,
+        before: None,
+        after: Some(b"fn main() { println!(\"cargo:rerun-if-changed=build.rs\"); }\n".to_vec()),
+        readable: true,
+    }]);
+    assert!(
+        !refused.protected.is_empty() || !content.is_empty() || !build_code.is_empty(),
+        "a new build.rs passes every host-side rule"
+    );
+    assert!(
+        !build_code.is_empty(),
+        "the rule for build code holds it, and it names the decision"
+    );
+    assert!(
+        build_code[0].message.contains("approve_build_code"),
+        "{}",
+        build_code[0].message
+    );
+}
+
+// ---- held: the protected paths ------------------------------------------------------------------
+
+/// Files that change what the gates run, or who owns the code, are refused for an add and for a
+/// change, by the path gate that runs on the host before any command.
+#[test]
+fn held_ci_gate_ownership_and_agent_instruction_files_are_refused() {
+    let engine = policy();
+    for path in [
+        ".github/workflows/ci.yml",
+        ".github/CODEOWNERS",
+        "CODEOWNERS",
+        "docs/CODEOWNERS",
+        "clippy.toml",
+        "rustfmt.toml",
+        "deny.toml",
+        ".cargo/config.toml",
+        "rust-toolchain.toml",
+        ".specify/memory/constitution.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+    ] {
+        for entry in [
+            DiffEntry::Added {
+                path: path.to_owned(),
+            },
+            DiffEntry::Modified {
+                path: path.to_owned(),
+                gained_lines_only: true,
+            },
+        ] {
+            let refused = protected::check(&engine.paths, std::slice::from_ref(&entry));
+            assert!(
+                !refused.protected.is_empty() || !refused.tests.is_empty(),
+                "{path} was allowed as {entry:?}"
+            );
+        }
+    }
+}
+
+/// A rename or a copy cannot move a protected file out of its place, or a new file into it.
+#[test]
+fn held_a_rename_or_copy_into_or_out_of_a_protected_path_is_refused() {
+    let engine = policy();
+    for entry in [
+        DiffEntry::Renamed {
+            from: ".github/workflows/ci.yml".to_owned(),
+            to: "src/ci.yml".to_owned(),
+        },
+        DiffEntry::Renamed {
+            from: "src/ci.yml".to_owned(),
+            to: ".github/workflows/ci.yml".to_owned(),
+        },
+        DiffEntry::Copied {
+            from: "src/ci.yml".to_owned(),
+            to: "CODEOWNERS".to_owned(),
+        },
+    ] {
+        let refused = protected::check(&engine.paths, std::slice::from_ref(&entry));
+        assert!(
+            !refused.protected.is_empty() || !refused.tests.is_empty(),
+            "{entry:?} was allowed"
+        );
+    }
+}

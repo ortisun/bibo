@@ -1,0 +1,815 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Factory API",
+    "version": "1.0.0",
+    "description": "Receives GitHub webhooks, accepts jobs and decisions from people, and answers status and timeline queries. Authority comes from the numeric GitHub id of the principal behind the token, mapped to the protected allowlist. A decision is recorded here and applied by the engine in the worker."
+  },
+  "servers": [{ "url": "/" }],
+  "tags": [
+    { "name": "health" },
+    { "name": "jobs" },
+    { "name": "decisions" },
+    { "name": "repositories" },
+    { "name": "webhooks" },
+    { "name": "contract" }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "liveness",
+        "tags": ["health"],
+        "summary": "The process is running. Never reads the database.",
+        "security": [],
+        "responses": {
+          "200": { "description": "Live.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Live" } } } },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readiness",
+        "tags": ["health"],
+        "summary": "Every check passes: the schema is not behind the code, the policy is loaded and every port is acceptable to the profile.",
+        "security": [],
+        "responses": {
+          "200": { "description": "Ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ready" } } } },
+          "503": { "description": "Not ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ready" } } } },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "tags": ["contract"],
+        "summary": "This document.",
+        "security": [],
+        "responses": {
+          "200": { "description": "The OpenAPI document.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "post": {
+        "operationId": "submitJob",
+        "tags": ["jobs"],
+        "summary": "Stores a request as a RECEIVED job. Admission is the engine's decision.",
+        "description": "Needs the requester designation. A repeat of the same Idempotency-Key with the same request finds the first job; the same key with a different request is a conflict.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitJob" } } }
+        },
+        "responses": {
+          "201": { "description": "A new job.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmittedJob" } } } },
+          "200": { "description": "The job this key made before.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmittedJob" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "get": {
+        "operationId": "listJobs",
+        "tags": ["jobs"],
+        "summary": "The jobs of the caller's tenant, newest first.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
+          { "name": "after", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 200 } }
+        ],
+        "responses": {
+          "200": { "description": "A page of jobs.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobPage" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "operationId": "getJob",
+        "tags": ["jobs"],
+        "summary": "The status of a job and of its stage runs.",
+        "description": "A job of another tenant and a job that does not exist have the same answer.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The job.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/timeline": {
+      "get": {
+        "operationId": "getJobTimeline",
+        "tags": ["jobs"],
+        "summary": "The state transitions of a job with their reasons, and its audit records, in time order.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The timeline.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Timeline" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/specification-draft": {
+      "get": {
+        "operationId": "getSpecificationDraft",
+        "tags": ["jobs"],
+        "summary": "The specification draft a person is asked to approve: the commit that holds it, the head of the ledger and the facts of the approval window.",
+        "description": "Gives the values an approve needs: head is the commit of the draft and evidence is the hash of the last ledger entry, both as they are now. The commit is the one the worker compares with. An approval is refused if the draft moved or a gate result arrived after the person read it. The text of the draft is untrusted: download it with getArtifact by artifact_sha256. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. 503 when the API has no artifact root configured.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "name": "stage_run_id", "in": "query", "required": false, "description": "A specification stage run of the job. Without it the newest one.", "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "The draft.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpecificationDraft" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/gate-reports": {
+      "get": {
+        "operationId": "listGateReports",
+        "tags": ["jobs"],
+        "summary": "The gate reports of a job: the gate, the outcome, the block code and the hash of each report.",
+        "description": "Lists every gate report the engine wrote into the ledger of the job, oldest first, at most 200. A person who approves a pull request reads the evidence here, and downloads one report with getArtifact by report_sha256. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. 503 when the API has no artifact root configured.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The reports.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GateReports" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/artifacts/{sha256}": {
+      "get": {
+        "operationId": "getArtifact",
+        "tags": ["jobs"],
+        "summary": "One stored document of a job, for download.",
+        "description": "The document is untrusted. It is served as an attachment, under text/plain; charset=utf-8 when the stages stored it as text or JSON and under application/octet-stream otherwise, never under the type it claims, with X-Content-Type-Options: nosniff. It must be linked to a stage run of the job in the path and indexed for the caller's tenant, or the answer is 404 (another tenant's document looks the same as no document). A document larger than 4 MiB is 413. Any designation of the tenant may read it, on the repositories its allowlist entry reaches.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "name": "sha256", "in": "path", "required": true, "description": "64 lower case hexadecimal digits, without sha256:.", "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes of the document.",
+            "headers": {
+              "Content-Disposition": { "schema": { "type": "string" }, "description": "attachment, with a file name the API makes." },
+              "X-Content-Type-Options": { "schema": { "type": "string", "enum": ["nosniff"] } }
+            },
+            "content": {
+              "text/plain; charset=utf-8": { "schema": { "type": "string" } },
+              "application/octet-stream": { "schema": { "type": "string", "format": "binary" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/decisions": {
+      "post": {
+        "operationId": "decideJob",
+        "tags": ["decisions"],
+        "summary": "Records a decision of a person: approve, reject, rework, pause, resume, cancel, answer, unblock, a decision on a new dependency (approve-dependency, approve-build-code), a decision on the project's own new build code (approve-project-build-code), or a decision about a translation warning (ack-translation-warning).",
+        "description": "Approve, reject, rework and ack-translation-warning need the approver designation; pause, resume, cancel and unblock need the operator designation; answer needs one of the designations the action answer_question names (requester, operator, approver, org_admin), and the engine also checks that a requester who answers asked for that job; approve-dependency needs the designation the action add_new_direct_dependency names and approve-build-code and approve-project-build-code the one approve_build_code names, a security approver (policies/approval.yaml, actions). The designation is read from the allowlist by the numeric GitHub id of the principal behind the token. The decision is recorded and acknowledged with 202; the engine applies it. A decision on a dependency names the package, the version and, to tell two packages of one name apart, the start of the checksum; the worker applies it only to a package that the blocked validation stage run waits for, and the policy engine decides again whether this person may decide on that package. Unblock lets a BLOCKED stage run go again once the cause is gone: it names the stage run and a reason and asserts no fact, because the engine reads for itself whether the block is cleared (a decision recorded for what the stage run waited for, or a capability re-probe that passes). Approve-project-build-code accepts one file of build code that the change itself adds (a build.rs, a procedural macro, build dependencies): it names the path and the start of the SHA-256 of the content, as the evidence of the blocked validation stage run lists them, and the decision counts for exactly that content, so an edited script needs a new decision. Ack-translation-warning records an approver's decision about one open warning of the documentation reviewer's rule translation-unfaithful: it names the approval stage run, the number of the warning (from 1, as the gate reports list them) and a reason; the engine reads the warnings and the manifest of the approval request from what the stage run stored, and an approve of that request counts only the decisions of the person who approves. Answer answers the questions of a stage run that waits for a person (the specification stage asks them as Q-001, Q-002 ...; GET /v1/jobs/{job_id}/specification-draft lists them): it names the stage run and carries the text in answer, which may hold one line Q-001: ... per question; a text with no such line answers the first question. The text is stored whole and its hash is part of the signed record; the worker gives it to the stage run as a new input and the stage runs again. An answer through the API never raises a budget ceiling, and a pull request or issue comment does not take the verb. There is no merge and no deployment.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Decision" } } }
+        },
+        "responses": {
+          "202": { "description": "Recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DecisionRecorded" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories": {
+      "post": {
+        "operationId": "registerRepository",
+        "tags": ["repositories"],
+        "summary": "Registers a repository of the caller's tenant. It starts disabled, at autonomy level L0, with no project map.",
+        "description": "Needs the designation that the action register_repository names in policies/approval.yaml (the operator). The engine holds no GitHub credential and does not look at the repository: the installation, the GitHub repository id and the name are what the person says they are. This route changes nothing in the table. It appends one signed request (the action repository.change_requested) and answers 202. The worker verifies the keyed word, asks the protected allowlist again by the numeric GitHub id, registers the repository and records the result as the system; a GitHub repository that another registration holds is refused there, with the code conflict, and never says whose it is. A repeat of the same Idempotency-Key with the same request answers 202 with changed false; the same key with a different request is a conflict.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterRepository" } } }
+        },
+        "responses": {
+          "202": { "description": "The request to register the repository is recorded and signed. The worker has not necessarily applied it: read it with getRepositoryChange. A repeat of the same key with the same request answers 202 again, with changed false.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeRequested" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}": {
+      "get": {
+        "operationId": "getRepository",
+        "tags": ["repositories"],
+        "summary": "One repository of the caller's tenant: whether it is enabled and what a person attested about its project map.",
+        "description": "A repository of another tenant and a repository that does not exist have the same answer. The project map is an attestation by a person. The engine did not read the repository, and the answer says so.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/RepositoryId" }],
+        "responses": {
+          "200": { "description": "The repository.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Repository" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}/project-map": {
+      "post": {
+        "operationId": "attestProjectMap",
+        "tags": ["repositories"],
+        "summary": "Records that the caller attests the project map: the commit of the default branch that holds it.",
+        "description": "Needs the designation that the action confirm_project_map names (the operator). This is an ATTESTATION BY A PERSON and not a verification: the engine holds no GitHub credential, does not read the repository and does not check that the commit exists or that the map is good. This route appends one signed request and answers 202; the worker applies it as the system and records the commit, the person, the reason and the time. A later attestation replaces the earlier one. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/RepositoryId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AttestProjectMap" } } }
+        },
+        "responses": {
+          "202": { "description": "The request to attest the map is recorded and signed. The worker has not necessarily applied it: read it with getRepositoryChange, then the repository with getRepository.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeRequested" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}/enable": {
+      "post": {
+        "operationId": "enableRepository",
+        "tags": ["repositories"],
+        "summary": "Lets the repository take tickets, for the project map commit the approver names. It needs a project map that a person attested.",
+        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The person who attested the map cannot enable a repository that was not registered with single_maintainer: that is refused with 409 and the code enabler_is_attestor (finding REG-6). The database refuses the same changes for every role. These refusals are made here, from the row as it is, and made again by the worker, which applies the request. This route appends one signed request and answers 202. A repository that is enabled for the commit attested now is answered 200 with changed false: nothing is recorded and no second approver is named. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/RepositoryId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EnableRepository" } } }
+        },
+        "responses": {
+          "202": { "description": "The request to enable the repository is recorded and signed. The worker has not necessarily applied it: read it with getRepositoryChange.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeRequested" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}/disable": {
+      "post": {
+        "operationId": "disableRepository",
+        "tags": ["repositories"],
+        "summary": "Stops the repository from taking tickets: its webhooks are dropped and no job can be submitted for it.",
+        "description": "Needs the designation that the action disable_repository names (the operator). It works with or without a project map. Jobs that already exist are not touched. Disabling only narrows what the factory reaches, so this is the one change the API makes itself and not as a signed request: it answers 200 with the repository. The database lets the API login do nothing else to a repository. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/RepositoryId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChangeRepository" } } }
+        },
+        "responses": {
+          "200": { "description": "The repository, disabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repository-changes/{request_id}": {
+      "get": {
+        "operationId": "getRepositoryChange",
+        "tags": ["repositories"],
+        "summary": "Where a request to register, attest or enable a repository stands.",
+        "description": "requested until the worker settles the request, then applied, or refused with the fixed code of the refusal (not_permitted, not_an_active_person, not_found, conflict, project_map_not_attested, project_map_changed, enabler_is_attestor, single_maintainer_not_allowed, expired, clock_skew, disabled_since_request, malformed or not_settled), or applied with the code already_enabled when the repository was enabled already. A request lives fifteen minutes and a disable made after it cancels it. A request of another tenant and one that does not exist have the same answer. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. The answer holds no text of the request.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "The request_id that the change returned." }],
+        "responses": {
+          "200": { "description": "The state of the request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChangeState" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/webhooks/github": {
+      "post": {
+        "operationId": "receiveGithubWebhook",
+        "tags": ["webhooks"],
+        "summary": "A GitHub delivery. Verified on the raw body before anything is parsed.",
+        "description": "The signature is HMAC-SHA256 of the exact bytes received, in X-Hub-Signature-256, compared in constant time against every secret in the rotation window. Every failure of the checks is the same 401. After a valid signature every outcome is 202: a new delivery, a repeat, an unknown installation and an event the factory does not act on look the same.",
+        "security": [{ "githubSignature": [] }],
+        "parameters": [
+          { "name": "X-GitHub-Event", "in": "header", "required": true, "schema": { "type": "string" } },
+          { "name": "X-GitHub-Delivery", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 128 } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "202": { "description": "Acknowledged.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookAccepted" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An opaque token: sfat_ and 43 URL-safe characters. Stored only as a SHA-256 hash, with an audience, an expiry and a revocation time. It identifies a principal and grants no role."
+      },
+      "githubSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Hub-Signature-256",
+        "description": "sha256= and the hex HMAC-SHA256 of the raw body."
+      }
+    },
+    "parameters": {
+      "JobId": { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "RepositoryId": { "name": "repository_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "1 to 128 characters from A-Z a-z 0-9 . _ : ~ -. A retry with the same key does not repeat the effect.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "responses": {
+      "BadRequest": { "description": "The request is not valid.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FieldError" } } } },
+      "Unauthorized": { "description": "No usable credential. One answer for every reason.", "headers": { "WWW-Authenticate": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Forbidden": { "description": "Known, and not permitted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "No such route or object. Another tenant's object has this answer.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Conflict": { "description": "The request conflicts with a recorded one.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "PayloadTooLarge": { "description": "The body is over the limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "UnsupportedMediaType": { "description": "The content type is not application/json.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RequestTimeout": { "description": "The body was too slow.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RateLimited": { "description": "A rate limit is exceeded.", "headers": { "Retry-After": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unavailable": { "description": "The service cannot answer now.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "additionalProperties": false,
+        "properties": {
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed", "enabler_is_attestor", "single_maintainer_not_allowed"] }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "required": ["error", "field"],
+        "additionalProperties": false,
+        "properties": {
+          "error": { "type": "string", "enum": ["bad_request"] },
+          "field": { "type": "string" }
+        }
+      },
+      "Live": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "enum": ["live"] } } },
+      "Ready": {
+        "type": "object",
+        "required": ["ready", "checks"],
+        "properties": {
+          "ready": { "type": "boolean" },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "status"],
+              "properties": { "name": { "type": "string" }, "status": { "type": "string", "enum": ["pass", "fail", "blocked"] } }
+            }
+          }
+        }
+      },
+      "SubmitJob": {
+        "type": "object",
+        "required": ["repository_id", "text", "source_ref"],
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": { "type": "string", "format": "uuid", "description": "A repository registered for the caller's tenant." },
+          "text": { "type": "string", "minLength": 1, "description": "The request exactly as written. At most 200 KiB; no control character except line breaks and tabs. It must be the title of the issue named by source_ref, a blank line and its body, as the code host shows them when intake runs: the API cannot check that, and intake refuses the job when the text is not the issue's (reason text_not_the_issue). Put a note in the body of the issue." },
+          "source_ref": { "type": "string", "maxLength": 2048, "pattern": "^[^/#\\s]+/[^/#\\s]+#[0-9]+$", "description": "The issue the job is for, as owner/name#number. The repository must be the one named by repository_id. A job is for one issue: intake authorizes the person who labelled it and delivery links the pull request to it, so a submission without one is refused with a 400." }
+        }
+      },
+      "SubmittedJob": {
+        "type": "object",
+        "required": ["job_id", "status", "repository_id", "correlation_id", "created"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "repository_id": { "type": "string", "format": "uuid" },
+          "correlation_id": { "type": "string", "format": "uuid" },
+          "created": { "type": "boolean" }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "required": ["job_id", "status", "repository_id", "requester_id", "autonomy_level", "execution_mode", "pipeline_scope", "correlation_id", "created_at", "stages"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "repository_id": { "type": "string", "format": "uuid" },
+          "requester_id": { "type": "string", "format": "uuid" },
+          "autonomy_level": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },
+          "execution_mode": { "type": "string", "enum": ["production", "test"] },
+          "pipeline_scope": { "type": "array", "items": { "type": "string" } },
+          "correlation_id": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "terminal_at": { "type": "string", "format": "date-time", "nullable": true },
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["stage_run_id", "kind", "status", "run_number", "created_at"],
+              "properties": {
+                "stage_run_id": { "type": "string", "format": "uuid" },
+                "kind": { "type": "string" },
+                "status": { "type": "string" },
+                "run_number": { "type": "integer" },
+                "created_at": { "type": "string", "format": "date-time" },
+                "finished_at": { "type": "string", "format": "date-time", "nullable": true }
+              }
+            }
+          }
+        }
+      },
+      "JobPage": {
+        "type": "object",
+        "required": ["jobs"],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["job_id", "status", "repository_id", "created_at"],
+              "properties": {
+                "job_id": { "type": "string", "format": "uuid" },
+                "status": { "type": "string" },
+                "repository_id": { "type": "string", "format": "uuid" },
+                "created_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          },
+          "next": { "type": "string", "nullable": true }
+        }
+      },
+      "SpecificationDraft": {
+        "type": "object",
+        "required": ["job_id", "stage_run_id", "status", "run_number", "draft", "ledger_head", "approval", "questions", "answerable"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "stage_run_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "run_number": { "type": "integer" },
+          "draft": {
+            "type": "object",
+            "nullable": true,
+            "description": "Null until the stage run has kept a draft.",
+            "required": ["number", "commit", "feature_directory", "artifact_sha256", "saved_at"],
+            "properties": {
+              "number": { "type": "integer" },
+              "commit": { "type": "string" },
+              "feature_directory": { "type": "string" },
+              "artifact_sha256": { "type": "string" },
+              "saved_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "ledger_head": {
+            "type": "object",
+            "nullable": true,
+            "required": ["sequence", "hash"],
+            "properties": { "sequence": { "type": "integer" }, "hash": { "type": "string" } }
+          },
+          "approval": {
+            "type": "object",
+            "required": ["window_hours", "approvable", "head", "evidence"],
+            "properties": {
+              "window_hours": { "type": "integer", "description": "How long a request for a decision stays good before the worker rejects it as expired." },
+              "approvable": { "type": "boolean", "description": "True when the stage run waits for a person and holds a draft." },
+              "head": { "type": "string", "nullable": true, "description": "The value to give as head." },
+              "evidence": { "type": "string", "nullable": true, "description": "The value to give as evidence." }
+            }
+          },
+          "questions": {
+            "type": "array",
+            "maxItems": 50,
+            "description": "The questions the stage asked when it kept its newest draft, as the stage's evidence holds them; empty when it asked none. The text is untrusted.",
+            "items": {
+              "type": "object",
+              "required": ["id", "question"],
+              "properties": {
+                "id": { "type": "string", "description": "Q- and three or more digits, such as Q-001." },
+                "question": { "type": "string", "maxLength": 2000 }
+              }
+            }
+          },
+          "answerable": { "type": "boolean", "description": "True when the stage run waits for a person, so that an answer (verb answer) is taken." }
+        }
+      },
+      "GateReports": {
+        "type": "object",
+        "required": ["job_id", "reports", "truncated"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "truncated": { "type": "boolean" },
+          "reports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["stage_run_id", "stage", "report_sha256", "recorded_at", "readable"],
+              "properties": {
+                "stage_run_id": { "type": "string", "format": "uuid" },
+                "stage": { "type": "string" },
+                "gate": { "type": "string", "nullable": true },
+                "title": { "type": "string", "nullable": true },
+                "outcome": { "type": "string", "nullable": true, "enum": ["PASSED", "FAILED", "BLOCKED", "NOT_APPLICABLE", null] },
+                "code": { "type": "string", "nullable": true, "description": "The block code of a BLOCKED report." },
+                "reason": { "type": "string", "nullable": true },
+                "report_sha256": { "type": "string" },
+                "recorded_at": { "type": "string", "format": "date-time" },
+                "readable": { "type": "boolean", "description": "False when the stored report could not be read or is not a gate report." }
+              }
+            }
+          }
+        }
+      },
+      "Timeline": {
+        "type": "object",
+        "required": ["job_id", "entries", "truncated"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "truncated": { "type": "boolean" },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["at", "kind"],
+              "properties": {
+                "at": { "type": "string", "format": "date-time" },
+                "kind": { "type": "string", "enum": ["transition", "audit"] },
+                "event": { "type": "string" },
+                "transition": { "type": "string" },
+                "reason": { "type": "string", "nullable": true },
+                "action": { "type": "string" },
+                "decision": { "type": "string", "enum": ["allow", "deny", "record"] }
+              }
+            }
+          }
+        }
+      },
+      "Decision": {
+        "type": "object",
+        "required": ["verb"],
+        "additionalProperties": false,
+        "properties": {
+          "verb": { "type": "string", "enum": ["approve", "reject", "rework", "pause", "resume", "cancel", "answer", "unblock", "approve-dependency", "approve-build-code", "approve-project-build-code", "ack-translation-warning"] },
+          "stage_run_id": { "type": "string", "format": "uuid", "description": "Required for approve, reject, rework, answer, unblock and ack-translation-warning. Optional for approve-dependency, approve-build-code and approve-project-build-code: without it the decision is for the blocked validation stage run of the job." },
+          "head": { "type": "string", "description": "The pull request head the person saw: 40 or 64 hex characters. Required for approve." },
+          "evidence": { "type": "string", "description": "The ledger digest the person read: sha256: and 64 hex characters. Required for approve." },
+          "target": { "type": "string", "description": "The stage that gets new work. Required for rework." },
+          "reason": { "type": "string", "maxLength": 2000, "description": "Why. Optional for approve, refused for answer, required for every other verb. For approve-dependency, approve-build-code, approve-project-build-code, ack-translation-warning and unblock it has 10 to 500 characters; for all but unblock it is redacted before the engine stores it." },
+          "package": { "type": "string", "maxLength": 64, "description": "The package name. Required for approve-dependency and approve-build-code, and refused for every other verb." },
+          "version": { "type": "string", "maxLength": 64, "description": "The version of the package, such as 1.2.3. Required for approve-dependency and approve-build-code, and refused for every other verb." },
+          "checksum": { "type": "string", "description": "The start of the checksum of the package archive the person was shown: 12 to 64 lower case hexadecimal digits, with or without sha256:. Needed only when two awaited packages share a name and a version." },
+          "warning": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "The number of the translation warning, counted from 1. Required for ack-translation-warning, and refused for every other verb." },
+          "path": { "type": "string", "maxLength": 180, "description": "The path in the repository of a file of build code the change adds, as the evidence of the blocked validation stage run lists it. Required for approve-project-build-code, and refused for every other verb." },
+          "answer": { "type": "string", "maxLength": 900, "description": "The answer to the questions of a waiting stage run: 1 to 900 bytes of text, kept whole (a longer text is refused, never cut), one line Q-001: ... per question. Required for answer, and refused for every other verb." },
+          "digest": { "type": "string", "description": "The start of the SHA-256 of the content of that file in the head commit: 12 to 64 lower case hexadecimal digits, with or without sha256:. Required for approve-project-build-code, and refused for every other verb. A script that was edited after the person read it has another hash and is not covered." }
+        }
+      },
+      "DecisionRecorded": {
+        "type": "object",
+        "required": ["decision_id", "status", "applied"],
+        "properties": {
+          "decision_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["recorded"] },
+          "applied": { "type": "boolean", "description": "False: the engine has not applied it yet." }
+        }
+      },
+      "RegisterRepository": {
+        "type": "object",
+        "required": ["installation_id", "github_repository_id", "full_name", "default_branch"],
+        "additionalProperties": false,
+        "properties": {
+          "installation_id": { "type": "integer", "minimum": 1, "description": "The GitHub App installation that covers the repository." },
+          "github_repository_id": { "type": "integer", "minimum": 1, "description": "GitHub's numeric id of the repository." },
+          "full_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", "maxLength": 140, "description": "owner/name." },
+          "default_branch": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "single_maintainer": { "type": "boolean", "default": false, "description": "True lets the same person attest the project map and enable the repository, for a project owner who works alone. False, the default, is the strict rule: the person who enables the repository is another than the person who attested its map (finding REG-6). It is written here, at registration, and nowhere else, and the audit record of the registration says which it was." }
+        }
+      },
+      "AttestProjectMap": {
+        "type": "object",
+        "required": ["commit", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The commit of the default branch that holds the project map. 40 lowercase hexadecimal characters." },
+          "reason": { "type": "string", "minLength": 10, "maxLength": 500, "description": "What the person did to be able to say the map is right: for example, that they read the map files in the merged pull request." }
+        }
+      },
+      "ChangeRepository": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": { "type": "string", "minLength": 10, "maxLength": 500 }
+        }
+      },
+      "EnableRepository": {
+        "type": "object",
+        "required": ["commit"],
+        "additionalProperties": false,
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The project map commit the approver read. It must be the commit attested now, or the answer is 409 with the code project_map_changed." },
+          "reason": { "type": "string", "minLength": 10, "maxLength": 500 }
+        }
+      },
+      "EnabledFor": {
+        "type": "object",
+        "required": ["commit", "enabled_by", "enabled_at"],
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The project map commit the repository was enabled for. While the repository is enabled it equals the attested commit." },
+          "enabled_by": { "type": "string", "format": "uuid", "nullable": true, "description": "The principal of the person who enabled it. Empty only for a row that a privileged writer enabled without saying who." },
+          "enabled_at": { "type": "string", "description": "The time the database recorded the enabling." }
+        }
+      },
+      "ProjectMapAttestation": {
+        "type": "object",
+        "required": ["commit", "attested_by", "attested_at", "verified_by_engine"],
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "attested_by": { "type": "string", "format": "uuid", "description": "The principal of the person who attested." },
+          "attested_at": { "type": "string", "description": "The time the database recorded the attestation." },
+          "verified_by_engine": { "type": "boolean", "enum": [false], "description": "Always false. The engine holds no GitHub credential and did not read the repository." }
+        }
+      },
+      "Standing": {
+        "type": "object",
+        "required": ["attestor_is_active_human", "enabler_is_active_human", "open_for_new_jobs"],
+        "description": "Whether the people behind the repository still stand (finding REG-6). A repository whose attestor or enabler is no longer an active human principal of the tenant is treated as not enabled for new jobs, whatever the stored flag says. Jobs that exist go on.",
+        "properties": {
+          "attestor_is_active_human": { "type": "boolean", "description": "False when a person attested the map and has since been switched off or is not a human. True when nobody attested it." },
+          "enabler_is_active_human": { "type": "boolean", "description": "False when a person enabled the repository and has since been switched off or is not a human. True when nobody is named as the enabler." },
+          "open_for_new_jobs": { "type": "boolean", "description": "True only when the repository is enabled and both are true. Webhooks and job submissions are dropped when it is false." }
+        }
+      },
+      "Repository": {
+        "type": "object",
+        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "single_maintainer", "enabled", "standing", "enabled_for", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
+        "properties": {
+          "repository_id": { "type": "string", "format": "uuid" },
+          "full_name": { "type": "string" },
+          "default_branch": { "type": "string" },
+          "github_installation_id": { "type": "integer" },
+          "github_repository_id": { "type": "integer" },
+          "single_maintainer": { "type": "boolean", "description": "True when the repository was registered so that the same person may attest its project map and enable it." },
+          "enabled": { "type": "boolean", "description": "The stored flag. A repository can be enabled and still closed to new jobs: see standing." },
+          "standing": { "$ref": "#/components/schemas/Standing" },
+          "enabled_for": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/EnabledFor" }], "description": "What the repository was enabled for. Present exactly while enabled is true. Attesting another project map commit, or the same commit by another person, switches an enabled repository off." },
+          "protection_preflight_passed": { "type": "boolean" },
+          "autonomy_ceiling": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "project_map": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/ProjectMapAttestation" }] }
+        }
+      },
+      "RepositoryChangeRequested": {
+        "type": "object",
+        "required": ["request_id", "kind", "repository_id", "state", "changed"],
+        "properties": {
+          "request_id": { "type": "string", "format": "uuid", "description": "The id of the signed request. getRepositoryChange reports its state." },
+          "kind": { "type": "string", "enum": ["register", "attest", "enable"] },
+          "repository_id": { "type": "string", "format": "uuid", "description": "The repository the request is about. For a registration it is the id the repository will have; getRepository answers 404 until the worker has registered it." },
+          "state": { "type": "string", "enum": ["requested"] },
+          "changed": { "type": "boolean", "description": "False when the Idempotency-Key was used before: the earlier request is the one that stands." }
+        }
+      },
+      "RepositoryChangeState": {
+        "type": "object",
+        "required": ["request_id", "kind", "repository_id", "state", "code"],
+        "properties": {
+          "request_id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "enum": ["register", "attest", "enable"] },
+          "repository_id": { "type": "string", "format": "uuid" },
+          "state": { "type": "string", "enum": ["requested", "applied", "refused"] },
+          "code": { "type": "string", "nullable": true, "description": "The fixed code of a refusal. Empty unless the state is refused." }
+        }
+      },
+      "RepositoryChanged": {
+        "type": "object",
+        "required": ["repository", "changed"],
+        "properties": {
+          "repository": { "$ref": "#/components/schemas/Repository" },
+          "changed": { "type": "boolean", "description": "False when the Idempotency-Key was used before: the earlier change was made, and this request changed nothing." }
+        }
+      },
+      "WebhookAccepted": {
+        "type": "object",
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "enum": ["accepted"] } }
+      }
+    }
+  }
+}

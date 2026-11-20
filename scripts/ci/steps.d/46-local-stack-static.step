@@ -1,0 +1,4 @@
+id       = local-stack-static
+title    = infra/compose/local.yml keeps its network layout, loopback ports, pins and hardening (scripts/smoke.sh --static, needs no Docker daemon)
+requires = docker python3
+run      = scripts/smoke.sh --static

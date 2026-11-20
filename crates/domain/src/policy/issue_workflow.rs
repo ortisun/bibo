@@ -1,0 +1,1426 @@
+//! `policies/issue-workflow.yaml` as typed values, the rules that file must satisfy, and the one
+//! type that may name a status label: [`StatusLabel`].
+//!
+//! # What the file decides
+//!
+//! The policy names the labels an issue carries (the trigger label, the `design:` track written by
+//! people and the `factory:` track written by the factory's GitHub App) and maps each job state of
+//! the engine to exactly one `factory:` label. The Python tool `scripts/lib/issue_workflow.py`
+//! checks the same file and renders `onboarding/github/issue-workflow.json` for the installer and
+//! the Action. The rules in [`IssueWorkflowPolicy::problems`] are the Rust side of that check, and
+//! a test compares the two renderings, so the two languages cannot disagree about a label.
+//!
+//! # The label that cannot be wrong
+//!
+//! The factory writes the state of a job onto its issue as one `factory: <state>` label. A label
+//! that is not in that namespace must never be written: not the trigger label `factory` (a label
+//! alone never authorizes work), not a `design:` label (people write those), not any other label.
+//! [`StatusLabel`] makes the wrong call impossible to write:
+//!
+//! * its fields are private and it has no `Deserialize`, no `Default` and no constructor from text;
+//! * the only way to get one is [`StatusLabels::label_for`], and the only way to get
+//!   [`StatusLabels`] is [`IssueWorkflowPolicy::status_labels`], which refuses a policy that breaks
+//!   any rule of this module;
+//! * [`check_status_label_name`] is the one pure test of a name, used here when the labels are built
+//!   and again by every adapter before it sends a label (defense in depth).
+//!
+//! One function is meant for tests only: [`StatusLabel::forged_for_negative_tests`]. It exists so
+//! that an adapter's own refusal can be shown to work. The architecture check ST-13 names the crates
+//! that may call it.
+//!
+//! No policy type implements `Default`: a missing policy is an error, never an empty allow.
+
+use std::collections::BTreeSet;
+use std::fmt;
+
+use super::common::{PolicyStatus, SchemaVersionOne, strict};
+use super::decision::Designation;
+use crate::state::JobStatus;
+
+/// The prefix of every label the factory writes. The factory has this namespace to itself.
+pub const STATUS_PREFIX: &str = "factory: ";
+
+/// The prefix of the labels people write while a design is worked out.
+pub const DESIGN_PREFIX: &str = "design: ";
+
+/// The longest label name GitHub accepts, in characters.
+pub const MAX_LABEL_NAME: usize = 50;
+
+/// The longest label description GitHub accepts, in characters.
+pub const MAX_LABEL_DESCRIPTION: usize = 100;
+
+/// The key path of the list of factory states, for the messages of a broken policy. Written with
+/// `concat!` because the telemetry name scan (ST-07) reads a string literal that starts with
+/// `factory_` as a metric name.
+const STATES_KEY: &str = concat!("factory", "_track.states");
+
+strict! {
+    /// The whole of `policies/issue-workflow.yaml`.
+    pub struct IssueWorkflowPolicy {
+        /// Always 1.
+        pub schema_version: SchemaVersionOne,
+        /// Identity and status of the policy.
+        pub policy: WorkflowHeader,
+        /// The label whose application by an authorized person starts a job.
+        pub trigger: TriggerLabel,
+        /// The two label namespaces and who writes each.
+        pub namespaces: Namespaces,
+        /// The design track, written by people.
+        pub design_track: DesignTrack,
+        /// The factory track, written by the factory.
+        pub factory_track: FactoryTrack,
+        /// What the engine must check when the trigger label is applied.
+        pub intake_requirements: IntakeRequirements,
+    }
+}
+
+strict! {
+    /// Identity and status of the policy.
+    pub struct WorkflowHeader {
+        /// Always `issue-workflow`.
+        pub id: String,
+        /// Designed or enforced. Nothing switches on it.
+        pub status: PolicyStatus,
+    }
+}
+
+strict! {
+    /// The trigger label.
+    pub struct TriggerLabel {
+        /// The label name, outside both namespaces.
+        pub label: String,
+        /// Six lower-case hex digits.
+        pub color: String,
+        /// One sentence.
+        pub description: String,
+    }
+}
+
+strict! {
+    /// The two namespaces.
+    pub struct Namespaces {
+        /// The `design:` namespace, written by people.
+        pub design: Namespace,
+        /// The `factory:` namespace, written by the factory.
+        pub factory: Namespace,
+    }
+}
+
+strict! {
+    /// One label namespace.
+    pub struct Namespace {
+        /// The prefix, such as `factory: `.
+        pub prefix: String,
+        /// `people` or `factory`.
+        pub written_by: String,
+    }
+}
+
+strict! {
+    /// The design track.
+    pub struct DesignTrack {
+        /// The states an issue may take first.
+        pub start_states: Vec<String>,
+        /// The states.
+        pub states: Vec<LabelState>,
+        /// The legal moves.
+        pub transitions: Vec<DesignMove>,
+        /// What moving to `approved` needs.
+        pub approval_requires: ApprovalRequires,
+    }
+}
+
+strict! {
+    /// A design state and its label.
+    pub struct LabelState {
+        /// The name after the prefix.
+        pub name: String,
+        /// Six lower-case hex digits.
+        pub color: String,
+        /// One sentence, at most 100 characters.
+        pub description: String,
+    }
+}
+
+strict! {
+    /// A legal move between design states.
+    pub struct DesignMove {
+        /// The state the issue leaves.
+        pub from: String,
+        /// The state it enters.
+        pub to: String,
+    }
+}
+
+strict! {
+    /// What approval of a design needs.
+    pub struct ApprovalRequires {
+        /// The design document.
+        pub design_document: DesignDocument,
+    }
+}
+
+strict! {
+    /// Where the design document is named and where it must be.
+    pub struct DesignDocument {
+        /// The field of the issue body that names the document.
+        pub issue_body_field: String,
+        /// The glob the path must match.
+        pub path_glob: String,
+    }
+}
+
+strict! {
+    /// The factory track.
+    pub struct FactoryTrack {
+        /// One entry for each job state.
+        pub states: Vec<FactoryState>,
+    }
+}
+
+strict! {
+    /// A job state and the label that shows it.
+    pub struct FactoryState {
+        /// A job state of the engine, such as `WAITING_FOR_HUMAN`.
+        pub job_state: String,
+        /// The name after the prefix.
+        pub name: String,
+        /// Six lower-case hex digits.
+        pub color: String,
+        /// One sentence, at most 100 characters.
+        pub description: String,
+    }
+}
+
+strict! {
+    /// What the engine checks when the trigger label is applied.
+    pub struct IntakeRequirements {
+        /// The design state an issue on the design track needs before a job may start.
+        pub design_track_requires: String,
+        /// The designation that the person who applied the label of that state must hold on the
+        /// protected allowlist, such as `approver`. A designation by name, matched by numeric
+        /// GitHub user id; never a GitHub role. Pending confirmation by the architect (ADR 0016).
+        pub design_approved_by: String,
+        /// The most replies of the kind [`ReplyKind::Refusal`] the factory posts on one issue in
+        /// the window: the answers of the design gate at intake (DG-9, DR-4). Whole, at least 1
+        /// and at most [`REPLY_CAP_MOST`]. A missing key is a load error, and zero is a problem
+        /// of the policy: neither can mean "no limit".
+        pub design_refusal_cap_per_issue: u32,
+        /// The most replies of the kind [`ReplyKind::Withdrawal`]: the stop before the pull
+        /// request opens (DG-8). Counted apart from the others, so that one kind cannot use up
+        /// the room of another (DR-4). Same range and same rules as the key above.
+        pub design_withdrawal_cap_per_issue: u32,
+        /// The most replies of the kind [`ReplyKind::Environment`]: the notice that the place where
+        /// the tools run is not available (LB-02). Same range and same rules.
+        pub design_environment_cap_per_issue: u32,
+        /// The length of the window of all three, in hours, at least 1 and at most
+        /// [`REPLY_WINDOW_HOURS_MOST`].
+        pub design_reply_window_hours: u32,
+    }
+}
+
+/// The most replies about a design that the policy may allow on one issue in a window: what the
+/// adapter can count in the pages of comments it reads.
+pub const REPLY_CAP_MOST: u32 = 100;
+
+/// The longest window of that cap in hours: a week.
+pub const REPLY_WINDOW_HOURS_MOST: u32 = 168;
+
+/// The kind of a reply about a design. Each kind has a cap of its own and a family of its own, so
+/// that the replies of one kind are counted apart from the others and a kind cannot use up the room
+/// of another (DR-4): a requester who is refused many times cannot silence the notice that the
+/// factory stopped before the pull request, or the notice about the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReplyKind {
+    /// An answer of the design gate at intake: not approved, not clear, approved by the wrong
+    /// person, dropped, the text is not the issue's, the approval is older than the words, or the
+    /// factory could not check.
+    Refusal,
+    /// The stop before the pull request is opened, because the design is not approved now or
+    /// could not be checked again (DG-8).
+    Withdrawal,
+    /// The notice that the place where the factory runs its tools is not available (LB-02).
+    Environment,
+}
+
+impl ReplyKind {
+    /// Every kind, in the order the policy lists them.
+    pub const ALL: [Self; 3] = [Self::Refusal, Self::Withdrawal, Self::Environment];
+
+    /// The family word of the kind: a slug that every comment of the kind carries as a hidden
+    /// marker, so that the adapter counts the kinds apart without reading text.
+    #[must_use]
+    pub const fn family(self) -> &'static str {
+        match self {
+            Self::Refusal => "design-refusal",
+            Self::Withdrawal => "design-withdrawal",
+            Self::Environment => "design-environment",
+        }
+    }
+}
+
+/// How many replies of one kind the factory may post on one issue, and over how long (DG-9, DR-4).
+/// It is built only from numbers that are in range, so a zero cannot be held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplyCap {
+    kind: ReplyKind,
+    max: u32,
+    window: std::time::Duration,
+}
+
+impl ReplyCap {
+    /// The cap of a kind for a rule that cannot be read: one reply of the kind on an issue in a
+    /// day, the least that still tells a person that the factory stopped. It is the closed value,
+    /// not a default of the policy: the policy has none.
+    #[must_use]
+    pub const fn when_the_policy_cannot_be_read(kind: ReplyKind) -> Self {
+        Self {
+            kind,
+            max: 1,
+            window: std::time::Duration::from_secs(24 * 3600),
+        }
+    }
+
+    /// A cap of `max` replies of `kind` in `window_hours`, or `None` when either number is zero or
+    /// above its most.
+    #[must_use]
+    pub fn new(kind: ReplyKind, max: u32, window_hours: u32) -> Option<Self> {
+        if !(1..=REPLY_CAP_MOST).contains(&max)
+            || !(1..=REPLY_WINDOW_HOURS_MOST).contains(&window_hours)
+        {
+            return None;
+        }
+        Some(Self {
+            kind,
+            max,
+            window: std::time::Duration::from_secs(u64::from(window_hours) * 3600),
+        })
+    }
+
+    /// The kind of reply the cap counts.
+    #[must_use]
+    pub const fn kind(&self) -> ReplyKind {
+        self.kind
+    }
+
+    /// The most replies of the kind in the window.
+    #[must_use]
+    pub const fn max(&self) -> u32 {
+        self.max
+    }
+
+    /// The length of the window.
+    #[must_use]
+    pub const fn window(&self) -> std::time::Duration {
+        self.window
+    }
+}
+
+/// What kind of rule a [`Problem`] breaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProblemKind {
+    /// A name used twice.
+    Duplicate,
+    /// A name that nothing defines, or a job state the engine does not have.
+    Unknown,
+    /// A glob or field that has the wrong shape.
+    Shape,
+    /// Another rule of the policy.
+    Constraint,
+}
+
+/// One rule the policy breaks: where, what kind and what to change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    /// The key path, such as `factory_track.states[3].name`.
+    pub path: String,
+    /// The kind of rule.
+    pub kind: ProblemKind,
+    /// Plain English.
+    pub message: String,
+}
+
+fn problem(path: impl Into<String>, kind: ProblemKind, message: impl Into<String>) -> Problem {
+    Problem {
+        path: path.into(),
+        kind,
+        message: message.into(),
+    }
+}
+
+/// Why a name is not a status label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BadStatusLabel {
+    /// The name does not start with `factory: `. This covers the trigger label, a `design:` label
+    /// and every other label.
+    #[error("a status label starts with `factory: `")]
+    WrongNamespace,
+    /// Nothing follows the prefix.
+    #[error("a status label needs a name after `factory: `")]
+    EmptyName,
+    /// More than 50 characters.
+    #[error("a label name is at most 50 characters")]
+    TooLong,
+    /// A character that is not printable ASCII.
+    #[error("a label name is printable ASCII")]
+    NotPrintable,
+    /// A space or tab at either edge.
+    #[error("a label name has no space at either edge")]
+    EdgeSpace,
+}
+
+/// The one test of a status label name. Pure. The policy loader applies it to every name it builds,
+/// and an adapter applies it again to every label it is about to send.
+///
+/// # Errors
+/// [`BadStatusLabel`] for the first rule the name breaks.
+pub fn check_status_label_name(name: &str) -> Result<(), BadStatusLabel> {
+    let Some(rest) = name.strip_prefix(STATUS_PREFIX) else {
+        return Err(BadStatusLabel::WrongNamespace);
+    };
+    if rest.is_empty() {
+        return Err(BadStatusLabel::EmptyName);
+    }
+    if name.chars().count() > MAX_LABEL_NAME {
+        return Err(BadStatusLabel::TooLong);
+    }
+    if !name.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return Err(BadStatusLabel::NotPrintable);
+    }
+    if rest.starts_with([' ', '\t']) || rest.ends_with([' ', '\t']) {
+        return Err(BadStatusLabel::EdgeSpace);
+    }
+    Ok(())
+}
+
+/// The label that shows one job state on an issue. See the module notes for why it cannot be
+/// built from text.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct StatusLabel {
+    name: String,
+    state: JobStatus,
+}
+
+impl StatusLabel {
+    /// The full name, such as `factory: working`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+
+    /// The job state this label shows.
+    #[must_use]
+    pub fn job_state(&self) -> JobStatus {
+        self.state
+    }
+
+    /// For the negative tests of an adapter, and for nothing else: a value that skips the policy,
+    /// so that an adapter's own check can be shown to refuse a name that the type is built to keep
+    /// out. The state is the first one, because a forged label does not show a state.
+    ///
+    /// **It does not exist in a production build** (finding STS-5). It is compiled only for this
+    /// crate's own unit tests and when the feature `forge-status-labels` is on, and only the test
+    /// kit turns that feature on; the test kit is a dev-dependency of every crate that uses it.
+    /// The architecture check ST-13 adds a second barrier: it refuses any mention of the function
+    /// outside the test kit, a call or a pointer to it alike.
+    #[cfg(any(test, feature = "forge-status-labels"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn forged_for_negative_tests(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            state: JobStatus::Received,
+        }
+    }
+}
+
+impl fmt::Debug for StatusLabel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "StatusLabel({:?})", self.name)
+    }
+}
+
+impl fmt::Display for StatusLabel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+/// The ten status labels of a policy that passed every rule, one for each job state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLabels {
+    labels: Vec<StatusLabel>,
+}
+
+impl StatusLabels {
+    /// The label for a job state. Every state has one, because the policy that built this value
+    /// has no state without one.
+    ///
+    /// # Panics
+    /// Never for a value built by [`IssueWorkflowPolicy::status_labels`].
+    #[must_use]
+    pub fn label_for(&self, state: JobStatus) -> &StatusLabel {
+        self.labels
+            .iter()
+            .find(|label| label.state == state)
+            .unwrap_or_else(|| unreachable!("the policy has a label for every job state"))
+    }
+
+    /// Every label, in the order of [`JobStatus::ALL`].
+    pub fn iter(&self) -> impl Iterator<Item = &StatusLabel> {
+        self.labels.iter()
+    }
+}
+
+fn label_problems(name: &str, color: &str, description: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let printable = name.bytes().all(|b| (0x20..=0x7e).contains(&b));
+    let length = name.chars().count();
+    if !(1..=MAX_LABEL_NAME).contains(&length) || !printable || name != name.trim() {
+        found.push(format!(
+            "the label name {name:?} must be 1 to {MAX_LABEL_NAME} printable ASCII characters with no space at either edge"
+        ));
+    }
+    let hex = color.len() == 6
+        && color
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !hex {
+        found.push(format!(
+            "the color {color:?} must be six lower-case hex digits"
+        ));
+    }
+    let words = description.chars().count();
+    if !(1..=MAX_LABEL_DESCRIPTION).contains(&words) || description.chars().any(|c| c < ' ') {
+        found.push(format!(
+            "the description of {name:?} must be 1 to {MAX_LABEL_DESCRIPTION} characters with no control character"
+        ));
+    }
+    found
+}
+
+fn glob_is_a_design_document(glob: &str) -> bool {
+    let Some(rest) = glob.strip_prefix("docs/designs/") else {
+        return false;
+    };
+    let Some(stem) = rest.strip_suffix(".md") else {
+        return false;
+    };
+    !glob.contains("..")
+        && (stem == "*"
+            || (!stem.is_empty()
+                && stem
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))))
+}
+
+/// The most design labels the audit record and the reply name.
+const MAX_LABELS_SEEN: usize = 10;
+
+/// The longest label name that is shown, in characters, after the cleaning.
+const MAX_SHOWN_CHARS: usize = 60;
+
+/// A label name as it is safe to show in an audit record, a report or a document.
+///
+/// What it guarantees, and nothing more: every character is printable ASCII, no character is a
+/// control character, and none is one that separates fields in the places the name is written (the
+/// semicolon of the audit line, the comma and the square brackets of its list, the vertical bar of
+/// the report evidence, the quotation mark and the backslash that a quoted form would need
+/// escaped). Printable ASCII stays; every other character becomes `?`. The name is cut after
+/// [`MAX_SHOWN_CHARS`] characters and shown with `...`. A hostile name therefore shows that it is
+/// odd, cannot add a field, a line or an item, and is still not trusted: it is shown, not read.
+#[must_use]
+pub fn printable_label(name: &str) -> String {
+    let mut shown: String = name
+        .chars()
+        .take(MAX_SHOWN_CHARS)
+        .map(|c| {
+            if (' '..='~').contains(&c) && !matches!(c, ';' | ',' | '[' | ']' | '|' | '"' | '\\') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    if name.chars().count() > MAX_SHOWN_CHARS {
+        shown.push_str("...");
+    }
+    shown
+}
+
+/// True for a character that is not shown, or that joins the letter before it so that it is not
+/// seen apart: the Unicode category Cf (format characters: the zero width characters, the
+/// bidirectional controls, the soft hyphen, the byte order mark and the others), the line and
+/// paragraph separators, the tag block, the fillers that render as nothing, the combining
+/// diacritical marks and the variation selectors.
+///
+/// The standard library has no category lookup, so the Cf ranges are listed, from Unicode 16. The
+/// list is a copy of `factory_ports::paths::hides_text` (this crate sits below `ports` and may not
+/// use it), with the combining and variation blocks added, because a track label with an accent
+/// on one letter reads as the same word. A character that a later Unicode version adds to Cf is
+/// not here, and is a non-ASCII character like any other: see [`DesignGate::is_design_label`].
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0300}'..='\u{036F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180E}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
+/// What the labels on an issue say about its design, before anybody checks who applied one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesignLabels {
+    /// No label of the design track. A small, clear change: this rule does not touch it.
+    NotOnTrack,
+    /// The issue is on the design track and its only design label is the approved one. Who applied
+    /// it is still to be checked.
+    ApprovalLabelOnly,
+    /// The issue is on the design track and does not carry the approved label.
+    NotApproved {
+        /// The design labels seen, cleaned for display (see [`printable_label`]).
+        seen: Vec<String>,
+    },
+    /// The approved label is on the issue together with another design label, such as a design
+    /// that was reopened and has not been cleaned up yet. The state is not clear, so it is not
+    /// approved.
+    Ambiguous {
+        /// The design labels seen, cleaned for display.
+        seen: Vec<String>,
+    },
+    /// The issue carries no design label now, and the events of the issue show that it carried
+    /// one: it was applied and taken off. The track is sticky (see [`DesignGate`]), so the issue
+    /// is on the track and is not approved. This is what [`DesignGate::classify_past`] returns.
+    Dropped {
+        /// The design labels that were applied before, cleaned for display.
+        seen: Vec<String>,
+    },
+}
+
+/// The design rule of the intake stage, made from a policy that passed every rule.
+///
+/// It is a pure value: it holds the three facts the rule needs (what makes a label a design label,
+/// which label approves, and which designation must have applied it) and decides nothing about
+/// people. The stage asks the allowlist about the person.
+///
+/// # What counts as a design label
+///
+/// A label is a design label when, after the characters that are not shown are removed and the
+/// leading white space, control characters and symbols are skipped, its first characters read as
+/// the prefix of the design namespace up to and including the colon (`design:`), in any letter
+/// case. That is wider than the namespace prefix itself (`design: `, with a space) on purpose.
+/// `design:approved`, `Design: approved` and `design: approved ` are not the label that approves,
+/// and an issue that carries one of them must not slip past the rule by being "not on the track".
+/// They put the issue on the track, where they do not approve it. The approving label is
+/// recognised by an exact, byte for byte, comparison.
+///
+/// The test for the track is meant to be what a person reads, so it is deliberately wider than the
+/// ASCII spelling. It (1) drops the characters that are not shown (zero width and bidirectional
+/// characters, the soft hyphen, the byte order mark, combining accents, variation selectors and
+/// the other format characters), (2) skips leading white space, control characters and non-ASCII
+/// symbols (a label that starts with an emoji or an arrow), and (3) lets every other non-ASCII
+/// character among the first seven take the place of the one letter or colon it could stand for:
+/// a full-width letter or colon, a Cyrillic or Greek look-alike, a letter with a bar or a ring.
+/// That covers every single-character substitution. It is not Unicode normalization (NFKC),
+/// which this crate does not have and which would need a new dependency here. It does not read a
+/// letter that was replaced by two characters, and it does not skip a leading ASCII symbol. A
+/// non-ASCII character counts only where the rest of the first seven fits, so `ação` or an emoji
+/// followed by `bug` is not a design label.
+///
+/// # The track is sticky
+///
+/// An issue is on the track when it carries a design label now, **or** when the events of the
+/// issue hold a `labeled` event of a design label, even one that was taken off later
+/// ([`DesignGate::classify_past`]). An issue that was never given a design label is a small change
+/// by definition and is not on the track. Once on it, the issue needs the approving label applied
+/// by an approver, like any issue of the track, so that a requester cannot leave the track by
+/// taking the label off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignGate {
+    track_key: String,
+    approved_label: String,
+    approved_by: Designation,
+    reply_caps: [ReplyCap; 3],
+}
+
+impl DesignGate {
+    /// The exact name of the label that approves a design, such as `design: approved`.
+    #[must_use]
+    pub fn approved_label(&self) -> &str {
+        &self.approved_label
+    }
+
+    /// The designation that the person who applied the approving label must hold.
+    #[must_use]
+    pub const fn approved_by(&self) -> Designation {
+        self.approved_by
+    }
+
+    /// How many replies of `kind` the factory may post on one issue, and over how long (DG-9,
+    /// DR-4). Each kind has its own cap.
+    #[must_use]
+    pub const fn reply_cap(&self, kind: ReplyKind) -> ReplyCap {
+        match kind {
+            ReplyKind::Refusal => self.reply_caps[0],
+            ReplyKind::Withdrawal => self.reply_caps[1],
+            ReplyKind::Environment => self.reply_caps[2],
+        }
+    }
+
+    /// True when the name is a design label in the wide sense described on the type. Used to put
+    /// an issue on the track, never to approve one.
+    #[must_use]
+    pub fn is_design_label(&self, name: &str) -> bool {
+        let visible = || {
+            name.chars()
+                .filter(|c| !is_invisible(*c))
+                .skip_while(|c| c.is_whitespace() || c.is_control())
+        };
+        // Both readings are tried: the name as it stands (a symbol in the first seven may be a
+        // look-alike of a letter, such as `\u{2202}` for `d`), and the name after leading
+        // symbols such as an emoji or an arrow are skipped.
+        self.prefix_fits(visible())
+            || self.prefix_fits(visible().skip_while(|c| {
+                c.is_whitespace() || c.is_control() || (!c.is_ascii() && !c.is_alphanumeric())
+            }))
+    }
+
+    /// True when the first characters of `shown` read as the track key: an ASCII character must
+    /// be the one of the key in any letter case, and a non-ASCII character takes the place of the
+    /// one character of the key at its position.
+    fn prefix_fits(&self, mut shown: impl Iterator<Item = char>) -> bool {
+        self.track_key.chars().all(|key| match shown.next() {
+            Some(c) if c.is_ascii() => c.eq_ignore_ascii_case(&key),
+            Some(_) => true,
+            None => false,
+        })
+    }
+
+    /// Reads the labels on an issue, as the code host returned them now.
+    #[must_use]
+    pub fn classify(&self, labels: &[String]) -> DesignLabels {
+        let design: Vec<&String> = labels
+            .iter()
+            .filter(|name| self.is_design_label(name))
+            .collect();
+        if design.is_empty() {
+            return DesignLabels::NotOnTrack;
+        }
+        let approved = design
+            .iter()
+            .any(|name| name.as_str() == self.approved_label);
+        let others = design
+            .iter()
+            .any(|name| name.as_str() != self.approved_label);
+        let seen: Vec<String> = design
+            .iter()
+            .take(MAX_LABELS_SEEN)
+            .map(|name| printable_label(name))
+            .collect();
+        match (approved, others) {
+            (true, false) => DesignLabels::ApprovalLabelOnly,
+            (true, true) => DesignLabels::Ambiguous { seen },
+            (false, _) => DesignLabels::NotApproved { seen },
+        }
+    }
+
+    /// For an issue that carries no design label now: reads the names of every label that the
+    /// events of the issue show as applied, at any time. If one of them is a design label, the
+    /// issue is on the track although the label was taken off, and the answer is
+    /// [`DesignLabels::Dropped`]; otherwise the issue was never on the track.
+    #[must_use]
+    pub fn classify_past(&self, applied_before: &[String]) -> DesignLabels {
+        let seen: Vec<String> = applied_before
+            .iter()
+            .filter(|name| self.is_design_label(name))
+            .take(MAX_LABELS_SEEN)
+            .map(|name| printable_label(name))
+            .collect();
+        if seen.is_empty() {
+            DesignLabels::NotOnTrack
+        } else {
+            DesignLabels::Dropped { seen }
+        }
+    }
+}
+
+impl IssueWorkflowPolicy {
+    /// Every rule the file breaks, or an empty list when it is sound. Pure. These are the rules of
+    /// `scripts/lib/issue_workflow.py check` that concern the file alone, plus the two that tie it
+    /// to the engine: every job state has exactly one label, and no label names a state the engine
+    /// does not have.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn problems(&self) -> Vec<Problem> {
+        let mut found = Vec::new();
+        if self.policy.id != "issue-workflow" {
+            found.push(problem(
+                "policy.id",
+                ProblemKind::Constraint,
+                "this file must be the issue workflow policy, with `id: issue-workflow`",
+            ));
+        }
+
+        // Namespaces: one writer each.
+        for (key, namespace, prefix, writer) in [
+            ("design", &self.namespaces.design, DESIGN_PREFIX, "people"),
+            (
+                "factory",
+                &self.namespaces.factory,
+                STATUS_PREFIX,
+                "factory",
+            ),
+        ] {
+            if namespace.prefix != prefix || namespace.written_by != writer {
+                found.push(problem(
+                    format!("namespaces.{key}"),
+                    ProblemKind::Constraint,
+                    format!("the {key} namespace must have the prefix {prefix:?} and be written by {writer}"),
+                ));
+            }
+        }
+
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut remember = |name: &str, place: String, found: &mut Vec<Problem>| {
+            let folded = name.to_ascii_lowercase();
+            if let Some((_, earlier)) = seen.iter().find(|(held, _)| *held == folded) {
+                found.push(problem(
+                    place.clone(),
+                    ProblemKind::Duplicate,
+                    format!("the label {name:?} is already used by {earlier}"),
+                ));
+            }
+            seen.push((folded, place));
+        };
+
+        // The trigger label sits outside both namespaces.
+        let trigger = &self.trigger;
+        for message in label_problems(&trigger.label, &trigger.color, &trigger.description) {
+            found.push(problem(
+                "trigger",
+                ProblemKind::Constraint,
+                format!("trigger: {message}"),
+            ));
+        }
+        if trigger.label.starts_with(DESIGN_PREFIX) || trigger.label.starts_with(STATUS_PREFIX) {
+            found.push(problem(
+                "trigger.label",
+                ProblemKind::Constraint,
+                "the trigger label must be outside both namespaces",
+            ));
+        }
+        remember(&trigger.label, "the trigger".to_owned(), &mut found);
+
+        // The design track.
+        let design = &self.design_track;
+        let mut design_names: Vec<&str> = Vec::new();
+        for (index, state) in design.states.iter().enumerate() {
+            let full = format!("{DESIGN_PREFIX}{}", state.name);
+            for message in label_problems(&full, &state.color, &state.description) {
+                found.push(problem(
+                    format!("design_track.states[{index}]"),
+                    ProblemKind::Constraint,
+                    message,
+                ));
+            }
+            remember(&full, format!("design state {}", state.name), &mut found);
+            if design_names.contains(&state.name.as_str()) {
+                found.push(problem(
+                    format!("design_track.states[{index}].name"),
+                    ProblemKind::Duplicate,
+                    "design states must have unique names",
+                ));
+            }
+            design_names.push(&state.name);
+        }
+        if design.start_states.is_empty() {
+            found.push(problem(
+                "design_track.start_states",
+                ProblemKind::Constraint,
+                "at least one start state is needed",
+            ));
+        }
+        for name in &design.start_states {
+            if !design_names.contains(&name.as_str()) {
+                found.push(problem(
+                    "design_track.start_states",
+                    ProblemKind::Unknown,
+                    format!("{name:?} is not a design state"),
+                ));
+            }
+        }
+        let mut edges: Vec<(&str, &str)> = Vec::new();
+        for (index, edge) in design.transitions.iter().enumerate() {
+            let at = format!("design_track.transitions[{index}]");
+            let (from, to) = (edge.from.as_str(), edge.to.as_str());
+            if !design_names.contains(&from) || !design_names.contains(&to) {
+                found.push(problem(
+                    at,
+                    ProblemKind::Unknown,
+                    format!("{from:?} to {to:?} names a state that does not exist"),
+                ));
+            } else if from == to {
+                found.push(problem(
+                    at,
+                    ProblemKind::Constraint,
+                    format!("{from:?} to {to:?} goes nowhere"),
+                ));
+            } else if edges.contains(&(from, to)) {
+                found.push(problem(
+                    at,
+                    ProblemKind::Duplicate,
+                    format!("{from:?} to {to:?} is listed twice"),
+                ));
+            }
+            edges.push((from, to));
+        }
+        let mut reachable: BTreeSet<&str> = design
+            .start_states
+            .iter()
+            .map(String::as_str)
+            .filter(|name| design_names.contains(name))
+            .collect();
+        loop {
+            let before = reachable.len();
+            for (from, to) in &edges {
+                if reachable.contains(from) {
+                    reachable.insert(to);
+                }
+            }
+            if reachable.len() == before {
+                break;
+            }
+        }
+        for name in &design_names {
+            if !reachable.contains(name) {
+                found.push(problem(
+                    "design_track.transitions",
+                    ProblemKind::Constraint,
+                    format!("the design state {name:?} cannot be reached from a start state"),
+                ));
+            }
+        }
+        if !design_names.contains(&self.intake_requirements.design_track_requires.as_str()) {
+            found.push(problem(
+                "intake_requirements.design_track_requires",
+                ProblemKind::Unknown,
+                "this is not a design state",
+            ));
+        }
+        match Designation::parse(&self.intake_requirements.design_approved_by) {
+            None => found.push(problem(
+                "intake_requirements.design_approved_by",
+                ProblemKind::Unknown,
+                format!(
+                    "{:?} is not a designation of the allowlist",
+                    self.intake_requirements.design_approved_by
+                ),
+            )),
+            Some(Designation::Requester | Designation::Operator) => found.push(problem(
+                "intake_requirements.design_approved_by",
+                ProblemKind::Constraint,
+                "the person whose label says a design is approved cannot be held to the requester or operator designation; the person who asks for work must not approve the design",
+            )),
+            Some(_) => {}
+        }
+        let caps = [
+            (
+                ReplyKind::Refusal,
+                "intake_requirements.design_refusal_cap_per_issue",
+                self.intake_requirements.design_refusal_cap_per_issue,
+            ),
+            (
+                ReplyKind::Withdrawal,
+                "intake_requirements.design_withdrawal_cap_per_issue",
+                self.intake_requirements.design_withdrawal_cap_per_issue,
+            ),
+            (
+                ReplyKind::Environment,
+                "intake_requirements.design_environment_cap_per_issue",
+                self.intake_requirements.design_environment_cap_per_issue,
+            ),
+        ];
+        let window = self.intake_requirements.design_reply_window_hours;
+        for (kind, key, max) in caps {
+            if ReplyCap::new(kind, max, window).is_none() {
+                found.push(problem(
+                    if (1..=REPLY_CAP_MOST).contains(&max) {
+                        "intake_requirements.design_reply_window_hours"
+                    } else {
+                        key
+                    },
+                    ProblemKind::Constraint,
+                    format!(
+                        "the replies about a design are capped by a number from 1 to {REPLY_CAP_MOST} for each kind and a window of 1 to {REPLY_WINDOW_HOURS_MOST} hours; zero is not a way to say there is no limit"
+                    ),
+                ));
+            }
+        }
+        let document = &design.approval_requires.design_document;
+        if !glob_is_a_design_document(&document.path_glob) {
+            found.push(problem(
+                "design_track.approval_requires.design_document.path_glob",
+                ProblemKind::Shape,
+                "the glob must look like docs/designs/*.md",
+            ));
+        }
+        let field = &document.issue_body_field;
+        if !(1..=40).contains(&field.len())
+            || !field.bytes().all(|b| b.is_ascii_alphabetic() || b == b' ')
+        {
+            found.push(problem(
+                "design_track.approval_requires.design_document.issue_body_field",
+                ProblemKind::Shape,
+                "the field is 1 to 40 letters and spaces",
+            ));
+        }
+
+        // The factory track: one label for each job state, none left out, none invented.
+        let mut mapped: Vec<&str> = Vec::new();
+        for (index, state) in self.factory_track.states.iter().enumerate() {
+            let at = format!("{STATES_KEY}[{index}]");
+            let full = format!("{STATUS_PREFIX}{}", state.name);
+            for message in label_problems(&full, &state.color, &state.description) {
+                found.push(problem(at.clone(), ProblemKind::Constraint, message));
+            }
+            if let Err(why) = check_status_label_name(&full) {
+                found.push(problem(
+                    format!("{at}.name"),
+                    ProblemKind::Constraint,
+                    format!("{full:?} is not a status label: {why}"),
+                ));
+            }
+            remember(&full, format!("factory state {}", state.name), &mut found);
+            if JobStatus::parse(&state.job_state).is_err() {
+                found.push(problem(
+                    format!("{at}.job_state"),
+                    ProblemKind::Unknown,
+                    format!("{:?} is not a job state of the engine", state.job_state),
+                ));
+            }
+            if mapped.contains(&state.job_state.as_str()) {
+                found.push(problem(
+                    format!("{at}.job_state"),
+                    ProblemKind::Duplicate,
+                    format!("the job state {} is mapped twice", state.job_state),
+                ));
+            }
+            mapped.push(&state.job_state);
+        }
+        for status in JobStatus::ALL {
+            if !mapped.contains(&status.as_str()) {
+                found.push(problem(
+                    STATES_KEY,
+                    ProblemKind::Constraint,
+                    format!(
+                        "the engine job state {} has no factory label",
+                        status.as_str()
+                    ),
+                ));
+            }
+        }
+        found
+    }
+
+    /// The design rule of the intake stage, when the policy passes every rule.
+    ///
+    /// # Errors
+    /// Every [`Problem`] of the policy. No rule exists after an error: a policy that cannot be
+    /// judged gives the stage nothing to judge by, and the stage then refuses.
+    pub fn design_gate(&self) -> Result<DesignGate, Vec<Problem>> {
+        let found = self.problems();
+        if !found.is_empty() {
+            return Err(found);
+        }
+        let approved_by = Designation::parse(&self.intake_requirements.design_approved_by)
+            .ok_or_else(|| {
+                vec![problem(
+                    "intake_requirements.design_approved_by",
+                    ProblemKind::Unknown,
+                    "this is not a designation of the allowlist",
+                )]
+            })?;
+        let cap = |kind, max| {
+            ReplyCap::new(
+                kind,
+                max,
+                self.intake_requirements.design_reply_window_hours,
+            )
+            .ok_or_else(|| {
+                vec![problem(
+                    "intake_requirements.design_reply_window_hours",
+                    ProblemKind::Constraint,
+                    "the replies about a design have no usable cap",
+                )]
+            })
+        };
+        let reply_caps = [
+            cap(
+                ReplyKind::Refusal,
+                self.intake_requirements.design_refusal_cap_per_issue,
+            )?,
+            cap(
+                ReplyKind::Withdrawal,
+                self.intake_requirements.design_withdrawal_cap_per_issue,
+            )?,
+            cap(
+                ReplyKind::Environment,
+                self.intake_requirements.design_environment_cap_per_issue,
+            )?,
+        ];
+        let key = self.namespaces.design.prefix.trim().to_ascii_lowercase();
+        Ok(DesignGate {
+            track_key: key,
+            approved_label: format!(
+                "{}{}",
+                self.namespaces.design.prefix, self.intake_requirements.design_track_requires
+            ),
+            approved_by,
+            reply_caps,
+        })
+    }
+
+    /// The status labels, when the policy passes every rule.
+    ///
+    /// # Errors
+    /// Every [`Problem`] of the policy. No label exists after an error.
+    pub fn status_labels(&self) -> Result<StatusLabels, Vec<Problem>> {
+        let found = self.problems();
+        if !found.is_empty() {
+            return Err(found);
+        }
+        let mut labels = Vec::with_capacity(JobStatus::ALL.len());
+        for status in JobStatus::ALL {
+            let state = self
+                .factory_track
+                .states
+                .iter()
+                .find(|state| state.job_state == status.as_str())
+                .ok_or_else(|| {
+                    vec![problem(
+                        STATES_KEY,
+                        ProblemKind::Constraint,
+                        format!(
+                            "the engine job state {} has no factory label",
+                            status.as_str()
+                        ),
+                    )]
+                })?;
+            let name = format!("{STATUS_PREFIX}{}", state.name);
+            if let Err(why) = check_status_label_name(&name) {
+                return Err(vec![problem(
+                    STATES_KEY,
+                    ProblemKind::Constraint,
+                    format!("{name:?} is not a status label: {why}"),
+                )]);
+            }
+            labels.push(StatusLabel {
+                name,
+                state: *status,
+            });
+        }
+        Ok(StatusLabels { labels })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_status_label_name_must_be_in_the_factory_namespace() {
+        for good in [
+            "factory: working",
+            "factory: waiting for a person",
+            "factory: a",
+        ] {
+            assert_eq!(check_status_label_name(good), Ok(()), "{good}");
+        }
+        for (bad, why) in [
+            ("factory", BadStatusLabel::WrongNamespace),
+            ("design: approved", BadStatusLabel::WrongNamespace),
+            ("bug", BadStatusLabel::WrongNamespace),
+            ("Factory: working", BadStatusLabel::WrongNamespace),
+            ("factory:working", BadStatusLabel::WrongNamespace),
+            (" factory: working", BadStatusLabel::WrongNamespace),
+            ("factory: ", BadStatusLabel::EmptyName),
+            ("factory:  working", BadStatusLabel::EdgeSpace),
+            ("factory: working ", BadStatusLabel::EdgeSpace),
+            ("factory: wörking", BadStatusLabel::NotPrintable),
+            ("factory: work\ning", BadStatusLabel::NotPrintable),
+        ] {
+            assert_eq!(check_status_label_name(bad), Err(why), "{bad:?}");
+        }
+        let long = format!(
+            "{STATUS_PREFIX}{}",
+            "x".repeat(MAX_LABEL_NAME - STATUS_PREFIX.len())
+        );
+        assert_eq!(long.chars().count(), MAX_LABEL_NAME);
+        assert_eq!(check_status_label_name(&long), Ok(()));
+        assert_eq!(
+            check_status_label_name(&format!("{long}x")),
+            Err(BadStatusLabel::TooLong)
+        );
+    }
+
+    fn rule() -> DesignGate {
+        DesignGate {
+            track_key: "design:".to_owned(),
+            approved_label: "design: approved".to_owned(),
+            approved_by: Designation::Approver,
+            reply_caps: ReplyKind::ALL.map(|kind| ReplyCap::new(kind, 3, 24).expect("a cap")),
+        }
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_issue_with_no_design_label_is_not_on_the_track() {
+        for labels in [
+            &[][..],
+            &["factory"][..],
+            &["bug", "factory", "factory: working"][..],
+            // Words that merely contain or resemble the prefix are not design labels.
+            &["designer", "design-system", "my design: approved", "design"][..],
+        ] {
+            assert_eq!(rule().classify(&names(labels)), DesignLabels::NotOnTrack);
+        }
+    }
+
+    #[test]
+    fn only_the_exact_approving_label_alone_is_the_approval_label() {
+        assert_eq!(
+            rule().classify(&names(&["factory", "design: approved"])),
+            DesignLabels::ApprovalLabelOnly
+        );
+        // Every other state of the track is not approved.
+        for state in ["proposed", "in progress", "in review"] {
+            let label = format!("design: {state}");
+            assert_eq!(
+                rule().classify(&names(&["factory", &label])),
+                DesignLabels::NotApproved {
+                    seen: names(&[&label])
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_look_alike_of_the_approving_label_is_on_the_track_and_does_not_approve() {
+        // The sibling of the test above: each of these must NOT be read as approved, and none may
+        // slip past the rule by being read as "not on the track".
+        for hostile in [
+            "design:approved",
+            "Design: approved",
+            "DESIGN: APPROVED",
+            "design: approved ",
+            " design: approved",
+            "\tdesign: approved",
+            "design: Approved",
+            "design: approved\n",
+            "design: approved\u{0}",
+            "design: appro\u{200b}ved",
+            "design: approv\u{0435}d",
+            "design:  approved",
+        ] {
+            match rule().classify(&names(&["factory", hostile])) {
+                DesignLabels::NotApproved { seen } => assert_eq!(seen.len(), 1, "{hostile:?}"),
+                other => panic!("{hostile:?} was read as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_that_a_person_reads_as_a_design_label_puts_the_issue_on_the_track() {
+        // DG-4. None of these starts with the seven ASCII characters, and every one reads as
+        // `design:`. Each must be on the track and none may approve.
+        for hidden in [
+            "\u{200b}design: proposed",  // zero width space in front
+            "d\u{200b}esign: proposed",  // zero width space inside
+            "design\u{feff}: proposed",  // byte order mark
+            "\u{202e}design: proposed",  // right-to-left override
+            "des\u{00ad}ign: proposed",  // soft hyphen
+            "design\u{2060}: proposed",  // word joiner
+            "design\u{034f}: proposed",  // combining grapheme joiner
+            "design\u{0301}: proposed",  // combining accent
+            "design\u{fe0f}: proposed",  // variation selector
+            "d\u{e0041}esign: proposed", // a tag character
+            "design\u{ff1a} proposed",   // full-width colon
+            "\u{ff44}\u{ff45}\u{ff53}\u{ff49}\u{ff47}\u{ff4e}\u{ff1a} proposed", // all full-width
+            "d\u{0435}sign: proposed",   // Cyrillic e
+            "\u{0501}esign: proposed",   // Cyrillic komi d
+            "des\u{0456}gn: proposed",   // Cyrillic i
+            "de\u{0455}ign: proposed",   // Cyrillic s
+            "d\u{03b5}sign: proposed",   // Greek epsilon
+            "de\u{017f}ign: proposed",   // long s
+            "\u{2202}esign: proposed",   // a symbol that looks like d
+            "\u{00a0}design: proposed",  // no-break space in front
+            "\u{3000}design: proposed",  // ideographic space in front
+            "\u{1f3a8} design: proposed", // a palette emoji in front
+            "\u{2192}design: proposed",  // an arrow in front
+            "\u{2192} \u{200b}Design: proposed",
+        ] {
+            assert_eq!(
+                rule().classify(&names(&["factory", hidden])),
+                DesignLabels::NotApproved {
+                    seen: vec![printable_label(hidden)]
+                },
+                "{hidden:?} must put the issue on the track"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_that_merely_has_other_letters_in_it_stays_off_the_track() {
+        // The sibling: the rule is wide on purpose, and not so wide that the labels of a team that
+        // writes in another language, or uses emoji, land on the design track.
+        for plain in [
+            "bug",
+            "\u{1f41b} bug",
+            "n\u{e3}o-urgente",
+            "documenta\u{e7}\u{e3}o",
+            "a\u{e7}\u{e3}o",
+            "desenho",
+            "designer",
+            "design",
+            "des",
+            "",
+            "\u{200b}",
+            "\u{1f3a8}",
+            "not design: approved",
+            "[design]: approved",
+            "- design: approved",
+            "des ign: x",
+        ] {
+            assert_eq!(
+                rule().classify(&names(&[plain])),
+                DesignLabels::NotOnTrack,
+                "{plain:?} is not a design label"
+            );
+        }
+    }
+
+    #[test]
+    fn counting_as_approved_stays_exact_whatever_the_track_reads() {
+        // Only the exact label approves. A name that reads as the same words, with a hidden or
+        // look-alike character anywhere, is on the track and not approved, alone or beside it.
+        for near in [
+            "\u{200b}design: approved",
+            "design: approved\u{200b}",
+            "d\u{200b}esign: approved",
+            "design\u{ff1a} approved",
+            "d\u{0435}sign: approved",
+            "design: approv\u{0435}d",
+        ] {
+            assert!(matches!(
+                rule().classify(&names(&[near])),
+                DesignLabels::NotApproved { .. }
+            ));
+            assert!(matches!(
+                rule().classify(&names(&["design: approved", near])),
+                DesignLabels::Ambiguous { .. }
+            ));
+        }
+        assert_eq!(
+            rule().classify(&names(&["design: approved"])),
+            DesignLabels::ApprovalLabelOnly
+        );
+    }
+
+    #[test]
+    fn a_label_that_was_applied_and_taken_off_keeps_the_issue_on_the_track() {
+        // DG-2. Nothing on the issue now; the events say a design label was applied once.
+        assert_eq!(
+            rule().classify_past(&names(&["bug", "design: proposed", "factory"])),
+            DesignLabels::Dropped {
+                seen: names(&["design: proposed"])
+            }
+        );
+        // The same reading as the track: look-alikes in the history count, a plain label does not.
+        assert!(matches!(
+            rule().classify_past(&names(&["\u{200b}design: proposed"])),
+            DesignLabels::Dropped { .. }
+        ));
+        for never in [&[][..], &["bug", "factory", "factory: working"][..]] {
+            assert_eq!(
+                rule().classify_past(&names(never)),
+                DesignLabels::NotOnTrack
+            );
+        }
+    }
+
+    #[test]
+    fn the_approving_label_beside_another_design_label_is_not_clear_and_is_not_approved() {
+        assert_eq!(
+            rule().classify(&names(&["design: in progress", "design: approved"])),
+            DesignLabels::Ambiguous {
+                seen: names(&["design: in progress", "design: approved"])
+            }
+        );
+        // A look-alike beside the real one is the same: the state is not clear.
+        assert!(matches!(
+            rule().classify(&names(&["design: approved", "Design: approved"])),
+            DesignLabels::Ambiguous { .. }
+        ));
+    }
+
+    #[test]
+    fn what_is_shown_of_a_label_name_is_printable_ascii_and_short() {
+        assert_eq!(printable_label("design: approved"), "design: approved");
+        assert_eq!(printable_label("design:\n approved"), "design:? approved");
+        assert_eq!(printable_label("design: \u{202e}x"), "design: ?x");
+        // DG-7: a name cannot carry the characters that separate fields where it is written.
+        assert_eq!(
+            printable_label("design:]; approved by user id 77; [x, \"y\"] | \\"),
+            "design:?? approved by user id 77? ?x? ?y?? ? ?"
+        );
+        let long = printable_label(&format!("design: {}", "a".repeat(200)));
+        assert!(long.chars().count() <= MAX_SHOWN_CHARS + 3);
+        assert!(long.ends_with("..."));
+        let seen = match rule().classify(
+            &(0..30)
+                .map(|n| format!("design: x{n}"))
+                .collect::<Vec<String>>(),
+        ) {
+            DesignLabels::NotApproved { seen } => seen,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(seen.len(), MAX_LABELS_SEEN);
+    }
+
+    #[test]
+    fn a_forged_label_keeps_the_name_it_was_given_and_shows_it_in_debug_output() {
+        let forged = StatusLabel::forged_for_negative_tests("factory");
+        assert_eq!(forged.as_str(), "factory");
+        assert_eq!(format!("{forged:?}"), "StatusLabel(\"factory\")");
+        assert!(check_status_label_name(forged.as_str()).is_err());
+    }
+}

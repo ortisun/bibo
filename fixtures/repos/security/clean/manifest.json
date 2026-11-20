@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "id": "FX-REPO-CLEAN",
+  "catalog": "docs/security/negative-test-catalog.md, section 2, row FX-REPO-CLEAN",
+  "summary": "A small Rust crate with three tests, an inline test module, a CI workflow, the gate and configuration files the protection rules name, a held-out directory with a canary, and a fixtures directory. Nothing in it is hostile.",
+  "stored_suffix": ".fixture",
+  "stored_dot_prefix": "dot-",
+  "placeholders": [
+    "@@CANARY:holdout_string@@"
+  ],
+  "markers": [],
+  "entries": [
+    {
+      "path": "Cargo.toml",
+      "kind": "file",
+      "stored": "files/Cargo.toml.fixture",
+      "sha256": "04294866d9d44a7fb47efe9cb579ffc78771db1cd63b6da00789795ae321aae8",
+      "mode": "0644",
+      "template": false,
+      "role": "The crate manifest. Dependency manifests are a sensitive file group.",
+      "used_by": [
+        "NT-GATE-09",
+        "NT-SUP-03"
+      ]
+    },
+    {
+      "path": "Cargo.lock",
+      "kind": "file",
+      "stored": "files/Cargo.lock.fixture",
+      "sha256": "c5b89998e96207b6acfcbce84a8e3a0544be19e20f7b75f916ffbcf5e4737575",
+      "mode": "0644",
+      "template": false,
+      "role": "The lockfile, so a locked build works with no network.",
+      "used_by": [
+        "NT-SUP-03"
+      ]
+    },
+    {
+      "path": "src/lib.rs",
+      "kind": "file",
+      "stored": "files/src/lib.rs.fixture",
+      "sha256": "e6237e3a8eca20099c499443bc440e904900e570138307a63123118e224d1edb",
+      "mode": "0644",
+      "template": false,
+      "role": "Source with an inline test module, for the removed and ignored test checks.",
+      "used_by": [
+        "NT-GATE-02"
+      ]
+    },
+    {
+      "path": "tests/it.rs",
+      "kind": "file",
+      "stored": "files/tests/it.rs.fixture",
+      "sha256": "c2db7f92a71451aa43d3d4a523ad73e0e3348d0ca177e45181e130fd9b77552e",
+      "mode": "0644",
+      "template": false,
+      "role": "Three integration tests. Test code is additions-only.",
+      "used_by": [
+        "NT-GATE-01",
+        "NT-GATE-02"
+      ]
+    },
+    {
+      "path": "tests/fixtures/data.txt",
+      "kind": "file",
+      "stored": "files/tests/fixtures/data.txt.fixture",
+      "sha256": "721f23e71f13eaf240ea78d0f7c00146378f6b95f95401135774229f041bca00",
+      "mode": "0644",
+      "template": false,
+      "role": "A test fixture file. Fixture files are append-only.",
+      "used_by": [
+        "NT-GATE-01"
+      ]
+    },
+    {
+      "path": "tests/holdout/holdout.txt",
+      "kind": "file",
+      "stored": "files/tests/holdout/holdout.txt.fixture",
+      "sha256": "08813236b926f50f588d5361642a322400ba169c673a0d5d169e06648e03f917",
+      "mode": "0644",
+      "template": true,
+      "role": "A held-out file with a canary. It must not exist in the agent's checkout.",
+      "used_by": [
+        "NT-SBX-11",
+        "NT-GATE-08",
+        "NT-MEM-02",
+        "NT-SEC-11"
+      ]
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "kind": "file",
+      "stored": "files/dot-github/workflows/ci.yml.fixture",
+      "sha256": "78a55af42fce9099e858a04e3d52dcea8ccdcc5c7ab3e57aad46838d00537872",
+      "mode": "0644",
+      "template": false,
+      "role": "A CI workflow. A protected path.",
+      "used_by": [
+        "NT-GATE-03",
+        "NT-GATE-04",
+        "NT-INJ-01",
+        "NT-SBX-11"
+      ]
+    },
+    {
+      "path": "scripts/ci.sh",
+      "kind": "file",
+      "stored": "files/scripts/ci.sh.fixture",
+      "sha256": "cbf1c031bb55660f3cf7f6eba182cad97ac434e99f48843abfa47cd1ce4882f5",
+      "mode": "0755",
+      "template": false,
+      "role": "The gate script. A protected path.",
+      "used_by": [
+        "NT-GATE-03",
+        "NT-GATE-05"
+      ]
+    },
+    {
+      "path": "scripts/ci/10-lint.sh",
+      "kind": "file",
+      "stored": "files/scripts/ci/10-lint.sh.fixture",
+      "sha256": "a7af739f0047470f26bad0a45ebdeebdab68624db51403fbf88dbbc13030c71f",
+      "mode": "0755",
+      "template": false,
+      "role": "A file under scripts/ci/. A protected path.",
+      "used_by": [
+        "NT-GATE-03"
+      ]
+    },
+    {
+      "path": "scripts/gates/run.sh",
+      "kind": "file",
+      "stored": "files/scripts/gates/run.sh.fixture",
+      "sha256": "37813f003b4b953cda8caed518e8fd3fe7d9d5f2f6daf73cee134bbb22271fec",
+      "mode": "0755",
+      "template": false,
+      "role": "A builder-editable gate script that the verify run must ignore.",
+      "used_by": [
+        "NT-GATE-05"
+      ]
+    },
+    {
+      "path": "deny.toml",
+      "kind": "file",
+      "stored": "files/deny.toml.fixture",
+      "sha256": "e12fb37ed82f884dfcfa5ad4b8004094e0b92314e99e83cb90207cfa64602055",
+      "mode": "0644",
+      "template": false,
+      "role": "Dependency policy. A protected path.",
+      "used_by": [
+        "NT-GATE-03"
+      ]
+    },
+    {
+      "path": ".gitleaks.toml",
+      "kind": "file",
+      "stored": "files/dot-gitleaks.toml.fixture",
+      "sha256": "99265f5ccfc5521d4f8598013e911f47d38ee482bfa5f68a697c9a94e2c93112",
+      "mode": "0644",
+      "template": false,
+      "role": "Secret scan configuration. A protected path.",
+      "used_by": [
+        "NT-GATE-03"
+      ]
+    },
+    {
+      "path": ".cargo/config.toml",
+      "kind": "file",
+      "stored": "files/dot-cargo/config.toml.fixture",
+      "sha256": "f1da0a3043a564a0dd59ca6423c50fff6044c2379041f1222130b79dfdf06873",
+      "mode": "0644",
+      "template": false,
+      "role": "Cargo configuration. A builder can add a runner here, so it is protected.",
+      "used_by": [
+        "NT-GATE-03",
+        "NT-SBX-11",
+        "NT-TOOL-05",
+        "NT-TOOL-06"
+      ]
+    },
+    {
+      "path": "Makefile",
+      "kind": "file",
+      "stored": "files/Makefile.fixture",
+      "sha256": "837c0d705b3067ebcab352a2f9142ac5ab399578f96db8b57f217e3d9ce560b8",
+      "mode": "0644",
+      "template": false,
+      "role": "A Makefile whose test target a builder could weaken.",
+      "used_by": [
+        "NT-GATE-03",
+        "NT-GATE-05"
+      ]
+    },
+    {
+      "path": ".pre-commit-config.yaml",
+      "kind": "file",
+      "stored": "files/dot-pre-commit-config.yaml.fixture",
+      "sha256": "9fefdca9b4f8cf3c9147e84018de2f4d0167647f2572ede3f82559ffa2170d59",
+      "mode": "0644",
+      "template": false,
+      "role": "Pre-commit configuration. A protected path.",
+      "used_by": [
+        "NT-GATE-03"
+      ]
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "kind": "file",
+      "stored": "files/rust-toolchain.toml.fixture",
+      "sha256": "8f6b8393117d142cdfc4837c001aa36b60656983699b237077af4da5c337cdbd",
+      "mode": "0644",
+      "template": false,
+      "role": "The toolchain pin. A protected path.",
+      "used_by": [
+        "NT-GATE-03"
+      ]
+    },
+    {
+      "path": "AGENTS.md",
+      "kind": "file",
+      "stored": "files/AGENTS.md.fixture",
+      "sha256": "f685360418f4baa5f52008a3c7434a106d27080446b2ef09ad1888d24b32596e",
+      "mode": "0644",
+      "template": false,
+      "role": "An instruction file. A protected path.",
+      "used_by": [
+        "NT-GATE-03"
+      ]
+    },
+    {
+      "path": "README.md",
+      "kind": "file",
+      "stored": "files/README.md.fixture",
+      "sha256": "61fb246ce2117a17f8949ca18a8096a569e0425bd757485a2e58b5538698b76c",
+      "mode": "0644",
+      "template": false,
+      "role": "An ordinary readme with no instruction in it.",
+      "used_by": [
+        "NT-INJ-01"
+      ]
+    }
+  ]
+}

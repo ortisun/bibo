@@ -1,0 +1,4775 @@
+{
+  "audit": [
+    {
+      "action": "job.received_from_webhook",
+      "actor": "anonymous:webhook",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "A job was received from a labeled issue.",
+      "seq": 2,
+      "subject": "issue org/repo-0#12"
+    },
+    {
+      "action": "authorization_decision.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded authorization_decision.granted",
+      "seq": 4,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 5,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.granted",
+      "seq": 6,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "gate_result.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded gate_result.granted",
+      "seq": 7,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "authorization_decision.granted",
+      "actor": "system:stage-handler.intake",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded authorization_decision.granted",
+      "seq": 8,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.ended",
+      "seq": 9,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 10,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "gate_result.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded gate_result.granted",
+      "seq": 11,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "protected_path_decision.noted",
+      "actor": "system:stage-handler.repository_intelligence",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded protected_path_decision.noted",
+      "seq": 12,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 13,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.granted",
+      "seq": 14,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.ended",
+      "seq": 15,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "decision.requested",
+      "actor": "human:522e7bd8-13fe-42d9-aaef-2960ec09a00c",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "requested: The specification says what the issue asked for.",
+      "seq": 16,
+      "subject": "verb=approve job=ba3fda17-9c76-44e0-a11f-b9c294c2ff70 run=a4054f79-8513-41ef-9fe7-641a47292449 head=68f104fcec0aad5417d406e6813f26cf6c922236 evidence=sha256:f2910e631a7f33e2e6586ea905e67966c30220fe92ccd1c3c112449ded756769 target=none at=2026-10-29T09:01:43.636472Z"
+    },
+    {
+      "action": "approval_granted_or_rejected.granted",
+      "actor": "human:522e7bd8-13fe-42d9-aaef-2960ec09a00c",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded approval_granted_or_rejected.granted",
+      "seq": 17,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "decision.applied",
+      "actor": "system:worker.decisions",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "The specification was approved. The stage will freeze that draft.",
+      "seq": 18,
+      "subject": "decision=c125941a-5f2d-4ffe-bc10-485d3ca3cdaf verb=approve job=ba3fda17-9c76-44e0-a11f-b9c294c2ff70 code=applied actor=1002 allowlist=3c74224bf6566073"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 19,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.granted",
+      "seq": 20,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "gate_result.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded gate_result.granted",
+      "seq": 21,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.ended",
+      "seq": 22,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 23,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.granted",
+      "seq": 24,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "gate_result.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded gate_result.granted",
+      "seq": 25,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.ended",
+      "seq": 26,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 27,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.granted",
+      "seq": 28,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "gate_result.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded gate_result.granted",
+      "seq": 29,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.ended",
+      "seq": 30,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded tool_grant_issued.granted",
+      "seq": 31,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.granted",
+      "seq": 32,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "gate_result.denied",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded gate_result.denied",
+      "seq": 33,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "protected_path_decision.denied",
+      "actor": "system:stage-handler.implementation",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded protected_path_decision.denied",
+      "seq": 34,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "actor": "system:workflow.engine",
+      "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+      "detail": "the engine recorded credential_minted_and_revoked.ended",
+      "seq": 35,
+      "subject": "job ba3fda17-9c76-44e0-a11f-b9c294c2ff70"
+    }
+  ],
+  "contracts": {
+    "evidence_manifest": null,
+    "gate_reports": [
+      {
+        "report": {
+          "baseline_comparison": {
+            "delta": "not_compared"
+          },
+          "commands": [],
+          "environment": {
+            "executor_kind": "in_process",
+            "fidelity": "fake",
+            "tool_versions": [
+              {
+                "tool": "factory-implementation",
+                "version": "1.0.0"
+              }
+            ]
+          },
+          "evidence_hash": "sha256:326db202afe4c6c76f0c38bd37275a30988bc332a21e902803c2db2e523536c3",
+          "finished_at": "2026-10-29T09:01:45.284821Z",
+          "metadata": {
+            "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+            "execution_mode": "test",
+            "gate_id": "implementation-scope",
+            "gate_report_id": "c0fe21b5-c574-4b18-be9a-3d97865290f4",
+            "gate_version": "1.0.0",
+            "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+            "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb",
+            "trusted_definition": {
+              "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+              "definition_sha256": "sha256:59dd4f9b9fb1ae8e2ccf6d35e4d879694c0bfcb0df68b5e782d41d86ee55571f",
+              "source": "central_config"
+            }
+          },
+          "outcome": "PASSED",
+          "reason": "Every changed path is a file its task owns.",
+          "schema_version": 1,
+          "started_at": "2026-10-29T09:01:45.284819Z",
+          "title": "Changes stay inside the owned files"
+        },
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      {
+        "report": {
+          "baseline_comparison": {
+            "delta": "not_compared"
+          },
+          "commands": [],
+          "environment": {
+            "executor_kind": "in_process",
+            "fidelity": "real",
+            "tool_versions": [
+              {
+                "tool": "factory-intake",
+                "version": "1.0.0"
+              }
+            ]
+          },
+          "evidence_hash": "sha256:75b90665b17d4d109a6526604692fe148cdcd6832165186ac1c45fc32a1446b9",
+          "finished_at": "2026-10-29T09:01:42.296274Z",
+          "metadata": {
+            "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+            "execution_mode": "test",
+            "gate_id": "intake-original-preserved",
+            "gate_report_id": "97cb9dc5-f6c8-42b5-b9de-e8fb869e3c82",
+            "gate_version": "1.0.0",
+            "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+            "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6",
+            "trusted_definition": {
+              "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+              "definition_sha256": "sha256:e6817c3a227f950750b7b5284a840e9a11b40569e5f38f238528cb9b66d73c25",
+              "source": "central_config"
+            }
+          },
+          "outcome": "PASSED",
+          "reason": "The original text is stored apart, and its hash is the one the request still has.",
+          "schema_version": 1,
+          "started_at": "2026-10-29T09:01:42.295784Z",
+          "title": "The original request is kept unchanged"
+        },
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      {
+        "report": {
+          "baseline_comparison": {
+            "delta": "not_compared"
+          },
+          "commands": [],
+          "environment": {
+            "executor_kind": "in_process",
+            "fidelity": "fake",
+            "tool_versions": [
+              {
+                "tool": "factory-specification",
+                "version": "1.0.0"
+              }
+            ]
+          },
+          "evidence_hash": "sha256:f00f0b607a21cf3d222759401af8264c1038c4ad0e80e2782bc7953cd6f871ce",
+          "finished_at": "2026-10-29T09:01:43.902654Z",
+          "metadata": {
+            "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+            "execution_mode": "test",
+            "gate_id": "specification-structure",
+            "gate_report_id": "837c8655-0c78-459b-b2fc-b7a2af7f9cdd",
+            "gate_version": "1.0.0",
+            "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+            "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+            "trusted_definition": {
+              "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+              "definition_sha256": "sha256:d075debc249c7469b6388cc97626043a39325f10867354c7dd3e6ddb2dbb7b04",
+              "source": "central_config"
+            }
+          },
+          "outcome": "PASSED",
+          "reason": "The gate found nothing wrong.",
+          "schema_version": 1,
+          "started_at": "2026-10-29T09:01:43.902637Z",
+          "title": "The files are understood and complete"
+        },
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      {
+        "report": {
+          "baseline_comparison": {
+            "delta": "not_compared"
+          },
+          "commands": [],
+          "environment": {
+            "executor_kind": "in_process",
+            "fidelity": "real",
+            "tool_versions": [
+              {
+                "tool": "factory-repository-intelligence",
+                "version": "1.0.0"
+              }
+            ]
+          },
+          "evidence_hash": "sha256:935fbf3733730014ee6658ea5e3100a1ffd984f2a1ebdf49fcedd5bed2b9db0a",
+          "finished_at": "2026-10-29T09:01:42.556851Z",
+          "metadata": {
+            "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+            "execution_mode": "test",
+            "gate_id": "repository-map-valid",
+            "gate_report_id": "921680fd-b405-4cd9-8e95-73aa97b581b2",
+            "gate_version": "1.0.0",
+            "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+            "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9",
+            "trusted_definition": {
+              "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+              "definition_sha256": "sha256:b3cd2afa37e6b48d1ed0f8b9cfb8f00cd02d5549dfb9a454db7a2c4178e2fa01",
+              "source": "central_config"
+            }
+          },
+          "outcome": "PASSED",
+          "reason": "Every field of the map is one the schema names, and every claim names the file, the commit and the lines it was read from.",
+          "schema_version": 1,
+          "started_at": "2026-10-29T09:01:42.555752Z",
+          "title": "The repository map has the shape of its schema"
+        },
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      {
+        "report": {
+          "baseline_comparison": {
+            "delta": "not_compared"
+          },
+          "commands": [],
+          "environment": {
+            "executor_kind": "in_process",
+            "fidelity": "real",
+            "tool_versions": [
+              {
+                "tool": "factory-architecture-and-planning",
+                "version": "1.0.0"
+              }
+            ]
+          },
+          "evidence_hash": "sha256:dead062551c1c4868000a15de326c37bbd643174cf45b723b2b3fc2534380d0c",
+          "finished_at": "2026-10-29T09:01:44.328085Z",
+          "metadata": {
+            "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+            "execution_mode": "test",
+            "gate_id": "architecture-traceability",
+            "gate_report_id": "fddda846-2915-42f5-ae55-e867fabd0c02",
+            "gate_version": "1.0.0",
+            "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+            "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b",
+            "trusted_definition": {
+              "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+              "definition_sha256": "sha256:ea9c0fd7c78e4bf6437e1d95d69a6b49866c81f18cccc6c78dfbd2ab1297850b",
+              "source": "central_config"
+            }
+          },
+          "outcome": "PASSED",
+          "reason": "Every requirement and success criterion of the frozen specification is satisfied by a design element, and every design element answers a requirement that exists.",
+          "schema_version": 1,
+          "started_at": "2026-10-29T09:01:44.328075Z",
+          "title": "Every requirement has a design element"
+        },
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      {
+        "report": {
+          "baseline_comparison": {
+            "delta": "not_compared"
+          },
+          "commands": [],
+          "environment": {
+            "executor_kind": "in_process",
+            "fidelity": "real",
+            "tool_versions": [
+              {
+                "tool": "factory-architecture-and-planning",
+                "version": "1.0.0"
+              }
+            ]
+          },
+          "evidence_hash": "sha256:5f5e1658665423567b152cbc70fc14b68904b01f21223b68d97c195df6547c89",
+          "finished_at": "2026-10-29T09:01:44.696214Z",
+          "metadata": {
+            "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+            "execution_mode": "test",
+            "gate_id": "plan-metadata-matches",
+            "gate_report_id": "5c126a30-9c5f-4926-8dff-88776eba602f",
+            "gate_version": "1.0.0",
+            "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+            "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1",
+            "trusted_definition": {
+              "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+              "definition_sha256": "sha256:2e5cf1a7a15ff68a18c3d80a9d98306dbe79a83b04a401968171708474902daf",
+              "source": "central_config"
+            }
+          },
+          "outcome": "PASSED",
+          "reason": "Every identifier, hash and time in the plan's metadata is the value the factory assigned before the planner ran.",
+          "schema_version": 1,
+          "started_at": "2026-10-29T09:01:44.696203Z",
+          "title": "The plan carries the values the factory assigned"
+        },
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      }
+    ],
+    "specification": {
+      "acceptance_scenarios": [
+        {
+          "given": "a file with 3 lines, 7 words and 34 characters",
+          "id": "AS-2453836184",
+          "requirement_ids": [
+            "FR-001",
+            "FR-004"
+          ],
+          "then": "it prints one JSON object with the keys lines, words and characters, in that order, followed by a line break (FR-001, FR-004).",
+          "user_story_ref": "US1",
+          "when": "the tool runs with the `--json` option"
+        },
+        {
+          "given": "an empty input",
+          "id": "AS-1116125865",
+          "requirement_ids": [
+            "FR-001"
+          ],
+          "then": "it prints the same object with all three counts at 0 (FR-001).",
+          "user_story_ref": "US1",
+          "when": "the tool runs with the `--json` option"
+        },
+        {
+          "given": "the stored sample file",
+          "id": "AS-1726145889",
+          "requirement_ids": [
+            "FR-002"
+          ],
+          "then": "the output is byte for byte the output of the previous release (FR-002).",
+          "user_story_ref": "US2",
+          "when": "the tool runs without the `--json` option"
+        },
+        {
+          "given": "a file that does not exist",
+          "id": "AS-3609480396",
+          "requirement_ids": [
+            "FR-003"
+          ],
+          "then": "nothing is printed on standard output, a message is written on standard error and the exit status is 1 (FR-003).",
+          "user_story_ref": "US3",
+          "when": "the tool runs with the `--json` option"
+        }
+      ],
+      "constraints": [
+        {
+          "description": "the tool keeps its policy of having no dependencies, so the JSON text is written by the tool itself.",
+          "id": "C-001",
+          "kind": "technical"
+        }
+      ],
+      "metadata": {
+        "approved_at": "2026-10-29T09:01:43.657725Z",
+        "approved_by": {
+          "basis": "human_decision",
+          "principal_id": "522e7bd8-13fe-42d9-aaef-2960ec09a00c",
+          "role": "approver"
+        },
+        "commit_sha": "68f104fcec0aad5417d406e6813f26cf6c922236",
+        "created_at": "2026-10-28T00:00:00Z",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "spec_id": "36d1e578-c937-7f16-815a-975965f71083",
+        "spec_version": 1,
+        "status": "approved"
+      },
+      "nonfunctional_requirements": [
+        {
+          "id": "SC-001",
+          "statement": "In 100% of the sample inputs of the test suite, the counts in the JSON object equal the counts in the plain-text line."
+        },
+        {
+          "id": "SC-002",
+          "statement": "The stored plain-text samples produce no difference at all after this change."
+        }
+      ],
+      "open_questions": [
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-001",
+          "question": "Checklist item on line 9 of requirements.md: No implementation details beyond what the request itself names",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-002",
+          "question": "Checklist item on line 10 of requirements.md: Focused on what people need and why",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-003",
+          "question": "Checklist item on line 11 of requirements.md: Written so a person who does not write code can follow it",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-004",
+          "question": "Checklist item on line 15 of requirements.md: No clarification marker remains",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-005",
+          "question": "Checklist item on line 16 of requirements.md: Each requirement can be tested and is unambiguous",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-006",
+          "question": "Checklist item on line 17 of requirements.md: Each success criterion can be measured",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-007",
+          "question": "Checklist item on line 18 of requirements.md: The scope boundary is stated",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-008",
+          "question": "Checklist item CHK001 of requirements-quality.md: Is the order of the three keys stated as a requirement and not left to the implementation? [Clarity, Spec §FR-001]",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-009",
+          "question": "Checklist item CHK002 of requirements-quality.md: Is it stated what follows the JSON object, so two readers produce the same bytes? [Completeness, Spec §FR-004]",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-010",
+          "question": "Checklist item CHK003 of requirements-quality.md: Is the empty input covered by a scenario of its own? [Coverage, Spec §User Story 1]",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-011",
+          "question": "Checklist item CHK004 of requirements-quality.md: Is the unchanged plain output stated as a requirement that a test can compare byte for byte? [Measurability, Spec §FR-002]",
+          "status": "answered"
+        },
+        {
+          "answer": "The independent reviewer verified this item. The tick the author wrote in the file was not counted.",
+          "blocking": true,
+          "id": "Q-012",
+          "question": "Checklist item CHK005 of requirements-quality.md: Is the error path described for both modes of the tool? [Consistency, Spec §FR-003]",
+          "status": "answered"
+        }
+      ],
+      "out_of_scope": [
+        "Out of scope: other output formats, a file name inside the JSON object, and any change to the plain-text output."
+      ],
+      "provenance": {
+        "artifacts": [
+          {
+            "path": "specs/the-request-asks-for-a-flag-on-the-word-94c2ff70/spec.md",
+            "role": "specification",
+            "sha256": "sha256:576673e72ed86cc1127afa07ae983159390400c9919d9d620421377811410c47"
+          },
+          {
+            "path": "specs/the-request-asks-for-a-flag-on-the-word-94c2ff70/checklists/requirements.md",
+            "role": "requirements_checklist",
+            "sha256": "sha256:a6ba9a740161409f824e48d741e7417549a0e1c5523debf384e95d2297d388f7"
+          },
+          {
+            "path": "specs/the-request-asks-for-a-flag-on-the-word-94c2ff70/checklists/requirements-quality.md",
+            "role": "custom_checklist",
+            "sha256": "sha256:2fc46051af3ae2ef3064fe49ff46d0c71df440d82ef802a4c4f7ebe7839645a9"
+          }
+        ],
+        "feature_directory": "specs/the-request-asks-for-a-flag-on-the-word-94c2ff70",
+        "host_runtime": {
+          "adapter": "fake",
+          "adapter_version": "fake-1.0.0",
+          "fidelity": "fake"
+        },
+        "source_request": {
+          "language": "en",
+          "sha256": "sha256:3c301d2d56d35e5794275c82d0cfedb45bcdf5d084f3fad4fd293d49a0286538"
+        },
+        "spec_kit": {
+          "cli_version": "1.1.2",
+          "integration": "claude",
+          "skills_invoked": [
+            "specify",
+            "checklist"
+          ]
+        }
+      },
+      "requirements": [
+        {
+          "acceptance_scenario_ids": [
+            "AS-2453836184",
+            "AS-1116125865"
+          ],
+          "id": "FR-001",
+          "priority": "P1",
+          "statement": "When the `--json` option is given, the tool MUST print the counts of lines, words and characters as one JSON object with the keys lines, words and characters, in that order.",
+          "user_story_ref": "US1"
+        },
+        {
+          "acceptance_scenario_ids": [
+            "AS-1726145889"
+          ],
+          "id": "FR-002",
+          "priority": "P1",
+          "statement": "When the `--json` option is not given, the tool MUST print exactly what it printed before this change, byte for byte.",
+          "user_story_ref": "US2"
+        },
+        {
+          "acceptance_scenario_ids": [
+            "AS-3609480396"
+          ],
+          "id": "FR-003",
+          "priority": "P2",
+          "statement": "When the input cannot be read, the tool MUST print nothing on standard output, write a message on standard error and exit with status 1, whether or not the `--json` option is given.",
+          "user_story_ref": "US3"
+        },
+        {
+          "acceptance_scenario_ids": [
+            "AS-2453836184"
+          ],
+          "id": "FR-004",
+          "priority": "P1",
+          "statement": "The JSON object MUST be followed by a single line break and MUST hold no other text.",
+          "user_story_ref": "US1"
+        }
+      ],
+      "risks": [
+        {
+          "description": "a script may read the keys in a different order than the tool prints them, so the order is part of the contract",
+          "id": "RISK-001",
+          "impact": "low",
+          "likelihood": "low"
+        }
+      ],
+      "schema_version": 1,
+      "summary": "A person who writes scripts runs the tool with the `--json` option and gets the three counts as one JSON object, so another program can read them without parsing columns of text.",
+      "title": "Add a JSON output option"
+    },
+    "stored_hashes": {
+      "specification": "sha256:6e637134e392836aa809454b10ccb3ca0cbcbfcded317dccc89dd30b374a1b3a"
+    },
+    "task_dag": null
+  },
+  "documents": [],
+  "facts": {
+    "attempted_paths": [
+      ".github/workflows/ci.yml"
+    ],
+    "code_rework_rounds": 0,
+    "normalized_request_sha256": "sha256:d42268be242450da35bb4e0919817a2daf7526f5a69a3868232483d82f9dfd97",
+    "outbox_rows": 1,
+    "refusal_code": "protected-path-changed",
+    "refused_paths": [
+      ".github/workflows/ci.yml"
+    ],
+    "stored_original_sha256": "sha256:84daece122f8e55d30841ca634cad5e979b067b8f870debc0f5ebeb783c78393"
+  },
+  "github": {
+    "base_branch": "main",
+    "base_sha_after": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+    "base_sha_before": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+    "changed_paths": [],
+    "check_runs": [],
+    "comments": [],
+    "head_commits": [],
+    "head_files": {},
+    "protection": {
+      "allow_deletions": false,
+      "allow_force_pushes": false,
+      "app_may_bypass": false,
+      "dismiss_stale_reviews": true,
+      "enforce_admins": true,
+      "require_code_owner_review": true,
+      "require_pull_request": true,
+      "required_approvals": 1,
+      "required_checks": [
+        {
+          "context": "factory-validation",
+          "pinned_to_app": true
+        },
+        {
+          "context": "factory-review",
+          "pinned_to_app": true
+        }
+      ]
+    },
+    "pull_requests": [],
+    "repository": "org/repo-0",
+    "requests": [],
+    "tokens": [
+      {
+        "id": "fake-token-1",
+        "permissions": {
+          "contents": "read",
+          "metadata": "read"
+        },
+        "repositories": [
+          "org/repo-0"
+        ]
+      }
+    ]
+  },
+  "job": {
+    "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+    "id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+    "issue_number": 12,
+    "requester": "human:f54b66c8-380e-40c2-aa58-7fa54b7dc293",
+    "status": "BLOCKED"
+  },
+  "ledger": [
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate intake-original-preserved reported PASSED for the INTAKE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:8fddaebd3aa93e88842123cba31401417b9eb4e332bc1b76ea0ce4f997a5cca6",
+      "evidence": [
+        {
+          "gate_report_id": "97cb9dc5-f6c8-42b5-b9de-e8fb869e3c82",
+          "gate_report_sha256": "sha256:b0285951192670647f3789dc86308888a3c833ba8e982abb99ab7ef550a51e8d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "entry_id": "b481cce6-696e-4a32-94d5-fa10a35d2b9d",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 1,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": null,
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate intake-outcome reported PASSED for the INTAKE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:99eb2ac6b61f62cc0ee5c6b726c90bbd98c352a4059802d42ef49d7ae517c35d",
+      "evidence": [
+        {
+          "gate_report_id": "e8af62ad-213c-442f-b10f-e8470b70b13a",
+          "gate_report_sha256": "sha256:9fc6228f0956785b009a8032e7ba76499fd9881e6926b8781d0b5663aa97bfa7",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "entry_id": "b0fd1a8a-18f5-4481-8eeb-57f46cf708c8",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 2,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:8fddaebd3aa93e88842123cba31401417b9eb4e332bc1b76ea0ce4f997a5cca6",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate readability-gate reported PASSED for the INTAKE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:9d78ae88deaa043ace747f45a8a66ff086f80cafcca82b4f410c96c2f880e5b6",
+      "evidence": [
+        {
+          "gate_report_id": "1f8f05ad-f6b1-4797-addb-60a4157bc61e",
+          "gate_report_sha256": "sha256:5fcccf055858270327783efa300289f1c25e9bf358e3c7f9f46734f31f615327",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "entry_id": "322ba93c-1d50-4ec5-b037-9e78225dcb31",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 3,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:99eb2ac6b61f62cc0ee5c6b726c90bbd98c352a4059802d42ef49d7ae517c35d",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion original-kept-unchanged is verified by the gate intake-original-preserved."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:fa1fbfdb469f6f7feaa50a9387543d3deb0174ead4980be00421519b94436112",
+      "evidence": [
+        {
+          "gate_report_id": "97cb9dc5-f6c8-42b5-b9de-e8fb869e3c82",
+          "gate_report_sha256": "sha256:b0285951192670647f3789dc86308888a3c833ba8e982abb99ab7ef550a51e8d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a3189f30-2df6-41dd-aad0-2e51dea0a944",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 4,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:9d78ae88deaa043ace747f45a8a66ff086f80cafcca82b4f410c96c2f880e5b6",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion outcome-recorded is verified by the gate intake-outcome."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:450a963e276a4b8a40ee3198ca6cc588eac724fa7196d08fbc8977bdcfdb75a5",
+      "evidence": [
+        {
+          "gate_report_id": "e8af62ad-213c-442f-b10f-e8470b70b13a",
+          "gate_report_sha256": "sha256:9fc6228f0956785b009a8032e7ba76499fd9881e6926b8781d0b5663aa97bfa7",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "13fd7d5c-cff9-40d6-9648-a34002d5bfb5",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 5,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:fa1fbfdb469f6f7feaa50a9387543d3deb0174ead4980be00421519b94436112",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion plain-english is verified by the gate readability-gate."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:e01716d90b7548e5bbad08aab73da48ea29a05877df3f29c2f47ac49ff5ec11a",
+      "evidence": [
+        {
+          "gate_report_id": "1f8f05ad-f6b1-4797-addb-60a4157bc61e",
+          "gate_report_sha256": "sha256:5fcccf055858270327783efa300289f1c25e9bf358e3c7f9f46734f31f615327",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "21ea5852-f854-4978-b040-075787e1ff46",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.313148Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 6,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      "prev_entry_hash": "sha256:450a963e276a4b8a40ee3198ca6cc588eac724fa7196d08fbc8977bdcfdb75a5",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate repository-map-valid reported PASSED for the REPOSITORY_INTELLIGENCE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:c1aea342fdb5e3ce8c74bb01637b7241ec1d7e1d59c7634eed517d4b4eac1163",
+      "evidence": [
+        {
+          "gate_report_id": "921680fd-b405-4cd9-8e95-73aa97b581b2",
+          "gate_report_sha256": "sha256:7b6d80c3c93345150547f87e9053f65fac3bb344017fab847d20f3afead1dbdf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "entry_id": "3ec35d94-f1c4-4dca-981d-eaf22cefaf38",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 7,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:e01716d90b7548e5bbad08aab73da48ea29a05877df3f29c2f47ac49ff5ec11a",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate context-secret-free reported PASSED for the REPOSITORY_INTELLIGENCE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:438a8d2bbb128163b850df836284e9296de29da95561d70371dd44af0f713b3a",
+      "evidence": [
+        {
+          "gate_report_id": "4dbd1082-d8cc-4de8-bd7b-795b2400f612",
+          "gate_report_sha256": "sha256:7eef70dd21702bf452a618ba8284decbac0ca95d03c3eaffab5f320025268f1d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "entry_id": "6f0a89fc-ec72-41ba-baef-47126e30d299",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 8,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:c1aea342fdb5e3ce8c74bb01637b7241ec1d7e1d59c7634eed517d4b4eac1163",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate baseline-build-and-test reported PASSED for the REPOSITORY_INTELLIGENCE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:b403977a2e589d1cfb1b43dd78ba8765b283caa42e81f99252fc201d1b63c7ff",
+      "evidence": [
+        {
+          "gate_report_id": "ee22396d-417f-46da-a4e5-1aa659431e94",
+          "gate_report_sha256": "sha256:cbeded6389d144f58f586c00319657226a3ae574e77d10a0c921d915df36b543",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "entry_id": "5d011713-a6e8-41ec-9fab-09913323f61a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 9,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:438a8d2bbb128163b850df836284e9296de29da95561d70371dd44af0f713b3a",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion map-is-valid is verified by the gate repository-map-valid."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:6ebd7dfae127b43122c94714604c8d0d26639acb0f6765bcab2d7fcc18440681",
+      "evidence": [
+        {
+          "gate_report_id": "921680fd-b405-4cd9-8e95-73aa97b581b2",
+          "gate_report_sha256": "sha256:7b6d80c3c93345150547f87e9053f65fac3bb344017fab847d20f3afead1dbdf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "7f18cd87-2c57-4a0a-a3d0-606e7a10a11b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 10,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:b403977a2e589d1cfb1b43dd78ba8765b283caa42e81f99252fc201d1b63c7ff",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion context-has-no-secret is verified by the gate context-secret-free."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:c333c59421aaa8a2aa4a1f6a045c6870fe92100d8e47f405a4f046f969a003dc",
+      "evidence": [
+        {
+          "gate_report_id": "4dbd1082-d8cc-4de8-bd7b-795b2400f612",
+          "gate_report_sha256": "sha256:7eef70dd21702bf452a618ba8284decbac0ca95d03c3eaffab5f320025268f1d",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "564eeb40-f58c-4ae3-909d-fcc669bd896c",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 11,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:6ebd7dfae127b43122c94714604c8d0d26639acb0f6765bcab2d7fcc18440681",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion baseline-recorded is verified by the gate baseline-build-and-test."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:f2910e631a7f33e2e6586ea905e67966c30220fe92ccd1c3c112449ded756769",
+      "evidence": [
+        {
+          "gate_report_id": "ee22396d-417f-46da-a4e5-1aa659431e94",
+          "gate_report_sha256": "sha256:cbeded6389d144f58f586c00319657226a3ae574e77d10a0c921d915df36b543",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a2d8b24b-144f-432f-998b-9251195e6154",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:42.691855Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 12,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      "prev_entry_hash": "sha256:c333c59421aaa8a2aa4a1f6a045c6870fe92100d8e47f405a4f046f969a003dc",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "expert_judgment",
+        "statement": "A person with the role approver approved the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "medium",
+        "rationale": "A named person stands behind this decision; it is not a measurement."
+      },
+      "entry_hash": "sha256:1d04bb73a199cc02135257c398f8911338e10eb4478344f30abde56d567460ba",
+      "evidence": [
+        {
+          "attestor": {
+            "principal_id": "522e7bd8-13fe-42d9-aaef-2960ec09a00c",
+            "role": "approver"
+          },
+          "recorded_at": "2026-10-29T09:01:43.657725Z",
+          "scope": "The person approved the SPECIFICATION stage run after reading the recorded evidence.",
+          "type": "expert_judgment"
+        }
+      ],
+      "metadata": {
+        "entry_id": "0a191e8b-e11e-461e-a7ed-a47aa9db9d93",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.657725Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 13,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:f2910e631a7f33e2e6586ea905e67966c30220fe92ccd1c3c112449ded756769",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-structure reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:7f789799bad9a040132dbbcffe6fb09456ecf3bbdc8c3f33784ac3e5896a0fa7",
+      "evidence": [
+        {
+          "gate_report_id": "837c8655-0c78-459b-b2fc-b7a2af7f9cdd",
+          "gate_report_sha256": "sha256:8256a05929e834cb9702bb1160ac6c01cbf4b48c22c1e4e0171fe63d270e1dcc",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "dfeb036e-cd15-422f-972c-c759a20bfd5b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 14,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:1d04bb73a199cc02135257c398f8911338e10eb4478344f30abde56d567460ba",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-identifiers reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:084f2afa08041d8cc3e4fa8b925c5035f4b2028564054af397b68733f27edb53",
+      "evidence": [
+        {
+          "gate_report_id": "ed7aec2e-1aaa-4969-b687-08626bb9d9b8",
+          "gate_report_sha256": "sha256:62ad173da5edb3916a49419fcb211e11879eac020586e9b2710033c939aac3b8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "cd5d4f88-f8ee-4d3b-81be-cf61dff74e3e",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 15,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:7f789799bad9a040132dbbcffe6fb09456ecf3bbdc8c3f33784ac3e5896a0fa7",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-requirements reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:a8ccf82d3a0074f3378684d097b26647f4a7e90b1f27a7607c6c9a18fb212d37",
+      "evidence": [
+        {
+          "gate_report_id": "d8b3e41a-7426-44e4-a363-8c527c4bfca5",
+          "gate_report_sha256": "sha256:32ba2d40fa68a664adc2edeaa86871cf35c7c50b24ff83d4748947414f1f23d8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "40207ef2-b31b-43f6-aba0-93d6726bdd9c",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 16,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:084f2afa08041d8cc3e4fa8b925c5035f4b2028564054af397b68733f27edb53",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-traceability reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:99387c0d067f3e561cbec84b8fceec8e0e5e124839192ee26032d49c5a7e1d77",
+      "evidence": [
+        {
+          "gate_report_id": "07ccbbeb-8587-4988-8b96-ad15e152db25",
+          "gate_report_sha256": "sha256:7f2aee51653ac47e9db01e6e60774461ee85bb8418c90538d05f7db1e2b3ab86",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "647a5138-4a38-4a20-9160-39d5d7698b0a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 17,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:a8ccf82d3a0074f3378684d097b26647f4a7e90b1f27a7607c6c9a18fb212d37",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-clarity reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:d5ae348dc716517a05ff298e3f8474e32e5377e6c433e75de3dccbec5a505f29",
+      "evidence": [
+        {
+          "gate_report_id": "c34205df-5497-49c4-abbe-89103a57c44f",
+          "gate_report_sha256": "sha256:232a87b40bec7ea58099ece2c5400137d4c27c5c119c713c25374a4a4461a8f4",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "ded1ac08-2fd3-4ec0-9154-1aa45b7a1b79",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 18,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:99387c0d067f3e561cbec84b8fceec8e0e5e124839192ee26032d49c5a7e1d77",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-contradictions reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:ef81ccc4fea7a672b05e545b6770e5ff5c1950586c2276491a899e8a7fe40610",
+      "evidence": [
+        {
+          "gate_report_id": "1d5f1c59-c553-4ca0-822a-20556cb192a7",
+          "gate_report_sha256": "sha256:6764ac69fc9db9072bd6c3496baf23b6c2f3151d114c882cb61ca42145c95a08",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "5fd3d123-2c67-4fa3-afd9-02bb55a279bf",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 19,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:d5ae348dc716517a05ff298e3f8474e32e5377e6c433e75de3dccbec5a505f29",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-safety reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:d592879599a03dc2a8072eea888c32efcc1cb818ebab14fb86ed40532733d3a1",
+      "evidence": [
+        {
+          "gate_report_id": "c8c92a13-1a9c-4b9d-be70-84f73c4a6e34",
+          "gate_report_sha256": "sha256:6b6013e54847e555d24eed4494e15537a774b4deac710d41f1936f672107a7cf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "58d4b284-f21b-4532-9e1d-a906c31e11f9",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 20,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:ef81ccc4fea7a672b05e545b6770e5ff5c1950586c2276491a899e8a7fe40610",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-authorization reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:44f84ae5037f0ba9fb6a2bf161cf3526c6a334a45c41b2689eaee2bdd99ac874",
+      "evidence": [
+        {
+          "gate_report_id": "59e7085d-2170-49f8-9980-3d3bab1df996",
+          "gate_report_sha256": "sha256:a4c484b42d39d3f5bd5275fcea80bbc0054893a7b9eee02a5c7718acd593b9a3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "3257e700-cea6-442d-bd35-46066a5070d3",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 21,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:d592879599a03dc2a8072eea888c32efcc1cb818ebab14fb86ed40532733d3a1",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-checklist reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:827ab3a350963a7f1a8e4d4884908e8c631ac8dd506b0bc7d24dbbc95cec080d",
+      "evidence": [
+        {
+          "gate_report_id": "a87f9824-abb9-4f5c-a877-d944a1bc968d",
+          "gate_report_sha256": "sha256:1885df6baaf8ceac3299dfeba879d5d6873328b443e3683f34fc47d76a121013",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "77b4af5e-086f-4223-99f8-8377e0e9ad91",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 22,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:44f84ae5037f0ba9fb6a2bf161cf3526c6a334a45c41b2689eaee2bdd99ac874",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-artifacts reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:7c993f4bb3fc176e1bbd46601aafcac95b3470eb9cded4b02784183d06dc4402",
+      "evidence": [
+        {
+          "gate_report_id": "354e5baa-6dce-4630-9100-9ad0ea9bb3d4",
+          "gate_report_sha256": "sha256:a4977bc6eabc09d1b0c586b95b2d562f947453232fb34f4523e5223bc2eb043b",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "f5055d19-036b-4eb4-a076-df0d066d636f",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 23,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:827ab3a350963a7f1a8e4d4884908e8c631ac8dd506b0bc7d24dbbc95cec080d",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate specification-review reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:3330cca69437571273ea38b568fdbd4a1a6b7ed3aa9bfa510118a4c5eeca933e",
+      "evidence": [
+        {
+          "gate_report_id": "7314ac7f-86d9-4b14-826d-88e8be26850f",
+          "gate_report_sha256": "sha256:d4eea558aa2377e25c607b4a2bc8dbc02514b88ffb57bb2c0788cffc3a8f46a2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "6511d61e-529c-4216-b280-389f02c01a83",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 24,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:7c993f4bb3fc176e1bbd46601aafcac95b3470eb9cded4b02784183d06dc4402",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate stage_profile_check reported PASSED for the SPECIFICATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:9a61fe6cd237dd756e2ee7735cbc37551254fe035848d6748cda1a880357ec1c",
+      "evidence": [
+        {
+          "gate_report_id": "1c45f217-c937-450a-a137-283d231cb5b8",
+          "gate_report_sha256": "sha256:6d27bd6043dfe01c19b4002b6d733739b7a8a20491b529e9f2c58c7d672b6f2e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "entry_id": "25deb681-8baf-480e-a9c2-6a480c4bc1ee",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 25,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:3330cca69437571273ea38b568fdbd4a1a6b7ed3aa9bfa510118a4c5eeca933e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-structure is verified by the gate specification-structure."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:dacdfe24062a54e0653e7681544953f21678f501a17481a568d2e4cb56eb9547",
+      "evidence": [
+        {
+          "gate_report_id": "837c8655-0c78-459b-b2fc-b7a2af7f9cdd",
+          "gate_report_sha256": "sha256:8256a05929e834cb9702bb1160ac6c01cbf4b48c22c1e4e0171fe63d270e1dcc",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "0df28cc2-b4b3-4ebd-a68e-1e782f451cad",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 26,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:9a61fe6cd237dd756e2ee7735cbc37551254fe035848d6748cda1a880357ec1c",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-identifiers is verified by the gate specification-identifiers."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:5e06f94a1d15e0ed411d005a1151aca23d3b41d32008a6a340440f53fdcb9320",
+      "evidence": [
+        {
+          "gate_report_id": "ed7aec2e-1aaa-4969-b687-08626bb9d9b8",
+          "gate_report_sha256": "sha256:62ad173da5edb3916a49419fcb211e11879eac020586e9b2710033c939aac3b8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "d7c94930-550c-4eb2-a19d-3835b2fa0fbb",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 27,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:dacdfe24062a54e0653e7681544953f21678f501a17481a568d2e4cb56eb9547",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-requirements is verified by the gate specification-requirements."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:19eed1a1bd12ec0022f0c0014d234d183dcb654eabe3d6f3dcdd4f3a87ba1671",
+      "evidence": [
+        {
+          "gate_report_id": "d8b3e41a-7426-44e4-a363-8c527c4bfca5",
+          "gate_report_sha256": "sha256:32ba2d40fa68a664adc2edeaa86871cf35c7c50b24ff83d4748947414f1f23d8",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "c9e31fe5-6c69-47dd-ab1f-dee7182ef192",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 28,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:5e06f94a1d15e0ed411d005a1151aca23d3b41d32008a6a340440f53fdcb9320",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-traceability is verified by the gate specification-traceability."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:b55cd31b9df70d471f9076fc4abff768a2ce767054920eccde627036986a7d18",
+      "evidence": [
+        {
+          "gate_report_id": "07ccbbeb-8587-4988-8b96-ad15e152db25",
+          "gate_report_sha256": "sha256:7f2aee51653ac47e9db01e6e60774461ee85bb8418c90538d05f7db1e2b3ab86",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "f7666578-947a-46e1-97d8-fb5c64cf913a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 29,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:19eed1a1bd12ec0022f0c0014d234d183dcb654eabe3d6f3dcdd4f3a87ba1671",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-clarity is verified by the gate specification-clarity."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:a3f115606145d1b95576a9b09814c1b060c24026ce98e89efbdd0233d0dc8378",
+      "evidence": [
+        {
+          "gate_report_id": "c34205df-5497-49c4-abbe-89103a57c44f",
+          "gate_report_sha256": "sha256:232a87b40bec7ea58099ece2c5400137d4c27c5c119c713c25374a4a4461a8f4",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "f5ed5895-a62f-413e-8950-a9db05636814",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 30,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:b55cd31b9df70d471f9076fc4abff768a2ce767054920eccde627036986a7d18",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-contradictions is verified by the gate specification-contradictions."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:9ea8413e2ea9da6758d220e25fc5dcaa132e0337f6ce5e11922c7b883010eeb3",
+      "evidence": [
+        {
+          "gate_report_id": "1d5f1c59-c553-4ca0-822a-20556cb192a7",
+          "gate_report_sha256": "sha256:6764ac69fc9db9072bd6c3496baf23b6c2f3151d114c882cb61ca42145c95a08",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "319c7f6e-2e7b-411b-8ecd-56f5b96e7805",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 31,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:a3f115606145d1b95576a9b09814c1b060c24026ce98e89efbdd0233d0dc8378",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-safety is verified by the gate specification-safety."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:131a969befe656346f21e11216fd5f865e7978f6116f5707856671f198b31e9e",
+      "evidence": [
+        {
+          "gate_report_id": "c8c92a13-1a9c-4b9d-be70-84f73c4a6e34",
+          "gate_report_sha256": "sha256:6b6013e54847e555d24eed4494e15537a774b4deac710d41f1936f672107a7cf",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "23396db9-92a9-4c88-be6b-1278769542db",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 32,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:9ea8413e2ea9da6758d220e25fc5dcaa132e0337f6ce5e11922c7b883010eeb3",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-authorization is verified by the gate specification-authorization."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:c4776d82b210930f7c7597a9a5228b49c59c86c9040a0068841c5263e7f0b8c3",
+      "evidence": [
+        {
+          "gate_report_id": "59e7085d-2170-49f8-9980-3d3bab1df996",
+          "gate_report_sha256": "sha256:a4c484b42d39d3f5bd5275fcea80bbc0054893a7b9eee02a5c7718acd593b9a3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "1753a8c7-87a4-465d-892d-f8074859154b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 33,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:131a969befe656346f21e11216fd5f865e7978f6116f5707856671f198b31e9e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-checklist is verified by the gate specification-checklist."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:06f830f6737342c33930b056efc0425589b94c1432e7a0aa477f049d04b2a86f",
+      "evidence": [
+        {
+          "gate_report_id": "a87f9824-abb9-4f5c-a877-d944a1bc968d",
+          "gate_report_sha256": "sha256:1885df6baaf8ceac3299dfeba879d5d6873328b443e3683f34fc47d76a121013",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "d00a03fb-ed12-4274-a624-3b14f8d7e82a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 34,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:c4776d82b210930f7c7597a9a5228b49c59c86c9040a0068841c5263e7f0b8c3",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-artifacts is verified by the gate specification-artifacts."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:6cd5596900aca5c4df6c4fbd8e17b582ccc5c7440ee85052e953d4e597f84349",
+      "evidence": [
+        {
+          "gate_report_id": "354e5baa-6dce-4630-9100-9ad0ea9bb3d4",
+          "gate_report_sha256": "sha256:a4977bc6eabc09d1b0c586b95b2d562f947453232fb34f4523e5223bc2eb043b",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "140edf1c-67f3-4e55-983a-7a08580e7a99",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 35,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:06f830f6737342c33930b056efc0425589b94c1432e7a0aa477f049d04b2a86f",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion specification-review is verified by the gate specification-review."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:5dd96f3c9dcd6d7ceb891a1d2a989b1e587f2c74a15539f56f9e891e4ad14651",
+      "evidence": [
+        {
+          "gate_report_id": "7314ac7f-86d9-4b14-826d-88e8be26850f",
+          "gate_report_sha256": "sha256:d4eea558aa2377e25c607b4a2bc8dbc02514b88ffb57bb2c0788cffc3a8f46a2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "156bab08-fdda-4307-88c8-2fac7a68a2e1",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 36,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:6cd5596900aca5c4df6c4fbd8e17b582ccc5c7440ee85052e953d4e597f84349",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion stage_profile_check is verified by the gate stage_profile_check."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:24a589957c19c1366a4688019207973b0c37fc9c8bbc97e8531233856303bb0c",
+      "evidence": [
+        {
+          "gate_report_id": "1c45f217-c937-450a-a137-283d231cb5b8",
+          "gate_report_sha256": "sha256:6d27bd6043dfe01c19b4002b6d733739b7a8a20491b529e9f2c58c7d672b6f2e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "d3e0a650-f23d-494a-a827-f60744b7fa0f",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 37,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      "prev_entry_hash": "sha256:5dd96f3c9dcd6d7ceb891a1d2a989b1e587f2c74a15539f56f9e891e4ad14651",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The DOMAIN_DISCOVERY stage was skipped because the rule static-general-software-profile states that it does not apply."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The rule is deterministic and its inputs are recorded in this entry."
+      },
+      "entry_hash": "sha256:ad67b31c417a38da6ac4c38d93b226d47e1de61018f248bb3de523a2cfa91a9e",
+      "evidence": [
+        {
+          "citation": "Skip rule static-general-software-profile states that the DOMAIN_DISCOVERY stage does not apply: Slice 1 does not profile the domain. It resolves one static profile, general-software, so there is no domain to discover.",
+          "retrieved_at": "2026-10-29T09:01:43.965485Z",
+          "sha256": "sha256:7373b72a298dc025411926a018ee9cbbc1543ed617e23ab6cd3166955bf5f100",
+          "type": "source"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a26b6c25-f8e1-4049-8887-dcb16e6820e8",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:43.965485Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 38,
+        "stage_run_id": "f5064502-6681-443f-b60b-5fc60712c9ad"
+      },
+      "prev_entry_hash": "sha256:24a589957c19c1366a4688019207973b0c37fc9c8bbc97e8531233856303bb0c",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate architecture-traceability reported PASSED for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:dca02ca44bab8f0b7ad658d6a6f0ae599a9fd8c7b55f05b0a635f625d615616d",
+      "evidence": [
+        {
+          "gate_report_id": "fddda846-2915-42f5-ae55-e867fabd0c02",
+          "gate_report_sha256": "sha256:3d963a886d4891ae0d8e79473bfcb89e5c8b49810b63ca16235f8ac7889d7425",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "695d49be-62c5-4fdd-a081-51ffa7f125ab",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 39,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:ad67b31c417a38da6ac4c38d93b226d47e1de61018f248bb3de523a2cfa91a9e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate architecture-completeness reported PASSED for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:0a84ba3b9f11c5b86c071d0f84a47dfe33c6dcc60524b128279156a726b4fbfc",
+      "evidence": [
+        {
+          "gate_report_id": "a4312545-c09c-4f2c-b71d-dbb96c8a58a2",
+          "gate_report_sha256": "sha256:b6af4f75b4c1e813faf7344b38110610fc34fe680bfeeb3bf79b9df58e57ab6e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "712e6ba1-081d-4395-965d-3ae24b69a468",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 40,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:dca02ca44bab8f0b7ad658d6a6f0ae599a9fd8c7b55f05b0a635f625d615616d",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate architecture-critic reported NOT_APPLICABLE for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:92cb40c379002c6a3fff8f89ec2cc9eb78a215403c518426e9b5b7c577cbf1bb",
+      "evidence": [
+        {
+          "gate_report_id": "887a1730-1f09-4051-ba97-ebc7d3eea737",
+          "gate_report_sha256": "sha256:5f94a2ea1fe5966f6d6bc2f21fada5e96d36cdb7b095ef9d26b6699d426d87fa",
+          "result": "not_run",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "02ca9ec2-ae72-4497-b3f4-5565746f70b9",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 41,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:0a84ba3b9f11c5b86c071d0f84a47dfe33c6dcc60524b128279156a726b4fbfc",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate readability-gate reported PASSED for the ARCHITECTURE stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:1ffd3ed3f7d1e4cf11d7b1abb8a1222001307f44abb1a49c3c4124fa4a99bf21",
+      "evidence": [
+        {
+          "gate_report_id": "f8be161a-f720-45fc-a55c-e8d67324288c",
+          "gate_report_sha256": "sha256:43cfa7c937ca584d20e5c34a713dd50a8455f620cd4d461561601f285cb58442",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "entry_id": "6e84d495-edea-416f-9a30-ca32d0506d91",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 42,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:92cb40c379002c6a3fff8f89ec2cc9eb78a215403c518426e9b5b7c577cbf1bb",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion every-requirement-has-a-design-element is verified by the gate architecture-traceability."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:1cc205d56a47b3b4d94bbf629c6091039f8adbd8711ef7939c8617deac2e4c71",
+      "evidence": [
+        {
+          "gate_report_id": "fddda846-2915-42f5-ae55-e867fabd0c02",
+          "gate_report_sha256": "sha256:3d963a886d4891ae0d8e79473bfcb89e5c8b49810b63ca16235f8ac7889d7425",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "6800b1c6-6353-4a72-b3e1-5d026e3c535b",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 43,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:1ffd3ed3f7d1e4cf11d7b1abb8a1222001307f44abb1a49c3c4124fa4a99bf21",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion the-design-is-complete is verified by the gate architecture-completeness."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:2facb50ac709a0bd27bd5b01852734d9ad852f5746965acc82e5017f8d856845",
+      "evidence": [
+        {
+          "gate_report_id": "a4312545-c09c-4f2c-b71d-dbb96c8a58a2",
+          "gate_report_sha256": "sha256:b6af4f75b4c1e813faf7344b38110610fc34fe680bfeeb3bf79b9df58e57ab6e",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "441102fc-72a0-4436-bf05-84272388dbb3",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 44,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:1cc205d56a47b3b4d94bbf629c6091039f8adbd8711ef7939c8617deac2e4c71",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion high-risk-work-had-an-independent-critic is verified by the gate architecture-critic."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:aec83087171d30a7de57974a77f11084dc7260951434784b1a7deebcc16ffe3f",
+      "evidence": [
+        {
+          "gate_report_id": "887a1730-1f09-4051-ba97-ebc7d3eea737",
+          "gate_report_sha256": "sha256:5f94a2ea1fe5966f6d6bc2f21fada5e96d36cdb7b095ef9d26b6699d426d87fa",
+          "result": "not_run",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "9404e1f0-ff96-42bd-94b4-3f11217075e4",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 45,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:2facb50ac709a0bd27bd5b01852734d9ad852f5746965acc82e5017f8d856845",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion plain-english is verified by the gate readability-gate."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:03d1d38adf345c3d361bee622f4526568b69bd366d3e40d3175137d4dc23cced",
+      "evidence": [
+        {
+          "gate_report_id": "f8be161a-f720-45fc-a55c-e8d67324288c",
+          "gate_report_sha256": "sha256:43cfa7c937ca584d20e5c34a713dd50a8455f620cd4d461561601f285cb58442",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "68ea4e63-7f20-497e-a3ee-4fb6c4748c0e",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.351404Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 46,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      "prev_entry_hash": "sha256:aec83087171d30a7de57974a77f11084dc7260951434784b1a7deebcc16ffe3f",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate plan-metadata-matches reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:a4cb70f278f3aac3293ecf2b41a164c59b93094e5ce698bc24b5a814dc239f7e",
+      "evidence": [
+        {
+          "gate_report_id": "5c126a30-9c5f-4926-8dff-88776eba602f",
+          "gate_report_sha256": "sha256:cf397422cb21bd4f7b6ed68a27e105d9b69ad616c7a9b3990dc86506063ad3d2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "f24aea33-9157-4176-bfb9-e3512ddd049a",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 47,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:03d1d38adf345c3d361bee622f4526568b69bd366d3e40d3175137d4dc23cced",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate task-plan-validator reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:07380e6edf430d461e66ddb04024e773568e0af94bc1354f4e4844cc2fa4d1e3",
+      "evidence": [
+        {
+          "gate_report_id": "f48140cc-2d88-4f98-9051-28d513c7c9c5",
+          "gate_report_sha256": "sha256:a27ed79f02b910e0b65adf69cbbcaeb928164424bb2041e772cebe868982837c",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "b0a763c0-c971-4263-a781-13860e520138",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 48,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:a4cb70f278f3aac3293ecf2b41a164c59b93094e5ce698bc24b5a814dc239f7e",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate plan-traceability-complete reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:0e7e9fd316d1c1bc3fa48acda5103a9858d79e6311c4d1082caeab5c50eefbe7",
+      "evidence": [
+        {
+          "gate_report_id": "2f6af2ab-acd7-4127-baa2-b8cc30631834",
+          "gate_report_sha256": "sha256:a7f27584a61af3374de50d308ebb2d864e4351fa323fdd7758be1b66a4ce1fe3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "91b64add-9d32-4f6f-9256-33278fa9e2da",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 49,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:07380e6edf430d461e66ddb04024e773568e0af94bc1354f4e4844cc2fa4d1e3",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate readability-gate reported PASSED for the TASK_PLANNING stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:19bfd68dcd6c7016c5a63eefb51a761cb3eb3e97fc3c2d39976c25567f41da4c",
+      "evidence": [
+        {
+          "gate_report_id": "faeaa99d-e97d-457a-be49-9a172f0888a9",
+          "gate_report_sha256": "sha256:81498507f36c44c24739e764cd7e3118fb5b27689498b76e37286620b9f00dc2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "entry_id": "62541f4d-80a8-4f25-8d26-217fa0aec8f5",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 50,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:0e7e9fd316d1c1bc3fa48acda5103a9858d79e6311c4d1082caeab5c50eefbe7",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion metadata-is-the-factorys-own is verified by the gate plan-metadata-matches."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:65928920b124d966cd1a9e6db96c9efdc4fb7e9388dc41f15e871714ded73dfb",
+      "evidence": [
+        {
+          "gate_report_id": "5c126a30-9c5f-4926-8dff-88776eba602f",
+          "gate_report_sha256": "sha256:cf397422cb21bd4f7b6ed68a27e105d9b69ad616c7a9b3990dc86506063ad3d2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "61f12343-0ac7-4143-a321-ef1e2714c2b6",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 51,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:19bfd68dcd6c7016c5a63eefb51a761cb3eb3e97fc3c2d39976c25567f41da4c",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion the-plan-can-be-run is verified by the gate task-plan-validator."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:7a6410a127b420a827ac84714dc10279eb11e253788d5ef7b9f57b644e5271e2",
+      "evidence": [
+        {
+          "gate_report_id": "f48140cc-2d88-4f98-9051-28d513c7c9c5",
+          "gate_report_sha256": "sha256:a27ed79f02b910e0b65adf69cbbcaeb928164424bb2041e772cebe868982837c",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "94de3775-83da-4830-b543-c8b8ccbfd705",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 52,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:65928920b124d966cd1a9e6db96c9efdc4fb7e9388dc41f15e871714ded73dfb",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion every-requirement-can-be-followed is verified by the gate plan-traceability-complete."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:5facfd715d04be2586c9a5a1de6ef2c9dad58c8836fddb1a94d899ecbd1825a9",
+      "evidence": [
+        {
+          "gate_report_id": "2f6af2ab-acd7-4127-baa2-b8cc30631834",
+          "gate_report_sha256": "sha256:a7f27584a61af3374de50d308ebb2d864e4351fa323fdd7758be1b66a4ce1fe3",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "fdc1767b-e9f3-499f-a0f4-1ed4cb869e08",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 53,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:7a6410a127b420a827ac84714dc10279eb11e253788d5ef7b9f57b644e5271e2",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The acceptance criterion plain-english is verified by the gate readability-gate."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The evidence is stored by its hash and was checked by the engine."
+      },
+      "entry_hash": "sha256:030bc962c33adb74f49343a91704adfed4fdfebdc2fa4edc186feeaa32d3f440",
+      "evidence": [
+        {
+          "gate_report_id": "faeaa99d-e97d-457a-be49-9a172f0888a9",
+          "gate_report_sha256": "sha256:81498507f36c44c24739e764cd7e3118fb5b27689498b76e37286620b9f00dc2",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "entry_id": "a0bafe41-0d71-4035-98b5-1c9934abf175",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:44.718301Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 54,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      "prev_entry_hash": "sha256:5facfd715d04be2586c9a5a1de6ef2c9dad58c8836fddb1a94d899ecbd1825a9",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate implementation-scope reported PASSED for the IMPLEMENTATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:f5052bbf9da608807fd4c99614d9ae80b86f7cb77e48a579fc0afd7e98759bf6",
+      "evidence": [
+        {
+          "gate_report_id": "c0fe21b5-c574-4b18-be9a-3d97865290f4",
+          "gate_report_sha256": "sha256:6285df60898e6a8ea3acd526d3c5345636b6de7043fc48d5a4db85421137b7e1",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "entry_id": "61786e2e-93e1-4602-8888-481fad98f351",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:45.302892Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 55,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      "prev_entry_hash": "sha256:030bc962c33adb74f49343a91704adfed4fdfebdc2fa4edc186feeaa32d3f440",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate implementation-commits reported PASSED for the IMPLEMENTATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:618350ab8c5f0286f2294e8e50a5058893bbfbefc34c79ca008c45fcd9561355",
+      "evidence": [
+        {
+          "gate_report_id": "a4c27113-5ceb-404f-abdf-549dc278cec7",
+          "gate_report_sha256": "sha256:ec518b397696e1f74ee1a01ecf457b416673bf2c9da0795bb35031d47ccc3dca",
+          "result": "passed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "entry_id": "8c900fc4-dabc-4ff3-b859-f0962424b8ee",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:45.302892Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 56,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      "prev_entry_hash": "sha256:f5052bbf9da608807fd4c99614d9ae80b86f7cb77e48a579fc0afd7e98759bf6",
+      "schema_version": 1
+    },
+    {
+      "claim": {
+        "kind": "measured_fact",
+        "statement": "The gate protected-paths-unchanged reported FAILED for the IMPLEMENTATION stage run."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The report is stored by its hash and follows the gate report schema."
+      },
+      "entry_hash": "sha256:7e573e4ee54d58271db6ca1eb324cf525d8201846425d1328512c91c77b27d08",
+      "evidence": [
+        {
+          "gate_report_id": "37bbd297-5766-4c1e-ad43-301499769ed4",
+          "gate_report_sha256": "sha256:97c9a0e78a0f2c9463bd4e6a5f8d425e8f8555ae095770f7c67a79222778e870",
+          "result": "failed",
+          "type": "test"
+        }
+      ],
+      "metadata": {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "entry_id": "68a2a8f1-95aa-40b3-92a6-204ae329d417",
+        "execution_mode": "test",
+        "job_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+        "recorded_at": "2026-10-29T09:01:45.302892Z",
+        "recorded_by": {
+          "component": "workflow.engine",
+          "fidelity": "fake"
+        },
+        "sequence": 57,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      "prev_entry_hash": "sha256:618350ab8c5f0286f2294e8e50a5058893bbfbefc34c79ca008c45fcd9561355",
+      "schema_version": 1
+    }
+  ],
+  "mode": "test",
+  "scenario": "E8",
+  "source_language": "en",
+  "stage_runs": [
+    {
+      "attempts": [],
+      "id": "131cad81-55c7-4b0a-a896-7656c15a64c9",
+      "kind": "DOCUMENTING",
+      "status": "PENDING"
+    },
+    {
+      "attempts": [
+        {
+          "id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb",
+      "kind": "IMPLEMENTATION",
+      "status": "BLOCKED"
+    },
+    {
+      "attempts": [
+        {
+          "id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "id": "62433df6-0df2-4e5e-8739-410bb57f77d6",
+      "kind": "INTAKE",
+      "status": "PASSED"
+    },
+    {
+      "attempts": [],
+      "id": "824640c9-f4cf-4f7b-ba20-dff8af8c8a8e",
+      "kind": "DELIVERY",
+      "status": "PENDING"
+    },
+    {
+      "attempts": [
+        {
+          "id": "88ad016d-9dde-4c14-a9b6-05597af7dc5c",
+          "status": "SUCCEEDED"
+        },
+        {
+          "id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "kind": "SPECIFICATION",
+      "status": "PASSED"
+    },
+    {
+      "attempts": [],
+      "id": "bc980e55-6f03-4822-bb81-a3d5f30b80bd",
+      "kind": "VALIDATION",
+      "status": "PENDING"
+    },
+    {
+      "attempts": [
+        {
+          "id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9",
+      "kind": "REPOSITORY_INTELLIGENCE",
+      "status": "PASSED"
+    },
+    {
+      "attempts": [],
+      "id": "c68c8c46-2d0d-4ae0-a2fd-3af184eed78d",
+      "kind": "REVIEW",
+      "status": "PENDING"
+    },
+    {
+      "attempts": [],
+      "id": "d3c7093f-2680-4b88-9dbb-60d5a2d5b5f2",
+      "kind": "DOCUMENTATION_REVIEW",
+      "status": "PENDING"
+    },
+    {
+      "attempts": [
+        {
+          "id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "id": "e9c0bfda-1819-4e50-9523-deaed844853b",
+      "kind": "ARCHITECTURE",
+      "status": "PASSED"
+    },
+    {
+      "attempts": [
+        {
+          "id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1",
+      "kind": "TASK_PLANNING",
+      "status": "PASSED"
+    },
+    {
+      "attempts": [],
+      "id": "f5064502-6681-443f-b60b-5fc60712c9ad",
+      "kind": "DOMAIN_DISCOVERY",
+      "status": "SKIPPED"
+    },
+    {
+      "attempts": [],
+      "id": "f6fe64bc-ef6f-4672-84cd-075854b48a79",
+      "kind": "APPROVAL",
+      "status": "PENDING"
+    }
+  ],
+  "telemetry": {
+    "correlated": [
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "event 514 (factory_composition::decisions: a received job was decided)",
+        "source": "log"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "event 522 (factory_composition::decisions: a decision was dealt with)",
+        "source": "log"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "job.admitted",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.gating",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.passed",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.gating",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.passed",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.waiting_for_human",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "job.waiting_for_human",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "job.resumed",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.gating",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.passed",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.skipped",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.gating",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.passed",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.gating",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.passed",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.ready",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.started",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.running",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "attempt.succeeded",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.gating",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "stage_run.blocked",
+        "source": "outbox"
+      },
+      {
+        "correlation_id": "c3515461-7756-441b-8785-17f64af4ab21",
+        "label": "job.blocked",
+        "source": "outbox"
+      }
+    ],
+    "spans": [
+      {
+        "attempt_id": null,
+        "id": "1",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "2",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "e9bb63a5-d02a-4560-b724-d21bda2d653f"
+      },
+      {
+        "attempt_id": "32dde3b4-1517-40aa-8ec1-4272d3715f03",
+        "id": "3",
+        "name": "factory.attempt",
+        "parent_id": "2",
+        "stage_run_id": "e9bb63a5-d02a-4560-b724-d21bda2d653f"
+      },
+      {
+        "attempt_id": "32dde3b4-1517-40aa-8ec1-4272d3715f03",
+        "id": "4",
+        "name": "factory.agent",
+        "parent_id": "3",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "5",
+        "name": "factory.gate",
+        "parent_id": "3",
+        "stage_run_id": "e9bb63a5-d02a-4560-b724-d21bda2d653f"
+      },
+      {
+        "attempt_id": null,
+        "id": "6",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "03fd75fe-0cf1-4b0f-98f5-73ce314ecfe8"
+      },
+      {
+        "attempt_id": "ee1d3a00-8c19-4c3a-b645-487d7705745d",
+        "id": "7",
+        "name": "factory.attempt",
+        "parent_id": "6",
+        "stage_run_id": "03fd75fe-0cf1-4b0f-98f5-73ce314ecfe8"
+      },
+      {
+        "attempt_id": null,
+        "id": "8",
+        "name": "factory.gate",
+        "parent_id": "7",
+        "stage_run_id": "03fd75fe-0cf1-4b0f-98f5-73ce314ecfe8"
+      },
+      {
+        "attempt_id": null,
+        "id": "9",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "10",
+        "name": "factory.attempt",
+        "parent_id": "9",
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "11",
+        "name": "factory.agent",
+        "parent_id": "10",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "12",
+        "name": "factory.agent",
+        "parent_id": "10",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "ce09f015-ebdb-4474-b658-191e6d5baa26",
+        "id": "13",
+        "name": "factory.agent",
+        "parent_id": "10",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "14",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "15",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "16",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": "a4d0f53d-ea2c-44c2-91a0-64471e3f6cf8",
+        "id": "17",
+        "name": "factory.attempt",
+        "parent_id": "16",
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": null,
+        "id": "18",
+        "name": "factory.gate",
+        "parent_id": "17",
+        "stage_run_id": "1eb020ee-e3d8-4d50-8630-83a731d7d3b6"
+      },
+      {
+        "attempt_id": null,
+        "id": "19",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "5d5c72c3-bf24-4e4e-978c-5babf3fca07f"
+      },
+      {
+        "attempt_id": "bed66f6b-b52a-45b7-b8a8-a94d020cb91e",
+        "id": "20",
+        "name": "factory.attempt",
+        "parent_id": "19",
+        "stage_run_id": "5d5c72c3-bf24-4e4e-978c-5babf3fca07f"
+      },
+      {
+        "attempt_id": "bed66f6b-b52a-45b7-b8a8-a94d020cb91e",
+        "id": "21",
+        "name": "factory.agent",
+        "parent_id": "20",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "22",
+        "name": "factory.gate",
+        "parent_id": "20",
+        "stage_run_id": "5d5c72c3-bf24-4e4e-978c-5babf3fca07f"
+      },
+      {
+        "attempt_id": null,
+        "id": "23",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "8aa7821a-2c82-43c3-b6eb-a19699c112fa"
+      },
+      {
+        "attempt_id": "bd62f83e-7c0c-41e9-baca-35b3f472d824",
+        "id": "24",
+        "name": "factory.attempt",
+        "parent_id": "23",
+        "stage_run_id": "8aa7821a-2c82-43c3-b6eb-a19699c112fa"
+      },
+      {
+        "attempt_id": "bd62f83e-7c0c-41e9-baca-35b3f472d824",
+        "id": "25",
+        "name": "factory.agent",
+        "parent_id": "24",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "26",
+        "name": "factory.gate",
+        "parent_id": "24",
+        "stage_run_id": "8aa7821a-2c82-43c3-b6eb-a19699c112fa"
+      },
+      {
+        "attempt_id": null,
+        "id": "27",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "03680ae7-4e2f-425a-845e-985f6c73e265"
+      },
+      {
+        "attempt_id": "db9bad2a-0d46-4857-9109-07868902fd4b",
+        "id": "28",
+        "name": "factory.attempt",
+        "parent_id": "27",
+        "stage_run_id": "03680ae7-4e2f-425a-845e-985f6c73e265"
+      },
+      {
+        "attempt_id": "db9bad2a-0d46-4857-9109-07868902fd4b",
+        "id": "29",
+        "name": "factory.agent",
+        "parent_id": "28",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "db9bad2a-0d46-4857-9109-07868902fd4b",
+        "id": "30",
+        "name": "factory.agent",
+        "parent_id": "28",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "31",
+        "name": "factory.gate",
+        "parent_id": "28",
+        "stage_run_id": "03680ae7-4e2f-425a-845e-985f6c73e265"
+      },
+      {
+        "attempt_id": null,
+        "id": "32",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "2874a4a6-740b-4547-8143-3bcd3a3e23b0"
+      },
+      {
+        "attempt_id": "fd3b765d-5ebe-4914-9cc4-3b0bf373818e",
+        "id": "33",
+        "name": "factory.attempt",
+        "parent_id": "32",
+        "stage_run_id": "2874a4a6-740b-4547-8143-3bcd3a3e23b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "34",
+        "name": "factory.gate",
+        "parent_id": "33",
+        "stage_run_id": "2874a4a6-740b-4547-8143-3bcd3a3e23b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "35",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "58636989-d638-47d7-ae7d-ce376acc9685"
+      },
+      {
+        "attempt_id": "e15ca5ad-9d46-4bb4-aa99-b8bc0163b69a",
+        "id": "36",
+        "name": "factory.attempt",
+        "parent_id": "35",
+        "stage_run_id": "58636989-d638-47d7-ae7d-ce376acc9685"
+      },
+      {
+        "attempt_id": "e15ca5ad-9d46-4bb4-aa99-b8bc0163b69a",
+        "id": "37",
+        "name": "factory.agent",
+        "parent_id": "36",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "38",
+        "name": "factory.gate",
+        "parent_id": "36",
+        "stage_run_id": "58636989-d638-47d7-ae7d-ce376acc9685"
+      },
+      {
+        "attempt_id": null,
+        "id": "39",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "9992c757-4299-4b3f-9750-7f2ad59fe3e3"
+      },
+      {
+        "attempt_id": "7233c47d-884c-4ca1-930e-ac4dc5a60eef",
+        "id": "40",
+        "name": "factory.attempt",
+        "parent_id": "39",
+        "stage_run_id": "9992c757-4299-4b3f-9750-7f2ad59fe3e3"
+      },
+      {
+        "attempt_id": null,
+        "id": "41",
+        "name": "factory.gate",
+        "parent_id": "40",
+        "stage_run_id": "9992c757-4299-4b3f-9750-7f2ad59fe3e3"
+      },
+      {
+        "attempt_id": null,
+        "id": "42",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a01e8f0b-b55d-49c2-b1c9-3a94fcab5bd3"
+      },
+      {
+        "attempt_id": "52f68914-246e-4dcc-84dc-fe4021816953",
+        "id": "43",
+        "name": "factory.attempt",
+        "parent_id": "42",
+        "stage_run_id": "a01e8f0b-b55d-49c2-b1c9-3a94fcab5bd3"
+      },
+      {
+        "attempt_id": "52f68914-246e-4dcc-84dc-fe4021816953",
+        "id": "44",
+        "name": "factory.agent",
+        "parent_id": "43",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "45",
+        "name": "factory.gate",
+        "parent_id": "43",
+        "stage_run_id": "a01e8f0b-b55d-49c2-b1c9-3a94fcab5bd3"
+      },
+      {
+        "attempt_id": null,
+        "id": "46",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "39e622a5-210b-4382-b7c7-0020ffc1e474"
+      },
+      {
+        "attempt_id": "3ba64cce-94e9-40a5-b268-05aa5105447a",
+        "id": "47",
+        "name": "factory.attempt",
+        "parent_id": "46",
+        "stage_run_id": "39e622a5-210b-4382-b7c7-0020ffc1e474"
+      },
+      {
+        "attempt_id": null,
+        "id": "48",
+        "name": "factory.gate",
+        "parent_id": "47",
+        "stage_run_id": "39e622a5-210b-4382-b7c7-0020ffc1e474"
+      },
+      {
+        "attempt_id": null,
+        "id": "49",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "50",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "51",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "af0ec16c-30f2-4e19-8227-e5acfbe03ed2"
+      },
+      {
+        "attempt_id": "666f5f62-2196-4016-9764-2a45a997dd1f",
+        "id": "52",
+        "name": "factory.attempt",
+        "parent_id": "51",
+        "stage_run_id": "af0ec16c-30f2-4e19-8227-e5acfbe03ed2"
+      },
+      {
+        "attempt_id": "666f5f62-2196-4016-9764-2a45a997dd1f",
+        "id": "53",
+        "name": "factory.agent",
+        "parent_id": "52",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "54",
+        "name": "factory.gate",
+        "parent_id": "52",
+        "stage_run_id": "af0ec16c-30f2-4e19-8227-e5acfbe03ed2"
+      },
+      {
+        "attempt_id": null,
+        "id": "55",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "0d343ad5-0d68-4d80-8727-df9109bb1f25"
+      },
+      {
+        "attempt_id": "5991c6e4-c0df-4b94-8dd3-16f5d234bc60",
+        "id": "56",
+        "name": "factory.attempt",
+        "parent_id": "55",
+        "stage_run_id": "0d343ad5-0d68-4d80-8727-df9109bb1f25"
+      },
+      {
+        "attempt_id": null,
+        "id": "57",
+        "name": "factory.gate",
+        "parent_id": "56",
+        "stage_run_id": "0d343ad5-0d68-4d80-8727-df9109bb1f25"
+      },
+      {
+        "attempt_id": null,
+        "id": "58",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "59",
+        "name": "factory.attempt",
+        "parent_id": "58",
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "60",
+        "name": "factory.agent",
+        "parent_id": "59",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "61",
+        "name": "factory.agent",
+        "parent_id": "59",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "28434120-a9ff-4d76-9415-5cdcd927333a",
+        "id": "62",
+        "name": "factory.agent",
+        "parent_id": "59",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "63",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "64",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "65",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": "b1b981dc-0411-46e1-abbb-cc401d94d9c8",
+        "id": "66",
+        "name": "factory.attempt",
+        "parent_id": "65",
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": null,
+        "id": "67",
+        "name": "factory.gate",
+        "parent_id": "66",
+        "stage_run_id": "f8b5f9f1-4be3-4d47-823b-e1fa5e48f6cb"
+      },
+      {
+        "attempt_id": null,
+        "id": "68",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "bb66daed-9dd4-4118-9631-323bae13f712"
+      },
+      {
+        "attempt_id": "d961c5ba-940a-4d00-a509-1d92d1c7c659",
+        "id": "69",
+        "name": "factory.attempt",
+        "parent_id": "68",
+        "stage_run_id": "bb66daed-9dd4-4118-9631-323bae13f712"
+      },
+      {
+        "attempt_id": "d961c5ba-940a-4d00-a509-1d92d1c7c659",
+        "id": "70",
+        "name": "factory.agent",
+        "parent_id": "69",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "71",
+        "name": "factory.gate",
+        "parent_id": "69",
+        "stage_run_id": "bb66daed-9dd4-4118-9631-323bae13f712"
+      },
+      {
+        "attempt_id": null,
+        "id": "72",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "7b3a7875-46cd-4eb7-a23a-0a7c5c484a1d"
+      },
+      {
+        "attempt_id": "25c02c24-1f24-4842-a91c-f9a2d0c3ee2d",
+        "id": "73",
+        "name": "factory.attempt",
+        "parent_id": "72",
+        "stage_run_id": "7b3a7875-46cd-4eb7-a23a-0a7c5c484a1d"
+      },
+      {
+        "attempt_id": "25c02c24-1f24-4842-a91c-f9a2d0c3ee2d",
+        "id": "74",
+        "name": "factory.agent",
+        "parent_id": "73",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "75",
+        "name": "factory.gate",
+        "parent_id": "73",
+        "stage_run_id": "7b3a7875-46cd-4eb7-a23a-0a7c5c484a1d"
+      },
+      {
+        "attempt_id": null,
+        "id": "76",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "de14c496-f5d6-439e-b6ec-ad422933e0d8"
+      },
+      {
+        "attempt_id": "6c377f49-9c78-4d26-9788-6f78fa279551",
+        "id": "77",
+        "name": "factory.attempt",
+        "parent_id": "76",
+        "stage_run_id": "de14c496-f5d6-439e-b6ec-ad422933e0d8"
+      },
+      {
+        "attempt_id": "6c377f49-9c78-4d26-9788-6f78fa279551",
+        "id": "78",
+        "name": "factory.agent",
+        "parent_id": "77",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "6c377f49-9c78-4d26-9788-6f78fa279551",
+        "id": "79",
+        "name": "factory.agent",
+        "parent_id": "77",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "80",
+        "name": "factory.gate",
+        "parent_id": "77",
+        "stage_run_id": "de14c496-f5d6-439e-b6ec-ad422933e0d8"
+      },
+      {
+        "attempt_id": null,
+        "id": "81",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "edf5a093-e2f1-429f-92e2-ca1c5b85deea"
+      },
+      {
+        "attempt_id": "c72f6693-ffdd-466a-a91c-3a41f15fc5d3",
+        "id": "82",
+        "name": "factory.attempt",
+        "parent_id": "81",
+        "stage_run_id": "edf5a093-e2f1-429f-92e2-ca1c5b85deea"
+      },
+      {
+        "attempt_id": null,
+        "id": "83",
+        "name": "factory.gate",
+        "parent_id": "82",
+        "stage_run_id": "edf5a093-e2f1-429f-92e2-ca1c5b85deea"
+      },
+      {
+        "attempt_id": null,
+        "id": "84",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "0a78dff7-7728-4b17-a7d4-6623b2a6cb14"
+      },
+      {
+        "attempt_id": "130002d3-b7f1-4429-8385-820cd5ee70ff",
+        "id": "85",
+        "name": "factory.attempt",
+        "parent_id": "84",
+        "stage_run_id": "0a78dff7-7728-4b17-a7d4-6623b2a6cb14"
+      },
+      {
+        "attempt_id": "130002d3-b7f1-4429-8385-820cd5ee70ff",
+        "id": "86",
+        "name": "factory.agent",
+        "parent_id": "85",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "87",
+        "name": "factory.gate",
+        "parent_id": "85",
+        "stage_run_id": "0a78dff7-7728-4b17-a7d4-6623b2a6cb14"
+      },
+      {
+        "attempt_id": null,
+        "id": "88",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "16a165d0-a807-477e-add3-17ba0d9b3331"
+      },
+      {
+        "attempt_id": "ab791463-f1ce-4c01-b2d3-37c77f7d897f",
+        "id": "89",
+        "name": "factory.attempt",
+        "parent_id": "88",
+        "stage_run_id": "16a165d0-a807-477e-add3-17ba0d9b3331"
+      },
+      {
+        "attempt_id": "ab791463-f1ce-4c01-b2d3-37c77f7d897f",
+        "id": "90",
+        "name": "factory.agent",
+        "parent_id": "89",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "91",
+        "name": "factory.gate",
+        "parent_id": "89",
+        "stage_run_id": "16a165d0-a807-477e-add3-17ba0d9b3331"
+      },
+      {
+        "attempt_id": null,
+        "id": "92",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "bd204225-033d-490d-9473-39fb1e3e0d18"
+      },
+      {
+        "attempt_id": "decd5da4-de31-490f-8a56-8ec6fb348e4b",
+        "id": "93",
+        "name": "factory.attempt",
+        "parent_id": "92",
+        "stage_run_id": "bd204225-033d-490d-9473-39fb1e3e0d18"
+      },
+      {
+        "attempt_id": "decd5da4-de31-490f-8a56-8ec6fb348e4b",
+        "id": "94",
+        "name": "factory.agent",
+        "parent_id": "93",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "95",
+        "name": "factory.gate",
+        "parent_id": "93",
+        "stage_run_id": "bd204225-033d-490d-9473-39fb1e3e0d18"
+      },
+      {
+        "attempt_id": null,
+        "id": "96",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "ac005144-6445-4d39-94b6-26b478bf377e"
+      },
+      {
+        "attempt_id": "db6a33f7-143f-44e7-83d2-b3eba3b9bfca",
+        "id": "97",
+        "name": "factory.attempt",
+        "parent_id": "96",
+        "stage_run_id": "ac005144-6445-4d39-94b6-26b478bf377e"
+      },
+      {
+        "attempt_id": null,
+        "id": "98",
+        "name": "factory.gate",
+        "parent_id": "97",
+        "stage_run_id": "ac005144-6445-4d39-94b6-26b478bf377e"
+      },
+      {
+        "attempt_id": null,
+        "id": "99",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1cca8013-47b6-40a5-bf3e-fcb057584999"
+      },
+      {
+        "attempt_id": "2e556050-f332-4c4e-a165-004f24691d05",
+        "id": "100",
+        "name": "factory.attempt",
+        "parent_id": "99",
+        "stage_run_id": "1cca8013-47b6-40a5-bf3e-fcb057584999"
+      },
+      {
+        "attempt_id": null,
+        "id": "101",
+        "name": "factory.gate",
+        "parent_id": "100",
+        "stage_run_id": "1cca8013-47b6-40a5-bf3e-fcb057584999"
+      },
+      {
+        "attempt_id": null,
+        "id": "102",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "103",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "104",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "105",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "106",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "107",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "108",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "1fc331d1-6e26-4bbc-ac6b-dd70da3fb92f"
+      },
+      {
+        "attempt_id": "990d378e-4668-404f-a457-149219b44684",
+        "id": "109",
+        "name": "factory.attempt",
+        "parent_id": "108",
+        "stage_run_id": "1fc331d1-6e26-4bbc-ac6b-dd70da3fb92f"
+      },
+      {
+        "attempt_id": "990d378e-4668-404f-a457-149219b44684",
+        "id": "110",
+        "name": "factory.agent",
+        "parent_id": "109",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "111",
+        "name": "factory.gate",
+        "parent_id": "109",
+        "stage_run_id": "1fc331d1-6e26-4bbc-ac6b-dd70da3fb92f"
+      },
+      {
+        "attempt_id": null,
+        "id": "112",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "9aca92d1-b102-4784-8123-59266393809c"
+      },
+      {
+        "attempt_id": "1a75bf4c-09b1-4201-b3db-750ab2e6edd3",
+        "id": "113",
+        "name": "factory.attempt",
+        "parent_id": "112",
+        "stage_run_id": "9aca92d1-b102-4784-8123-59266393809c"
+      },
+      {
+        "attempt_id": null,
+        "id": "114",
+        "name": "factory.gate",
+        "parent_id": "113",
+        "stage_run_id": "9aca92d1-b102-4784-8123-59266393809c"
+      },
+      {
+        "attempt_id": null,
+        "id": "115",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "116",
+        "name": "factory.attempt",
+        "parent_id": "115",
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "117",
+        "name": "factory.agent",
+        "parent_id": "116",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "118",
+        "name": "factory.agent",
+        "parent_id": "116",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "d9f183c6-027f-4347-8397-3ab3154c95ec",
+        "id": "119",
+        "name": "factory.agent",
+        "parent_id": "116",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "120",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "121",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "122",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": "ab5ec72c-0a40-4faa-af86-205a5115e502",
+        "id": "123",
+        "name": "factory.attempt",
+        "parent_id": "122",
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": null,
+        "id": "124",
+        "name": "factory.gate",
+        "parent_id": "123",
+        "stage_run_id": "6cdace45-c6ad-47ac-9b78-6a630355cb9b"
+      },
+      {
+        "attempt_id": null,
+        "id": "125",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a8e5ed9e-b980-45b3-b0ef-ddb019ae99fe"
+      },
+      {
+        "attempt_id": "bff7b052-a1ae-4b27-9a2d-d6b53a6bc19a",
+        "id": "126",
+        "name": "factory.attempt",
+        "parent_id": "125",
+        "stage_run_id": "a8e5ed9e-b980-45b3-b0ef-ddb019ae99fe"
+      },
+      {
+        "attempt_id": "bff7b052-a1ae-4b27-9a2d-d6b53a6bc19a",
+        "id": "127",
+        "name": "factory.agent",
+        "parent_id": "126",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "128",
+        "name": "factory.gate",
+        "parent_id": "126",
+        "stage_run_id": "a8e5ed9e-b980-45b3-b0ef-ddb019ae99fe"
+      },
+      {
+        "attempt_id": null,
+        "id": "129",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "7bfeec19-69ae-499f-89d5-2b514afe5c1b"
+      },
+      {
+        "attempt_id": "75dfd067-246a-4717-90a5-ea723a607410",
+        "id": "130",
+        "name": "factory.attempt",
+        "parent_id": "129",
+        "stage_run_id": "7bfeec19-69ae-499f-89d5-2b514afe5c1b"
+      },
+      {
+        "attempt_id": "75dfd067-246a-4717-90a5-ea723a607410",
+        "id": "131",
+        "name": "factory.agent",
+        "parent_id": "130",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "132",
+        "name": "factory.gate",
+        "parent_id": "130",
+        "stage_run_id": "7bfeec19-69ae-499f-89d5-2b514afe5c1b"
+      },
+      {
+        "attempt_id": null,
+        "id": "133",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "77d4d87f-4c15-4d04-9515-3f2e82cd223e"
+      },
+      {
+        "attempt_id": "eeadfdf1-1ccb-420d-a58b-17c21c5e359b",
+        "id": "134",
+        "name": "factory.attempt",
+        "parent_id": "133",
+        "stage_run_id": "77d4d87f-4c15-4d04-9515-3f2e82cd223e"
+      },
+      {
+        "attempt_id": "eeadfdf1-1ccb-420d-a58b-17c21c5e359b",
+        "id": "135",
+        "name": "factory.agent",
+        "parent_id": "134",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "eeadfdf1-1ccb-420d-a58b-17c21c5e359b",
+        "id": "136",
+        "name": "factory.agent",
+        "parent_id": "134",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "137",
+        "name": "factory.gate",
+        "parent_id": "134",
+        "stage_run_id": "77d4d87f-4c15-4d04-9515-3f2e82cd223e"
+      },
+      {
+        "attempt_id": null,
+        "id": "138",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a051d985-5560-417e-8db6-2f32c2a695b0"
+      },
+      {
+        "attempt_id": "ab50dc05-2636-4199-9d57-47e305c373f7",
+        "id": "139",
+        "name": "factory.attempt",
+        "parent_id": "138",
+        "stage_run_id": "a051d985-5560-417e-8db6-2f32c2a695b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "140",
+        "name": "factory.gate",
+        "parent_id": "139",
+        "stage_run_id": "a051d985-5560-417e-8db6-2f32c2a695b0"
+      },
+      {
+        "attempt_id": null,
+        "id": "141",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "ae668145-19ba-4ec2-8ab3-1d06c73800b7"
+      },
+      {
+        "attempt_id": "73944163-810d-414d-99e3-9f6eaebe7f0f",
+        "id": "142",
+        "name": "factory.attempt",
+        "parent_id": "141",
+        "stage_run_id": "ae668145-19ba-4ec2-8ab3-1d06c73800b7"
+      },
+      {
+        "attempt_id": "73944163-810d-414d-99e3-9f6eaebe7f0f",
+        "id": "143",
+        "name": "factory.agent",
+        "parent_id": "142",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "144",
+        "name": "factory.gate",
+        "parent_id": "142",
+        "stage_run_id": "ae668145-19ba-4ec2-8ab3-1d06c73800b7"
+      },
+      {
+        "attempt_id": null,
+        "id": "145",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "95e88aea-39d8-423a-8de6-e571936ad208"
+      },
+      {
+        "attempt_id": "f2b8e63a-2c5d-4d00-a963-4874d3459b92",
+        "id": "146",
+        "name": "factory.attempt",
+        "parent_id": "145",
+        "stage_run_id": "95e88aea-39d8-423a-8de6-e571936ad208"
+      },
+      {
+        "attempt_id": "f2b8e63a-2c5d-4d00-a963-4874d3459b92",
+        "id": "147",
+        "name": "factory.agent",
+        "parent_id": "146",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "148",
+        "name": "factory.gate",
+        "parent_id": "146",
+        "stage_run_id": "95e88aea-39d8-423a-8de6-e571936ad208"
+      },
+      {
+        "attempt_id": null,
+        "id": "149",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "2cea3dde-9903-41ae-a69b-eac5cea5fff4"
+      },
+      {
+        "attempt_id": "f361d43f-5131-463a-8561-e95f601b5d59",
+        "id": "150",
+        "name": "factory.attempt",
+        "parent_id": "149",
+        "stage_run_id": "2cea3dde-9903-41ae-a69b-eac5cea5fff4"
+      },
+      {
+        "attempt_id": "f361d43f-5131-463a-8561-e95f601b5d59",
+        "id": "151",
+        "name": "factory.agent",
+        "parent_id": "150",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "152",
+        "name": "factory.gate",
+        "parent_id": "150",
+        "stage_run_id": "2cea3dde-9903-41ae-a69b-eac5cea5fff4"
+      },
+      {
+        "attempt_id": null,
+        "id": "153",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "44db6b79-3e4b-4b3b-a46d-a206032769d9"
+      },
+      {
+        "attempt_id": "09545f85-7c3e-4b3e-9a46-58bbb1b9ad67",
+        "id": "154",
+        "name": "factory.attempt",
+        "parent_id": "153",
+        "stage_run_id": "44db6b79-3e4b-4b3b-a46d-a206032769d9"
+      },
+      {
+        "attempt_id": null,
+        "id": "155",
+        "name": "factory.gate",
+        "parent_id": "154",
+        "stage_run_id": "44db6b79-3e4b-4b3b-a46d-a206032769d9"
+      },
+      {
+        "attempt_id": null,
+        "id": "156",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "c88a3c66-d3b1-4c62-a49a-e7c9b4b3ff2c"
+      },
+      {
+        "attempt_id": "bcc15741-9685-4d82-b5e6-e586836240b4",
+        "id": "157",
+        "name": "factory.attempt",
+        "parent_id": "156",
+        "stage_run_id": "c88a3c66-d3b1-4c62-a49a-e7c9b4b3ff2c"
+      },
+      {
+        "attempt_id": null,
+        "id": "158",
+        "name": "factory.gate",
+        "parent_id": "157",
+        "stage_run_id": "c88a3c66-d3b1-4c62-a49a-e7c9b4b3ff2c"
+      },
+      {
+        "attempt_id": null,
+        "id": "159",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "160",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "161",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "162",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "163",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "164",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "165",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "id": "166",
+        "name": "factory.attempt",
+        "parent_id": "165",
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      {
+        "attempt_id": "176b78cb-f7b0-4852-87be-7cac13eb215a",
+        "id": "167",
+        "name": "factory.agent",
+        "parent_id": "166",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "168",
+        "name": "factory.gate",
+        "parent_id": "166",
+        "stage_run_id": "62433df6-0df2-4e5e-8739-410bb57f77d6"
+      },
+      {
+        "attempt_id": null,
+        "id": "169",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      {
+        "attempt_id": "7f051b2d-b136-4331-9b64-bb44d923c9b3",
+        "id": "170",
+        "name": "factory.attempt",
+        "parent_id": "169",
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      {
+        "attempt_id": null,
+        "id": "171",
+        "name": "factory.gate",
+        "parent_id": "170",
+        "stage_run_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9"
+      },
+      {
+        "attempt_id": null,
+        "id": "172",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      {
+        "attempt_id": "88ad016d-9dde-4c14-a9b6-05597af7dc5c",
+        "id": "173",
+        "name": "factory.attempt",
+        "parent_id": "172",
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      {
+        "attempt_id": "88ad016d-9dde-4c14-a9b6-05597af7dc5c",
+        "id": "174",
+        "name": "factory.agent",
+        "parent_id": "173",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "88ad016d-9dde-4c14-a9b6-05597af7dc5c",
+        "id": "175",
+        "name": "factory.agent",
+        "parent_id": "173",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "88ad016d-9dde-4c14-a9b6-05597af7dc5c",
+        "id": "176",
+        "name": "factory.agent",
+        "parent_id": "173",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "177",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "178",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "179",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      {
+        "attempt_id": "2e4bf17f-ee99-4cdd-b7cd-4a2864c5d329",
+        "id": "180",
+        "name": "factory.attempt",
+        "parent_id": "179",
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      {
+        "attempt_id": null,
+        "id": "181",
+        "name": "factory.gate",
+        "parent_id": "180",
+        "stage_run_id": "a4054f79-8513-41ef-9fe7-641a47292449"
+      },
+      {
+        "attempt_id": null,
+        "id": "182",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "id": "183",
+        "name": "factory.attempt",
+        "parent_id": "182",
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      {
+        "attempt_id": "c4f6c5ce-7385-4b99-91e6-a01810b11f54",
+        "id": "184",
+        "name": "factory.agent",
+        "parent_id": "183",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "185",
+        "name": "factory.gate",
+        "parent_id": "183",
+        "stage_run_id": "e9c0bfda-1819-4e50-9523-deaed844853b"
+      },
+      {
+        "attempt_id": null,
+        "id": "186",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "id": "187",
+        "name": "factory.attempt",
+        "parent_id": "186",
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      {
+        "attempt_id": "c1d492c9-47b3-4848-aecf-e790cd3d4ebf",
+        "id": "188",
+        "name": "factory.agent",
+        "parent_id": "187",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "189",
+        "name": "factory.gate",
+        "parent_id": "187",
+        "stage_run_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1"
+      },
+      {
+        "attempt_id": null,
+        "id": "190",
+        "name": "factory.stage_run",
+        "parent_id": null,
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "id": "191",
+        "name": "factory.attempt",
+        "parent_id": "190",
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "id": "192",
+        "name": "factory.agent",
+        "parent_id": "191",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": "a2bcc7a8-9669-4dea-93cc-b56a58bdbca6",
+        "id": "193",
+        "name": "factory.agent",
+        "parent_id": "191",
+        "stage_run_id": null
+      },
+      {
+        "attempt_id": null,
+        "id": "194",
+        "name": "factory.gate",
+        "parent_id": "191",
+        "stage_run_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb"
+      },
+      {
+        "attempt_id": null,
+        "id": "195",
+        "name": "factory.job",
+        "parent_id": null,
+        "stage_run_id": null
+      }
+    ]
+  },
+  "timeline": [
+    {
+      "from": "RECEIVED",
+      "kind": null,
+      "reason": "job.admitted",
+      "seq": 1,
+      "subject": "job",
+      "subject_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+      "to": "ACTIVE"
+    },
+    {
+      "from": "PENDING",
+      "kind": "INTAKE",
+      "reason": "stage_run.ready",
+      "seq": 2,
+      "subject": "stage_run",
+      "subject_id": "62433df6-0df2-4e5e-8739-410bb57f77d6",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "kind": "INTAKE",
+      "reason": "stage_run.started",
+      "seq": 3,
+      "subject": "stage_run",
+      "subject_id": "62433df6-0df2-4e5e-8739-410bb57f77d6",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "INTAKE",
+      "reason": "stage_run.gating",
+      "seq": 4,
+      "subject": "stage_run",
+      "subject_id": "62433df6-0df2-4e5e-8739-410bb57f77d6",
+      "to": "GATING"
+    },
+    {
+      "from": "GATING",
+      "kind": "INTAKE",
+      "reason": "stage_run.passed",
+      "seq": 5,
+      "subject": "stage_run",
+      "subject_id": "62433df6-0df2-4e5e-8739-410bb57f77d6",
+      "to": "PASSED"
+    },
+    {
+      "from": "PENDING",
+      "kind": "REPOSITORY_INTELLIGENCE",
+      "reason": "stage_run.ready",
+      "seq": 6,
+      "subject": "stage_run",
+      "subject_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "kind": "REPOSITORY_INTELLIGENCE",
+      "reason": "stage_run.started",
+      "seq": 7,
+      "subject": "stage_run",
+      "subject_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "REPOSITORY_INTELLIGENCE",
+      "reason": "stage_run.gating",
+      "seq": 8,
+      "subject": "stage_run",
+      "subject_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9",
+      "to": "GATING"
+    },
+    {
+      "from": "GATING",
+      "kind": "REPOSITORY_INTELLIGENCE",
+      "reason": "stage_run.passed",
+      "seq": 9,
+      "subject": "stage_run",
+      "subject_id": "be57f5f6-b73e-41c5-8e47-a117d7ec86d9",
+      "to": "PASSED"
+    },
+    {
+      "from": "PENDING",
+      "kind": "SPECIFICATION",
+      "reason": "stage_run.ready",
+      "seq": 10,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "kind": "SPECIFICATION",
+      "reason": "stage_run.started",
+      "seq": 11,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "SPECIFICATION",
+      "reason": "agent-requested-a-human",
+      "seq": 12,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "WAITING_FOR_HUMAN"
+    },
+    {
+      "from": "ACTIVE",
+      "kind": null,
+      "reason": "job.waiting_for_human",
+      "seq": 13,
+      "subject": "job",
+      "subject_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+      "to": "WAITING_FOR_HUMAN"
+    },
+    {
+      "from": "WAITING_FOR_HUMAN",
+      "kind": "SPECIFICATION",
+      "reason": "approved-for-freezing",
+      "seq": 14,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "READY"
+    },
+    {
+      "from": "WAITING_FOR_HUMAN",
+      "kind": null,
+      "reason": "job.resumed",
+      "seq": 15,
+      "subject": "job",
+      "subject_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+      "to": "ACTIVE"
+    },
+    {
+      "from": "READY",
+      "kind": "SPECIFICATION",
+      "reason": "stage_run.started",
+      "seq": 16,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "SPECIFICATION",
+      "reason": "stage_run.gating",
+      "seq": 17,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "GATING"
+    },
+    {
+      "from": "GATING",
+      "kind": "SPECIFICATION",
+      "reason": "stage_run.passed",
+      "seq": 18,
+      "subject": "stage_run",
+      "subject_id": "a4054f79-8513-41ef-9fe7-641a47292449",
+      "to": "PASSED"
+    },
+    {
+      "from": "PENDING",
+      "kind": "DOMAIN_DISCOVERY",
+      "reason": "not-applicable",
+      "seq": 19,
+      "subject": "stage_run",
+      "subject_id": "f5064502-6681-443f-b60b-5fc60712c9ad",
+      "to": "SKIPPED"
+    },
+    {
+      "from": "PENDING",
+      "kind": "ARCHITECTURE",
+      "reason": "stage_run.ready",
+      "seq": 20,
+      "subject": "stage_run",
+      "subject_id": "e9c0bfda-1819-4e50-9523-deaed844853b",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "kind": "ARCHITECTURE",
+      "reason": "stage_run.started",
+      "seq": 21,
+      "subject": "stage_run",
+      "subject_id": "e9c0bfda-1819-4e50-9523-deaed844853b",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "ARCHITECTURE",
+      "reason": "stage_run.gating",
+      "seq": 22,
+      "subject": "stage_run",
+      "subject_id": "e9c0bfda-1819-4e50-9523-deaed844853b",
+      "to": "GATING"
+    },
+    {
+      "from": "GATING",
+      "kind": "ARCHITECTURE",
+      "reason": "stage_run.passed",
+      "seq": 23,
+      "subject": "stage_run",
+      "subject_id": "e9c0bfda-1819-4e50-9523-deaed844853b",
+      "to": "PASSED"
+    },
+    {
+      "from": "PENDING",
+      "kind": "TASK_PLANNING",
+      "reason": "stage_run.ready",
+      "seq": 24,
+      "subject": "stage_run",
+      "subject_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "kind": "TASK_PLANNING",
+      "reason": "stage_run.started",
+      "seq": 25,
+      "subject": "stage_run",
+      "subject_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "TASK_PLANNING",
+      "reason": "stage_run.gating",
+      "seq": 26,
+      "subject": "stage_run",
+      "subject_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1",
+      "to": "GATING"
+    },
+    {
+      "from": "GATING",
+      "kind": "TASK_PLANNING",
+      "reason": "stage_run.passed",
+      "seq": 27,
+      "subject": "stage_run",
+      "subject_id": "f0dcff4f-5c2a-4b57-af9f-ccfa5a1946a1",
+      "to": "PASSED"
+    },
+    {
+      "from": "PENDING",
+      "kind": "IMPLEMENTATION",
+      "reason": "stage_run.ready",
+      "seq": 28,
+      "subject": "stage_run",
+      "subject_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb",
+      "to": "READY"
+    },
+    {
+      "from": "READY",
+      "kind": "IMPLEMENTATION",
+      "reason": "stage_run.started",
+      "seq": 29,
+      "subject": "stage_run",
+      "subject_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb",
+      "to": "RUNNING"
+    },
+    {
+      "from": "RUNNING",
+      "kind": "IMPLEMENTATION",
+      "reason": "stage_run.gating",
+      "seq": 30,
+      "subject": "stage_run",
+      "subject_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb",
+      "to": "GATING"
+    },
+    {
+      "from": "GATING",
+      "kind": "IMPLEMENTATION",
+      "reason": "policy-violation",
+      "seq": 31,
+      "subject": "stage_run",
+      "subject_id": "4e36521e-1e4f-439a-8bfa-e0a0683a52bb",
+      "to": "BLOCKED"
+    },
+    {
+      "from": "ACTIVE",
+      "kind": null,
+      "reason": "job.blocked",
+      "seq": 32,
+      "subject": "job",
+      "subject_id": "ba3fda17-9c76-44e0-a11f-b9c294c2ff70",
+      "to": "BLOCKED"
+    }
+  ],
+  "usage": {
+    "budget_micro_usd": 0,
+    "calls_after_exhaustion": 0,
+    "total_micro_usd": 0
+  },
+  "wiring": "composed-test"
+}

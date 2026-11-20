@@ -1,0 +1,62 @@
+# Workspace root. The crate layout and the dependency rules are in ADR 0002 and in
+# docs/architecture/crate-dependency-rules.json, which `cargo xtask check-architecture` enforces.
+[workspace]
+resolver = "3"
+members = ["xtask", "crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+# Library crates and binaries inherit these with `[lints] workspace = true`.
+[workspace.lints.rust]
+# DEP-06: no crate uses unsafe code. `forbid` cannot be overridden by an `allow` in a crate.
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+
+# Crates inherit dependencies with `name.workspace = true`.
+[workspace.dependencies]
+# xtask reads `cargo metadata` output and the rules file with it. The rules file lets xtask use
+# std and serde_json only. Maintained by dtolnay (1.0.154, published 2026-10-11).
+serde_json = "1.0.154"
+
+# The twelve library crates from ADR 0002 (package prefix `factory-`, directory `crates/<name>`).
+# A crate lists the workspace crates it may depend on in its own manifest, with
+# `factory-domain.workspace = true`. `cargo xtask check-architecture` rejects any edge the rules
+# file does not allow.
+factory-domain = { path = "crates/domain" }
+factory-ports = { path = "crates/ports" }
+factory-workflow = { path = "crates/workflow" }
+factory-spec_adapter = { path = "crates/spec_adapter" }
+factory-storage = { path = "crates/storage" }
+factory-runtime = { path = "crates/runtime" }
+factory-sandbox = { path = "crates/sandbox" }
+factory-github = { path = "crates/github" }
+factory-contracts = { path = "crates/contracts" }
+factory-egress = { path = "crates/egress" }
+factory-observability = { path = "crates/observability" }
+factory-testkit = { path = "crates/testkit" }
+# The shared composition core, ring 3, a library (ADR 0015). Only apps/* may depend on it.
+factory-composition = { path = "crates/composition" }
+# The read-only PostgreSQL MCP server, a ring 2 adapter (ADR 0021, decision 4). Served in process by the
+# troubleshooter's gateway and as the binary apps/mcp-postgres.
+factory-mcp_postgres = { path = "crates/mcp_postgres" }
+# The troubleshooter's MCP gateway, a ring 2 adapter (ADR 0021, decision 3). It does not depend on
+# mcp_postgres: apps/troubleshooter wires that server in as an in-process upstream.
+factory-mcp_gateway = { path = "crates/mcp_gateway" }
+
+# The official Rust SDK of the Model Context Protocol, maintained by the modelcontextprotocol organization
+# (github.com/modelcontextprotocol/rust-sdk). Apache-2.0. New direct dependency approved by the owner on
+# 2026-11-20 (ADR 0021, "Owner decisions this record needs", item 1). Pinned with `=` because MCP is a moving
+# specification and a minor release of the SDK can change what goes over the wire. Default features off: a
+# crate names the subset it needs from `server`, `macros` and `transport-streamable-http-server`. Not
+# `transport-io`, which would turn on tokio's `io-std` for the inner crates (DEP-05). No auth. The client side
+# (`client`, `transport-streamable-http-client-reqwest`, `reqwest-tls-no-provider`) is used by crates/mcp_gateway
+# only, to reach Datadog and VictoriaMetrics (ADR 0021, decision 3).
+rmcp = { version = "=3.11.0", default-features = false }

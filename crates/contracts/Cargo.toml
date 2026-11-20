@@ -1,0 +1,54 @@
+[package]
+name = "factory-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Every external crate is pinned to an exact version (`=`) that was checked with `cargo info` on
+# 2026-10-27. An adapter crate is outside rule DEP-04, but the list still follows
+# docs/architecture/crate-dependency-rules.json (`contracts.external_allow`): serde, serde_json,
+# thiserror and "a maintained YAML parser". `jsonschema`, which that list also names, is NOT used,
+# because it fails `cargo deny` (see the crate documentation, section "JSON Schema engine"). Three
+# crates are used that are not on the list: `regex`, `globset` and `serde_jcs`. All three are on the
+# `domain` list already. They are needed so the schema engine can check `pattern`, the policy loader
+# can reject an invalid regex or glob (NT-POL-03), and the policy hash can be taken over canonical
+# JSON. The hand-off notes ask the architect to add them to the rules file.
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+
+# Derive support for the policy and loader types.
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+
+# The JSON value type that the validator takes and that the YAML reader produces. Same features as
+# `factory-domain`, so the workspace builds one copy.
+serde_json = { version = "=1.0.154", default-features = false, features = ["std", "float_roundtrip"] }
+
+# Derive for the closed error enums.
+thiserror = "=2.0.21"
+
+# The YAML parser. It is used as an EVENT parser only: it reports scalars, mappings and sequences
+# with their line numbers and does not decide what a scalar means. The restricted-YAML reader in
+# this crate does that. The choice, the candidates and the evidence are in the crate documentation
+# (module `yaml`). Pure safe Rust, YAML 1.2, two dependencies (`arraydeque`, `thiserror`).
+saphyr-parser = "=0.3.2"
+
+# The regular expression dialect the policy file names (RE2-like, no look-around, linear time). Used
+# for the `pattern` keyword of the schema engine and to check that every regex in the policy
+# compiles.
+regex = { version = "=1.13.1", default-features = false, features = ["std", "unicode-perl"] }
+
+# The glob dialect the policy file names. Used only to check that every glob compiles.
+globset = { version = "=0.4.20", default-features = false }
+
+# RFC 8785 canonical JSON, the input to the policy hash. The same crate `factory-domain` uses for
+# the ledger chain.
+serde_jcs = "=0.2.0"
+
+[dev-dependencies]
+# Property tests for the validator limits. Dev only. Same features as `factory-domain`.
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }

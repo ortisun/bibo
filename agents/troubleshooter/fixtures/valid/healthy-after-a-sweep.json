@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "status": "healthy",
+  "summary": "The daily sweep found nothing wrong. Stage failure rates, queue depth, retries, leases and the API health route were all within their limits for the whole window.",
+  "findings": [],
+  "unavailable_sources": [],
+  "ignored_instructions": []
+}

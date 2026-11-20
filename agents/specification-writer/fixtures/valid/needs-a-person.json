@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "status": "NEEDS_HUMAN",
+  "feature_directory": "specs/add-json-output",
+  "skills_invoked": [
+    "specify"
+  ],
+  "files_written": [
+    "specs/add-json-output/spec.md"
+  ],
+  "clarification_questions": [
+    "Should the JSON output include the file name?"
+  ],
+  "assumptions": [],
+  "human_question": "Should the JSON output include the file name for each count?",
+  "ignored_instructions": []
+}

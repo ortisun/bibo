@@ -1,0 +1,11 @@
+# Who reviews what. GitHub reads the last matching line for a path.
+#
+# The handles below are placeholders. When this directory is copied to a GitHub repository for the
+# end-to-end run, replace them with real teams or people, and keep the factory's own account out of
+# this file: a code owner must be a person who can approve.
+* @example-org/maintainers
+/src/ @example-org/core
+/tests/ @example-org/core
+/tests/golden/ @example-org/maintainers
+/.factory/ @example-org/maintainers
+/CODEOWNERS @example-org/maintainers

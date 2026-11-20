@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "entry_id": "018f3a95-0003-7a03-8b03-1c03d03e03f3",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a96-1111-7b11-8c11-9d11e11f1111",
+    "sequence": 3,
+    "recorded_at": "2026-10-27T10:05:00Z",
+    "execution_mode": "production",
+    "recorded_by": { "component": "workflow.human-decision", "fidelity": "real" }
+  },
+  "claim": {
+    "statement": "The approver accepts that the lint gate did not run because the linter is not installed in the sandbox image, and asks for it to be added later.",
+    "kind": "expert_judgment"
+  },
+  "evidence": [
+    { "type": "expert_judgment", "attestor": { "principal_id": "018f3a00-0000-7000-8000-00000000a001", "role": "approver" }, "scope": "Lint gate only. The mandatory gates of the active profile are not affected.", "recorded_at": "2026-10-27T10:05:00Z" }
+  ],
+  "confidence": { "level": "medium", "rationale": "This is a human risk acceptance, not a measurement. It creates no assurance level." },
+  "prev_entry_hash": "sha256:edda7b47233f9790fcc6d116d0a0c0eac38a5d6e44b7cf0c002c6d30bfa61e74",
+  "entry_hash": "sha256:6e18ec763c0751ffab6eddca795cf9a03b16c59b30cc266b9281a23a55897359"
+}

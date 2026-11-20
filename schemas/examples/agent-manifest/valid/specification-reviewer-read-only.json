@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "specification-reviewer",
+  "version": "1.0.0",
+  "title": "Specification reviewer",
+  "description": "Reads a draft specification and its requirements checklist and reports gaps, contradictions and untestable statements. It reads files only and cannot change anything.",
+  "role": "specification-reviewer",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [
+    {
+      "id": "requirements-review",
+      "version": "1.0.0"
+    }
+  ],
+  "allowed_tools": [
+    {
+      "name": "read-file",
+      "access": "read",
+      "path_scope": [
+        "specs/**",
+        ".specify/**"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "specification-artifact-hash"
+  ],
+  "inputs_schema": {
+    "name": "spec-review-input",
+    "version": 1,
+    "sha256": "sha256:ea8eb3fecc2320aeecf31727e9fbd2171e6701d6055a247d4d61d4382c7b07f1"
+  },
+  "outputs_schema": {
+    "name": "review-verdict",
+    "version": 1,
+    "sha256": "sha256:313b325cf20fe17d354c72d26dfcba3923a23ccf884c5ced779d4e42f681c8fa"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 600,
+    "max_tokens": 120000,
+    "max_cost_usd": 1,
+    "max_tool_calls": 40,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "specs/**",
+        ".specify/**"
+      ],
+      "write": []
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "tier": "standard"
+    }
+  ],
+  "evaluation_suite": {
+    "id": "spec-review-seeded-defects",
+    "version": "1.0.0",
+    "min_pass_rate": 0.75
+  },
+  "prompt": {
+    "template_path": "agents/specification-reviewer/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:22103d3836026a9e38910b068af4615458e410ba89d41bcc0d97fc737b9b85b3"
+  }
+}

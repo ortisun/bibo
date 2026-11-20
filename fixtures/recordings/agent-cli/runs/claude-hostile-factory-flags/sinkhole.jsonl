@@ -1,0 +1,6 @@
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 537987}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 537989}
+{"client": "10.77.55.4", "first_bytes": 1508, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 537990}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 538106}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 538107}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 538108}

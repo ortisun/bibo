@@ -1,0 +1,2 @@
+* filter=evil
+*.bin diff=evil

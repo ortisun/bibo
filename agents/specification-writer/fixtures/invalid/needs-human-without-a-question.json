@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "NEEDS_HUMAN",
+  "feature_directory": "specs/add-json-output",
+  "skills_invoked": [
+    "specify"
+  ],
+  "files_written": [],
+  "clarification_questions": [],
+  "assumptions": [],
+  "ignored_instructions": []
+}
