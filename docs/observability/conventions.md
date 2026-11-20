@@ -47,6 +47,9 @@ A span must carry every attribute in its "required" column when it ends. Require
 | `factory.agent` | `factory.correlation_id`, `factory.job_id`, `factory.attempt_id`, `factory.agent_id`, `factory.outcome` | One agent invocation inside an attempt. |
 | `factory.tool_call` | `factory.correlation_id`, `factory.job_id`, `factory.attempt_id`, `factory.tool_name`, `factory.outcome` | One tool call made by an agent. |
 | `factory.gate` | `factory.correlation_id`, `factory.job_id`, `factory.stage_run_id`, `factory.gate_id`, `factory.outcome` | One gate evaluation inside a stage run. |
+| `factory.troubleshooting_run` | `factory.troubleshooting_run_id`, `factory.trigger`, `factory.result` | One run of the troubleshooter, outside every job: the probes that tripped, the agent run and the issue decisions. |
+| `factory.probe` | `factory.troubleshooting_run_id`, `factory.probe_id`, `factory.result` | One deterministic probe of the troubleshooter. |
+| `factory.triage_issue` | `factory.troubleshooting_run_id`, `factory.issue_action` | One decision of the troubleshooter about the triage issue of a finding. |
 <!-- /table:spans -->
 
 ## 4. Attributes
@@ -77,6 +80,11 @@ An attribute is a key and a value on a span. Only the keys in this table are exp
 | `factory.tokens_output` | int | unbounded | `factory.agent` | Output tokens the broker metered for this invocation. |
 | `factory.cost_usd` | double | unbounded | `factory.agent` | Cost in United States dollars the broker metered for this invocation. |
 | `error.type` | string | bounded | `factory.job`, `factory.stage_run`, `factory.attempt`, `factory.agent`, `factory.tool_call`, `factory.gate` | The standard error.type key. A short error kind, never a message. |
+| `factory.troubleshooting_run_id` | string | unbounded | `factory.troubleshooting_run`, `factory.probe`, `factory.triage_issue` | The troubleshooting run. A run is not a job. |
+| `factory.trigger` | string | bounded | `factory.troubleshooting_run` | Why the troubleshooting run started: probe or sweep. |
+| `factory.result` | string | bounded | `factory.troubleshooting_run`, `factory.probe` | How a troubleshooting run or a probe ended, such as healthy, evidence_mismatch, tripped or no_data. |
+| `factory.probe_id` | string | bounded | `factory.probe` | The probe id from the troubleshooting policy. |
+| `factory.issue_action` | string | bounded | `factory.triage_issue` | What the troubleshooter did about a finding: opened, commented, unchanged, deferred or dry_run. |
 <!-- /table:attributes -->
 
 ### Event attributes
@@ -129,6 +137,10 @@ Metrics are for questions about the whole system over time: how deep is the queu
 | `factory_retries_total` | counter | {retry} | `stage` | Retries scheduled after a retryable attempt failure, by stage kind. |
 | `factory_spend_usd_total` | counter | {USD} | `provider`, `stage` | Model spend in United States dollars as metered by the broker, by provider and stage kind. |
 | `factory_redactions_total` | counter | {redaction} | `kind` | Values the attribute guard redacted, truncated or dropped before a span left the process, by kind. |
+| `factory_troubleshooting_runs_total` | counter | {run} | `trigger`, `result` | Troubleshooting runs that ended, by trigger and result. |
+| `factory_probe_results_total` | counter | {probe_result} | `probe`, `result` | Results of the troubleshooter's probes, by probe and result. |
+| `factory_gateway_calls_total` | counter | {call} | `upstream`, `result` | Calls of the troubleshooter's MCP gateway, probes and agent together, by upstream and result. |
+| `factory_triage_issues_total` | counter | {issue} | `action` | The troubleshooter's decisions about triage issues, by action. |
 <!-- /table:metrics -->
 
 `factory_redactions_total` was added in the telemetry gap fix (gap OBS-10) at the lead's approval; architect confirmation pending. Its one label, `kind`, takes the fixed words `redacted`, `truncated` and `dropped`, and no other value. It is raised where the guard raises its own counts (`GuardStats`), and only the kind is passed to it: never the matched text, the pattern id, the key or the value, so no customer value can become a label. `dropped` also counts the values the guard replaced because the scrubber failed (`GuardSnapshot::scrub_failures`), since the original is not passed on in either case. The metric covers the span guard only. The log writer's own redactions are not counted yet.
@@ -171,6 +183,11 @@ A metric event is not a log line and not a span event. The log layer and the spa
 | `provider` | 8 | The model provider the broker reports, such as anthropic. |
 | `queue` | 4 | The name of a work queue, such as ready_stage_runs. |
 | `kind` | 4 | What the attribute guard did to a value: redacted, truncated or dropped. |
+| `trigger` | 4 | Why a troubleshooting run started: probe or sweep. |
+| `result` | 16 | How a troubleshooting run, a probe or a gateway call ended, in the troubleshooter's closed words. |
+| `probe` | 32 | The probe id from the troubleshooting policy. |
+| `upstream` | 4 | The upstream of the MCP gateway: datadog, victoriametrics or postgres. |
+| `action` | 8 | What the troubleshooter did about a finding: opened, commented, unchanged, deferred or dry_run. |
 <!-- /table:labels -->
 
 "Max values" is the size of the closed set the label draws from, with some room to grow. It is not a count of values in use today.

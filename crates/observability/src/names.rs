@@ -24,6 +24,13 @@ pub mod span {
     pub const TOOL_CALL: &str = "factory.tool_call";
     /// One gate evaluation inside a stage run.
     pub const GATE: &str = "factory.gate";
+    /// One run of the troubleshooter (ADR 0021): a probe pass that led to work, or a sweep. Not a
+    /// job: it has no correlation id and no job id.
+    pub const TROUBLESHOOTING_RUN: &str = "factory.troubleshooting_run";
+    /// One deterministic probe of the troubleshooter.
+    pub const PROBE: &str = "factory.probe";
+    /// One decision of the troubleshooter about a triage issue: opened, commented on, deferred.
+    pub const TRIAGE_ISSUE: &str = "factory.triage_issue";
 }
 
 /// Span attribute keys.
@@ -49,6 +56,16 @@ pub mod attr {
     pub const TOKENS_INPUT: &str = "factory.tokens_input";
     pub const TOKENS_OUTPUT: &str = "factory.tokens_output";
     pub const COST_USD: &str = "factory.cost_usd";
+    /// The troubleshooting run (ADR 0021).
+    pub const TROUBLESHOOTING_RUN_ID: &str = "factory.troubleshooting_run_id";
+    /// Why a troubleshooting run started: `probe` or `sweep`.
+    pub const TRIGGER: &str = "factory.trigger";
+    /// How a troubleshooting run or a probe ended, in the troubleshooter's own closed words.
+    pub const RESULT: &str = "factory.result";
+    /// The probe id from `policies/troubleshooting.yaml`.
+    pub const PROBE_ID: &str = "factory.probe_id";
+    /// What the troubleshooter did about a finding's issue.
+    pub const ISSUE_ACTION: &str = "factory.issue_action";
     /// The OpenTelemetry semantic-convention key for the kind of error.
     pub const ERROR_TYPE: &str = "error.type";
 }
@@ -147,7 +164,10 @@ const ALL_SPANS: &[&str] = &[
     span::GATE,
 ];
 
-/// The six kinds of span, in the order they nest.
+/// The spans of the troubleshooter (ADR 0021), which runs outside every job.
+const TROUBLESHOOTER_SPANS: &[&str] = &[span::TROUBLESHOOTING_RUN, span::PROBE, span::TRIAGE_ISSUE];
+
+/// The six kinds of span of a job, in the order they nest, then the three of the troubleshooter.
 pub const SPANS: &[SpanSpec] = &[
     SpanSpec {
         name: span::JOB,
@@ -208,6 +228,21 @@ pub const SPANS: &[SpanSpec] = &[
             attr::OUTCOME,
         ],
         meaning: "One gate evaluation inside a stage run.",
+    },
+    SpanSpec {
+        name: span::TROUBLESHOOTING_RUN,
+        required: &[attr::TROUBLESHOOTING_RUN_ID, attr::TRIGGER, attr::RESULT],
+        meaning: "One run of the troubleshooter, outside every job: the probes that tripped, the agent run and the issue decisions.",
+    },
+    SpanSpec {
+        name: span::PROBE,
+        required: &[attr::TROUBLESHOOTING_RUN_ID, attr::PROBE_ID, attr::RESULT],
+        meaning: "One deterministic probe of the troubleshooter.",
+    },
+    SpanSpec {
+        name: span::TRIAGE_ISSUE,
+        required: &[attr::TROUBLESHOOTING_RUN_ID, attr::ISSUE_ACTION],
+        meaning: "One decision of the troubleshooter about the triage issue of a finding.",
     },
 ];
 
@@ -346,6 +381,41 @@ pub const ATTRIBUTES: &[AttributeSpec] = &[
         spans: ALL_SPANS,
         meaning: "The standard error.type key. A short error kind, never a message.",
     },
+    AttributeSpec {
+        key: attr::TROUBLESHOOTING_RUN_ID,
+        value_type: ValueType::String,
+        cardinality: Cardinality::Unbounded,
+        spans: TROUBLESHOOTER_SPANS,
+        meaning: "The troubleshooting run. A run is not a job.",
+    },
+    AttributeSpec {
+        key: attr::TRIGGER,
+        value_type: ValueType::String,
+        cardinality: Cardinality::Bounded,
+        spans: &[span::TROUBLESHOOTING_RUN],
+        meaning: "Why the troubleshooting run started: probe or sweep.",
+    },
+    AttributeSpec {
+        key: attr::RESULT,
+        value_type: ValueType::String,
+        cardinality: Cardinality::Bounded,
+        spans: &[span::TROUBLESHOOTING_RUN, span::PROBE],
+        meaning: "How a troubleshooting run or a probe ended, such as healthy, evidence_mismatch, tripped or no_data.",
+    },
+    AttributeSpec {
+        key: attr::PROBE_ID,
+        value_type: ValueType::String,
+        cardinality: Cardinality::Bounded,
+        spans: &[span::PROBE],
+        meaning: "The probe id from the troubleshooting policy.",
+    },
+    AttributeSpec {
+        key: attr::ISSUE_ACTION,
+        value_type: ValueType::String,
+        cardinality: Cardinality::Bounded,
+        spans: &[span::TRIAGE_ISSUE],
+        meaning: "What the troubleshooter did about a finding: opened, commented, unchanged, deferred or dry_run.",
+    },
 ];
 
 /// Attributes that the tracing layer adds to every span event, and that are allowed on events
@@ -380,7 +450,7 @@ pub fn is_allowed_attribute(key: &str) -> bool {
 /// Why a span does not have the shape its kind requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapeError {
-    /// The name is not one of the six span kinds.
+    /// The name is not one of the factory's span kinds.
     UnknownSpan(String),
     /// Attributes outside the allowlist, sorted.
     ForbiddenAttributes(Vec<String>),

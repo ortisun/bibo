@@ -792,6 +792,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "factory-troubleshooter"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "diesel",
+ "diesel-async",
+ "factory-composition",
+ "factory-contracts",
+ "factory-domain",
+ "factory-github",
+ "factory-mcp_gateway",
+ "factory-mcp_postgres",
+ "factory-observability",
+ "factory-ports",
+ "factory-runtime",
+ "factory-sandbox",
+ "factory-storage",
+ "factory-testkit",
+ "factory-workflow",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
 name = "factory-worker"
 version = "0.0.0"
 dependencies = [

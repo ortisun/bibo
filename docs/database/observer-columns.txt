@@ -1,4 +1,6 @@
-# Every column of every table that the group factory_observer can read (migration 2026-11-20-002900_observer_role).
+# Every column of every table that the group factory_observer can read (migration 2026-11-20-002900_observer_role, and
+# the troubleshooter's own tables of migration 2026-11-20-003000_troubleshooting_runs, every column but the
+# agent-written issue title operational).
 #
 # Format: <table> <column> <class> [# why, for a sensitive column]. Class is "operational" (granted) or
 # "sensitive" (never granted: a request text, a specification, an issue body, a token or token digest, a key, a
@@ -235,6 +237,47 @@ tenants display_name sensitive # names a customer
 tenants kind operational
 tenants created_at operational
 tenants disabled_at operational
+troubleshooting_daily_counters tenant_id operational
+troubleshooting_daily_counters day operational
+troubleshooting_daily_counters agent_runs operational
+troubleshooting_daily_counters new_issues operational
+troubleshooting_daily_counters comments operational
+troubleshooting_daily_counters spend_micro_usd operational
+troubleshooting_issues tenant_id operational
+troubleshooting_issues fingerprint operational
+troubleshooting_issues category operational
+troubleshooting_issues component operational
+troubleshooting_issues title sensitive # the agent's own words, as the issue title
+troubleshooting_issues repository operational
+troubleshooting_issues issue_number operational
+troubleshooting_issues opened_at operational
+troubleshooting_issues last_comment_day operational
+troubleshooting_issues comments_on_last_day operational
+troubleshooting_probe_state tenant_id operational
+troubleshooting_probe_state probe_id operational
+troubleshooting_probe_state last_outcome operational
+troubleshooting_probe_state last_value operational
+troubleshooting_probe_state last_call_id operational
+troubleshooting_probe_state last_run_id operational
+troubleshooting_probe_state last_checked_at operational
+troubleshooting_probe_state last_tripped_at operational
+troubleshooting_probe_state cooldown_until operational
+troubleshooting_runs tenant_id operational
+troubleshooting_runs id operational
+troubleshooting_runs trigger operational
+troubleshooting_runs state operational
+troubleshooting_runs started_at operational
+troubleshooting_runs ended_at operational
+troubleshooting_runs spend_micro_usd operational
+troubleshooting_runs report_sha256 operational
+troubleshooting_runs gateway_record_sha256 operational
+troubleshooting_runs outcome operational
+troubleshooting_runs agent_ran operational
+troubleshooting_runs dry_run operational
+troubleshooting_runs datadog_enabled operational
+troubleshooting_runs issues_opened operational
+troubleshooting_runs comments_posted operational
+troubleshooting_runs deferred_fingerprints operational
 webhook_deliveries tenant_id operational
 webhook_deliveries id operational
 webhook_deliveries delivery_id operational

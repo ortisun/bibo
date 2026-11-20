@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn the_real_rules_file_parses_with_fifteen_libraries_five_binaries_and_xtask() {
+    fn the_real_rules_file_parses_with_fifteen_libraries_six_binaries_and_xtask() {
         let rules = Rules::parse(&real_rules_text()).expect("the real rules file parses");
         assert_eq!(rules.crates.len(), 15);
         assert_eq!(
@@ -346,7 +346,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["composition"]
         );
-        assert_eq!(rules.apps.len(), 5);
+        assert_eq!(rules.apps.len(), 6);
         assert_eq!(
             rules
                 .tooling
