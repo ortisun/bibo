@@ -98,6 +98,18 @@ pub const WORKSPACE_TARGET: &str = "/workspace";
 /// Where the output directory is mounted, read-write.
 pub const OUT_TARGET: &str = "/out";
 
+/// Where a build inside any sandbox puts its target directory (`CARGO_TARGET_DIR`): under the
+/// output directory, which every profile mounts writable and without `noexec`, which the disk
+/// watchdog counts, and which the host never ingests. The checkout is no place for it: in a
+/// `verify` sandbox it is read-only, and in an `agent` sandbox the ingestion audit refuses every
+/// file under `target/` (real run 32 of scenario E1, ADR 0023).
+pub const BUILD_TARGET_DIR: &str = "/out/target";
+
+/// The temporary directory a build in a sandbox is given (`TMPDIR`). The scratch tmpfs (`/tmp`) and
+/// the home are `noexec`, and `rustdoc` and some tests run the programs they write there, so the
+/// temporary directory is the output directory, which allows it (ADR 0023).
+pub const BUILD_TEMP_DIR: &str = OUT_TARGET;
+
 /// The scratch tmpfs every container has, because the root file system is read-only. Its size is
 /// `SandboxLimits::tmpfs_mb`.
 pub const SCRATCH_TARGET: &str = "/tmp";
@@ -1573,6 +1585,14 @@ mod tests {
     }
 
     // ---- expected mounts ------------------------------------------------------------------------------
+
+    #[test]
+    fn a_build_writes_under_the_output_directory_never_the_workspace_or_the_scratch() {
+        assert!(BUILD_TARGET_DIR.starts_with(&format!("{OUT_TARGET}/")));
+        assert!(!BUILD_TARGET_DIR.starts_with(WORKSPACE_TARGET));
+        assert_eq!(BUILD_TEMP_DIR, OUT_TARGET);
+        assert!(!BUILD_TEMP_DIR.starts_with(SCRATCH_TARGET));
+    }
 
     #[test]
     fn the_expected_mounts_are_the_workspace_the_output_the_scratch_the_overlays_and_the_mask() {

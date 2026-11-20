@@ -46,6 +46,16 @@ pub enum EnvName {
     /// cache writes by default, which the broker refuses (RR-2: they cost twice what its price list
     /// books); with `5m` it sends the five-minute writes the broker prices (captured 2026-11-12).
     ClaudePromptCacheTtl,
+    /// Cargo: where a build the agent starts writes its `target` directory. Outside the workspace,
+    /// which the ingestion audit walks (see [`BuildEnv`]).
+    CargoTargetDir,
+    /// Cargo: its home (registry, configuration). Inside the run's fresh home.
+    CargoHome,
+    /// Cargo: `true`, because the agent's network reaches the broker and nothing else.
+    CargoNetOffline,
+    /// The temporary directory. One that is not `noexec`, so tests and `rustdoc` can run what they
+    /// write there.
+    TmpDir,
 }
 
 /// The shell that starts Claude Code in subscription mode.
@@ -63,7 +73,7 @@ pub const OAUTH_TOKEN_LAUNCHER: &str = concat!(
 
 impl EnvName {
     /// Every name, in the order they are written.
-    pub const ALL: [EnvName; 7] = [
+    pub const ALL: [EnvName; 11] = [
         EnvName::Home,
         EnvName::Path,
         EnvName::AnthropicBaseUrl,
@@ -71,6 +81,10 @@ impl EnvName {
         EnvName::ClaudeMaxRetries,
         EnvName::ClaudeDisableBundledSkills,
         EnvName::ClaudePromptCacheTtl,
+        EnvName::CargoTargetDir,
+        EnvName::CargoHome,
+        EnvName::CargoNetOffline,
+        EnvName::TmpDir,
     ];
 
     /// The variable name.
@@ -84,7 +98,59 @@ impl EnvName {
             Self::ClaudeMaxRetries => "CLAUDE_CODE_MAX_RETRIES",
             Self::ClaudeDisableBundledSkills => "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS",
             Self::ClaudePromptCacheTtl => "CLAUDE_CODE_PROMPT_CACHE_TTL",
+            Self::CargoTargetDir => "CARGO_TARGET_DIR",
+            Self::CargoHome => "CARGO_HOME",
+            Self::CargoNetOffline => "CARGO_NET_OFFLINE",
+            Self::TmpDir => "TMPDIR",
         }
+    }
+}
+
+/// The build environment of an agent tool run: where a `cargo` the agent starts writes, and whether
+/// it may reach a registry (ADR 0023).
+///
+/// The agent runs `cargo build` and `cargo test` in `/workspace`, and without a target directory of
+/// its own cargo writes `target/` there, where the ingestion audit refuses every file under
+/// `deny_write` (real run 32 of scenario E1). The values are the composition root's configuration,
+/// never the request's, the repository's or the agent's: the names are from the closed
+/// [`EnvName`] set and the values are fixed text, so NT-TOOL-06 still holds. `CARGO_HOME` is not a
+/// field: it is always `.cargo` in the run's own home, which is new for every run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildEnv {
+    /// `CARGO_TARGET_DIR`: writable, not `noexec`, never ingested.
+    pub target_dir: String,
+    /// `TMPDIR`: writable and not `noexec`.
+    pub temp_dir: String,
+    /// `CARGO_NET_OFFLINE`: `true` unless the sandbox can reach a registry, which an `agent`
+    /// sandbox cannot.
+    pub offline: bool,
+}
+
+impl Default for BuildEnv {
+    /// The sandbox layout of the ports: the output directory, offline.
+    fn default() -> Self {
+        Self {
+            target_dir: factory_ports::sandbox::BUILD_TARGET_DIR.to_owned(),
+            temp_dir: factory_ports::sandbox::BUILD_TEMP_DIR.to_owned(),
+            offline: true,
+        }
+    }
+}
+
+impl BuildEnv {
+    /// Adds the build variables to `env`, with the cargo home inside `home`.
+    ///
+    /// # Errors
+    /// [`BadEnvValue`] for a value with a control character.
+    pub fn apply(&self, env: ToolEnv, home: &str) -> Result<ToolEnv, BadEnvValue> {
+        let cargo_home = format!("{}/.cargo", home.trim_end_matches('/'));
+        env.set(EnvName::CargoTargetDir, self.target_dir.clone())?
+            .set(EnvName::CargoHome, cargo_home)?
+            .set(
+                EnvName::CargoNetOffline,
+                if self.offline { "true" } else { "false" },
+            )?
+            .set(EnvName::TmpDir, self.temp_dir.clone())
     }
 }
 
@@ -283,6 +349,48 @@ mod tests {
         ] {
             assert_eq!(broker_origin(bad), Err(BadBrokerUrl), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_builders_cargo_writes_outside_the_workspace_in_a_place_that_runs_programs() {
+        let home = "/tmp/h-0000-1";
+        let env = BuildEnv::default()
+            .apply(
+                ToolEnv::new().set(EnvName::Home, home).expect("a home"),
+                home,
+            )
+            .expect("the build variables");
+        let target = env.get(EnvName::CargoTargetDir).expect("a target dir");
+        assert_eq!(target, "/out/target");
+        // Not under the checkout the ingestion audit walks, and not on the `noexec` scratch.
+        assert!(!target.starts_with(factory_ports::sandbox::WORKSPACE_TARGET));
+        assert!(target.starts_with(&format!("{}/", factory_ports::sandbox::OUT_TARGET)));
+        let temp = env.get(EnvName::TmpDir).expect("a temp dir");
+        assert!(!temp.starts_with(factory_ports::sandbox::SCRATCH_TARGET));
+        assert!(!temp.starts_with(factory_ports::sandbox::WORKSPACE_TARGET));
+        assert_eq!(env.get(EnvName::CargoHome), Some("/tmp/h-0000-1/.cargo"));
+        assert_eq!(env.get(EnvName::CargoNetOffline), Some("true"));
+        // A trailing slash on the home does not double the separator.
+        let again = BuildEnv::default()
+            .apply(ToolEnv::new(), "/tmp/h/")
+            .expect("the build variables");
+        assert_eq!(again.get(EnvName::CargoHome), Some("/tmp/h/.cargo"));
+        let online = BuildEnv {
+            offline: false,
+            ..BuildEnv::default()
+        }
+        .apply(ToolEnv::new(), home)
+        .expect("the build variables");
+        assert_eq!(online.get(EnvName::CargoNetOffline), Some("false"));
+    }
+
+    #[test]
+    fn a_build_value_with_a_control_character_is_refused() {
+        let bad = BuildEnv {
+            target_dir: "/out/target\nLD_PRELOAD=/x".to_owned(),
+            ..BuildEnv::default()
+        };
+        assert_eq!(bad.apply(ToolEnv::new(), "/tmp/h"), Err(BadEnvValue));
     }
 
     #[test]

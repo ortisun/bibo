@@ -57,9 +57,24 @@ pub const ALLOWED_ENV: [&str; 8] = [
     "TMPDIR",
 ];
 
-/// Where a build in a `verify` or `fetch_deps` sandbox puts its output: the writable output
-/// directory, because the workspace is read-only there.
-pub const TARGET_DIR: &str = "/out/target";
+/// Where a build in any sandbox puts its output: the writable output directory, because the
+/// workspace is read-only in a `verify` sandbox and ingested from an `agent` one. The sandbox
+/// layout of the ports holds the one value, which the agent tools get too ([`agent_build_env`]).
+pub const TARGET_DIR: &str = factory_ports::sandbox::BUILD_TARGET_DIR;
+
+/// The build environment the agent tools are started with (ADR 0023): the target directory and
+/// the temporary directory of the `verify` sandbox, offline, because an `agent` sandbox's network
+/// reaches the broker's sidecar and nothing else. The runtimes add `CARGO_HOME` in each run's own
+/// home. This is the one place the composition root decides it, beside [`profile_env`], so the
+/// builder's `cargo` and the trusted gates' `cargo` build into the same place.
+#[must_use]
+pub fn agent_build_env() -> factory_runtime::command::BuildEnv {
+    factory_runtime::command::BuildEnv {
+        target_dir: TARGET_DIR.to_owned(),
+        temp_dir: factory_ports::sandbox::BUILD_TEMP_DIR.to_owned(),
+        offline: true,
+    }
+}
 
 /// The path of a program that `cargo build` made in a `verify` sandbox. A bare name is not on the
 /// `PATH` of the image, so a gate that runs the built program (the documentation review runs it
@@ -88,18 +103,20 @@ pub fn built_program(name: &str) -> String {
 /// sandbox's. The `fetch_deps` sandbox is the one that may reach the registry.
 fn profile_env(profile: SandboxProfile) -> Vec<(String, String)> {
     let pairs: &[(&str, &str)] = match profile {
+        // The agent tools start with `env -i` and get their build variables from the runtime's
+        // configuration ([`agent_build_env`]), so the container holds none.
         SandboxProfile::Agent => &[],
         SandboxProfile::Verify => &[
             ("CARGO_TARGET_DIR", TARGET_DIR),
             ("CARGO_HOME", "/home/agent/.cargo"),
             ("CARGO_NET_OFFLINE", "true"),
-            ("TMPDIR", "/out"),
+            ("TMPDIR", factory_ports::sandbox::BUILD_TEMP_DIR),
         ],
         SandboxProfile::FetchDeps => &[
             ("CARGO_TARGET_DIR", TARGET_DIR),
             ("CARGO_HOME", "/home/agent/.cargo"),
             ("CARGO_NET_OFFLINE", "false"),
-            ("TMPDIR", "/out"),
+            ("TMPDIR", factory_ports::sandbox::BUILD_TEMP_DIR),
         ],
     };
     let mut env = vec![("HOME".to_owned(), "/home/agent".to_owned())];
@@ -451,6 +468,33 @@ mod tests {
         // The directory is the one the sandbox tells cargo to build into.
         let env = profile_env(SandboxProfile::Verify);
         assert!(env.contains(&("CARGO_TARGET_DIR".to_owned(), TARGET_DIR.to_owned())));
+    }
+
+    #[test]
+    fn the_builder_and_the_verify_sandbox_build_into_the_same_place_outside_the_workspace() {
+        let build = agent_build_env();
+        let verify = profile_env(SandboxProfile::Verify);
+        let of = |name: &str| {
+            verify
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(of("CARGO_TARGET_DIR"), Some(build.target_dir.clone()));
+        assert_eq!(of("TMPDIR"), Some(build.temp_dir.clone()));
+        assert!(build.offline, "an agent sandbox reaches no registry");
+        assert!(
+            !build
+                .target_dir
+                .starts_with(factory_ports::sandbox::WORKSPACE_TARGET)
+        );
+        // Every variable the build sets is one a sandbox may hold at all.
+        let env = build
+            .apply(factory_runtime::command::ToolEnv::new(), "/tmp/h")
+            .expect("the build variables");
+        for (name, _) in env.pairs() {
+            assert!(ALLOWED_ENV.contains(&name.as_str()), "{}", name.as_str());
+        }
     }
 
     #[test]

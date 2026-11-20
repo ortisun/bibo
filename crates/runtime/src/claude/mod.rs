@@ -45,8 +45,8 @@ use factory_ports::sandbox::SandboxSession;
 
 use crate::attest::{Attestor, Claim, rejected_note};
 use crate::command::{
-    EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, OAUTH_TOKEN_LAUNCHER, ToolCommand,
-    ToolEnv, broker_origin,
+    BuildEnv, EnvName, HARD_DEADLINE_MARGIN_SECONDS, LAUNCHER_SHELL, OAUTH_TOKEN_LAUNCHER,
+    ToolCommand, ToolEnv, broker_origin,
 };
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
@@ -99,6 +99,9 @@ pub struct ClaudeCodeConfig {
     /// How the job token reaches the tool. The composition root sets it from
     /// `credentials.model_providers.mode` of the security policy.
     pub credential: argv::ClaudeCredential,
+    /// Where a `cargo` the agent starts builds, and whether it is offline (ADR 0023). The
+    /// composition root sets it from the sandbox layout.
+    pub build: BuildEnv,
 }
 
 impl Default for ClaudeCodeConfig {
@@ -116,6 +119,7 @@ impl Default for ClaudeCodeConfig {
             max_turns_cap: 200,
             spec_skills: None,
             credential: argv::ClaudeCredential::default(),
+            build: BuildEnv::default(),
         }
     }
 }
@@ -318,8 +322,10 @@ impl ClaudeCodeRuntime {
             return early(never_started(), version);
         };
         let env = ToolEnv::new()
-            .set(EnvName::Home, home)
+            .set(EnvName::Home, home.clone())
             .and_then(|e| e.set(EnvName::Path, self.config.path.clone()))
+            // A `cargo` the agent starts builds outside the workspace the ingestion audit walks.
+            .and_then(|e| self.config.build.apply(e, &home))
             .and_then(|e| e.set(EnvName::AnthropicBaseUrl, base))
             .and_then(|e| e.set(EnvName::ClaudeDisableNonessentialTraffic, "1"))
             .and_then(|e| {
