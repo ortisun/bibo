@@ -238,6 +238,21 @@ fn negative_nt_pol_02_each_widening_is_refused_and_names_its_key() {
             }),
         ),
         (
+            "raises the design rework cap",
+            "budgets.hard_ceilings.per_job.max_design_rework_iterations",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_design_rework_iterations"] = 3.into();
+            }),
+        ),
+        (
+            "raises the specification rework cap",
+            "budgets.hard_ceilings.per_job.max_specification_rework_iterations",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_specification_rework_iterations"] =
+                    3.into();
+            }),
+        ),
+        (
             "adds a tool grant",
             "tools.entries[net.shell]",
             Box::new(|j| {
@@ -726,6 +741,19 @@ fn negative_nt_pol_02_tightenings_are_accepted() {
             "lowers the rework cap to zero",
             Box::new(|j| {
                 j["budgets"]["hard_ceilings"]["per_job"]["max_rework_iterations"] = 0.into()
+            }),
+        ),
+        (
+            "lowers the design rework cap to zero",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_design_rework_iterations"] = 0.into()
+            }),
+        ),
+        (
+            "lowers the specification rework cap to one",
+            Box::new(|j| {
+                j["budgets"]["hard_ceilings"]["per_job"]["max_specification_rework_iterations"] =
+                    1.into()
             }),
         ),
         (

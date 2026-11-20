@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::LazyLock;
 
+use factory_domain::machines::limits::ReworkTrack;
 use factory_domain::policy::authority::{
     ActionContext, ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry, AutonomyLevel,
     ChangeFacts,
@@ -404,11 +405,12 @@ fn security_snapshot(e: &PolicyEngine) -> Vec<(u64, String)> {
         }
     }
     let limits = e.budget.rework_limits();
-    out.push((u64::from(limits.code.get()), "rework cap, code".to_owned()));
-    out.push((
-        u64::from(limits.documentation.get()),
-        "rework cap, documentation".to_owned(),
-    ));
+    for track in ReworkTrack::ALL {
+        out.push((
+            u64::from(limits.cap(*track).get()),
+            format!("rework cap, {track}"),
+        ));
+    }
     out.push((
         u64::from(e.budget.repair_cap().get()),
         "repair cap".to_owned(),

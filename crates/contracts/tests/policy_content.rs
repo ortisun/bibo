@@ -632,6 +632,8 @@ fn the_rework_and_repair_caps_are_two_and_a_project_can_only_lower_them() {
     let policy = security();
     let per_job = &policy.budgets.hard_ceilings.per_job;
     assert_eq!(per_job.max_rework_iterations, 2);
+    assert_eq!(per_job.max_specification_rework_iterations, 2);
+    assert_eq!(per_job.max_design_rework_iterations, 2);
     assert_eq!(per_job.max_documentation_rework_iterations, 2);
     assert_eq!(policy.budgets.rework.default_rounds, 2);
     assert_eq!(policy.budgets.rework.project_override, "lower_only");

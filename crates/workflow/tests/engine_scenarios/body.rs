@@ -1311,6 +1311,174 @@ async fn rework_stops_at_the_cap_of_two_and_then_a_person_decides() {
     );
 }
 
+/// A job whose specification was sent back twice by its gate and then passed: two rounds on the
+/// specification count, as in run 29 of scenario E1. The stages up to `REPOSITORY_INTELLIGENCE`
+/// ran first, so the next stage to run is `DOMAIN_DISCOVERY`.
+async fn specification_converged_in_two_rounds(world: &World) -> factory_domain::ids::JobId {
+    let job = world.admitted_job().await;
+    run_stages(world, 2).await; // INTAKE, REPOSITORY_INTELLIGENCE
+    world
+        .script(StageKind::Specification)
+        .queue_evals([Eval::Fail("spec-first"), Eval::Fail("spec-second")]);
+    run_stages(world, 3).await; // fails, fails, passes
+    let view = world.view(job).await;
+    assert_eq!(view.specification_rework_rounds, 2);
+    assert_eq!(view.design_rework_rounds, 0);
+    assert_eq!(view.code_rework_rounds, 0);
+    assert_eq!(
+        status_of(&view, StageKind::Specification),
+        StageRunStatus::Passed
+    );
+    assert_eq!(view.runs_of(StageKind::Specification).count(), 3);
+    job
+}
+
+#[tokio::test]
+async fn two_specification_rounds_leave_the_architecture_its_own_two_rounds() {
+    // Run 29 of scenario E1: the specification used its two rounds, and the very first
+    // architecture gate failure asked a person (rework-limit) because both were on one count.
+    let world = World::new().await;
+    let job = specification_converged_in_two_rounds(&world).await;
+    world.script(StageKind::Architecture).queue_evals([
+        Eval::Fail("design-first"),
+        Eval::Fail("design-second"),
+        Eval::Fail("design-third"),
+    ]);
+    run_stages(&world, 2).await; // DOMAIN_DISCOVERY passes, ARCHITECTURE fails
+    let view = world.view(job).await;
+    // Two runs replaced by the specification rounds, the one that failed, and its rework.
+    assert_eq!(
+        statuses_of(&view, StageKind::Architecture),
+        vec![
+            StageRunStatus::Superseded,
+            StageRunStatus::Superseded,
+            StageRunStatus::ReworkRequested,
+            StageRunStatus::Ready
+        ],
+        "the first architecture failure is reworked, not sent to a person"
+    );
+    assert_eq!(view.design_rework_rounds, 1);
+    assert_eq!(view.specification_rework_rounds, 2);
+    assert_eq!(view.code_rework_rounds, 0);
+    assert_eq!(view.status, JobStatus::Active);
+
+    run_stages(&world, 1).await; // the second failure: the second design round
+    let view = world.view(job).await;
+    assert_eq!(view.design_rework_rounds, 2);
+    assert_eq!(view.status, JobStatus::Active);
+
+    run_stages(&world, 1).await; // the third failure: the cap, a person decides
+    let view = world.view(job).await;
+    assert_eq!(view.design_rework_rounds, 2, "no third design round");
+    assert_eq!(
+        status_of(&view, StageKind::Architecture),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+    // Two runs replaced by the specification rounds, the first run and two reworks.
+    assert_eq!(view.runs_of(StageKind::Architecture).count(), 5);
+    // Neither count of a later phase moved.
+    assert_eq!(view.code_rework_rounds, 0);
+    assert_eq!(view.documentation_rework_rounds, 0);
+}
+
+#[tokio::test]
+async fn after_specification_and_design_rounds_the_implementation_still_has_its_two() {
+    let world = World::new().await;
+    let job = specification_converged_in_two_rounds(&world).await;
+    world
+        .script(StageKind::Architecture)
+        .queue_evals([Eval::Fail("design-first")]);
+    world.script(StageKind::Validation).queue_evals([
+        Eval::Fail("code-first"),
+        Eval::Fail("code-second"),
+        Eval::Fail("code-third"),
+    ]);
+    // DOMAIN_DISCOVERY, ARCHITECTURE fails, ARCHITECTURE passes, TASK_PLANNING, IMPLEMENTATION,
+    // VALIDATION fails, IMPLEMENTATION, VALIDATION fails, IMPLEMENTATION, VALIDATION fails.
+    run_stages(&world, 10).await;
+    let view = world.view(job).await;
+    assert_eq!(view.specification_rework_rounds, 2);
+    assert_eq!(view.design_rework_rounds, 1);
+    assert_eq!(view.code_rework_rounds, 2, "both code rounds were there");
+    // The original run, one for each upstream round (two specification rounds and one design
+    // round replaced it), and two code rounds. A third code round would make seven.
+    assert_eq!(view.runs_of(StageKind::Implementation).count(), 6);
+    assert_eq!(
+        status_of(&view, StageKind::Validation),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+}
+
+#[tokio::test]
+async fn a_person_may_send_the_design_back_when_the_code_count_is_used_up() {
+    // A full code count does not stop a person from sending work back to the architecture: the
+    // round goes on the design count.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 7).await; // through IMPLEMENTATION
+    world.script(StageKind::Validation).queue_evals([
+        Eval::Fail("code-first"),
+        Eval::Fail("code-second"),
+        Eval::Fail("code-third"),
+    ]);
+    run_stages(&world, 5).await;
+    let view = world.view(job).await;
+    assert_eq!(view.code_rework_rounds, 2);
+    let waiting = view.newest(StageKind::Validation).expect("a run");
+    assert_eq!(waiting.status, StageRunStatus::WaitingForHuman);
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+
+    // Another code round is refused by G_HUMAN_REWORK_ALLOWED: the code cap is used up.
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: waiting.id,
+            },
+            Decision::RequestRework {
+                target: StageKind::Implementation,
+                instructions: None,
+            },
+        )
+        .await;
+    assert!(
+        matches!(
+            &refused,
+            Err(EngineError::GuardUnmet(failure))
+                if failure.guard == factory_domain::state::Guard::HumanReworkAllowed
+        ),
+        "{refused:?}"
+    );
+
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: waiting.id,
+            },
+            Decision::RequestRework {
+                target: StageKind::Architecture,
+                instructions: None,
+            },
+        )
+        .await
+        .expect("a design round is still there");
+    let view = world.view(job).await;
+    assert_eq!(view.design_rework_rounds, 1);
+    assert_eq!(view.code_rework_rounds, 2);
+    assert_eq!(view.status, JobStatus::Active);
+    assert_eq!(
+        statuses_of(&view, StageKind::Architecture),
+        vec![StageRunStatus::Superseded, StageRunStatus::Ready]
+    );
+}
+
 #[tokio::test]
 async fn negative_nt_bud_03_a_repeated_failure_asks_a_person_after_one_round() {
     // The same failing check twice means another round would not help.

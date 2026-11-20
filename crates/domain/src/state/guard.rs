@@ -79,7 +79,7 @@ string_enum! {
         EscalationRequired = "G_ESCALATION_REQUIRED",
         /// The gate decision is PASS and is persisted, every acceptance criterion of the stage contract has a ledger entry, and every mandatory gate report is PASSED or NOT_APPLICABLE with a recorded reason. No gate report is BLOCKED.
         GatePassEvidenced = "G_GATE_PASS_EVIDENCED",
-        /// The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, rework rounds used are below the cap of two (code and documentation each have their own count), the failing set differs from the previous round, and budget remains. After the second round a human decides.
+        /// The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, the rework rounds used on the count of the target stage are below its cap of two, the failing set differs from the previous round, and budget remains. The specification (SPECIFICATION), the design (ARCHITECTURE and TASK_PLANNING), the code (IMPLEMENTATION) and the documentation (DOCUMENTING) each have their own count, so rounds on one never use the rounds of another (ADR 0022). After the second round on a count a human decides.
         ReworkAllowed = "G_REWORK_ALLOWED",
         /// The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate, or a finding that justifies the verdict has a defect class that only a person can decide (specification, or policy; see defect_routing).
         NeedsHumanVerdict = "G_NEEDS_HUMAN_VERDICT",
@@ -91,7 +91,7 @@ string_enum! {
         AnswerRecorded = "G_ANSWER_RECORDED",
         /// The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, the evidence digest the human saw equals the current evidence digest, and every warning of the rule translation-unfaithful in the gate reports of that evidence has a recorded human decision.
         ApproverAuthorized = "G_APPROVER_AUTHORIZED",
-        /// The principal holds the approver or operator role and the rework rounds used are below the cap of two. The stagnation detector does not apply to human requests. After the second round a human must choose to continue, with the decision recorded.
+        /// The principal holds the approver or operator role and the rework rounds used on the count of the target the person names are below its cap of two (the four counts of G_REWORK_ALLOWED). The stagnation detector does not apply to human requests. After the second round on a count a human must choose to continue, with the decision recorded.
         HumanReworkAllowed = "G_HUMAN_REWORK_ALLOWED",
         /// An authorized approver recorded a reject decision with a reason.
         HumanRejected = "G_HUMAN_REJECTED",

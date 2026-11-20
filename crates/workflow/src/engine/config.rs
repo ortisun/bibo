@@ -98,7 +98,8 @@ pub struct EngineConfig {
     pub heartbeat_interval: Duration,
     /// The grace period for tearing down a cancelled attempt.
     pub teardown_grace: Duration,
-    /// The rework caps. Never above two (ADR 0009 item 6).
+    /// The rework caps, one for each count (ADR 0022). Never above two (ADR 0009 item 6). A
+    /// composition root sets them from the policy's `budgets.hard_ceilings.per_job`.
     pub rework_limits: ReworkLimits,
     /// The repair cap after an invalid output. Never above two (ADR 0010).
     pub repair_cap: RepairCap,
@@ -216,8 +217,9 @@ mod tests {
         assert_eq!(config.lease_ttl, Duration::from_secs(60));
         assert_eq!(config.heartbeat_interval, Duration::from_secs(15));
         assert_eq!(config.teardown_grace, Duration::from_secs(30));
-        assert_eq!(config.rework_limits.code.get(), 2);
-        assert_eq!(config.rework_limits.documentation.get(), 2);
+        for track in factory_domain::machines::limits::ReworkTrack::ALL {
+            assert_eq!(config.rework_limits.cap(*track).get(), 2, "{track}");
+        }
         assert_eq!(config.repair_cap.get(), 2);
         assert_eq!(config.scope.len(), 13);
         assert_eq!(config.validate(), Ok(()));

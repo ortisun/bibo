@@ -54,7 +54,11 @@ pub struct JobView {
     pub status: JobStatus,
     /// Its stage runs, in the order they were created.
     pub stage_runs: Vec<StageRunView>,
-    /// Rework rounds used on the code count.
+    /// Rework rounds used on the specification count (re-runs of `SPECIFICATION`).
+    pub specification_rework_rounds: u8,
+    /// Rework rounds used on the design count (re-runs of `ARCHITECTURE` and `TASK_PLANNING`).
+    pub design_rework_rounds: u8,
+    /// Rework rounds used on the code count (re-runs of `IMPLEMENTATION`).
     pub code_rework_rounds: u8,
     /// Rework rounds used on the documentation count.
     pub documentation_rework_rounds: u8,
@@ -181,6 +185,8 @@ impl Engine {
             job,
             status: stored.value.status,
             stage_runs,
+            specification_rework_rounds: timeline.rework.used(ReworkTrack::Specification),
+            design_rework_rounds: timeline.rework.used(ReworkTrack::Design),
             code_rework_rounds: timeline.rework.used(ReworkTrack::Code),
             documentation_rework_rounds: timeline.rework.used(ReworkTrack::Documentation),
         })

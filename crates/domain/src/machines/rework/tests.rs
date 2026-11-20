@@ -6,6 +6,14 @@ use crate::machines::limits::{ReworkLedger, ReworkLimits, ReworkTrack};
 use crate::state::{StageRunEvent, StageRunStatus, Status};
 use crate::vocabulary::{HumanRole, StageKind};
 
+/// A ledger with `code` rounds used on the code count and `documentation` on the documentation
+/// count, and none on the specification and design counts.
+fn code_docs(code: u8, documentation: u8) -> ReworkLedger {
+    ReworkLedger::default()
+        .with_used(ReworkTrack::Code, code)
+        .with_used(ReworkTrack::Documentation, documentation)
+}
+
 fn route_of(from: StageKind, cause: ReworkCause) -> Result<StageKind, NoReworkRoute> {
     route(from, cause).map(|r| r.target)
 }
@@ -305,7 +313,7 @@ fn the_first_validation_failure_goes_back_to_implementation_as_round_one() {
     assert_eq!(plan.target, StageKind::Implementation);
     assert_eq!(plan.track, ReworkTrack::Code);
     assert_eq!(plan.round, 1);
-    assert_eq!(plan.ledger_after, ReworkLedger::new(1, 0));
+    assert_eq!(plan.ledger_after, code_docs(1, 0));
     assert_eq!(decision.event(), StageRunEvent::GateRequiresRework);
     assert_eq!(
         StageRunStatus::Gating.apply(decision.event()),
@@ -315,14 +323,14 @@ fn the_first_validation_failure_goes_back_to_implementation_as_round_one() {
 
 #[test]
 fn the_second_round_is_still_allowed_and_the_third_is_not() {
-    let second = decide_gate_rework(&gate_request(StageKind::Review, ReworkLedger::new(1, 0)));
+    let second = decide_gate_rework(&gate_request(StageKind::Review, code_docs(1, 0)));
     let GateReworkDecision::Rework(plan) = second else {
         panic!("{second:?}");
     };
     assert_eq!(plan.round, 2);
-    assert_eq!(plan.ledger_after, ReworkLedger::new(2, 0));
+    assert_eq!(plan.ledger_after, code_docs(2, 0));
 
-    let third = decide_gate_rework(&gate_request(StageKind::Review, ReworkLedger::new(2, 0)));
+    let third = decide_gate_rework(&gate_request(StageKind::Review, code_docs(2, 0)));
     assert_eq!(
         third,
         GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit)
@@ -336,14 +344,14 @@ fn the_second_round_is_still_allowed_and_the_third_is_not() {
 
 #[test]
 fn documentation_rework_has_its_own_count() {
-    let mut request = gate_request(StageKind::DocumentationReview, ReworkLedger::new(2, 0));
+    let mut request = gate_request(StageKind::DocumentationReview, code_docs(2, 0));
     request.defect = Some(DefectClass::Documentation);
     let GateReworkDecision::Rework(plan) = decide_gate_rework(&request) else {
         panic!("documentation rework should still have both rounds");
     };
     assert_eq!(plan.target, StageKind::Documenting);
     assert_eq!(plan.track, ReworkTrack::Documentation);
-    assert_eq!(plan.ledger_after, ReworkLedger::new(2, 1));
+    assert_eq!(plan.ledger_after, code_docs(2, 1));
 
     // Code rework found by the same stage is charged to the full code count.
     request.defect = Some(DefectClass::CodeBehavior);
@@ -354,16 +362,77 @@ fn documentation_rework_has_its_own_count() {
 }
 
 #[test]
+fn two_specification_rounds_leave_the_architecture_and_the_implementation_their_own() {
+    // Run 29 of scenario E1: the specification converged in two rounds, then the first
+    // architecture gate failure was refused with rework-limit because both were on the code count.
+    let mut ledger = ReworkLedger::default();
+    for round in 1..=2 {
+        let GateReworkDecision::Rework(plan) =
+            decide_gate_rework(&gate_request(StageKind::Specification, ledger))
+        else {
+            panic!("specification round {round}");
+        };
+        assert_eq!(plan.track, ReworkTrack::Specification);
+        assert_eq!(plan.round, round);
+        ledger = plan.ledger_after;
+    }
+    assert_eq!(
+        decide_gate_rework(&gate_request(StageKind::Specification, ledger)),
+        GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit),
+        "a third specification round goes to a person"
+    );
+
+    // The architecture still has both design rounds; the third goes to a person.
+    for round in 1..=2 {
+        let GateReworkDecision::Rework(plan) =
+            decide_gate_rework(&gate_request(StageKind::Architecture, ledger))
+        else {
+            panic!("architecture round {round}");
+        };
+        assert_eq!(plan.target, StageKind::Architecture);
+        assert_eq!(plan.track, ReworkTrack::Design);
+        assert_eq!(plan.round, round);
+        ledger = plan.ledger_after;
+    }
+    assert_eq!(
+        decide_gate_rework(&gate_request(StageKind::Architecture, ledger)),
+        GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit),
+        "a third design round goes to a person"
+    );
+    // The task plan shares the design count with the architecture it is cut from.
+    assert_eq!(
+        decide_gate_rework(&gate_request(StageKind::TaskPlanning, ledger)),
+        GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit)
+    );
+
+    // The implementation still has both of its rounds.
+    for round in 1..=2 {
+        let GateReworkDecision::Rework(plan) =
+            decide_gate_rework(&gate_request(StageKind::Validation, ledger))
+        else {
+            panic!("code round {round}");
+        };
+        assert_eq!(plan.track, ReworkTrack::Code);
+        assert_eq!(plan.round, round);
+        ledger = plan.ledger_after;
+    }
+    assert_eq!(ledger.used(ReworkTrack::Specification), 2);
+    assert_eq!(ledger.used(ReworkTrack::Design), 2);
+    assert_eq!(ledger.used(ReworkTrack::Code), 2);
+    assert_eq!(ledger.used(ReworkTrack::Documentation), 0);
+}
+
+#[test]
 fn a_lower_cap_stops_rework_sooner_and_a_higher_policy_value_cannot_buy_a_round() {
-    let mut request = gate_request(StageKind::Validation, ReworkLedger::new(1, 0));
-    request.limits = ReworkLimits::from_policy(1, 2);
+    let mut request = gate_request(StageKind::Validation, code_docs(1, 0));
+    request.limits = ReworkLimits::default().with_policy(ReworkTrack::Code, 1);
     assert_eq!(
         decide_gate_rework(&request),
         GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit)
     );
 
-    let mut request = gate_request(StageKind::Validation, ReworkLedger::new(2, 0));
-    request.limits = ReworkLimits::from_policy(9, 9);
+    let mut request = gate_request(StageKind::Validation, code_docs(2, 0));
+    request.limits = ReworkLimits::uniform(9);
     assert_eq!(
         decide_gate_rework(&request),
         GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit)
@@ -373,7 +442,7 @@ fn a_lower_cap_stops_rework_sooner_and_a_higher_policy_value_cannot_buy_a_round(
 #[test]
 fn a_cap_of_zero_sends_every_finding_to_a_human() {
     let mut request = gate_request(StageKind::Validation, ReworkLedger::default());
-    request.limits = ReworkLimits::from_policy(0, 0);
+    request.limits = ReworkLimits::uniform(0);
     assert_eq!(
         decide_gate_rework(&request),
         GateReworkDecision::NeedsHuman(NeedsHumanCause::ReworkLimit)
@@ -382,7 +451,7 @@ fn a_cap_of_zero_sends_every_finding_to_a_human() {
 
 #[test]
 fn the_same_findings_twice_go_to_a_human_even_with_rounds_left() {
-    let mut request = gate_request(StageKind::Validation, ReworkLedger::new(1, 0));
+    let mut request = gate_request(StageKind::Validation, code_docs(1, 0));
     request.failing_set_differs = false;
     assert_eq!(
         decide_gate_rework(&request),
@@ -455,7 +524,7 @@ fn a_rework_plan_names_the_stages_whose_old_runs_are_replaced() {
 #[test]
 fn repeated_findings_use_exactly_the_cap_and_then_stop() {
     for configured in 0..=5u8 {
-        let limits = ReworkLimits::from_policy(configured, configured);
+        let limits = ReworkLimits::uniform(configured);
         let mut ledger = ReworkLedger::default();
         let mut rounds = 0;
         for _ in 0..20 {
@@ -571,7 +640,7 @@ fn a_specification_finding_asks_a_person_except_where_the_specification_is_made(
         panic!("a specification defect at SPECIFICATION is reworked");
     };
     assert_eq!(plan.target, StageKind::Specification);
-    assert_eq!(plan.track, ReworkTrack::Code);
+    assert_eq!(plan.track, ReworkTrack::Specification);
 }
 
 #[test]
@@ -608,7 +677,7 @@ fn a_class_only_a_person_decides_does_not_use_up_a_round() {
         from: StageKind::Review,
         defect: Some(DefectClass::Policy),
         finding: GateFinding::VerdictChangesRequired,
-        ledger: ReworkLedger::new(2, 2),
+        ledger: code_docs(2, 2),
         limits: ReworkLimits::default(),
         failing_set_differs: false,
         budget_remains: false,
@@ -771,7 +840,7 @@ fn a_human_request_after_the_cap_is_refused_until_a_human_chooses_to_go_on() {
         StageKind::Approval,
         StageKind::Implementation,
         &roles,
-        ReworkLedger::new(2, 0),
+        code_docs(2, 0),
     ));
     assert!(
         matches!(decision, HumanReworkDecision::Refused(_)),
@@ -920,20 +989,24 @@ fn only_agent_produced_stages_are_targets() {
 
 #[test]
 fn the_cap_and_the_counts_follow_the_target_a_person_names() {
-    // Rework to DOCUMENTING is charged to the documentation count, any other to the code count.
+    // Rework to DOCUMENTING is charged to the documentation count, to ARCHITECTURE or
+    // TASK_PLANNING to the design count, and to IMPLEMENTATION to the code count (ADR 0022).
     let to_documenting = approver_sends(StageKind::Approval, StageKind::Documenting);
     let HumanReworkDecision::Rework(plan) = &to_documenting else {
         panic!("{to_documenting:?}");
     };
     assert_eq!(plan.track, ReworkTrack::Documentation);
-    assert_eq!(plan.ledger_after, ReworkLedger::new(0, 1));
+    assert_eq!(plan.ledger_after, code_docs(0, 1));
 
     let to_architecture = approver_sends(StageKind::Approval, StageKind::Architecture);
     let HumanReworkDecision::Rework(plan) = &to_architecture else {
         panic!("{to_architecture:?}");
     };
-    assert_eq!(plan.track, ReworkTrack::Code);
-    assert_eq!(plan.ledger_after, ReworkLedger::new(1, 0));
+    assert_eq!(plan.track, ReworkTrack::Design);
+    assert_eq!(
+        plan.ledger_after,
+        ReworkLedger::default().with_used(ReworkTrack::Design, 1)
+    );
 
     // A full code count does not stop a documentation round, and the other way round.
     let roles = [HumanRole::Approver];
@@ -941,28 +1014,42 @@ fn the_cap_and_the_counts_follow_the_target_a_person_names() {
         decide_human_rework(&human_request(StageKind::Approval, target, &roles, ledger))
     };
     assert!(matches!(
-        request(StageKind::Documenting, ReworkLedger::new(2, 0)),
+        request(StageKind::Documenting, code_docs(2, 0)),
         HumanReworkDecision::Rework(_)
     ));
     assert!(matches!(
-        request(StageKind::Implementation, ReworkLedger::new(0, 2)),
+        request(StageKind::Implementation, code_docs(0, 2)),
         HumanReworkDecision::Rework(_)
     ));
-    for target in [
-        StageKind::Architecture,
-        StageKind::TaskPlanning,
-        StageKind::Implementation,
-    ] {
+    assert!(matches!(
+        request(StageKind::Implementation, code_docs(2, 0)),
+        HumanReworkDecision::Refused(_)
+    ));
+    // A full code count does not stop a person from sending the design back, and a full design
+    // count stops the design and not the code.
+    let design_full = ReworkLedger::default().with_used(ReworkTrack::Design, 2);
+    for target in [StageKind::Architecture, StageKind::TaskPlanning] {
         assert!(
             matches!(
-                request(target, ReworkLedger::new(2, 0)),
+                request(target, code_docs(2, 0)),
+                HumanReworkDecision::Rework(_)
+            ),
+            "{target}"
+        );
+        assert!(
+            matches!(
+                request(target, design_full),
                 HumanReworkDecision::Refused(_)
             ),
             "{target}"
         );
     }
     assert!(matches!(
-        request(StageKind::Documenting, ReworkLedger::new(0, 2)),
+        request(StageKind::Implementation, design_full),
+        HumanReworkDecision::Rework(_)
+    ));
+    assert!(matches!(
+        request(StageKind::Documenting, code_docs(0, 2)),
         HumanReworkDecision::Refused(_)
     ));
 }
@@ -976,7 +1063,7 @@ fn a_refused_target_is_reported_before_the_role_and_the_cap_are_looked_at() {
         StageKind::Review,
         StageKind::Documenting,
         &roles,
-        ReworkLedger::new(2, 2),
+        code_docs(2, 2),
     ));
     assert!(matches!(
         decision,

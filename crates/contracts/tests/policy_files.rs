@@ -86,14 +86,10 @@ fn the_security_policy_says_what_the_other_work_packages_depend_on() {
 
     // The rework cap in the file is the default the architect decided.
     assert!(policy.budgets.hard_ceilings.per_job.max_rework_iterations <= 2);
-    assert!(
-        policy
-            .budgets
-            .hard_ceilings
-            .per_job
-            .max_documentation_rework_iterations
-            <= 2
-    );
+    let per_job = &policy.budgets.hard_ceilings.per_job;
+    assert!(per_job.max_specification_rework_iterations <= 2);
+    assert!(per_job.max_design_rework_iterations <= 2);
+    assert!(per_job.max_documentation_rework_iterations <= 2);
     assert_eq!(policy.budgets.rework.default_rounds, 2);
 
     // The one-line controls the threat model relies on.

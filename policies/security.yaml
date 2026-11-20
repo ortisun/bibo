@@ -1158,13 +1158,22 @@ webhook:
 # Starting values only; tune with measured data. Raising a ceiling is an
 # always_human decision.
 #
-# Rework cap (ADR 0009 item 6). `max_rework_iterations` and
-# `max_documentation_rework_iterations` are CONFIGURABLE VALUES WHOSE DEFAULT IS 2:
-# after two rework rounds the stage goes to a human, who decides. A project
-# policy may lower either value (tighten-only). Raising either above 2 is a
-# widening and needs the `raise_budget_ceiling` human decision in approval.yaml.
-# The engine takes the lower of this value and the ADR 0009 default, and a test
-# in the policy-evaluation work package fails if this file exceeds 2.
+# Rework cap (ADR 0009 item 6, ADR 0022). A job has four rework counts, one per
+# phase, charged by the stage a round sends work back to:
+#   max_specification_rework_iterations  re-runs of SPECIFICATION (the clarify loop)
+#   max_design_rework_iterations         re-runs of ARCHITECTURE and TASK_PLANNING
+#   max_rework_iterations                re-runs of IMPLEMENTATION (code; validation
+#                                        and review findings go there)
+#   max_documentation_rework_iterations  re-runs of DOCUMENTING
+# Each is a CONFIGURABLE VALUE WHOSE DEFAULT IS 2: after two rework rounds on one
+# count the stage goes to a human, who decides. Rounds on one count never use the
+# rounds of another, so a specification that needed two rounds to converge leaves
+# the architecture and the implementation their own. A project policy may lower
+# any value (tighten-only). Raising one above 2 is a widening and needs the
+# `raise_budget_ceiling` human decision in approval.yaml. The engine takes the
+# lower of each value and the ADR 0009 default, refuses to load a file where one
+# is above 2, and a test in the policy-evaluation work package fails if this file
+# exceeds 2.
 #
 # Turn and tool-call caps. The agent CLI runs inside the sandbox, so the factory
 # does not see individual tool calls. The broker therefore counts MODEL REQUESTS
@@ -1187,7 +1196,7 @@ budgets:
   turn_accounting: broker_model_request_count
   hard_ceilings:
     per_task:     { max_usd: 8,   max_input_tokens: 4000000,  max_output_tokens: 400000,  max_turns: 60,  max_tool_calls: 1500, max_wall_clock_s: 3600 }
-    per_job:      { max_usd: 25,  max_rework_iterations: 2, max_documentation_rework_iterations: 2, max_wall_clock_s: 14400, max_delegation_depth: 2 }
+    per_job:      { max_usd: 25,  max_rework_iterations: 2, max_specification_rework_iterations: 2, max_design_rework_iterations: 2, max_documentation_rework_iterations: 2, max_wall_clock_s: 14400, max_delegation_depth: 2 }
     per_repo_day: { max_usd: 100, max_jobs_started: 40 }
     per_org_day:  { max_usd: 500 }
   rework:

@@ -195,8 +195,10 @@
     "hard_ceilings": {
       "per_job": {
         "max_delegation_depth": 2,
+        "max_design_rework_iterations": 2,
         "max_documentation_rework_iterations": 2,
         "max_rework_iterations": 2,
+        "max_specification_rework_iterations": 2,
         "max_usd": 25.0,
         "max_wall_clock_s": 14400
       },

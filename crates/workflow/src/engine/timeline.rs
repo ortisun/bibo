@@ -300,7 +300,10 @@ pub(crate) fn window_of(attempts: &[AttemptRecord], answers: &[AnswerRecord]) ->
 /// therefore the rounds whose set holds that stage, and a round is charged to the stage it
 /// targeted: walking the stages in pipeline order, the rounds that targeted a stage are the runs
 /// it has with a predecessor, less the rounds of earlier targets that also replaced it. The count
-/// it is charged to is `ReworkTrack::for_target`, the rule that charged it when it was made.
+/// it is charged to is `ReworkTrack::for_target`. Nothing about the count is stored with a run, so
+/// a job created before a change to that rule (ADR 0022 split the specification and the design
+/// off the code count) is counted under the rule in force, the same as a new job: its rounds are
+/// all still counted, each on the count its target now belongs to.
 ///
 /// This inverts `rework_stages`, the function that created the runs, and holds while every target
 /// replaces only itself and the stages after it (the `rework_stages_replace_only_later_stages`
@@ -313,7 +316,10 @@ pub(crate) fn rework_ledger<'a>(runs: impl IntoIterator<Item = &'a StageRun>) ->
             *replaced.entry(position(run.kind)).or_default() += 1;
         }
     }
-    let (mut code, mut documentation) = (0_u32, 0_u32);
+    // Rounds on each count, in the order of `ReworkTrack::ALL`. A `u32` sum that saturates, then
+    // a saturating narrowing to the ledger's `u8`: a count past 255 reads as 255, which is above
+    // every cap, so it can only refuse a round, never grant one.
+    let mut used: BTreeMap<ReworkTrack, u32> = BTreeMap::new();
     let mut rounds: Vec<(StageKind, u32)> = Vec::new();
     for kind in StageKind::ALL.iter().copied() {
         let seen = replaced.get(&position(kind)).copied().unwrap_or(0);
@@ -323,16 +329,14 @@ pub(crate) fn rework_ledger<'a>(runs: impl IntoIterator<Item = &'a StageRun>) ->
             .map(|(_, count)| *count)
             .sum();
         let targeted = seen.saturating_sub(carried);
-        match ReworkTrack::for_target(kind) {
-            ReworkTrack::Code => code = code.saturating_add(targeted),
-            ReworkTrack::Documentation => documentation = documentation.saturating_add(targeted),
-        }
+        let count = used.entry(ReworkTrack::for_target(kind)).or_default();
+        *count = count.saturating_add(targeted);
         rounds.push((kind, targeted));
     }
-    ReworkLedger::new(
-        u8::try_from(code).unwrap_or(u8::MAX),
-        u8::try_from(documentation).unwrap_or(u8::MAX),
-    )
+    used.into_iter()
+        .fold(ReworkLedger::default(), |ledger, (track, rounds)| {
+            ledger.with_used(track, u8::try_from(rounds).unwrap_or(u8::MAX))
+        })
 }
 
 /// The digest of what failed in the last rework round of each stage kind, by pipeline position.
@@ -632,9 +636,12 @@ mod tests {
         runs
     }
 
-    fn used(runs: &[StageRun]) -> (u8, u8) {
+    /// Rounds used as (specification, design, code, documentation).
+    fn used(runs: &[StageRun]) -> (u8, u8, u8, u8) {
         let ledger = rework_ledger(runs);
         (
+            ledger.used(ReworkTrack::Specification),
+            ledger.used(ReworkTrack::Design),
             ledger.used(ReworkTrack::Code),
             ledger.used(ReworkTrack::Documentation),
         )
@@ -642,14 +649,61 @@ mod tests {
 
     #[test]
     fn a_job_that_was_never_sent_back_has_used_no_round() {
-        assert_eq!(used(&job_with_rounds(&[])), (0, 0));
+        assert_eq!(used(&job_with_rounds(&[])), (0, 0, 0, 0));
     }
 
     #[test]
     fn a_round_is_charged_to_the_count_of_its_target() {
-        assert_eq!(used(&job_with_rounds(&[StageKind::Implementation])), (1, 0));
-        assert_eq!(used(&job_with_rounds(&[StageKind::Documenting])), (0, 1));
-        assert_eq!(used(&job_with_rounds(&[StageKind::Architecture])), (1, 0));
+        assert_eq!(
+            used(&job_with_rounds(&[StageKind::Specification])),
+            (1, 0, 0, 0)
+        );
+        assert_eq!(
+            used(&job_with_rounds(&[StageKind::Architecture])),
+            (0, 1, 0, 0)
+        );
+        assert_eq!(
+            used(&job_with_rounds(&[StageKind::TaskPlanning])),
+            (0, 1, 0, 0)
+        );
+        assert_eq!(
+            used(&job_with_rounds(&[StageKind::Implementation])),
+            (0, 0, 1, 0)
+        );
+        assert_eq!(
+            used(&job_with_rounds(&[StageKind::Documenting])),
+            (0, 0, 0, 1)
+        );
+    }
+
+    #[test]
+    fn specification_rounds_are_not_charged_to_the_design_or_the_code() {
+        // Run 29 of scenario E1: two specification rounds, then the architecture was sent back.
+        // A specification round replaces every later stage, the architecture and the
+        // implementation included, and still only the specification count moves.
+        let runs = job_with_rounds(&[
+            StageKind::Specification,
+            StageKind::Specification,
+            StageKind::Architecture,
+        ]);
+        assert_eq!(used(&runs), (2, 1, 0, 0));
+        let runs = job_with_rounds(&[
+            StageKind::Specification,
+            StageKind::Specification,
+            StageKind::Architecture,
+            StageKind::TaskPlanning,
+            StageKind::Implementation,
+            StageKind::Implementation,
+            StageKind::Documenting,
+        ]);
+        assert_eq!(used(&runs), (2, 2, 2, 1));
+    }
+
+    #[test]
+    fn a_count_past_what_a_byte_holds_saturates_and_never_wraps() {
+        // 300 rounds read back as 255, which is above every cap and so refuses the next round.
+        let runs = job_with_rounds(&[StageKind::Documenting; 300]);
+        assert_eq!(used(&runs), (0, 0, 0, u8::MAX));
     }
 
     #[test]
@@ -662,7 +716,7 @@ mod tests {
             StageKind::Implementation,
             StageKind::TaskPlanning,
         ]);
-        assert_eq!(used(&runs), (3, 1));
+        assert_eq!(used(&runs), (0, 1, 2, 1));
     }
 
     #[test]
@@ -682,7 +736,7 @@ mod tests {
             false,
             StageRunStatus::Passed,
         ));
-        assert_eq!(used(&runs), (1, 0));
+        assert_eq!(used(&runs), (0, 0, 1, 0));
     }
 
     #[test]
@@ -707,7 +761,7 @@ mod tests {
             false,
             StageRunStatus::Pending,
         ));
-        assert_eq!(used(&runs), (1, 0));
+        assert_eq!(used(&runs), (0, 0, 1, 0));
     }
 
     #[test]

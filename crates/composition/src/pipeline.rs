@@ -280,6 +280,16 @@ pub fn job_budget_micro_usd(budget: &BudgetPolicy) -> u64 {
         .map_or(0, |dollars| (dollars * 1_000_000.0).ceil() as u64)
 }
 
+/// Sets the limits of `config` that the budget policy decides, in place of the constants the
+/// engine starts with: the ceiling of a job ([`job_budget_micro_usd`]), the rework cap of each
+/// count (ADR 0022) and the repair cap (ADR 0010). Each cap is at most the engine's default
+/// (`BudgetPolicy` refuses a policy above it and clamps), so the policy can only lower one.
+pub fn apply_budget_policy(config: &mut EngineConfig, budget: &BudgetPolicy) {
+    config.job_budget_micro_usd = job_budget_micro_usd(budget);
+    config.rework_limits = budget.rework_limits();
+    config.repair_cap = budget.repair_cap();
+}
+
 /// The commit of the gate definitions: the configured one, and for the profiles that are not
 /// production a stand-in made from the policy hash, so that a report names something.
 fn definition_commit(
@@ -871,8 +881,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         // The solo mode (ADR 0021): the engine checks the policy's rules again at commit.
         .with_solo(policies.engine.authority.solo_rules());
     config.claim_batch = 1;
-    // The ceiling of a job is the policy's, not the constant the engine starts with.
-    config.job_budget_micro_usd = job_budget_micro_usd(&policies.engine.budget);
+    apply_budget_policy(&mut config, &policies.engine.budget);
     if let Some(tune) = tune_engine {
         tune(&mut config);
     }

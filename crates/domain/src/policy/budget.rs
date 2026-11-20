@@ -160,6 +160,14 @@ impl BudgetPolicy {
                 c.per_job.max_rework_iterations,
             ),
             (
+                "budgets.hard_ceilings.per_job.max_specification_rework_iterations",
+                c.per_job.max_specification_rework_iterations,
+            ),
+            (
+                "budgets.hard_ceilings.per_job.max_design_rework_iterations",
+                c.per_job.max_design_rework_iterations,
+            ),
+            (
                 "budgets.hard_ceilings.per_job.max_documentation_rework_iterations",
                 c.per_job.max_documentation_rework_iterations,
             ),
@@ -257,10 +265,20 @@ impl BudgetPolicy {
             org_day,
             warn_at,
             stop_at,
-            rework: ReworkLimits::from_policy(
-                clamp_u8(c.per_job.max_rework_iterations),
-                clamp_u8(c.per_job.max_documentation_rework_iterations),
-            ),
+            rework: ReworkLimits::default()
+                .with_policy(
+                    ReworkTrack::Specification,
+                    clamp_u8(c.per_job.max_specification_rework_iterations),
+                )
+                .with_policy(
+                    ReworkTrack::Design,
+                    clamp_u8(c.per_job.max_design_rework_iterations),
+                )
+                .with_policy(ReworkTrack::Code, clamp_u8(c.per_job.max_rework_iterations))
+                .with_policy(
+                    ReworkTrack::Documentation,
+                    clamp_u8(c.per_job.max_documentation_rework_iterations),
+                ),
             repair: RepairCap::from_policy(clamp_u8(repair)),
             max_running_jobs_per_repo: b.concurrency.max_running_jobs_per_repo,
             max_queued_jobs_per_repo: b.concurrency.max_queued_jobs_per_repo,

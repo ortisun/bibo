@@ -56,6 +56,7 @@ Several choices need a person's decision: legal, commercial or risk acceptance t
 - Cost: more escalations to a human.
 - Resolved: `policies/security.yaml` `budgets.per_job.max_rework_iterations` is 2 (read 2026-10-27). The engine still takes the lower of the policy value and 2, and a test in `s1-policy-evaluation` fails if the policy file exceeds 2.
 - Encoded in: [state-machine.md](../architecture/state-machine.md) bounds table, guards `G_REWORK_ALLOWED` and `G_HUMAN_REWORK_ALLOWED`, invariant INV-10.
+- Revision 2026-11-20: [ADR 0022](0022-a-rework-count-for-each-phase.md) keeps two rounds and splits the counts: the specification and the design (`ARCHITECTURE`, `TASK_PLANNING`) each have their own, beside code and documentation. Run 29 of scenario E1 showed two specification rounds using the rounds of the architecture and the implementation.
 
 ### 7. A limit asks a person, and a budget limit neither fails nor blocks a stage
 

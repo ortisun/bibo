@@ -1108,11 +1108,12 @@ fn human_rework_routes_match(doc: &Value) {
                     panic!("human rework {from} -> {target} is in the file: {decision:?}");
                 };
                 assert_eq!(plan.target, *target);
-                // The count follows the target: documentation for DOCUMENTING, code otherwise.
-                let expected_track = if *target == StageKind::Documenting {
-                    ReworkTrack::Documentation
-                } else {
-                    ReworkTrack::Code
+                // The count follows the target's phase (ADR 0022).
+                let expected_track = match *target {
+                    StageKind::Specification => ReworkTrack::Specification,
+                    StageKind::Architecture | StageKind::TaskPlanning => ReworkTrack::Design,
+                    StageKind::Documenting => ReworkTrack::Documentation,
+                    _ => ReworkTrack::Code,
                 };
                 assert_eq!(plan.track, expected_track, "{from} -> {target}");
             } else {
@@ -1150,8 +1151,10 @@ fn rework_cap_matches(doc: &Value) {
         .expect("INV-10 is in the file");
     let statement = invariant["statement"].as_str().unwrap();
     assert!(
-        statement.contains("two rework rounds for code and two for documentation"),
-        "INV-10 no longer says two and two: {statement}"
+        statement.contains(
+            "two rework rounds on each of the specification, design, code and documentation counts"
+        ),
+        "INV-10 no longer says two on each count: {statement}"
     );
     assert_eq!(DEFAULT_REWORK_CAP, 2, "INV-10 and ADR 0009 say two");
 }
@@ -1553,7 +1556,7 @@ fn conformance_detects_a_changed_table() {
                     invariant["statement"] = json!("Attempts are bounded. Three rework rounds.");
                 }
             },
-            "INV-10 no longer says two and two",
+            "INV-10 no longer says two on each count",
         ),
     ];
 
