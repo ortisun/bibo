@@ -43,6 +43,7 @@ pub mod registry;
 pub mod router;
 pub mod sandbox;
 pub mod store;
+pub mod triage_issue;
 pub mod webhook;
 pub mod workspace;
 
