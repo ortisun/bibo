@@ -44,3 +44,15 @@ factory-observability = { path = "crates/observability" }
 factory-testkit = { path = "crates/testkit" }
 # The shared composition core, ring 3, a library (ADR 0015). Only apps/* may depend on it.
 factory-composition = { path = "crates/composition" }
+# The read-only PostgreSQL MCP server, a ring 2 adapter (ADR 0021, decision 4). Served in process by the
+# troubleshooter's gateway and as the binary apps/mcp-postgres.
+factory-mcp_postgres = { path = "crates/mcp_postgres" }
+
+# The official Rust SDK of the Model Context Protocol, maintained by the modelcontextprotocol organization
+# (github.com/modelcontextprotocol/rust-sdk). Apache-2.0. New direct dependency approved by the owner on
+# 2026-11-20 (ADR 0021, "Owner decisions this record needs", item 1). Pinned with `=` because MCP is a moving
+# specification and a minor release of the SDK can change what goes over the wire. Default features off: a
+# crate names the subset it needs from `server`, `macros` and `transport-streamable-http-server`. Not
+# `transport-io`, which would turn on tokio's `io-std` for the inner crates (DEP-05). No client, no auth, no
+# reqwest outside dev-dependencies.
+rmcp = { version = "=3.11.0", default-features = false }

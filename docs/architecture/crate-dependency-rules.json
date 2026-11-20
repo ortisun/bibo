@@ -365,6 +365,29 @@
       "responsibility": "The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library)."
     },
     {
+      "name": "mcp_postgres",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/mcp_postgres",
+      "slice": 3,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "rmcp[server,macros]",
+        "tokio-postgres[runtime]",
+        "tokio[rt,sync,time]",
+        "serde",
+        "serde_json"
+      ],
+      "external_allow_notes": {
+        "rmcp": "ADR 0021: the official Rust SDK of the Model Context Protocol, 3.11.0, Apache-2.0, new direct dependency approved by the owner on 2026-11-20. This crate needs the tool router and the server handler only; the transports are chosen by the binary (stdio, Streamable HTTP) and by the gateway (in memory). Its server feature turns on uuid/v4 in the whole workspace; see source_scans.dep_05.resolved_features.",
+        "tokio-postgres": "ADR 0021, decision 4: the server returns arbitrary result sets, which Diesel cannot map. 0.7.18, the version diesel-async already resolves, so nothing new enters Cargo.lock for it. runtime only (Config::connect over TCP or a Unix socket), no TLS feature: the connection is made with NoTls, as the storage crate does."
+      },
+      "responsibility": "The read-only PostgreSQL MCP server (ADR 0021, decision 4): eight tools (pg_list_relations, pg_describe_relation, pg_query, pg_explain, pg_activity, pg_locks, pg_table_health, pg_factory_health) over one connection of a factory_observer login. Every call runs in BEGIN READ ONLY ... ROLLBACK with local timeouts; free SQL is wrapped as a subquery and sent with the extended protocol; rows, bytes and calls are capped; every string is redacted through an injected Redact seam. Depends on no other ring 2 crate; served in process by the troubleshooter's gateway and as apps/mcp-postgres."
+    },
+    {
       "name": "testkit",
       "ring": 2,
       "layer": "test-support",
@@ -435,6 +458,23 @@
       "path": "apps/egress-sidecar",
       "slice": 1,
       "responsibility": "The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential."
+    },
+    {
+      "name": "mcp-postgres",
+      "path": "apps/mcp-postgres",
+      "slice": 3,
+      "responsibility": "Serves crates/mcp_postgres for an engineer's Claude Code: stdio by default, or Streamable HTTP on a loopback address behind a bearer token read from a mode 0600 file. Connection settings from a JSON file or the environment, the password from a file only. Refuses to serve with a login that is a superuser, bypasses row-level security, or belongs to a group other than factory_observer. Starts no process.",
+      "external_dependencies": [
+        "rmcp[server,transport-streamable-http-server]",
+        "axum[http1,tokio]",
+        "tokio[rt,rt-multi-thread,net,time,sync,macros,signal,io-util]",
+        "serde",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "rmcp": "ADR 0021, approved by the owner on 2026-11-20. transport-streamable-http-server for HTTP. Not transport-io: it would turn on tokio/io-std in the whole workspace, which the DEP-05 limit for the inner crates does not allow, so stdio is bridged to the server through a tokio duplex pipe and two threads (std::io::stdin and stdout) instead.",
+        "axum": "The same version and features as apps/api, already in Cargo.lock: the HTTP server under the Streamable HTTP service and the bearer check."
+      }
     }
   ],
   "tooling": [
@@ -572,9 +612,11 @@
         {
           "package": "uuid",
           "allowed": [
-            "std"
+            "rng",
+            "std",
+            "v4"
           ],
-          "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates."
+          "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates. Since ADR 0021 the rmcp crate (server feature) depends on uuid with v4, and Cargo unifies it into the one uuid the inner crates see, so v4 and rng resolve for them and cannot be removed while rmcp is in the workspace graph. As for time, the guard is therefore the clippy ban on uuid::Uuid::new_v4 and every other generator in the clippy.toml of each inner crate, which DEP-05 requires. Any other generator feature (v1, v3, v5, v6, v7, v8, fast-rng) still fails here. Decided with ADR 0021, pending architect confirmation."
         },
         {
           "package": "tokio",
