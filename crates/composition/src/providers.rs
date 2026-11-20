@@ -484,6 +484,12 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
                 .chain(config.sandbox.labels.clone())
                 .collect(),
             sidecar_command: config.sandbox.sidecar_command.clone(),
+            gateway_relay: config.sandbox.gateway_upstream.map(|upstream| {
+                factory_sandbox::container::args::GatewayRelay {
+                    listen_port: crate::sandbox_specs::SIDECAR_GATEWAY_PORT,
+                    upstream,
+                }
+            }),
             docker: docker_settings_from(&config.sandbox)?,
             watchdog: WatchdogSettings {
                 disk_poll_interval: Duration::from_secs(5),

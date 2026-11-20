@@ -34,8 +34,9 @@
 use std::path::Path;
 
 use factory_ports::sandbox::{
-    CACHE_ROOT, Confinement, JOB_TOKEN_TARGET, MASK_SOURCE, MASK_TARGET, Namespace,
-    NetworkAttachment, OUT_TARGET, SCRATCH_TARGET, SandboxSpec, WORKSPACE_TARGET,
+    CACHE_ROOT, Confinement, JOB_TOKEN_TARGET, MASK_SOURCE, MASK_TARGET, MCP_TOKEN_TARGET,
+    Namespace, NetworkAttachment, OUT_TARGET, SCRATCH_TARGET, SandboxProfile, SandboxSpec,
+    WORKSPACE_TARGET,
 };
 
 use super::posture::{BindAllowlist, denied_flag_in, denied_flag_in_allowing};
@@ -78,8 +79,10 @@ pub struct CreatePlan<'a> {
     pub network: Option<&'a str>,
     /// The labels, as written by [`super::names::labels`].
     pub labels: &'a [(String, String)],
-    /// The host path of the job token file, for an `agent` spec.
+    /// The host path of the job token file, for an `agent` or `troubleshooter` spec.
     pub token_file: Option<&'a Path>,
+    /// The host path of the MCP gateway's run token file, for a `troubleshooter` spec.
+    pub mcp_token_file: Option<&'a Path>,
     /// For each cache the spec names, the host directory, in the spec's order.
     pub cache_dirs: &'a [(String, &'a Path)],
 }
@@ -292,6 +295,21 @@ pub fn create_args(spec: &SandboxSpec, plan: &CreatePlan<'_>) -> Result<Vec<Stri
             ));
         }
     }
+    match (&spec.mcp_token, plan.mcp_token_file) {
+        (Some(_), Some(file)) => {
+            out.extend(bind(
+                &host_path(file, "gateway token path")?,
+                MCP_TOKEN_TARGET,
+                true,
+            ));
+        }
+        (None, None) => {}
+        _ => {
+            return Err(ArgsError::WeakerThanAllowed(
+                "gateway token mount does not fit the spec",
+            ));
+        }
+    }
 
     out.push(safe(plan.image, "image")?);
     out.push(IDLE_PROGRAM.to_owned());
@@ -339,7 +357,62 @@ pub fn allowed_binds(spec: &SandboxSpec, plan: &CreatePlan<'_>) -> BindAllowlist
     if let Some(file) = plan.token_file {
         allowed = allowed.allow(&file.to_string_lossy(), JOB_TOKEN_TARGET);
     }
+    if let Some(file) = plan.mcp_token_file {
+        allowed = allowed.allow(&file.to_string_lossy(), MCP_TOKEN_TARGET);
+    }
     allowed
+}
+
+/// The sidecar's second fixed relay, for a `troubleshooter` sandbox (ADR 0021, Decision 5): the
+/// port it listens on inside the job network and the one address it relays to, the MCP gateway
+/// as the sidecar sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatewayRelay {
+    /// The port of the second listener. 1024 or higher.
+    pub listen_port: u16,
+    /// The gateway's address. An IP address and a port: the sidecar resolves nothing.
+    pub upstream: std::net::SocketAddr,
+}
+
+/// The flags of the sidecar's second relay. Only the provider writes them.
+pub const SECOND_RELAY_FLAGS: [&str; 2] = ["--second-listen", "--second-upstream"];
+
+/// The arguments of the sidecar's program for a sandbox of `profile`: the deployment's
+/// `base` command, and for the `troubleshooter` profile alone the second relay to the gateway.
+///
+/// # Errors
+/// [`ArgsError::WeakerThanAllowed`] when `base` already names a second relay (it would reach
+/// every profile), when the troubleshooter has no relay configured, or when the relay's listen
+/// port is below 1024.
+pub fn sidecar_command_for(
+    profile: SandboxProfile,
+    base: &[String],
+    relay: Option<GatewayRelay>,
+) -> Result<Vec<String>, ArgsError> {
+    if base
+        .iter()
+        .any(|word| SECOND_RELAY_FLAGS.iter().any(|flag| word.starts_with(flag)))
+    {
+        return Err(ArgsError::WeakerThanAllowed(
+            "the sidecar command names a second relay itself",
+        ));
+    }
+    let mut command = base.to_vec();
+    if profile == SandboxProfile::Troubleshooter {
+        let relay = relay.ok_or(ArgsError::WeakerThanAllowed(
+            "the troubleshooter's sidecar needs its gateway relay",
+        ))?;
+        if relay.listen_port < 1024 {
+            return Err(ArgsError::WeakerThanAllowed("the gateway relay port"));
+        }
+        command.extend([
+            SECOND_RELAY_FLAGS[0].to_owned(),
+            format!("0.0.0.0:{}", relay.listen_port),
+            SECOND_RELAY_FLAGS[1].to_owned(),
+            relay.upstream.to_string(),
+        ]);
+    }
+    Ok(command)
 }
 
 /// What the sidecar's `docker create` needs.

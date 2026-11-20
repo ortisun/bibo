@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::{
-    JOB_TOKEN_TARGET, NetworkAttachment, PostureDiff, ProvisionStage, SandboxError, SandboxId,
-    SandboxSpec,
+    JOB_TOKEN_TARGET, MCP_TOKEN_TARGET, NetworkAttachment, PostureDiff, ProvisionStage,
+    SandboxError, SandboxId, SandboxSpec,
 };
 use tokio::time::Instant;
 
@@ -18,7 +18,9 @@ use super::cleanup::Guard;
 use super::session::DockerSession;
 use super::watchdog::{self, Limits};
 use super::{Shared, daemon_error};
-use crate::container::args::{CreatePlan, SidecarPlan, create_args, sidecar_args};
+use crate::container::args::{
+    CreatePlan, SidecarPlan, create_args, sidecar_args, sidecar_command_for,
+};
 use crate::container::docker::{DockerClient, DockerError};
 use crate::container::images::CatalogImage;
 use crate::container::names::{Kind, SandboxNames, labels};
@@ -176,6 +178,13 @@ async fn prepare_network(
 
     guard.created.sidecar = true;
     let sidecar_labels = labels(Kind::Sidecar, spec, Some(alias), owner);
+    // The troubleshooter's sidecar alone gets the second relay, to the MCP gateway (ADR 0021).
+    let command = sidecar_command_for(
+        spec.profile,
+        &shared.config.sidecar_command,
+        shared.config.gateway_relay,
+    )
+    .map_err(|_| SandboxError::ProvisionFailed(stage))?;
     let plan = SidecarPlan {
         container: &names.sidecar,
         image: sidecar_image.reference.reference(),
@@ -183,7 +192,7 @@ async fn prepare_network(
         alias,
         ids: (sidecar_image.uid, sidecar_image.gid),
         labels: &sidecar_labels,
-        command: &shared.config.sidecar_command,
+        command: &command,
     };
     let args = sidecar_args(&plan).map_err(|_| SandboxError::ProvisionFailed(stage))?;
     docker
@@ -280,6 +289,7 @@ async fn build(
     let mut registration = Registration {
         redactor: Arc::clone(&shared.redactor),
         handle: None,
+        mcp_handle: None,
     };
     let token_file = match &spec.job_token {
         Some(token) => {
@@ -292,6 +302,30 @@ async fn build(
             let file = shared
                 .tokens
                 .write(
+                    &names.suffix,
+                    &token.secret,
+                    spec.hardening.uid,
+                    spec.hardening.gid,
+                )
+                .map_err(|_| SandboxError::ProvisionFailed(ProvisionStage::TokenFile))?;
+            Some(file)
+        }
+        None => None,
+    };
+    // The MCP gateway's run token, for the troubleshooter: registered first, then written beside
+    // the job token in the same directory, so the same removal takes both.
+    let mcp_token_file = match &spec.mcp_token {
+        Some(token) => {
+            if let Ok(factory_domain::redaction::Registered::Added(handle)) = shared
+                .redactor
+                .register("mcp_run_token", token.secret.expose())
+            {
+                registration.mcp_handle = Some(handle);
+            }
+            guard.created.token = true;
+            let file = shared
+                .tokens
+                .write_mcp(
                     &names.suffix,
                     &token.secret,
                     spec.hardening.uid,
@@ -325,6 +359,7 @@ async fn build(
         network: sidecar_image.map(|_| names.network.as_str()),
         labels: &container_labels,
         token_file: token_file.as_ref().map(|file| file.path()),
+        mcp_token_file: mcp_token_file.as_ref().map(|file| file.path()),
         cache_dirs: &cache_dirs,
     };
     let args = create_args(spec, &plan)
@@ -398,6 +433,14 @@ async fn build(
             return Err(SandboxError::ProvisionFailed(ProvisionStage::TokenFile));
         }
     }
+    if let Some(token) = &spec.mcp_token {
+        let seen = run_in_container(docker, &names.container, &["cat", MCP_TOKEN_TARGET], cancel)
+            .await
+            .map_err(|e| failed(e, ProvisionStage::TokenFile))?;
+        if seen != token.secret.expose().as_bytes() {
+            return Err(SandboxError::ProvisionFailed(ProvisionStage::TokenFile));
+        }
+    }
     report.self_check_passed = true;
     report.verified_at = shared.clock.now();
 
@@ -428,11 +471,15 @@ async fn build(
 struct Registration {
     redactor: Arc<factory_domain::redaction::Redactor>,
     handle: Option<factory_domain::redaction::SecretHandle>,
+    mcp_handle: Option<factory_domain::redaction::SecretHandle>,
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
+        for handle in [self.handle.take(), self.mcp_handle.take()]
+            .into_iter()
+            .flatten()
+        {
             self.redactor.forget(handle);
         }
     }
