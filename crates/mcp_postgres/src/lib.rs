@@ -8,9 +8,13 @@
 //!
 //! The controls, in the order PostgreSQL applies them:
 //!
-//! 1. **The role.** The login is a member of `factory_observer` (migration
-//!    `2026-11-20-002900_observer_role`): `SELECT` on named operational columns only, one
-//!    read policy per table under row-level security, `pg_read_all_stats`, nothing else.
+//! 1. **The role.** The login is a member of `factory_observer` (migrations
+//!    `2026-11-20-002900_observer_role` and `2026-11-20-003100_observer_hardening`): `SELECT` on
+//!    named operational columns only, one read policy per table under row-level security,
+//!    `EXECUTE` on the observer functions that return other sessions' query texts normalized, and
+//!    nothing else: no `pg_read_all_stats`, no advisory lock. [`Inspector::check_login`] refuses a
+//!    login that is anything more (an allowlist: no other membership, no predefined role, no
+//!    ownership, no column or write beyond the group's).
 //! 2. **Every call runs in `BEGIN READ ONLY` and ends with `ROLLBACK`**, with `SET LOCAL
 //!    statement_timeout` and `lock_timeout`. A write, `nextval`, `NOTIFY` or a data-modifying
 //!    CTE fails. After the rollback the session runs `DISCARD ALL`, so a session-level advisory

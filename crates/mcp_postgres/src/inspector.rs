@@ -17,9 +17,9 @@ use crate::{ConnectSettings, Limits, Redact, ToolFailure, redact_json};
 /// redaction, as a second layer. Free SQL cannot read a raw query text of another role at all.
 const QUERY_TEXT_KEYS: [&str; 3] = ["query", "blocked_query", "blocking_query"];
 
-/// The groups a login of this server must not belong to: each would add a write privilege or a
-/// policy that the observer does not have.
-const FORBIDDEN_GROUPS: &str = "'factory_app', 'factory_api_app', 'factory_system', 'factory_resolver', 'factory_lookup', 'pg_write_all_data', 'pg_signal_backend', 'pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program'";
+/// The check of [`Inspector::check_login`], one row: what the login is, not a list of what it
+/// must not be.
+const LOGIN_CHECK: &str = include_str!("login_check.sql");
 
 /// One statement and its text parameters. Every fixed statement casts its parameters from text.
 struct Statement {
@@ -102,23 +102,29 @@ impl Inspector {
         self.calls.load(Ordering::Relaxed)
     }
 
-    /// Connects and checks that the login is fit to serve: not a superuser, no `BYPASSRLS`, a
-    /// member of `factory_observer`, and a member of no group that could write. Does not count
-    /// against the call budget. Returns the login's name.
+    /// Connects and checks that the login is fit to serve. An allowlist of what the login is
+    /// (`login_check.sql`):
+    ///
+    /// - not a superuser, and no `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`;
+    /// - a member of `factory_observer`, and directly of no other role, so that everything it
+    ///   holds comes through that group, and the group passes on the privileges of no role;
+    /// - a member of no predefined role (`pg_read_all_data`, `pg_write_all_data`,
+    ///   `pg_read_server_files`, `pg_execute_server_program`, `pg_signal_backend`, `pg_monitor`,
+    ///   `pg_database_owner` and every other `pg_*` role) by effective membership. For
+    ///   `pg_read_all_stats` the test is on its privileges: migration 002900, run again for another
+    ///   database of the cluster, grants it for a moment to the group, which is NOINHERIT;
+    /// - the owner of nothing in this database, and a member of no role that owns something;
+    /// - able to read no column the group cannot read and to write to no table or sequence,
+    ///   whatever role or `PUBLIC` grant gives it: the property itself.
+    ///
+    /// Does not count against any call budget. Returns the login's name.
     ///
     /// # Errors
     /// [`ToolFailure::Unavailable`] when the database cannot be reached, and
     /// [`ToolFailure::Refused`] naming what is wrong with the login.
     pub async fn check_login(&self) -> Result<String, ToolFailure> {
-        let check = format!(
-            "SELECT current_user::text AS login, r.rolsuper AS superuser, r.rolbypassrls AS bypassrls, \
-                    pg_catalog.pg_has_role(current_user, 'factory_observer', 'MEMBER') AS observer, \
-                    coalesce((SELECT bool_or(pg_catalog.pg_has_role(current_user, g.oid, 'MEMBER')) \
-                                FROM pg_catalog.pg_roles g WHERE g.rolname IN ({FORBIDDEN_GROUPS})), false) AS too_much \
-               FROM pg_catalog.pg_roles r WHERE r.rolname = current_user"
-        );
         let mut sets = self
-            .read_uncharged(&[Statement::new(wrap_fixed(&check))])
+            .read_uncharged(&[Statement::new(wrap_fixed(LOGIN_CHECK))])
             .await?;
         let row = sets
             .pop()
@@ -130,24 +136,60 @@ impl Inspector {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
+        let refused = |why: String| {
+            ToolFailure::Refused(format!(
+                "the login {login} {why}; use a login made as docs/database/observer-login.sql makes it, a member of factory_observer and of nothing else"
+            ))
+        };
         if flag("superuser") || flag("bypassrls") {
-            return Err(ToolFailure::Refused(format!(
-                "the login {login} is a superuser or bypasses row-level security; use a login made as docs/database/observer-login.sql makes it"
-            )));
+            return Err(refused(
+                "is a superuser or bypasses row-level security".to_owned(),
+            ));
+        }
+        if flag("createrole") || flag("createdb") || flag("replication") {
+            return Err(refused(
+                "may create roles or databases, or replicate".to_owned(),
+            ));
         }
         if !row
             .get("observer")
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            return Err(ToolFailure::Refused(format!(
-                "the login {login} is not a member of factory_observer"
-            )));
+            return Err(refused("is not a member of factory_observer".to_owned()));
         }
-        if flag("too_much") {
-            return Err(ToolFailure::Refused(format!(
-                "the login {login} is a member of a group that can write or signal; it must belong to factory_observer only"
-            )));
+        for (key, why) in [
+            ("other_groups", "is also a member of"),
+            (
+                "group_inherits",
+                "belongs to factory_observer, which passes on the privileges of",
+            ),
+            ("predefined", "holds the predefined roles"),
+            ("owns", ""),
+            (
+                "reads_more",
+                "can read columns factory_observer may not read, in",
+            ),
+            ("writes", "can write to"),
+            ("sequences", "can use or set the sequences"),
+        ] {
+            if key == "owns" {
+                if flag(key) {
+                    return Err(refused(
+                        "owns objects in this database, or is a member of a role that does"
+                            .to_owned(),
+                    ));
+                }
+                continue;
+            }
+            // A missing value counts as found: the check refuses what it cannot read.
+            let found = row
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("(the check gave no answer)");
+            if !found.is_empty() {
+                return Err(refused(format!("{why} {found}")));
+            }
         }
         Ok(login)
     }

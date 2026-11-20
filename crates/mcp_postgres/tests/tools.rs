@@ -445,23 +445,124 @@ async fn the_call_budget_is_enforced() {
     );
 }
 
+/// The reason `check_login` gives for a login, or `None` when it accepts it.
+async fn refusal(db: &TestDb, login: &support::Login) -> Option<String> {
+    match db.inspector(login, quick_limits()).check_login().await {
+        Ok(name) => {
+            assert_eq!(name, login.name);
+            None
+        }
+        Err(ToolFailure::Refused(why)) => Some(why),
+        Err(other) => panic!("{}: {other}", login.name),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_login_that_can_write_is_refused() {
+async fn only_a_login_that_is_an_observer_and_nothing_else_is_accepted() {
     let db = TestDb::fresh().await;
-    let both = db
-        .login("both", &["factory_observer", "factory_app"], true)
-        .await;
-    let inspector = db.inspector(&both, quick_limits());
-    assert!(matches!(
-        inspector.check_login().await,
-        Err(ToolFailure::Refused(_))
+    let observer = db.observer().await;
+    assert_eq!(refusal(&db, &observer).await, None);
+
+    // The cases of TR-1, each with the part of the reason that names it.
+    let mut cases: Vec<(support::Login, &str)> = Vec::new();
+    for (label, group, expected) in [
+        ("app", "factory_app", "also a member of factory_app"),
+        (
+            "rad",
+            "pg_read_all_data",
+            "also a member of pg_read_all_data",
+        ),
+        ("monitor", "pg_monitor", "also a member of pg_monitor"),
+        (
+            "signal",
+            "pg_signal_backend",
+            "also a member of pg_signal_backend",
+        ),
+        (
+            "stats",
+            "pg_read_all_stats",
+            "also a member of pg_read_all_stats",
+        ),
+    ] {
+        let login = db.login(label, &["factory_observer", group], true).await;
+        cases.push((login, expected));
+    }
+    // A member of the role that owns a table.
+    let owner = db.role("owner").await;
+    db.admin()
+        .await
+        .batch_execute(&format!(
+            "CREATE TABLE public.owned_elsewhere (secret text); ALTER TABLE public.owned_elsewhere OWNER TO \"{owner}\""
+        ))
+        .await
+        .expect("a table owned by another role");
+    cases.push((
+        db.login("ownergroup", &["factory_observer", &owner], true)
+            .await,
+        "also a member of dbtest_owner",
     ));
-    let bare = db.login("bare", &[], true).await;
-    let inspector = db.inspector(&bare, quick_limits());
-    assert!(matches!(
-        inspector.check_login().await,
-        Err(ToolFailure::Refused(_))
+    // The owner of a table itself, with nothing else.
+    let owns = db.login("owns", &["factory_observer"], true).await;
+    db.admin()
+        .await
+        .batch_execute(&format!(
+            "CREATE TABLE public.owned_by_login (n int); ALTER TABLE public.owned_by_login OWNER TO \"{}\"",
+            owns.name
+        ))
+        .await
+        .expect("a table owned by the login");
+    cases.push((owns, "owns objects"));
+    // CREATEROLE, CREATEDB, BYPASSRLS.
+    for (label, attribute, expected) in [
+        ("createrole", "CREATEROLE", "may create roles"),
+        ("createdb", "CREATEDB", "may create roles or databases"),
+        ("bypass", "BYPASSRLS", "bypasses row-level security"),
+    ] {
+        let login = db.login(label, &["factory_observer"], true).await;
+        db.admin()
+            .await
+            .batch_execute(&format!("ALTER ROLE \"{}\" {attribute}", login.name))
+            .await
+            .expect("give the attribute");
+        cases.push((login, expected));
+    }
+    // Not an observer at all.
+    cases.push((
+        db.login("bare", &[], true).await,
+        "is not a member of factory_observer",
     ));
+    for (login, expected) in &cases {
+        let why = refusal(&db, login)
+            .await
+            .unwrap_or_else(|| panic!("{} was accepted", login.name));
+        assert!(why.contains(expected), "{}: {why}", login.name);
+    }
+
+    // The property itself: a grant to PUBLIC that lets every role read a sensitive column, or
+    // write, refuses even the correctly made login.
+    let admin = db.admin().await;
+    admin
+        .batch_execute("GRANT SELECT (idempotency_key) ON jobs TO PUBLIC")
+        .await
+        .expect("grant to PUBLIC");
+    let why = refusal(&db, &observer).await.expect("refused");
+    assert!(
+        why.contains("can read columns factory_observer may not read, in public.jobs"),
+        "{why}"
+    );
+    admin
+        .batch_execute(
+            "REVOKE SELECT (idempotency_key) ON jobs FROM PUBLIC; GRANT INSERT ON inbox TO PUBLIC",
+        )
+        .await
+        .expect("grant a write to PUBLIC");
+    let why = refusal(&db, &observer).await.expect("refused");
+    assert!(why.contains("can write to public.inbox"), "{why}");
+    admin
+        .batch_execute("REVOKE INSERT ON inbox FROM PUBLIC")
+        .await
+        .expect("revoke");
+    assert_eq!(refusal(&db, &observer).await, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
