@@ -31,6 +31,7 @@ fn required(agent: &Agent) -> Vec<Input> {
     vec![
         super::prompts_support::input(agent, "frozen_specification", "the specification"),
         super::prompts_support::input(agent, "repository_map", "the map"),
+        super::prompts_support::input(agent, "project_rules", "the rules"),
     ]
 }
 

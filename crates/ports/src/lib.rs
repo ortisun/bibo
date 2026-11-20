@@ -23,6 +23,7 @@
 //! | [`githost`] | `IssueSource`, `ChangeHost`, `WebhookVerifier` |
 //! | [`issue_status`] | `IssueStatusWriter`: one `factory: <state>` label and one status comment on the issue a job came from (v1.2) |
 //! | [`process`] | `ProcessRunner` |
+//! | [`project_rules`] | `ProjectRulesHost`: the draft pull request that installs or updates the project's rules for agents in `AGENTS.md` (v1.3) |
 //! | [`paths`] | Checked names shared by the ports: `RepoPath`, `RepoGlob`, `BranchName`, `RepoRef`, and the policy's `PathRules` |
 //!
 //! # Async strategy
@@ -68,6 +69,7 @@ pub mod githost;
 pub mod issue_status;
 pub mod paths;
 pub mod process;
+pub mod project_rules;
 pub mod registry;
 pub mod sandbox;
 pub mod spec;

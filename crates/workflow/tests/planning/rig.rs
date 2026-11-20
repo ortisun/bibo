@@ -1116,7 +1116,13 @@ impl Rig {
                 kind: StageKind::RepositoryIntelligence,
                 contract_id: "stage-contract.repository-intelligence",
                 span: "stage.repository_intelligence",
-                deliverables: vec![(REPOSITORY_MAP, map)],
+                deliverables: vec![
+                    (REPOSITORY_MAP, map),
+                    (
+                        "project-rules",
+                        b"# Rules of the fixture project\n\nWrite the documents first.\n".to_vec(),
+                    ),
+                ],
             },
             Fixed {
                 kind: StageKind::Specification,

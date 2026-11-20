@@ -387,10 +387,18 @@ pub fn input_schema_problems(prompt: &str, schema: &Value) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// The inputs each reviewer role may receive, and no others. None is the author's own account.
+/// `project_rules` is the project's `AGENTS.md` at the job's base commit, or the factory's
+/// built-in copy (ADR 0026): text the project's owners approved, not anything the author of the
+/// work wrote, so every reviewer may have it.
 pub const REVIEWER_INPUTS: [(&str, &[&str]); 4] = [
     (
         "code_reviewer",
-        &["frozen_specification", "diff", "gate_reports"],
+        &[
+            "frozen_specification",
+            "diff",
+            "gate_reports",
+            "project_rules",
+        ],
     ),
     (
         "specification_reviewer",
@@ -401,6 +409,7 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 4] = [
             "specification",
             "requirements_checklist",
             "people_answers",
+            "project_rules",
         ],
     ),
     (
@@ -411,6 +420,7 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 4] = [
             "frozen_specification",
             "architecture_design",
             "repository_map",
+            "project_rules",
         ],
     ),
     (
@@ -421,6 +431,7 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 4] = [
             "code_diff",
             "documentation_diff",
             "gate_reports",
+            "project_rules",
         ],
     ),
 ];

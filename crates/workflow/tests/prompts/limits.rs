@@ -101,9 +101,9 @@ fn prompts_limits_lines_count_toward_the_limit_with_their_quote_prefixes() {
 
 #[test]
 fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
-    // 20_000 tokens, 25 percent for the prompt, 3 bytes a token: 15_000 bytes. The instructions of
+    // 24_000 tokens, 25 percent for the prompt, 3 bytes a token: 18_000 bytes. The instructions of
     // the reviewer take most of that, because the output contract shows the whole answer schema.
-    let agent = with_max_tokens("code-reviewer", 20_000);
+    let agent = with_max_tokens("code-reviewer", 24_000);
     let limits = Limits::default();
     let assembled = assembler_with(limits.clone())
         .assemble_any((
@@ -112,9 +112,9 @@ fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
         ))
         .expect("assembles within the budget");
     let manifest = assembled.manifest();
-    assert_eq!(manifest.budget_bytes, 15_000);
+    assert_eq!(manifest.budget_bytes, 18_000);
     assert!(
-        assembled.text().len() <= 15_000,
+        assembled.text().len() <= 18_000,
         "{}",
         assembled.text().len()
     );
@@ -130,11 +130,12 @@ fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
 
 #[test]
 fn prompts_limits_a_small_input_is_kept_whole_while_large_ones_are_cut_to_a_common_level() {
-    let agent = with_max_tokens("code-reviewer", 20_000);
+    let agent = with_max_tokens("code-reviewer", 24_000);
     let inputs = vec![
         input(&agent, "frozen_specification", "tiny spec"),
         input(&agent, "diff", "d".repeat(100_000)),
         input(&agent, "gate_reports", "g".repeat(100_000)),
+        input(&agent, "project_rules", "tiny rules"),
     ];
     let assembled = assembler_with(Limits::default())
         .assemble_any((&agent, inputs))
@@ -164,14 +165,14 @@ fn prompts_limits_a_budget_too_small_for_the_instructions_fails() {
 fn prompts_limits_the_prompt_byte_limit_applies_when_the_token_budget_is_larger() {
     let agent = agent("builder");
     let limits = Limits {
-        max_prompt_bytes: 12_000,
+        max_prompt_bytes: 14_000,
         ..Limits::default()
     };
     let assembled = assembler_with(limits)
         .assemble_any((&agent, all_inputs(&agent, |_| "a line\n".repeat(20_000))))
         .expect("assembles");
-    assert!(assembled.text().len() <= 12_000);
-    assert_eq!(assembled.manifest().budget_bytes, 12_000);
+    assert!(assembled.text().len() <= 14_000);
+    assert_eq!(assembled.manifest().budget_bytes, 14_000);
 }
 
 #[test]

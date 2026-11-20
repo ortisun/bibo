@@ -128,6 +128,21 @@ impl PermissionSet {
         Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
     }
 
+    /// The credential of the project rules host (ports v1.3, ADR 0026): `contents: write` to write
+    /// the rules files on the branch `factory/project-rules`, `pull_requests: write` to open or
+    /// update the draft pull request, and the `metadata: read` that every installation token
+    /// carries, for one repository. It is minted for this purpose and independent of any stage:
+    /// no stage token is widened and the delivery token is not borrowed. The App held both write
+    /// permissions already, for the delivery stage.
+    #[must_use]
+    pub fn project_rules() -> Self {
+        Self::of(&[
+            ("metadata", Level::Read),
+            ("contents", Level::Write),
+            ("pull_requests", Level::Write),
+        ])
+    }
+
     /// True when the set holds the permission `name` at the level `level` or above.
     #[must_use]
     pub fn holds(&self, name: &str, level: Level) -> bool {

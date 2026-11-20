@@ -509,6 +509,14 @@ async fn write_in(
         .registry
         .prompt(manifest)
         .map_err(|_| StageError::Internal)?;
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = match crate::stages::project_rules::block(ctx).await {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
     let assembled = {
         let now = ports.clock.now();
         let tenant = identity.tenant;
@@ -542,6 +550,7 @@ async fn write_in(
             )
             .touching(changed_paths.iter().map(|p| (*p).to_owned()))
             .fetched_at(now),
+            rules,
         ];
         if let Some(text) = feedback_text {
             inputs.push(

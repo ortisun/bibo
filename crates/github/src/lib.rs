@@ -3,8 +3,11 @@
 //! This crate implements [`factory_ports::githost::IssueSource`],
 //! [`factory_ports::githost::ChangeHost`] and [`factory_ports::githost::WebhookVerifier`] for
 //! GitHub, authenticated as a GitHub App (ports-v1.1, ADR 0014). It also implements
-//! [`factory_ports::issue_status::IssueStatusWriter`] (ports v1.2, ADR 0017). It has no merge call, no call
-//! that marks a pull request ready for review, and no call that writes a workflow file.
+//! [`factory_ports::issue_status::IssueStatusWriter`] (ports v1.2, ADR 0017) and
+//! [`factory_ports::project_rules::ProjectRulesHost`] (ports v1.3, ADR 0026). It has no merge call,
+//! no call that marks a pull request ready for review, and no call that writes a workflow file. Its
+//! one `PUT` writes a file of the contents API on the branch `factory/project-rules`, and the client
+//! refuses it for any other path.
 //!
 //! # Dependencies (decision of work package `s1-github-adapter`, 2026-10-28)
 //!
@@ -60,6 +63,7 @@ mod issues;
 mod jwt;
 mod parse;
 mod permissions;
+mod project_rules;
 mod protection;
 mod status;
 mod text;
@@ -73,10 +77,11 @@ pub use adapter::{DEFAULT_REFRESH_MARGIN, GithubAdapter, GithubConfig, GithubPar
 pub use changes::{GithubChangeHost, conclusion_for_gate, conclusion_for_gates};
 pub use client::PageLimits;
 pub use core::{BackoffPolicy, Sleeper, TokioSleeper};
-pub use encoding::{base64_decode, base64url_encode, percent_encode_component};
+pub use encoding::{base64_decode, base64_encode, base64url_encode, percent_encode_component};
 pub use issues::{GithubIssueSource, NormalizedText, normalize_untrusted_text};
 pub use jwt::{AppJwt, JwtError, JwtSigner, RingRs256Signer};
 pub use permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
+pub use project_rules::GithubProjectRules;
 pub use protection::{protection_from_rules, with_classic_protection};
 pub use status::{GithubIssueStatus, MUTATION_PAUSE};
 pub use text::{OutboundPolicy, keeps_link};
@@ -86,4 +91,7 @@ pub use webhook::{
     BadSecret, GithubWebhookVerifier, MAX_BODY_BYTES, MAX_DEPTH, MIN_SECRET_BYTES, NoSecrets,
     Replay, WebhookSecret, accept_delivery,
 };
-pub use wire::{ApiBase, BadApiBase, Method, Transport, TransportError, WireRequest, WireResponse};
+pub use wire::{
+    ApiBase, BadApiBase, Method, Transport, TransportError, WireRequest, WireResponse,
+    is_contents_path,
+};

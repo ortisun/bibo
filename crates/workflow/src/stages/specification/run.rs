@@ -466,9 +466,34 @@ async fn run_skill_in(
     .await?;
     work.tally.sandbox_reported = true;
 
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy,
+    // redacted before they reach the checkout.
+    let rules = match crate::stages::project_rules::text(ctx).await {
+        Ok((_, bytes)) => h
+            .redactor
+            .redact_str(&String::from_utf8_lossy(&bytes))
+            .map(|redacted| redacted.output.into_owned().into_bytes())
+            .map_err(|_| StageError::Internal),
+        Err(error) => Err(error),
+    };
+    let rules = match rules {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
+
     // The stage puts the request and the answers into the checkout. The skills read them as data.
     let prepared = async {
         run_command(&mut *session, ctx.cancel, &["mkdir", "-p", "inputs"], None).await?;
+        run_command(
+            &mut *session,
+            ctx.cancel,
+            &["tee", "--", crate::prompts::skill::RULES_FILE],
+            Some(rules),
+        )
+        .await?;
         run_command(
             &mut *session,
             ctx.cancel,
@@ -604,6 +629,7 @@ async fn run_skill_in(
             work.request_file.as_str(),
             work.answers_file.as_str(),
             FEEDBACK_FILE,
+            crate::prompts::skill::RULES_FILE,
         ],
         None,
     )
@@ -981,7 +1007,16 @@ async fn review_in(
         kind: kind.to_owned(),
         id: Sha256Digest::of(bytes).to_string(),
     };
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = match crate::stages::project_rules::block(ctx).await {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
     let inputs = vec![
+        rules,
         Input::untrusted(
             "request",
             ContentClass::IssueText,

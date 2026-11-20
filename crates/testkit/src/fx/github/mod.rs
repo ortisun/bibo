@@ -529,8 +529,13 @@ pub(crate) struct Repo {
     pub statuses: Vec<Value>,
     /// The files of the default branch that the contents route serves, by path. `None` is a file
     /// the route lists and gives no text for, as GitHub does for a file over 1 MB. The fake keeps
-    /// one tree for the repository and ignores the `ref` of a request.
+    /// one tree for the repository, used for every commit that has no tree of its own below.
     pub files: BTreeMap<String, Option<String>>,
+    /// The whole tree of each commit that the contents write route
+    /// (`PUT .../contents/{path}`) or [`FakeGithub::commit_files`] made, by commit id. The
+    /// contents route reads the tree of the commit its `ref` names when there is one, and
+    /// [`files`](Self::files) otherwise.
+    pub trees: BTreeMap<String, BTreeMap<String, Option<String>>>,
 }
 
 /// Everything the fake holds. Locked as a whole for each request, so a request is atomic.
@@ -698,6 +703,7 @@ impl FakeGithub {
                 checks: Vec::new(),
                 statuses: Vec::new(),
                 files: BTreeMap::new(),
+                trees: BTreeMap::new(),
             },
         );
         drop(state);
@@ -1070,6 +1076,140 @@ impl FakeGithub {
             .and_then(|r| r.pulls.get_mut(&number))
             .expect("a known pull request")
             .draft = false;
+    }
+
+    /// A person's commit on `branch`: sets (`Some`) or removes (`None`) files, starting from the
+    /// tree of the branch's tip, and moves the branch to the new commit. A branch that does not
+    /// exist starts from the tip of the default branch. Returns the new commit.
+    ///
+    /// # Panics
+    /// Panics when the repository is not known.
+    pub fn commit_files(
+        &self,
+        repo: &str,
+        branch: &str,
+        changes: &[(&str, Option<&str>)],
+    ) -> String {
+        let mut state = self.lock();
+        let sha = state.new_sha();
+        let repo_state = state.repos.get_mut(repo).expect("a known repository");
+        let tip = repo_state
+            .branches
+            .get(branch)
+            .or_else(|| repo_state.branches.get(&repo_state.default_branch))
+            .cloned()
+            .unwrap_or_default();
+        let mut tree = routes::tree_of(repo_state, &tip);
+        for (path, text) in changes {
+            match text {
+                Some(text) => {
+                    tree.insert((*path).to_owned(), Some((*text).to_owned()));
+                }
+                None => {
+                    tree.remove(*path);
+                }
+            }
+        }
+        repo_state.trees.insert(sha.clone(), tree);
+        repo_state.branches.insert(branch.to_owned(), sha.clone());
+        routes::move_pull_heads(repo_state, branch, &sha);
+        sha
+    }
+
+    /// The files of a branch's tip, or of a commit, with their text. A file with no text is left
+    /// out.
+    #[must_use]
+    pub fn files_at(&self, repo: &str, reference: &str) -> BTreeMap<String, String> {
+        let state = self.lock();
+        let Some(repo_state) = state.repos.get(repo) else {
+            return BTreeMap::new();
+        };
+        let sha = repo_state
+            .branches
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(|| reference.to_owned());
+        routes::tree_of(repo_state, &sha)
+            .into_iter()
+            .filter_map(|(path, text)| text.map(|text| (path, text)))
+            .collect()
+    }
+
+    /// Closes a pull request as a person does, merged or not. A merge puts the tree of its head on
+    /// the base branch as a new commit.
+    ///
+    /// # Panics
+    /// Panics when the pull request is not known.
+    pub fn close_pull(&self, repo: &str, number: u64, merged: bool) {
+        let (head, base) = {
+            let mut state = self.lock();
+            let pull = state
+                .repos
+                .get_mut(repo)
+                .and_then(|r| r.pulls.get_mut(&number))
+                .expect("a known pull request");
+            pull.state = "closed".to_owned();
+            pull.merged = merged;
+            (pull.head_sha.clone(), pull.base_ref.clone())
+        };
+        if merged {
+            let tree = {
+                let state = self.lock();
+                routes::tree_of(state.repos.get(repo).expect("a known repository"), &head)
+            };
+            let owned: Vec<(String, Option<String>)> = tree.into_iter().collect();
+            let changes: Vec<(&str, Option<&str>)> = owned
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_deref()))
+                .collect();
+            let sha = self.commit_files(repo, &base, &changes);
+            if let Some(pull) = self
+                .lock()
+                .repos
+                .get_mut(repo)
+                .and_then(|r| r.pulls.get_mut(&number))
+            {
+                pull.merge_commit_sha = Some(sha);
+            }
+        }
+    }
+
+    /// A pull request a person (`author`, a login) opened from `head` into the default branch.
+    ///
+    /// # Panics
+    /// Panics when the repository or the branch is not known.
+    pub fn add_person_pull(&self, repo: &str, head: &str, author: &str, body: &str) -> u64 {
+        let now = self.now();
+        let mut state = self.lock();
+        let repo_state = state.repos.get_mut(repo).expect("a known repository");
+        let head_sha = repo_state
+            .branches
+            .get(head)
+            .cloned()
+            .expect("a known branch");
+        let number = repo_state.next_number;
+        repo_state.next_number += 1;
+        let base = repo_state.default_branch.clone();
+        repo_state.pulls.insert(
+            number,
+            Pull {
+                number,
+                title: "A person's change".to_owned(),
+                body: body.to_owned(),
+                state: "open".to_owned(),
+                draft: false,
+                merged: false,
+                merge_commit_sha: None,
+                head_ref: head.to_owned(),
+                head_sha,
+                base_ref: base,
+                author: author.to_owned(),
+                created_at: now,
+                updated_at: now,
+                reviews: Vec::new(),
+            },
+        );
+        number
     }
 
     /// The next request that matches `route` (a template such as

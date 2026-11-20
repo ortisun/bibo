@@ -12,6 +12,7 @@ pub mod domain_discovery;
 pub mod implementation;
 pub mod intake;
 pub mod planning;
+pub mod project_rules;
 pub mod repo_intel;
 pub mod review;
 pub mod specification;

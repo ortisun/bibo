@@ -397,6 +397,8 @@ pub(super) async fn execute(
         .map_err(|_| StageError::Internal)?;
     let rendered = render_reports(&report_values);
     let writer_result = input_artifact(ctx.contract, DOCUMENTATION_RESULT);
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = crate::stages::project_rules::block(ctx).await?;
     let assembled = {
         let now = ports.clock.now();
         let tenant_id = identity.tenant;
@@ -459,6 +461,7 @@ pub(super) async fn execute(
                 tenant_id,
                 rendered.clone().into_bytes(),
             )),
+            rules.into_independent(),
         ]
         .into_iter()
         .collect::<Result<Vec<_>, _>>()

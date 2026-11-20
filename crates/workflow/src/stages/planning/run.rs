@@ -176,6 +176,7 @@ pub(super) async fn execute(
             rendered.clone().into_bytes(),
         )
         .fetched_at(now),
+        crate::stages::project_rules::block(ctx).await?,
     ];
     if let Some(text) = &feedback {
         inputs.push(

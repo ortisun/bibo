@@ -42,7 +42,7 @@
   "inputs_schema": {
     "name": "architecture-critic-input",
     "version": 1,
-    "sha256": "sha256:866fa3f8fb554e7b51f5bda0d72d7384c03fc3ac91dc179008400c07c5ee153d"
+    "sha256": "sha256:32f448e62711be5acba470e60102308adddaf139201ca7872c2e7861f6f6de11"
   },
   "outputs_schema": {
     "name": "review-findings",
@@ -98,7 +98,7 @@
   },
   "prompt": {
     "template_path": "agents/architecture-critic/prompt.md",
-    "template_version": "1.0.0",
-    "template_sha256": "sha256:02ebfc76ceda9853509980b3f9dac8dfa4e99c7d0d265cfdec6f3829f8d0e540"
+    "template_version": "1.1.0",
+    "template_sha256": "sha256:e02a63195f60a90bd3dfb7fc74cd71536837387ff6395c05811e708471654714"
   }
 }

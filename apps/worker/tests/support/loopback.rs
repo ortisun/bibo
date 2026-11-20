@@ -343,8 +343,12 @@ impl Lab {
                 // The provider key the deployment wrote is replaced with one made here, so that the
                 // run can be swept for it.
                 write_private(&dir.join("provider.key"), &provider_key);
+                // The rules check (ADR 0026) is off: these scenarios judge the intake path alone,
+                // with no pull request and no push. The rules pull request is tested by the step's
+                // own tests (`crates/composition/tests/project_rules.rs`) and by the adapter's
+                // (`crates/github/tests/project_rules.rs`).
                 format!(
-                    "github:\n  app_id: {app_id}\n  key_file: {dir}/app.pem\n  api_base_url: '{github_base}'\n  installations:\n    - {{ tenant: {tenant_text}, repository: {REPO}, installation_id: {INSTALLATION} }}\n\
+                    "github:\n  app_id: {app_id}\n  key_file: {dir}/app.pem\n  api_base_url: '{github_base}'\n  propose_project_rules: false\n  installations:\n    - {{ tenant: {tenant_text}, repository: {REPO}, installation_id: {INSTALLATION} }}\n\
                      registry: {{ base_url: '{registry_base}', user_agent: factory-loopback-test }}\n\
                      advisory_database: {{ date_file: {dir}/advisory.date }}\n\
                      runtimes: {{ declare_capabilities: true }}\n\

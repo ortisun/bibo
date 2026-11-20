@@ -112,6 +112,15 @@ pub fn all() -> Vec<SuiteEntry> {
             waivers: super::issue_status::WAIVERS,
         },
         SuiteEntry {
+            suite: "project rules host",
+            checks: super::project_rules::project_rules_checks()
+                .iter()
+                .map(|c| c.name)
+                .collect(),
+            defects: defects(crate::project_rules::PROJECT_RULES_DEFECTS),
+            waivers: super::project_rules::WAIVERS,
+        },
+        SuiteEntry {
             suite: "webhook verifier",
             checks: super::webhook::checks().iter().map(|c| c.name).collect(),
             defects: defects(crate::webhook::DEFECTS),

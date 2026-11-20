@@ -133,12 +133,12 @@ proptest! {
     /// errors are the ones that say the budget or the read limit was too small.
     #[test]
     fn prompts_properties_the_prompt_always_fits_its_budget(
-        sizes in proptest::collection::vec(0usize..100_000, 3),
+        sizes in proptest::collection::vec(0usize..100_000, 4),
         max_block in 100usize..300_000,
         max_prompt in 5_000usize..400_000,
         line in 1usize..400,
     ) {
-        let agent = &agent("code-reviewer"); // three inputs
+        let agent = &agent("code-reviewer"); // four inputs
         let limits = Limits {
             max_block_bytes: max_block,
             max_prompt_bytes: max_prompt,

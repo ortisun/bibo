@@ -44,7 +44,7 @@
   "inputs_schema": {
     "name": "documentation-writer-input",
     "version": 1,
-    "sha256": "sha256:f7e005320a7d6e0f6683b7c73ce374264685b20b40f42bce64a90a10d68c59f2"
+    "sha256": "sha256:02a84e2c13d1c281ca7d495da304db83416be289f030bb981659b9c7864f740c"
   },
   "outputs_schema": {
     "name": "documentation-report",
@@ -104,7 +104,7 @@
   },
   "prompt": {
     "template_path": "agents/documentation-writer/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:06b2084c22593a07f4f31c9e2ae723ca800654c3bb62362ace959f6da9d3cbb3"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:bae373b613d1101283de4711317d86d4762ebc31f8765e5547849ec0a11cf6f5"
   }
 }

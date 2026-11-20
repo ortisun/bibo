@@ -165,6 +165,11 @@ fn resolve(
     ) {
         inputs.push(profile);
     }
+    // The project's rules for agents (ADR 0026), given to the architect and the critic.
+    inputs.extend(crate::stages::project_rules::contract_input(
+        ctx.upstream,
+        ctx.now,
+    ));
     inputs.push(ContractInput {
         name: POLICY_INPUT,
         description: "The hash of the policy bundle in force when the stage run was resolved.",

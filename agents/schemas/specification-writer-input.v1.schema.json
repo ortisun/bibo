@@ -6,7 +6,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "request"
+    "request",
+    "project_rules"
   ],
   "properties": {
     "request": {
@@ -18,6 +19,11 @@
       "type": "string",
       "maxLength": 1048576,
       "description": "Answers a person gave to earlier clarification questions, when there are any."
+    },
+    "project_rules": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The project's rules for agents: the project's AGENTS.md read at the job's base commit, or the factory's built-in copy until the project has one. Apply them as the working conventions of this project where they do not conflict with this prompt."
     }
   }
 }

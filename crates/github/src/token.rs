@@ -58,6 +58,10 @@ pub(crate) enum TokenClass {
     /// that the protection preflight makes ([`PermissionSet::protection_reader`]). It does not
     /// depend on the stage in the scope, and no other call uses it.
     ProtectionRead,
+    /// `contents: write`, `pull_requests: write` and `metadata: read`, for the rules pull request
+    /// ([`PermissionSet::project_rules`], ports v1.3). It does not depend on the stage in the
+    /// scope.
+    ProjectRules,
 }
 
 /// Where the factory's tenants' installations are. The adapter does not discover them: a tenant
@@ -228,6 +232,7 @@ impl TokenMinter {
             TokenClass::IssueStatus => Ok(PermissionSet::issue_status()),
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
             TokenClass::ProtectionRead => Ok(PermissionSet::protection_reader()),
+            TokenClass::ProjectRules => Ok(PermissionSet::project_rules()),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),
             // The write credential is never minted for a stage that may not write.
             TokenClass::Push => Err(GitHostError::Forbidden),

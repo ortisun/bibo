@@ -1404,7 +1404,13 @@ fn register_around(
             kind: StageKind::RepositoryIntelligence,
             contract_id: "stage-contract.repository-intelligence",
             span: "stage.repository_intelligence",
-            deliverables: vec![("repository-map", map)],
+            deliverables: vec![
+                ("repository-map", map),
+                (
+                    "project-rules",
+                    b"# Rules of the fixture project\n\nWrite the documents first.\n".to_vec(),
+                ),
+            ],
         },
         Fixed {
             kind: StageKind::Architecture,

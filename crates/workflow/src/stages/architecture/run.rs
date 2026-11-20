@@ -104,6 +104,7 @@ pub(super) async fn execute(
             map_bytes.clone(),
         )
         .fetched_at(now),
+        crate::stages::project_rules::block(ctx).await?,
     ];
     if let Some(text) = &feedback {
         inputs.push(
@@ -322,7 +323,9 @@ async fn ask_critic(
     };
     // The type of these inputs is the guard: an agent's account of its own work cannot become one.
     let independent = |input: Input| input.fetched_at(now).into_independent();
+    let rules = crate::stages::project_rules::block(ctx).await?;
     let inputs = vec![
+        rules.into_independent(),
         independent(Input::untrusted(
             critic::INPUT_SPECIFICATION,
             ContentClass::SpecificationText,

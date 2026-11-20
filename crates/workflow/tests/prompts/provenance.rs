@@ -58,12 +58,18 @@ fn prompts_provenance_records_each_input_with_its_source_and_sizes() {
         )
         .fetched_at(at("2026-10-27T10:00:00Z")),
         input(&agent, "gate_reports", "reports"),
+        input(&agent, "project_rules", "rules"),
     ];
     let assembled = assemble(&agent, inputs).expect("assembles");
     let m = assembled.manifest();
     assert_eq!(
         m.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
-        vec!["frozen_specification", "diff", "gate_reports"]
+        vec![
+            "frozen_specification",
+            "diff",
+            "gate_reports",
+            "project_rules"
+        ]
     );
     let diff = m.input("diff").expect("record");
     assert_eq!(diff.class, ContentClass::ModelOutput);
@@ -181,7 +187,7 @@ fn prompts_provenance_the_port_prompt_carries_the_whole_text_and_the_shape_is_do
     let port = assembled.to_port_prompt();
     assert_eq!(port.instructions, assembled.text());
     assert!(port.data.is_empty());
-    assert_eq!(names(&agent).len(), 3);
+    assert_eq!(names(&agent).len(), 4);
 }
 
 #[test]

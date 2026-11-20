@@ -30,6 +30,7 @@ use factory_composition::pipeline::{
 };
 use factory_composition::policy_broker::{JobSpend, PolicyBroker};
 use factory_composition::profile::PortName;
+use factory_composition::project_rules::{ProjectRulesSync, ProjectRulesSyncDeps};
 use factory_composition::redaction::RegisteringBroker;
 use factory_composition::routing::{enabled_models, first_selection};
 use factory_composition::sandbox_specs::PolicySpecs;
@@ -41,6 +42,7 @@ use factory_composition::token_sweep::RevokeEndedJobs;
 use factory_domain::vocabulary::StageKind;
 use factory_ports::agent::ModelBroker;
 use factory_ports::issue_status::IssueStatusWriter;
+use factory_ports::project_rules::ProjectRulesHost;
 use factory_ports::store::{Store, WorkerId};
 use factory_sandbox::container::images::ImageCatalog;
 
@@ -291,6 +293,51 @@ pub fn issue_status(
             |g| g.web_root().to_owned(),
         ),
     })))
+}
+
+/// The rules check (ADR 0026): a draft pull request that installs or updates the project's rules
+/// for agents in `AGENTS.md`, at onboarding and when the factory's template changes. `None` when
+/// the configuration turns it off (`github.propose_project_rules: false`) or has no `github`
+/// table. The binary puts it before each claim and tells the repository changes step about it
+/// (`RepositoryChanges::tell_when_onboarded`), so a register or an enable triggers it at once.
+///
+/// # Errors
+/// [`StartupFailure`] when the tenants or the identifiers cannot be made, or the profile refuses
+/// the host.
+pub fn project_rules(
+    booted: &Booted,
+    config: &FactoryConfig,
+    world: &ExternalWorld,
+) -> Result<Option<Arc<ProjectRulesSync>>, StartupFailure> {
+    if !config
+        .github
+        .as_ref()
+        .is_some_and(|g| g.propose_project_rules)
+    {
+        return Ok(None);
+    }
+    let tenants = config
+        .worker
+        .served_tenants()
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let host: Arc<dyn ProjectRulesHost> = Arc::new(world.github.project_rules_host());
+    config
+        .profile
+        .admit(PortName::Changes, host.fidelity())
+        .map_err(|refused| StartupFailure::Other(refused.to_string()))?;
+    let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
+    Ok(Some(Arc::new(ProjectRulesSync::new(
+        ProjectRulesSyncDeps {
+            store: booted.prepared.store.clone(),
+            host,
+            changes: Arc::clone(&world.ports.changes),
+            jobs: Arc::clone(&booted.jobs),
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(ids),
+            tenants,
+            policy_hash: booted.prepared.policies.hash.clone(),
+        },
+    ))))
 }
 
 /// Assembles the pipeline from what the worker holds and the ports it was given, and puts it in a

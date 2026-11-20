@@ -74,15 +74,25 @@ struct OwnComment {
     body: String,
 }
 
-/// Leaves a gap between requests that change something.
-struct Pacer {
+/// Leaves a gap between requests that change something. The rules host (`project_rules.rs`)
+/// paces its writes with it too.
+pub(crate) struct Pacer {
     sleeper: Arc<dyn Sleeper>,
     clock: Arc<dyn Clock>,
     last_change: Mutex<Option<Timestamp>>,
 }
 
 impl Pacer {
-    async fn before_change(&self) {
+    /// A pacer that has made no change yet.
+    pub(crate) fn new(sleeper: Arc<dyn Sleeper>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            sleeper,
+            clock,
+            last_change: Mutex::new(None),
+        }
+    }
+
+    pub(crate) async fn before_change(&self) {
         let last = *self
             .last_change
             .lock()
@@ -95,7 +105,7 @@ impl Pacer {
         }
     }
 
-    fn changed(&self) {
+    pub(crate) fn changed(&self) {
         *self
             .last_change
             .lock()

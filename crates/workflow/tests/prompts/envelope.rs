@@ -322,11 +322,12 @@ fn an_input_that_is_not_given_renders_as_an_empty_block() {
     let given = vec![
         input(&agent, "frozen_specification", "spec"),
         input(&agent, "repository_map", "map"),
+        input(&agent, "project_rules", "rules"),
     ];
     let assembled = assemble(&agent, given).expect("the optional input may be missing");
     let decoded = decode(&outside_lines(&agent), &names(&agent), assembled.text());
     assert!(decoded.problems.is_empty(), "{:#?}", decoded.problems);
-    assert_eq!(decoded.bodies, vec!["spec", "map", ""]);
+    assert_eq!(decoded.bodies, vec!["spec", "map", "", "rules"]);
 }
 
 #[test]

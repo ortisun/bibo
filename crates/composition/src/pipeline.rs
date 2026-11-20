@@ -242,6 +242,9 @@ pub struct Pipeline {
     /// The steps before each claim, in the order a loop runs them: the request cache, the
     /// preflight, the hook.
     pub before_claim: Vec<Arc<dyn BeforeClaim>>,
+    /// The step that applies the signed requests to register, attest and enable. A binary tells
+    /// it about the rules check (`RepositoryChanges::tell_when_onboarded`, ADR 0026).
+    pub repository_changes: Arc<RepositoryChanges>,
     /// The decisions people recorded about new dependencies, read from the ledger by tenant and
     /// job. This is the very value the validation stage's supply chain gate reads.
     pub dependency_approvals: Arc<dyn RecordedApprovals>,
@@ -1006,7 +1009,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         .with_stage_decisions(stage_decisions)
         .with_recorded_decisions(Arc::clone(&dependency_approvals))
         .with_rejections(rejections)
-        .with_repository_changes(repository_changes),
+        .with_repository_changes(Arc::clone(&repository_changes)),
     );
     let check_names = [
         factory_workflow::stages::delivery::CHECK_VALIDATION,
@@ -1057,6 +1060,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         approvals: approval_sources,
         spec_drafts,
         before_claim,
+        repository_changes,
         dependency_approvals,
         supply_chain: external.supply_chain.standings(),
     })

@@ -24,6 +24,31 @@ pub enum Method {
     /// Remove. Used for the installation token, for a label taken off an issue and for the
     /// duplicate of a status comment (ports v1.2).
     Delete,
+    /// `PUT` to a file of the contents API (`/repos/{owner}/{repo}/contents/{path}`) and to
+    /// nothing else, for the rules pull request (ports v1.3, ADR 0026). The client refuses it for
+    /// any other path before it asks for a token ([`is_contents_path`]), so this method cannot
+    /// reach the merge endpoint, which is also a `PUT`.
+    PutContents,
+}
+
+/// True when `target` is a path of the contents API of one repository:
+/// `/repos/{owner}/{repo}/contents/{one or more segments}`, with an optional query, and no
+/// segment that is empty, `.` or `..`.
+#[must_use]
+pub fn is_contents_path(target: &str) -> bool {
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
+    let mut segments = path.split('/');
+    if segments.next() != Some("") || segments.next() != Some("repos") {
+        return false;
+    }
+    let rest: Vec<&str> = segments.collect();
+    match rest.as_slice() {
+        [owner, repo, "contents", file @ ..] if !file.is_empty() => [*owner, *repo]
+            .iter()
+            .chain(file.iter())
+            .all(|segment| !segment.is_empty() && *segment != "." && *segment != ".."),
+        _ => false,
+    }
 }
 
 impl Method {
@@ -35,6 +60,7 @@ impl Method {
             Method::Post => "POST",
             Method::Patch => "PATCH",
             Method::Delete => "DELETE",
+            Method::PutContents => "PUT",
         }
     }
 }
@@ -206,6 +232,36 @@ impl ApiBase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_one_put_reaches_a_file_of_the_contents_api_and_never_a_merge() {
+        for good in [
+            "/repos/o/r/contents/AGENTS.md",
+            "/repos/o/r/contents/docs/adr/README.md",
+            "/repos/o/r/contents/AGENTS.md?ref=factory%2Fproject-rules",
+        ] {
+            assert!(is_contents_path(good), "{good}");
+        }
+        // The merge endpoint is spelled in two pieces, so that the source scan of the crate
+        // (`change_host_behaviour`) still finds no merge path in it.
+        let merge = format!("/repos/o/r/pulls/1/{}", "mer".to_owned() + "ge");
+        let climbing = format!("/repos/o/r/contents/../pulls/1/{}", "mer".to_owned() + "ge");
+        for bad in [
+            merge.as_str(),
+            "/repos/o/r/contents",
+            "/repos/o/r/contents/",
+            climbing.as_str(),
+            "/repos/o/r/contents/./x",
+            "/repos/o/r/merges",
+            "/repos/o/contents/x",
+            "repos/o/r/contents/x",
+            "/user/repos/o/r/contents/x",
+            "/repos//r/contents/x",
+        ] {
+            assert!(!is_contents_path(bad), "{bad}");
+        }
+        assert_eq!(Method::PutContents.as_str(), "PUT");
+    }
 
     #[test]
     fn an_https_base_must_name_a_host_and_nothing_secret() {

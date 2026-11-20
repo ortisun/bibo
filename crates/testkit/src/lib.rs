@@ -30,6 +30,7 @@
 //! | [`registry`] | `InMemoryAgentRegistry` | `contracts::registry` |
 //! | [`githost`] | `FakeChangeHost`, `FakeIssueSource` | `contracts::githost` |
 //! | [`issue_status`] | `FakeIssueStatusWriter` (one `factory: <state>` label and one status comment per issue; ports v1.2) | `contracts::issue_status` |
+//! | [`project_rules`] | `FakeProjectRulesHost` (branches with their files, and the draft pull request that installs the project's rules for agents; ports v1.3) | `contracts::project_rules` |
 //! | [`webhook`] | `FakeWebhookVerifier` (a real HMAC-SHA256, fixed test secrets) | `contracts::webhook` |
 //! | [`process`] | `ScriptedProcessRunner` (starts nothing) | `contracts::process` |
 //! | [`spec`] | `FakeSpecificationProvider` | none yet: Spec Kit is driven only by `spec_adapter` |
@@ -59,6 +60,7 @@ pub mod fx;
 pub mod githost;
 pub mod issue_status;
 pub mod process;
+pub mod project_rules;
 pub mod registry;
 pub mod router;
 pub mod sandbox;

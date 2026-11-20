@@ -35,6 +35,7 @@
     "documents": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/document" } },
     "excluded_paths": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/excluded" } },
     "project_manifest": { "$ref": "#/$defs/manifest" },
+    "project_rules": { "$ref": "#/$defs/rules" },
     "baseline": { "$ref": "#/$defs/baseline" },
     "counts": { "$ref": "#/$defs/counts" }
   },
@@ -163,6 +164,18 @@
         "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "rules": {
+      "description": "Where the rules for agents that the later stages give their agents came from (ADR 0026): the path read at the base commit, the digest of the text the agents get, its origin, and why the factory's built-in copy was used for a file that is there.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "origin"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "origin": { "enum": ["repository", "repository_with_factory_rules", "built_in"] },
+        "fallback": { "enum": ["too_large", "not_utf8"] }
       }
     },
     "baseline": {

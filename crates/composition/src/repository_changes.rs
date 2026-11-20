@@ -88,6 +88,7 @@ use crate::decision_signing::{
     DecisionKeys, RepositoryChangeSigning, read_repository_change_subject,
 };
 use crate::decisions::{MAX_TRIES, Unreadable};
+use crate::project_rules::RepositoryOnboarded;
 
 /// The audit action of a request. The API writes it, and its trigger lists it among the actions the API may
 /// write.
@@ -463,6 +464,8 @@ pub struct RepositoryChanges {
     scans: Mutex<BTreeMap<TenantId, Scan>>,
     pages_per_pass: usize,
     page: u32,
+    /// Told after a register or an enable was applied and committed: the rules check (ADR 0026).
+    onboarded: std::sync::OnceLock<Arc<dyn RepositoryOnboarded>>,
 }
 
 impl RepositoryChanges {
@@ -474,7 +477,15 @@ impl RepositoryChanges {
             scans: Mutex::new(BTreeMap::new()),
             pages_per_pass: PAGES_PER_PASS,
             page: PAGE,
+            onboarded: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Names what to tell after a request to register or to enable a repository was applied (the
+    /// rules check of ADR 0026). Set once; a second call changes nothing. What it does never
+    /// changes the outcome of the request, which is committed before it is told.
+    pub fn tell_when_onboarded(&self, listener: Arc<dyn RepositoryOnboarded>) {
+        let _ = self.onboarded.set(listener);
     }
 
     /// The same step reading smaller pages and fewer of them in a pass. For tests that need a log longer than
@@ -638,6 +649,13 @@ impl RepositoryChanges {
                     "a repository change was applied"
                 );
                 self.forget(tenant, request.id);
+                if let (
+                    Change::Register { repository, .. } | Change::Enable { repository, .. },
+                    Some(listener),
+                ) = (&request.fields.change, self.onboarded.get())
+                {
+                    listener.onboarded(tenant, *repository).await;
+                }
             }
             Outcome::Refused(code) => {
                 if self.record_refusal(tenant, &request, code).await {

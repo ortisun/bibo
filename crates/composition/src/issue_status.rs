@@ -1083,7 +1083,7 @@ struct Target {
 /// over. If the task panics or is dropped while the round runs (a shutdown, an abort), `finish`
 /// is never reached; dropping the round then lifts the shield and ends the credential from a
 /// task of its own, so that neither stays for the life of the process (finding STS-4).
-struct Round {
+pub(crate) struct Round {
     jobs: Arc<ActiveJobs>,
     host: Arc<dyn ChangeHost>,
     session: JobId,
@@ -1091,7 +1091,7 @@ struct Round {
 }
 
 impl Round {
-    fn start(
+    pub(crate) fn start(
         jobs: Arc<ActiveJobs>,
         host: Arc<dyn ChangeHost>,
         session: JobId,
@@ -1107,7 +1107,7 @@ impl Round {
     }
 
     /// Ends the credential of the round, then lifts the shield.
-    async fn finish(mut self) {
+    pub(crate) async fn finish(mut self) {
         self.finished = true;
         let _ = self.host.revoke_job_tokens(self.session).await;
         self.jobs.leave(self.session);

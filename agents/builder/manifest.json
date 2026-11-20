@@ -55,7 +55,7 @@
   "inputs_schema": {
     "name": "builder-input",
     "version": 1,
-    "sha256": "sha256:b2bcc30ebad27e596d762ecf560a6bc8e78960234b704e00e73ec54cf158e0af"
+    "sha256": "sha256:274d9b95d215743338dfbf4ec913f25d640244de39b31e37aaade4048f61a382"
   },
   "outputs_schema": {
     "name": "builder-report",
@@ -114,7 +114,7 @@
   },
   "prompt": {
     "template_path": "agents/builder/prompt.md",
-    "template_version": "1.1.0",
-    "template_sha256": "sha256:b3a814ed47c873124915f4d5ac103ec1dcb27f9634b3f3d38b18f139fc0f8ebb"
+    "template_version": "1.2.0",
+    "template_sha256": "sha256:532f28b64f39a91bef7d97baf8460d8535de18ce25c1c964ce56be5a85d69854"
   }
 }

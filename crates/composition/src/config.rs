@@ -530,6 +530,12 @@ pub struct GithubConfig {
     /// labels and the comment are observability and no job depends on them.
     #[serde(default = "default_true")]
     pub write_issue_status: bool,
+    /// Opens a draft pull request in each repository that installs or updates the factory's rules
+    /// for agents in `AGENTS.md`, at onboarding and when a new release changes them (ADR 0026).
+    /// False stops the worker from opening it. The agents still read the project's `AGENTS.md`, or
+    /// the factory's built-in copy when the project has none.
+    #[serde(default = "default_true")]
+    pub propose_project_rules: bool,
     /// The address of GitHub's web pages, `scheme://host[:port]` with no path, from which the
     /// factory builds the links it writes (the link to the draft pull request in the status
     /// comment of a finished job). The default is `https://github.com`; a GitHub Enterprise server
@@ -1827,6 +1833,19 @@ mod tests {
             "  api_base_url: http://127.0.0.1:9\n  write_issue_statuses: false\n",
         );
         assert!(FactoryConfig::from_yaml(&with_world("local", &typo)).is_err());
+    }
+
+    #[test]
+    fn proposing_the_project_rules_is_on_unless_the_file_turns_it_off() {
+        let on = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(on.github.expect("github").propose_project_rules);
+        let off_world = LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            "  api_base_url: http://127.0.0.1:9\n  propose_project_rules: false\n",
+        );
+        assert_ne!(off_world, LOOPBACK_WORLD, "the edit applied");
+        let off = FactoryConfig::from_yaml(&with_world("local", &off_world)).expect("loads");
+        assert!(!off.github.expect("github").propose_project_rules);
     }
 
     #[test]

@@ -19,7 +19,9 @@ use factory_composition::health::CheckStatus;
 use factory_composition::issue_status::StatusStep;
 use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
-use factory_worker::pipeline::{assemble_loop, external_ports, issue_status, token_sweep};
+use factory_worker::pipeline::{
+    assemble_loop, external_ports, issue_status, project_rules, token_sweep,
+};
 use factory_worker::run::exit_code;
 
 fn main() -> ExitCode {
@@ -95,7 +97,19 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         }
-        let (worker_loop, _pipeline) =
+        // The rules check (ADR 0026): before each claim, and told about every register and enable.
+        let rules = match project_rules(&booted, &config, &world) {
+            Ok(rules) => rules,
+            Err(error) => {
+                eprintln!("factory-worker: the project rules check cannot be built: {error}");
+                booted.broker.shutdown();
+                return ExitCode::from(1);
+            }
+        };
+        if let Some(rules) = &rules {
+            sweep.push(rules.clone());
+        }
+        let (worker_loop, pipeline) =
             match assemble_loop(&booted, &config, world.ports, sweep, shutdown) {
                 Ok(assembled) => assembled,
                 Err(error) => {
@@ -104,6 +118,9 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
+        if let Some(rules) = rules {
+            pipeline.repository_changes.tell_when_onboarded(rules);
+        }
         let summary = worker_loop.run().await;
         booted.broker.shutdown();
         ExitCode::from(exit_code(&summary))

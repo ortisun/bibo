@@ -146,6 +146,27 @@ async fn nothing_the_adapter_does_merges_marks_ready_or_touches_a_branch_it_may_
 }
 
 #[test]
+fn the_rules_host_writes_references_of_the_rules_branch_only() {
+    let source = include_str!("../src/project_rules.rs");
+    let code: Vec<&str> = source
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    let reference_lines: Vec<&&str> = code.iter().filter(|l| l.contains("/git/ref")).collect();
+    assert!(!reference_lines.is_empty());
+    for line in reference_lines {
+        assert!(
+            line.contains("{encoded}")
+                || line.contains("{RULES_BRANCH}")
+                || line.ends_with("/git/refs\", repo_path(&scope.repo));"),
+            "a reference path not built from the rules branch: {line}"
+        );
+    }
+    assert!(source.contains("let encoded = percent_encode_component(RULES_BRANCH);"));
+    assert!(!code.iter().any(|l| l.contains("Method::Delete")));
+}
+
+#[test]
 fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut deletes = Vec::new();
@@ -167,6 +188,16 @@ fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
             "/git/refs",
             "pulls/{number}/merge",
         ] {
+            // The rules pull request (ports v1.3, ADR 0026) creates or moves one reference, the
+            // branch `factory/project-rules`, in `project_rules.rs`. Every reference path there is
+            // built from the constant `RULES_BRANCH`; the test below holds it to that.
+            if needle == "/git/refs"
+                && path
+                    .file_name()
+                    .is_some_and(|name| name == "project_rules.rs")
+            {
+                continue;
+            }
             // The one read of GraphQL the adapter makes (the time a body was last edited, DR-1)
             // is in `edits.rs`; `security_review` holds it to a constant query and a short list
             // of routes.

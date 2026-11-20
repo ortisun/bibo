@@ -742,6 +742,15 @@ async fn build_in(
     let identity = ctx.identity;
     let mut session = open_builder_sandbox(handler, ctx, workspace, tally).await?;
 
+    // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
+    let rules = match crate::stages::project_rules::block(ctx).await {
+        Ok(rules) => rules,
+        Err(error) => {
+            let _ = close(session, false).await;
+            return Err(error);
+        }
+    };
+
     // The prompt. Everything the builder reads is untrusted data in a quoted block.
     let assembled = {
         let now = ports.clock.now();
@@ -775,6 +784,7 @@ async fn build_in(
                 shared.architecture.clone(),
             )
             .fetched_at(now),
+            rules,
         ];
         if let Some(feedback) = &shared.feedback {
             inputs.push(

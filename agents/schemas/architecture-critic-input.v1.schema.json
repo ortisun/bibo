@@ -8,7 +8,8 @@
   "required": [
     "frozen_specification",
     "architecture_design",
-    "repository_map"
+    "repository_map",
+    "project_rules"
   ],
   "properties": {
     "frozen_specification": {
@@ -25,6 +26,11 @@
       "type": "string",
       "maxLength": 1048576,
       "description": "The repository map from the repository stage: languages, layout, build and test commands."
+    },
+    "project_rules": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The project's rules for agents: the project's AGENTS.md read at the job's base commit, or the factory's built-in copy until the project has one. Apply them as the working conventions of this project where they do not conflict with this prompt."
     }
   }
 }

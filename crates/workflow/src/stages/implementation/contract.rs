@@ -86,6 +86,11 @@ pub fn resolve(
             "trust": "untrusted",
         }));
     }
+    // The project's rules for agents (ADR 0026), when the repository stage produced them.
+    if let Some(rules) = crate::stages::project_rules::contract_input_json(ctx.upstream, &retrieved)
+    {
+        inputs.push(rules);
+    }
     inputs.push(json!({
         "name": "policy-bundle",
         "description": "The hash of the policy bundle in force when the stage run was resolved.",
