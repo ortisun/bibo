@@ -179,3 +179,15 @@ Items only a person can do, which block a live run but not the build: a Datadog 
   - **T-53** the troubleshooter floods the issue tracker or the plan. Mitigation: fingerprints, one comment a day, issue and run caps, the role's day ceiling.
   - **T-54** a stuck or slow upstream holds the run. Mitigation: per-call deadline, run wall clock, `source_unavailable` findings raised without the model.
 - Not built here: watching the repositories the factory changes (the owner chose the factory only); remediation of any kind; VictoriaLogs and VictoriaTraces upstreams; Codex as the troubleshooter's runtime (unavailable in subscription mode, ADR 0020).
+
+## Implementation notes: where the build differs from Decisions 5 and 6
+
+Added on 2026-11-20 with the runtime, sidecar, sandbox and policy changes. The decisions stand; these are the shapes that differ from the text above, and why.
+
+- **`--mcp-config` carries the configuration inline, not a path.** `Flag::McpConfig` writes `--mcp-config=<json>` (the form the spike used, section 4.9), so no file is written into the run's home between building and starting the tool. The bearer token is not in it: the header is `Authorization: Bearer ${FACTORY_MCP_TOKEN}`, and the launcher line reads `/run/factory/mcp-token` into that variable inside the sandbox, as it reads the job token in subscription mode (ADR 0020).
+- **The troubleshooter runs with `--permission-mode=dontAsk` and without `--dangerously-skip-permissions`.** With no built-in tool there is nothing to bypass, and `dontAsk` makes `--allowedTools` a filter: a call to a gateway tool that is not listed is denied and reported in `permission_denials`. Every other flag set is unchanged.
+- **`McpGateway` has no token-file field.** The run token is mounted at the fixed path `MCP_TOKEN_TARGET`, like the job token, so the request and the sandbox cannot name different files. `ClaudeTool::Mcp` holds a checked `McpToolName`; the server name `factory` is a constant.
+- **A `troubleshooter` egress profile, not an entry in the `agent` egress profile.** The `agent` egress profile is shared by every pipeline agent, so `mcp_gateway` sits in its own profile with a copy of the broker entry (`troubleshooter_model_broker`). The policy check and the egress engine refuse `mcp_gateway` in any other egress profile.
+- **Names.** The sidecar's flags are `--second-listen` and `--second-upstream`; the relay listens on port 8444 in the job network; the deployment names the gateway's address in `sandbox.gateway_upstream`.
+
+Checked against Claude Code 2.1.329 on the host (not inside the agent image, not 2.1.311) with the fake provider and a fake MCP server: the `${FACTORY_MCP_TOKEN}` header is expanded, `--strict-mcp-config --tools=` leaves only the `mcp__factory__*` tools, an allowed call reaches the server, an unlisted one is denied under `dontAsk`, and the token value appears in no event of the stream.
