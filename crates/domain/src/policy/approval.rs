@@ -29,6 +29,8 @@ strict! {
         pub roles: Vec<Role>,
         /// Separation of duties.
         pub separation_of_duties: SeparationOfDuties,
+        /// The solo mode: when the requester of a job may approve it alone (ADR 0021).
+        pub solo_mode: SoloMode,
         /// Risk tiers.
         pub risk_tiers: Vec<RiskTierRule>,
         /// How risk is classified.
@@ -242,6 +244,40 @@ strict! {
         pub factory_app_may_approve: bool,
         /// A security approver must differ from the requester.
         pub security_approver_must_differ_from_requester: bool,
+    }
+}
+
+strict! {
+    /// The solo mode (ADR 0021): the one person who approves on a repository marked
+    /// `single_maintainer` may approve what they asked for themselves, under a minimum wait and a
+    /// confirmation phrase for the riskier decisions. Every field is required, and
+    /// [`check_solo_mode`](super::solo::check_solo_mode) refuses a value out of range, so a file
+    /// that leaves the block out or writes zero does not load.
+    pub struct SoloMode {
+        /// The switch. Off, nobody approves their own request.
+        pub enabled: bool,
+        /// The minimum waits, in whole minutes, from 1 to 1440.
+        pub minimum_wait_minutes: MinimumWaitMinutes,
+        /// The confirmation phrase, with exactly one `{target}`.
+        pub confirmation_template: String,
+    }
+}
+
+strict! {
+    /// The minimum waits of the solo mode, in whole minutes, each from 1 to 1440 (one day). A wait
+    /// is measured from the moment the stage run last entered the state that asks for the
+    /// decision (`WAITING_FOR_HUMAN` or `BLOCKED`) to the moment the decision was asked for.
+    pub struct MinimumWaitMinutes {
+        /// The approval of a pull request at the high risk tier.
+        pub pull_request_high: u32,
+        /// The approval of a pull request at the critical risk tier.
+        pub pull_request_critical: u32,
+        /// A decision on a new direct dependency.
+        pub dependency: u32,
+        /// A decision on a translation warning.
+        pub translation_warning: u32,
+        /// A decision on build code (of a new package or of the project).
+        pub build_code: u32,
     }
 }
 

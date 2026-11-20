@@ -447,5 +447,6 @@ fn ask_for(
         },
         require_designation,
         step_up_done: false,
+        solo: factory_domain::policy::solo::SoloFact::NONE,
     })
 }

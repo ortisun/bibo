@@ -1127,6 +1127,7 @@ fn decide(engine: &PolicyEngine, who: u64, action: &str, level: AutonomyLevel) -
         },
         require_designation: None,
         step_up_done: true,
+        solo: factory_domain::policy::solo::SoloFact::NONE,
     })
 }
 
@@ -1167,6 +1168,7 @@ fn decide_change(
             },
             require_designation: None,
             step_up_done: true,
+            solo: factory_domain::policy::solo::SoloFact::NONE,
         },
         from,
         to,

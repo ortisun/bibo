@@ -624,6 +624,7 @@ fn negative_nt_mrg_05_there_is_no_verb_for_merge_deploy_or_ready() {
                     },
                     require_designation: None,
                     step_up_done: false,
+                    solo: factory_domain::policy::solo::SoloFact::NONE,
                 },
             );
             assert!(

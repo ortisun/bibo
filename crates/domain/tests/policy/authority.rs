@@ -15,6 +15,7 @@ use factory_domain::policy::authority::{
 };
 use factory_domain::policy::decision::{AuthorizedApproval, Designation, GithubUserId};
 use factory_domain::policy::paths::{ChangeEvidence, Operation, PathPolicy, PathVerdict};
+use factory_domain::policy::solo::SoloFact;
 use factory_domain::policy::{PolicyEngine, RepoKind};
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::RiskTier;
@@ -170,6 +171,7 @@ fn decide_with(
         change,
         require_designation,
         step_up_done,
+        solo: SoloFact::NONE,
     })
 }
 
@@ -454,6 +456,7 @@ fn raising_autonomy_needs_an_org_admin_and_lowering_a_repo_admin() {
                 change: LOW,
                 require_designation: None,
                 step_up_done: true,
+                solo: SoloFact::NONE,
             },
             from,
             to,
@@ -760,11 +763,19 @@ fn separation_of_duties_follows_the_change_and_the_designation() {
         },
         high,
     ];
-    // A low-risk change in a single-maintainer repository: the requester may approve.
-    assert!(matches!(
-        decide(&list, &alice, "approve_pr", L1, Some(REQUESTER), LOW),
-        ActionVerdict::Authorized(_)
-    ));
+    // A low-risk change: the requester may not approve outside the solo mode (ADR 0021), now that
+    // `approver_may_equal_requester_when_low_risk` is false.
+    assert_eq!(
+        reason(&decide(
+            &list,
+            &alice,
+            "approve_pr",
+            L1,
+            Some(REQUESTER),
+            LOW
+        )),
+        Some(ActionDenialReason::SelfApproval)
+    );
     // Any of the four triggers: not the requester.
     for change in flags {
         assert_eq!(
@@ -830,10 +841,12 @@ fn sf_07_the_rules_of_a_branch_are_held_to_the_smallest_number_of_approvals_of_t
     // that every pull request needs: the smallest of the tiers (1), not the largest (2, the critical
     // tier, which the approval stage holds to by counting the approvals of people itself).
     let a = authority();
-    assert_eq!(a.required_approvals(RiskTier::Critical), 2);
+    assert_eq!(a.required_approvals(RiskTier::Critical, SoloFact::NONE), 2);
     assert_eq!(a.approvals_every_pull_request_needs(), 1);
     for tier in [RiskTier::Low, RiskTier::Medium, RiskTier::High] {
-        assert!(a.approvals_every_pull_request_needs() <= a.required_approvals(tier));
+        assert!(
+            a.approvals_every_pull_request_needs() <= a.required_approvals(tier, SoloFact::NONE)
+        );
     }
 }
 
@@ -869,8 +882,8 @@ fn a_critical_change_needs_two_distinct_security_approvers() {
     ));
     assert_eq!(first.designation(), Designation::SecurityApprover);
     let a = authority();
-    assert_eq!(a.required_approvals(RiskTier::Critical), 2);
-    assert_eq!(a.required_approvals(RiskTier::Low), 1);
+    assert_eq!(a.required_approvals(RiskTier::Critical, SoloFact::NONE), 2);
+    assert_eq!(a.required_approvals(RiskTier::Low, SoloFact::NONE), 1);
     assert!(!a.quorum_met(
         RiskTier::Critical,
         "approve_pr",
@@ -1162,6 +1175,7 @@ fn override_with(
         change: LOW,
         require_designation: None,
         step_up_done: true,
+        solo: SoloFact::NONE,
     };
     authority().authorize_override(&ctx, request).map(|g| {
         assert!(g.residual_risk_accepted);
@@ -1527,4 +1541,263 @@ fn rh_3_the_policy_asks_an_entry_with_the_id_by_the_id_when_it_is_given_the_regi
         by_name_held("acme/renamed", ITS_ID),
         Err(AuthorityDenial::RepositoryNotListed)
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The solo mode (ADR 0021): the requester who is the one approver
+// ---------------------------------------------------------------------------------------------
+
+/// One person who asks and approves, with or without `security_approver`.
+fn solo_list(security: bool) -> Allowlist {
+    use Designation::{Approver, Operator, Requester, SecurityApprover};
+    let mut held = vec![Requester, Approver, Operator];
+    if security {
+        held.push(SecurityApprover);
+    }
+    Allowlist::new("sha256:solo", vec![entry(REQUESTER, "alice", &held)]).expect("list")
+}
+
+fn decide_solo(
+    list: &Allowlist,
+    actor_id: u64,
+    action: &str,
+    tier: RiskTier,
+    solo: SoloFact,
+) -> ActionVerdict {
+    let (tenant, now) = (tenant(), now());
+    let actor = human(actor_id, "alice");
+    authority().authorize_action(&ActionContext {
+        action,
+        level: AutonomyLevel::L1,
+        tenant: &tenant,
+        repository: REPO,
+        actor: &actor,
+        allowlist: list,
+        now: &now,
+        requester: Some(uid(REQUESTER)),
+        change: ChangeFacts {
+            risk_tier: tier,
+            new_dependency: action == "add_new_direct_dependency",
+            protected_path_change: tier == RiskTier::Critical,
+            ..LOW
+        },
+        require_designation: (action == "approve_build_code")
+            .then_some(Designation::SecurityApprover),
+        step_up_done: true,
+        solo,
+    })
+}
+
+/// `Some(true)`: authorized with the stamp; `Some(false)`: authorized without it.
+fn stamp(verdict: &ActionVerdict) -> Option<bool> {
+    match verdict {
+        ActionVerdict::Authorized(proof) => Some(proof.solo_stamp()),
+        _ => None,
+    }
+}
+
+#[test]
+fn the_solo_fact_needs_the_switch_the_mark_and_exactly_one_approver() {
+    let a = authority();
+    assert!(
+        a.solo_rules().enabled(),
+        "the shipped policy switches the mode on"
+    );
+    assert!(a.solo_fact(true, 1).holds());
+    assert!(!a.solo_fact(false, 1).holds(), "no single_maintainer mark");
+    assert!(!a.solo_fact(true, 2).holds(), "two approving people");
+    assert!(!a.solo_fact(true, 0).holds(), "nobody approves");
+    assert!(!a.solo_fact(true, u32::MAX).holds());
+}
+
+#[test]
+fn negative_nt_solo_05_the_requester_approves_alone_only_with_the_solo_fact() {
+    let solo = authority().solo_fact(true, 1);
+    let plain = solo_list(false);
+    let full = solo_list(true);
+    for tier in [RiskTier::Low, RiskTier::Medium, RiskTier::High] {
+        assert_eq!(
+            reason(&decide_solo(
+                &plain,
+                REQUESTER,
+                "approve_pr",
+                tier,
+                SoloFact::NONE
+            )),
+            Some(ActionDenialReason::SelfApproval),
+            "{tier:?} without the fact"
+        );
+        assert_eq!(
+            stamp(&decide_solo(&plain, REQUESTER, "approve_pr", tier, solo)),
+            Some(true),
+            "{tier:?} with the fact"
+        );
+    }
+    // Critical needs a security approver, solo or not.
+    for fact in [SoloFact::NONE, solo] {
+        assert!(matches!(
+            reason(&decide_solo(
+                &plain,
+                REQUESTER,
+                "approve_pr",
+                RiskTier::Critical,
+                fact
+            )),
+            Some(ActionDenialReason::MissingDesignation { .. })
+        ));
+    }
+    assert_eq!(
+        reason(&decide_solo(
+            &full,
+            REQUESTER,
+            "approve_pr",
+            RiskTier::Critical,
+            SoloFact::NONE
+        )),
+        Some(ActionDenialReason::SelfApproval)
+    );
+    assert_eq!(
+        stamp(&decide_solo(
+            &full,
+            REQUESTER,
+            "approve_pr",
+            RiskTier::Critical,
+            solo
+        )),
+        Some(true)
+    );
+    for action in [
+        "freeze_specification",
+        "acknowledge_documentation_warning",
+        "add_new_direct_dependency",
+    ] {
+        assert_eq!(
+            reason(&decide_solo(
+                &plain,
+                REQUESTER,
+                action,
+                RiskTier::Medium,
+                SoloFact::NONE
+            )),
+            Some(ActionDenialReason::SelfApproval),
+            "{action}"
+        );
+        assert_eq!(
+            stamp(&decide_solo(
+                &plain,
+                REQUESTER,
+                action,
+                RiskTier::Medium,
+                solo
+            )),
+            Some(true),
+            "{action}"
+        );
+    }
+    // Build code needs a security approver; with one the solo requester decides.
+    assert!(matches!(
+        reason(&decide_solo(
+            &plain,
+            REQUESTER,
+            "approve_build_code",
+            RiskTier::Medium,
+            solo
+        )),
+        Some(ActionDenialReason::MissingDesignation { .. })
+    ));
+    assert_eq!(
+        reason(&decide_solo(
+            &full,
+            REQUESTER,
+            "approve_build_code",
+            RiskTier::Medium,
+            SoloFact::NONE
+        )),
+        Some(ActionDenialReason::SelfApproval)
+    );
+    assert_eq!(
+        stamp(&decide_solo(
+            &full,
+            REQUESTER,
+            "approve_build_code",
+            RiskTier::Medium,
+            solo
+        )),
+        Some(true)
+    );
+}
+
+#[test]
+fn negative_nt_solo_05_the_solo_exception_is_for_approval_actions_only() {
+    let solo = authority().solo_fact(true, 1);
+    let full = solo_list(true);
+    for action in [
+        "reject_or_request_rework",
+        "pause_or_resume_job",
+        "cancel_job",
+    ] {
+        for fact in [SoloFact::NONE, solo] {
+            // At low risk the requester keeps the power to reject, rework, pause and cancel.
+            assert_eq!(
+                stamp(&decide_solo(&full, REQUESTER, action, RiskTier::Low, fact)),
+                Some(false),
+                "{action} low"
+            );
+            assert_eq!(
+                reason(&decide_solo(&full, REQUESTER, action, RiskTier::High, fact)),
+                Some(ActionDenialReason::SelfApproval),
+                "{action} high"
+            );
+        }
+    }
+    // The waiver of a gate never gets the exception.
+    for fact in [SoloFact::NONE, solo] {
+        assert_eq!(
+            reason(&decide_solo(
+                &full,
+                REQUESTER,
+                "waive_failed_gate",
+                RiskTier::Low,
+                fact
+            )),
+            Some(ActionDenialReason::SelfApproval)
+        );
+    }
+}
+
+#[test]
+fn negative_nt_solo_05_the_solo_stamp_is_only_set_when_the_exception_was_used() {
+    let solo = authority().solo_fact(true, 1);
+    let list = allowlist();
+    // Another approver, with the fact true, gets a proof without the stamp.
+    assert_eq!(
+        stamp(&decide_solo(
+            &list,
+            APPROVER,
+            "approve_pr",
+            RiskTier::Low,
+            solo
+        )),
+        Some(false)
+    );
+    assert_eq!(
+        stamp(&decide_solo(
+            &list,
+            APPROVER,
+            "approve_pr",
+            RiskTier::High,
+            SoloFact::NONE
+        )),
+        Some(false)
+    );
+}
+
+#[test]
+fn negative_nt_solo_02_solo_quorum_is_one() {
+    let a = authority();
+    let solo = a.solo_fact(true, 1);
+    for tier in RiskTier::ALL {
+        assert_eq!(a.required_approvals(*tier, solo), 1, "{tier:?}");
+    }
+    assert_eq!(a.required_approvals(RiskTier::Critical, SoloFact::NONE), 2);
 }

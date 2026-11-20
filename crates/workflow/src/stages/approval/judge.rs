@@ -247,6 +247,7 @@ pub fn judge(cmd: &ApprovalCommand, cx: &Context<'_>) -> Result<Accepted, Refusa
         },
         require_designation: None,
         step_up_done: false,
+        solo: factory_domain::policy::solo::SoloFact::NONE,
     });
     let authorization = match verdict {
         ActionVerdict::Authorized(proof) => proof,

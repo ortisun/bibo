@@ -553,7 +553,10 @@ impl ApprovalService {
         let mut tx = d.store.begin(TenantScope::new(cmd.tenant)).await?;
         let valid = tx.valid_approvals(cmd.job, &request.pr_head).await?;
         tx.commit().await?;
-        let required = d.policy.authority.required_approvals(request.tier);
+        let required = d
+            .policy
+            .authority
+            .required_approvals(request.tier, factory_domain::policy::solo::SoloFact::NONE);
         let counted = count_distinct(&valid, request.tier);
         Ok(required.saturating_sub(counted))
     }
