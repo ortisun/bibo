@@ -92,6 +92,11 @@ impl ImageDigest {
 /// when the sandbox is torn down, whatever the reason.
 pub const JOB_TOKEN_TARGET: &str = "/run/factory/job-token";
 
+/// Where the run token of the MCP gateway is mounted inside a `troubleshooter` container:
+/// read-only, at this fixed path, written and removed by the sandbox adapter exactly like the job
+/// token (ADR 0021). Only the runtime's launcher line reads it.
+pub const MCP_TOKEN_TARGET: &str = "/run/factory/mcp-token";
+
 /// Where the checkout is mounted inside the container.
 pub const WORKSPACE_TARGET: &str = "/workspace";
 

@@ -404,6 +404,7 @@ pub fn agent_run_request(ids: &Ids) -> AgentRunRequest {
             model: NonEmptyString::parse("fake-model").expect("a valid model name"),
         },
         flag_set: FlagSet::Standard,
+        mcp_gateway: None,
         max_output_bytes: 1_048_576,
     }
 }

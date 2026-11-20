@@ -358,6 +358,7 @@ async fn run_in(
         limits: manifest.resource_limits.clone(),
         model: route.model,
         flag_set: route.flag_set,
+        mcp_gateway: None,
     };
     let report = ports.runtime.run(&mut *session, request, ctx.cancel).await;
     close(session, report.outcome.is_ok()).await?;
