@@ -1,0 +1,248 @@
+# Every column of every table that the group factory_observer can read (migration 2026-11-20-002900_observer_role).
+#
+# Format: <table> <column> <class> [# why, for a sensitive column]. Class is "operational" (granted) or
+# "sensitive" (never granted: a request text, a specification, an issue body, a token or token digest, a key, a
+# signature or bound hash, a chain hash, free text written by a person, a person's identity, an event payload).
+#
+# The test observer_columns in crates/mcp_postgres/tests/observer_role.rs migrates a database and fails when:
+#   * the group can read a column this file does not mark operational (a grant nobody classified);
+#   * a column this file marks sensitive is readable by the group;
+#   * a table the group can read has a column this file does not list (a new column nobody classified).
+# A new column is therefore denied until a person classifies it here and, if operational, grants it in a migration.
+
+__diesel_schema_migrations version operational
+__diesel_schema_migrations run_on operational
+api_tokens tenant_id operational
+api_tokens id operational
+api_tokens principal_id operational
+api_tokens token_hash sensitive # token digest
+api_tokens audience operational
+api_tokens label sensitive # free text
+api_tokens created_at operational
+api_tokens expires_at operational
+api_tokens revoked_at operational
+api_tokens last_used_at operational
+approvals tenant_id operational
+approvals id operational
+approvals job_id operational
+approvals stage_run_id operational
+approvals decision operational
+approvals approver_principal_id sensitive # who approved
+approvals approver_kind operational
+approvals approver_github_user_id sensitive # a person
+approvals approver_designation sensitive # a person
+approvals allowlist_version_hash sensitive # signature-bound hash
+approvals pr_head_sha sensitive # bound commit
+approvals tree_hash sensitive # bound hash
+approvals base_sha sensitive # bound commit
+approvals evidence_manifest_hash sensitive # bound hash
+approvals spec_version sensitive # bound to a specification
+approvals policy_hash sensitive # bound hash
+approvals reason sensitive # free text written by a person
+approvals channel operational
+approvals created_at operational
+approvals expires_at operational
+approvals invalidated_at operational
+approvals invalidation_reason operational
+artifacts tenant_id operational
+artifacts content_sha256 operational
+artifacts size_bytes operational
+artifacts media_type operational
+artifacts backend operational
+artifacts retention_class operational
+artifacts created_by_job_id operational
+artifacts created_by_stage_run_id operational
+artifacts created_at operational
+attempts tenant_id operational
+attempts id operational
+attempts job_id operational
+attempts stage_run_id operational
+attempts attempt_number operational
+attempts status operational
+attempts version operational
+attempts lease_owner operational
+attempts lease_epoch operational
+attempts lease_expires_at operational
+attempts last_heartbeat_at operational
+attempts deadline_at operational
+attempts teardown_deadline_at operational
+attempts failure_class operational
+attempts output_sha256 sensitive # digest of agent output
+attempts sandbox_id operational
+attempts sandbox_leaked operational
+attempts created_at operational
+attempts updated_at operational
+attempts ended_at operational
+audit_events tenant_id operational
+audit_events sequence operational
+audit_events event_id operational
+audit_events actor_type operational
+audit_events actor_id sensitive # the identity of a person or principal
+audit_events action operational
+audit_events subject sensitive # free text
+audit_events decision operational
+audit_events reason operational
+audit_events policy_hash sensitive # bound hash
+audit_events job_id operational
+audit_events stage_run_id operational
+audit_events correlation_id operational
+audit_events created_at operational
+audit_events prev_sequence sensitive # chain link
+audit_events prev_hash sensitive # chain hash
+audit_events canonical_json sensitive # entry content
+audit_events hash sensitive # chain hash
+inbox tenant_id operational
+inbox consumer operational
+inbox event_id operational
+inbox processed_at operational
+jobs tenant_id operational
+jobs id operational
+jobs repository_id operational
+jobs requester_principal_id operational
+jobs status operational
+jobs version operational
+jobs execution_mode operational
+jobs autonomy_level operational
+jobs pipeline_scope operational
+jobs correlation_id operational
+jobs idempotency_key sensitive # chosen by a client
+jobs webhook_delivery_id operational
+jobs policy_hash operational
+jobs normalized_request_sha256 sensitive # digest of a request text
+jobs ledger_head_sequence operational
+jobs ledger_head_hash sensitive # chain hash
+jobs created_at operational
+jobs updated_at operational
+jobs terminal_at operational
+ledger_entries tenant_id operational
+ledger_entries job_id operational
+ledger_entries sequence operational
+ledger_entries entry_id operational
+ledger_entries stage_run_id operational
+ledger_entries attempt_id operational
+ledger_entries recorded_at operational
+ledger_entries inserted_at operational
+ledger_entries execution_mode operational
+ledger_entries recorded_component operational
+ledger_entries recorded_fidelity operational
+ledger_entries claim_kind operational
+ledger_entries assurance_level operational
+ledger_entries confidence_level operational
+ledger_entries invalidates sensitive # evidence content
+ledger_entries prev_sequence sensitive # chain link
+ledger_entries prev_entry_hash sensitive # chain hash
+ledger_entries entry_hash sensitive # chain hash
+ledger_entries canonical_json sensitive # entry content
+outbox seq operational
+outbox tenant_id operational
+outbox event_id operational
+outbox event_type operational
+outbox event_version operational
+outbox job_id operational
+outbox aggregate_type operational
+outbox aggregate_id operational
+outbox aggregate_version operational
+outbox transition_id operational
+outbox reason_code operational
+outbox correlation_id operational
+outbox causation_id operational
+outbox occurred_at operational
+outbox producer operational
+outbox traceparent operational
+outbox payload sensitive # event payload
+outbox payload_schema_name sensitive # part of the payload
+outbox payload_schema_version sensitive # part of the payload
+outbox created_at operational
+outbox published_at operational
+outbox publish_attempts operational
+principals tenant_id operational
+principals id operational
+principals kind operational
+principals github_user_id sensitive # a person
+principals login sensitive # a person
+principals created_at operational
+principals disabled_at operational
+repositories tenant_id operational
+repositories id operational
+repositories github_installation_id operational
+repositories github_repository_id operational
+repositories full_name sensitive # a customer repository name
+repositories default_branch operational
+repositories enabled operational
+repositories protection_preflight_passed operational
+repositories autonomy_ceiling operational
+repositories version operational
+repositories created_at operational
+repositories updated_at operational
+repositories bypass_attested_by_principal_id sensitive # who attested
+repositories bypass_attested_at operational
+repositories project_map_commit sensitive # a commit
+repositories project_map_attested_by_principal_id sensitive # who attested
+repositories project_map_attested_at operational
+repositories enabled_project_map_commit sensitive # a commit
+repositories enabled_by_principal_id sensitive # who enabled
+repositories enabled_at operational
+repositories single_maintainer operational
+stage_runs tenant_id operational
+stage_runs id operational
+stage_runs job_id operational
+stage_runs stage_kind operational
+stage_runs run_number operational
+stage_runs status operational
+stage_runs version operational
+stage_runs lease_epoch operational
+stage_runs max_attempts operational
+stage_runs not_before operational
+stage_runs rework_of_stage_run_id operational
+stage_runs stage_contract_sha256 sensitive # digest of a contract
+stage_runs gate_outcome operational
+stage_runs gate_report_sha256 sensitive # digest of a report
+stage_runs created_at operational
+stage_runs updated_at operational
+stage_runs finished_at operational
+stage_runs superseded_at operational
+stage_runs attempts_before_last_answer operational
+stage_runs failing_set_sha256 sensitive # digest of test names
+state_machine_edges machine operational
+state_machine_edges from_status operational
+state_machine_edges transition_id operational
+state_machine_states machine operational
+state_machine_states status operational
+state_machine_states is_initial operational
+state_machine_states is_terminal operational
+state_machine_transitions machine operational
+state_machine_transitions transition_id operational
+state_machine_transitions event operational
+state_machine_transitions to_status operational
+state_machine_transitions emits operational
+task_nodes tenant_id operational
+task_nodes id operational
+task_nodes job_id operational
+task_nodes stage_run_id operational
+task_nodes task_key sensitive # written by the planner
+task_nodes plan_sha256 sensitive # digest of a plan
+task_nodes status operational
+task_nodes version operational
+task_nodes retry_count operational
+task_nodes current_attempt_id operational
+task_nodes commit_sha sensitive # a commit
+task_nodes created_at operational
+task_nodes updated_at operational
+task_nodes finished_at operational
+tenants id operational
+tenants slug sensitive # names a customer
+tenants display_name sensitive # names a customer
+tenants kind operational
+tenants created_at operational
+tenants disabled_at operational
+webhook_deliveries tenant_id operational
+webhook_deliveries id operational
+webhook_deliveries delivery_id operational
+webhook_deliveries event_name operational
+webhook_deliveries action operational
+webhook_deliveries github_installation_id operational
+webhook_deliveries github_repository_id operational
+webhook_deliveries sender_github_user_id sensitive # a person
+webhook_deliveries body_sha256 sensitive # digest of a delivery body
+webhook_deliveries semantic_key sensitive # derived from a delivery body
+webhook_deliveries received_at operational
