@@ -709,3 +709,279 @@ fn sf_18_the_module_comment_of_the_crate_does_not_say_the_routing_policy_is_miss
             .is_file()
     );
 }
+
+// ---- operations roles (ADR 0021) --------------------------------------------------------------
+
+fn messages(found: &[factory_contracts::policy::check::Problem]) -> Vec<String> {
+    found
+        .iter()
+        .map(|p| format!("{}: {}", p.path, p.message))
+        .collect()
+}
+
+fn operations_problems_after(change: impl Fn(&mut ModelRoutingPolicy)) -> Vec<String> {
+    let mut policy = real();
+    change(&mut policy);
+    let mut found = routing_problems(&policy);
+    found.extend(security_problems_of(&policy, &security()));
+    messages(&found)
+}
+
+#[test]
+fn the_troubleshooter_is_an_operations_role_with_no_stage_and_no_route() {
+    let policy = real();
+    assert!(policy.role("troubleshooter").is_none());
+    let role = policy.operations_role("troubleshooter").expect("the role");
+    assert_eq!(role.start_with, "claude-sonnet-5-5");
+    assert_eq!(role.escalate_to, "claude-opus-5-5");
+    assert_eq!(role.escalate_after_failed_repairs, 2);
+    assert!(!role.allowed_models.iter().any(|m| m == "gpt-6.1-sol"));
+    // A low day ceiling: 3 dollars at list price, and one run fits under it.
+    assert_eq!(role.per_day.max_micro_usd, 3_000_000);
+    assert!(role.per_run.max_micro_usd <= role.per_day.max_micro_usd);
+    // No route names a stage for it, and no stage ceiling counts it.
+    for route in &policy.routes {
+        assert!(
+            policy.roles_of_stage(&route.stage).count() > 0,
+            "{}",
+            route.stage
+        );
+    }
+}
+
+#[test]
+fn an_operations_run_starts_with_the_standard_model_and_escalates_after_two_failed_repairs() {
+    let policy = real();
+    let model = |failed: u32| {
+        policy
+            .operations_model("troubleshooter", failed)
+            .map(|m| m.id.clone())
+    };
+    assert_eq!(model(0).as_deref(), Some("claude-sonnet-5-5"));
+    assert_eq!(model(1).as_deref(), Some("claude-sonnet-5-5"));
+    assert_eq!(model(2).as_deref(), Some("claude-opus-5-5"));
+    assert_eq!(model(3).as_deref(), Some("claude-opus-5-5"));
+    assert!(policy.operations_model("builder", 0).is_none());
+}
+
+#[test]
+fn the_day_ceiling_holds_one_run_at_the_boundary_and_refuses_one_more_micro_dollar() {
+    // Equal is allowed.
+    let at = operations_problems_after(|p| {
+        let role = &mut p.operations_roles[0];
+        role.per_day.max_micro_usd = role.per_run.max_micro_usd;
+    });
+    assert!(at.is_empty(), "{at:#?}");
+    // One run above the day is refused.
+    let over = operations_problems_after(|p| {
+        let role = &mut p.operations_roles[0];
+        role.per_day.max_micro_usd = role.per_run.max_micro_usd - 1;
+    });
+    assert!(
+        over.iter()
+            .any(|m| m.starts_with("operations_roles[0].per_run.max_micro_usd")),
+        "{over:#?}"
+    );
+}
+
+#[test]
+fn the_day_ceiling_is_under_the_org_day_hard_ceiling_of_the_security_policy() {
+    let hard = (security().budgets.hard_ceilings.per_org_day.max_usd * 1_000_000.0) as u64;
+    let at = operations_problems_after(|p| p.operations_roles[0].per_day.max_micro_usd = hard);
+    assert!(at.is_empty(), "{at:#?}");
+    let over =
+        operations_problems_after(|p| p.operations_roles[0].per_day.max_micro_usd = hard + 1);
+    assert!(
+        over.iter()
+            .any(|m| m.starts_with("operations_roles[0].per_day.max_micro_usd")),
+        "{over:#?}"
+    );
+}
+
+/// One change to the shipped policy.
+type Change = Box<dyn Fn(&mut ModelRoutingPolicy)>;
+
+#[test]
+fn every_broken_operations_role_is_refused() {
+    let cases: Vec<(&str, Change, &str)> = vec![
+        (
+            "a zero day ceiling",
+            Box::new(|p| p.operations_roles[0].per_day.max_micro_usd = 0),
+            "operations_roles[0].per_day",
+        ),
+        (
+            "a zero run ceiling",
+            Box::new(|p| p.operations_roles[0].per_run.max_tokens = 0),
+            "operations_roles[0].per_run",
+        ),
+        (
+            "a zero request cap",
+            Box::new(|p| p.operations_roles[0].per_request.max_output_tokens = 0),
+            "operations_roles[0].per_request",
+        ),
+        (
+            "a request larger than the run",
+            Box::new(|p| {
+                let role = &mut p.operations_roles[0];
+                role.per_request.max_input_tokens = role.per_run.max_tokens;
+            }),
+            "operations_roles[0].per_request",
+        ),
+        (
+            "a model nobody lists",
+            Box::new(|p| {
+                p.operations_roles[0]
+                    .allowed_models
+                    .push("nobody".to_owned())
+            }),
+            "operations_roles[0].allowed_models",
+        ),
+        (
+            "a first model the role may not use",
+            Box::new(|p| p.operations_roles[0].start_with = "gpt-6.1-sol".to_owned()),
+            "operations_roles[0].start_with",
+        ),
+        (
+            "an escalation to a smaller tier",
+            Box::new(|p| {
+                let role = &mut p.operations_roles[0];
+                role.start_with = "claude-opus-5-5".to_owned();
+                role.escalate_to = "claude-sonnet-5-5".to_owned();
+            }),
+            "operations_roles[0].escalate_to",
+        ),
+        (
+            "an escalation before any failed repair",
+            Box::new(|p| p.operations_roles[0].escalate_after_failed_repairs = 0),
+            "operations_roles[0].escalate_after_failed_repairs",
+        ),
+        (
+            "an operations role that is also a pipeline role",
+            Box::new(|p| p.operations_roles[0].role = "builder".to_owned()),
+            "operations_roles[0].role",
+        ),
+        (
+            "the same operations role twice",
+            Box::new(|p| {
+                let again = p.operations_roles[0].clone();
+                p.operations_roles.push(again);
+            }),
+            "operations_roles[1].role",
+        ),
+        (
+            "a run ceiling above the hard task ceiling",
+            Box::new(|p| {
+                let role = &mut p.operations_roles[0];
+                role.per_run.max_micro_usd = 8_000_001;
+                role.per_day.max_micro_usd = 9_000_000;
+            }),
+            "operations_roles[0].per_run.max_micro_usd",
+        ),
+        (
+            "a request above the security caps",
+            Box::new(|p| {
+                let role = &mut p.operations_roles[0];
+                role.per_request.max_output_tokens = 32_001;
+            }),
+            "operations_roles[0].per_request.max_output_tokens",
+        ),
+    ];
+    for (label, change, key) in cases {
+        let found = operations_problems_after(change);
+        assert!(
+            found.iter().any(|m| m.starts_with(key)),
+            "{label}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn an_operations_role_in_the_file_with_a_stage_or_no_day_ceiling_does_not_load() {
+    let text = real_text();
+    let with_stage = text.replace(
+        "  - role: troubleshooter\n",
+        "  - role: troubleshooter\n    stage: IMPLEMENTATION\n",
+    );
+    assert_ne!(with_stage, text);
+    let error = load_text(&with_stage).expect_err("a stage");
+    assert_eq!(error.kind, PolicyErrorKind::Type);
+    let without_day = text.replace("    per_day: { max_micro_usd: 3000000 }", "");
+    assert_ne!(without_day, text);
+    let error = load_text(&without_day).expect_err("no day ceiling");
+    assert_eq!(error.kind, PolicyErrorKind::Type);
+    // A file with no operations role still loads, as every file before ADR 0021 did.
+    let start = text.find("operations_roles:").expect("the section");
+    assert!(load_text(&text[..start]).is_ok());
+}
+
+#[test]
+fn the_troubleshooter_agrees_with_its_manifest_and_a_ceiling_over_it_is_refused() {
+    let mut policy = real();
+    policy.operations_roles[0].per_run.max_tokens = 200_001;
+    policy.operations_roles[0].per_request.max_input_tokens = 100_000;
+    let found = messages(&manifest_problems(&policy, &manifests()));
+    assert!(
+        found
+            .iter()
+            .any(|m| m.starts_with("operations_roles[0].per_run.max_tokens")),
+        "{found:#?}"
+    );
+    let mut policy = real();
+    policy.operations_roles[0].role = "night_watch".to_owned();
+    let found = messages(&manifest_problems(&policy, &manifests()));
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains("no agent manifest has the role `night_watch`")),
+        "{found:#?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains("the agent role `troubleshooter` has no entry")),
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn a_project_may_lower_the_operations_ceilings_and_may_not_raise_add_or_remove_a_role() {
+    let central = real();
+    let mut lower = central.clone();
+    lower.operations_roles[0].per_day.max_micro_usd /= 2;
+    lower.operations_roles[0].per_run.max_micro_usd /= 2;
+    assert!(check_tighten(&central, &lower).is_empty());
+    let widen = |change: &dyn Fn(&mut ModelRoutingPolicy)| -> Vec<String> {
+        let mut project = central.clone();
+        change(&mut project);
+        check_tighten(&central, &project)
+            .into_iter()
+            .map(|looser| looser.key)
+            .collect()
+    };
+    assert_eq!(
+        widen(&|p| p.operations_roles[0].per_day.max_micro_usd += 1),
+        ["operations_roles[troubleshooter].per_day.max_micro_usd"]
+    );
+    assert_eq!(
+        widen(&|p| p.operations_roles[0].per_run.max_tokens += 1),
+        ["operations_roles[troubleshooter].per_run.max_tokens"]
+    );
+    assert_eq!(
+        widen(&|p| p.operations_roles[0]
+            .allowed_models
+            .push("gpt-6.1-sol".to_owned())),
+        ["operations_roles[troubleshooter].allowed_models"]
+    );
+    assert_eq!(
+        widen(&|p| p.operations_roles.clear()),
+        ["operations_roles[troubleshooter]"]
+    );
+    assert_eq!(
+        widen(&|p| {
+            let mut extra = p.operations_roles[0].clone();
+            extra.role = "night_watch".to_owned();
+            p.operations_roles.push(extra);
+        }),
+        ["operations_roles[night_watch]"]
+    );
+}

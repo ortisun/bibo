@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "status": "findings",
+  "summary": "Datadog did not answer, so the logs were not read. The database shows two leases past their expiry on the worker.",
+  "findings": [
+    {
+      "category": "stuck_work",
+      "severity": "high",
+      "component": "worker",
+      "title": "Two leases stay held past their expiry",
+      "probe_ids": [
+        "leases_past_expiry"
+      ],
+      "observations": [
+        {
+          "call_id": "call-2",
+          "tool": "pg_factory_health",
+          "observed": "Two stage run leases expired 41 and 37 minutes ago and are still held by the same worker."
+        }
+      ],
+      "hypothesis": "The worker that holds the leases stopped renewing them without releasing them, which a stopped or hung worker process would do.",
+      "confidence": 0.5,
+      "next_checks": [
+        "Check whether the worker process that holds the leases is still running and when it last logged a line."
+      ]
+    }
+  ],
+  "unavailable_sources": [
+    "datadog"
+  ],
+  "ignored_instructions": []
+}

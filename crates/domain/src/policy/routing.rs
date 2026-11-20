@@ -46,6 +46,42 @@ strict! {
         pub independence: Independence,
         /// What one job may spend.
         pub job: JobSpend,
+        /// The roles of the operations agents, which run outside the pipeline in no job and no
+        /// stage (ADR 0021), such as the troubleshooter. They have no route: a run starts with
+        /// `start_with` and escalates to `escalate_to`. A file may leave the section out.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub operations_roles: Vec<OperationsRole>,
+    }
+}
+
+strict! {
+    /// The role of an operations agent: what it may use and what it may spend, a run at a time and
+    /// a day at a time. Its spend is charged to its own day ceiling, never to a job.
+    pub struct OperationsRole {
+        /// The role, as the agent manifest spells it.
+        pub role: String,
+        /// Every model the role may use.
+        pub allowed_models: Vec<String>,
+        /// The model of the first attempt.
+        pub start_with: String,
+        /// The model to use after the failed repairs.
+        pub escalate_to: String,
+        /// How many repairs fail before the role escalates.
+        pub escalate_after_failed_repairs: u32,
+        /// The most one run may spend.
+        pub per_run: StageCeiling,
+        /// The largest request the broker forwards.
+        pub per_request: RequestCaps,
+        /// The most all the runs of one UTC day may spend together.
+        pub per_day: DayCeiling,
+    }
+}
+
+strict! {
+    /// What all the runs of an operations role may spend in one UTC day.
+    pub struct DayCeiling {
+        /// Millionths of a US dollar.
+        pub max_micro_usd: u64,
     }
 }
 
@@ -271,6 +307,28 @@ impl ModelRoutingPolicy {
     #[must_use]
     pub fn role(&self, role: &str) -> Option<&Role> {
         self.roles.iter().find(|entry| entry.role == role)
+    }
+
+    /// The operations role with this name. A pipeline role is never one.
+    #[must_use]
+    pub fn operations_role(&self, role: &str) -> Option<&OperationsRole> {
+        self.operations_roles
+            .iter()
+            .find(|entry| entry.role == role)
+    }
+
+    /// The model of a run of an operations role: `start_with` before the role has failed
+    /// `escalate_after_failed_repairs` repairs, `escalate_to` from then on. `None` when the role
+    /// or the model is unknown.
+    #[must_use]
+    pub fn operations_model(&self, role: &str, failed_repairs: u32) -> Option<&Model> {
+        let entry = self.operations_role(role)?;
+        let id = if failed_repairs >= entry.escalate_after_failed_repairs {
+            &entry.escalate_to
+        } else {
+            &entry.start_with
+        };
+        self.model(id)
     }
 
     /// The roles that run in a stage. A stage can have more than one, such as the writer and the
@@ -554,5 +612,89 @@ pub fn check_tighten(central: &ModelRoutingPolicy, candidate: &ModelRoutingPolic
     if candidate.job.max_tokens > central.job.max_tokens {
         loosen("job.max_tokens".to_owned(), "a ceiling was raised");
     }
+    check_tighten_operations(central, candidate, &mut loosen);
     found
+}
+
+/// The operations roles under [`check_tighten`]: none may be added or removed, a role may only lose
+/// models, and every ceiling may only go down.
+fn check_tighten_operations(
+    central: &ModelRoutingPolicy,
+    candidate: &ModelRoutingPolicy,
+    loosen: &mut impl FnMut(String, &'static str),
+) {
+    for role in &candidate.operations_roles {
+        let key = |field: &str| format!("operations_roles[{}].{field}", role.role);
+        let Some(old) = central.operations_role(&role.role) else {
+            loosen(
+                format!("operations_roles[{}]", role.role),
+                "an operations role was added",
+            );
+            continue;
+        };
+        if role
+            .allowed_models
+            .iter()
+            .any(|id| !old.allowed_models.contains(id))
+        {
+            loosen(key("allowed_models"), "a model was added to the role");
+        }
+        if !role.allowed_models.contains(&role.start_with) {
+            loosen(
+                key("start_with"),
+                "the first model is not one the role may use",
+            );
+        }
+        if !role.allowed_models.contains(&role.escalate_to) {
+            loosen(
+                key("escalate_to"),
+                "the larger model is not one the role may use",
+            );
+        }
+        if role.escalate_after_failed_repairs < old.escalate_after_failed_repairs {
+            loosen(
+                key("escalate_after_failed_repairs"),
+                "the role escalates to the larger model sooner",
+            );
+        }
+        for (field, new, was) in [
+            (
+                "per_run.max_micro_usd",
+                role.per_run.max_micro_usd,
+                old.per_run.max_micro_usd,
+            ),
+            (
+                "per_run.max_tokens",
+                role.per_run.max_tokens,
+                old.per_run.max_tokens,
+            ),
+            (
+                "per_request.max_input_tokens",
+                role.per_request.max_input_tokens,
+                old.per_request.max_input_tokens,
+            ),
+            (
+                "per_request.max_output_tokens",
+                role.per_request.max_output_tokens,
+                old.per_request.max_output_tokens,
+            ),
+            (
+                "per_day.max_micro_usd",
+                role.per_day.max_micro_usd,
+                old.per_day.max_micro_usd,
+            ),
+        ] {
+            if new > was {
+                loosen(key(field), "a ceiling was raised");
+            }
+        }
+    }
+    for old in &central.operations_roles {
+        if candidate.operations_role(&old.role).is_none() {
+            loosen(
+                format!("operations_roles[{}]", old.role),
+                "an operations role was removed",
+            );
+        }
+    }
 }

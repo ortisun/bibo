@@ -43,6 +43,31 @@ pub const STAGE_OF_ROLE: [(&str, &str); 9] = [
     ("documentation_reviewer", "DOCUMENTATION_REVIEW"),
 ];
 
+/// The roles of the operations agents. Such a role has no stage: it is in no `STAGE_OF_ROLE` pair
+/// and no pipeline route. Its agent holds only gateway tools and the output channel, reaches only
+/// the MCP gateway, and has no skill.
+pub const OPERATIONS_ROLES: [&str; 1] = ["troubleshooter"];
+
+/// The one place an operations agent may reach: the fixed relay of its sandbox sidecar to the MCP
+/// gateway (ADR 0021, Decision 5). It is the name of that relay, not a host the agent resolves.
+pub const GATEWAY_NETWORK: &str = "mcp_gateway";
+
+/// The prefix of the tool ids of the MCP gateway in the security policy's tool table.
+pub const GATEWAY_TOOL_PREFIX: &str = "mcp.";
+
+/// True for the role of an operations agent.
+pub fn is_operations_role(role: &str) -> bool {
+    OPERATIONS_ROLES.contains(&role)
+}
+
+/// The stage a role works in, or `None` for an operations role, which has none.
+pub fn stage_of_role(role: &str) -> Option<&'static str> {
+    STAGE_OF_ROLE
+        .iter()
+        .find(|(r, _)| *r == role)
+        .map(|(_, s)| *s)
+}
+
 /// What `policies/security.yaml` does not grant yet. The tool table now lists the
 /// `specification_writer` and `specification_reviewer` roles with the tools their manifests
 /// declare, so nothing is left. The list stays so that a future gap can be recorded in one place,
@@ -504,12 +529,40 @@ pub fn skill_writes(policy: &SecurityPolicy, skill: &str) -> Vec<String> {
         .collect()
 }
 
-/// Tools against the policy: the tool exists, is on, may run in the agent profile, is held by
+/// The access a tool needs, by the effect it can have. Every gateway tool reads.
+fn expected_access(name: &str) -> Option<&'static str> {
+    if name.starts_with(GATEWAY_TOOL_PREFIX) {
+        return Some("read");
+    }
+    TOOL_ACCESS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, access)| *access)
+}
+
+/// Tools against the policy: the tool exists, is on, may run where the agent runs, is held by
 /// this role, is not on the never-grantable list, and has the access its effect needs.
+///
+/// A pipeline agent's tools run in the `agent` sandbox profile and it holds no gateway tool. An
+/// operations agent holds gateway tools and the output channel only. A gateway tool runs in the
+/// MCP gateway of the control plane, so its policy entry names no sandbox profile, and no role
+/// but an operations role holds it.
 pub fn tool_problems(manifest: &Value, policy: &SecurityPolicy) -> Vec<String> {
     let role = text(manifest, "/role");
+    let operations = is_operations_role(role);
     let mut problems = Vec::new();
     for (name, access, _) in tools_of(manifest) {
+        let gateway = name.starts_with(GATEWAY_TOOL_PREFIX);
+        if gateway && !operations {
+            problems.push(format!(
+                "the tool `{name}` is a gateway tool, and only an operations agent may hold one"
+            ));
+        }
+        if operations && !gateway && name != "report.submit" {
+            problems.push(format!(
+                "the operations role `{role}` holds `{name}`, but it may hold only gateway tools and the output channel"
+            ));
+        }
         if policy.tools.never_grantable.contains(&name) {
             problems.push(format!("the tool `{name}` is never grantable"));
         }
@@ -527,7 +580,20 @@ pub fn tool_problems(manifest: &Value, policy: &SecurityPolicy) -> Vec<String> {
         if entry.enabled == Some(false) {
             problems.push(format!("the tool `{name}` is switched off in the policy"));
         }
-        if !entry.profiles.iter().any(|p| p == "agent") {
+        if gateway {
+            if !entry.profiles.is_empty() {
+                problems.push(format!(
+                    "the gateway tool `{name}` names sandbox profiles {:?}, but it runs in the gateway of the control plane",
+                    entry.profiles
+                ));
+            }
+            if entry.roles.iter().any(|r| !is_operations_role(r)) {
+                problems.push(format!(
+                    "the gateway tool `{name}` is given to {:?}, but only operations roles may hold it",
+                    entry.roles
+                ));
+            }
+        } else if !entry.profiles.iter().any(|p| p == "agent") {
             problems.push(format!(
                 "the tool `{name}` cannot run in the `agent` sandbox profile"
             ));
@@ -539,8 +605,8 @@ pub fn tool_problems(manifest: &Value, policy: &SecurityPolicy) -> Vec<String> {
                 "the policy does not give the tool `{name}` to the role `{role}`"
             ));
         }
-        match TOOL_ACCESS.iter().find(|(n, _)| *n == name) {
-            Some((_, expected)) if *expected != access => problems.push(format!(
+        match expected_access(&name) {
+            Some(expected) if expected != access => problems.push(format!(
                 "the tool `{name}` is declared with access `{access}`, but its effect is `{expected}`"
             )),
             None => problems.push(format!("the tool `{name}` has no known access")),
@@ -648,10 +714,44 @@ pub fn placement_problems(manifest: &Value) -> Vec<String> {
             "the read tools reach {read_scopes:?}, which is more than filesystem.read {fs_read:?}"
         ));
     }
-    for field in ["network", "production_access", "secrets"] {
+    for field in ["production_access", "secrets"] {
         let value = text(manifest, &format!("/permissions/{field}"));
         if value != "none" {
             problems.push(format!("permissions.{field} is `{value}`, not `none`"));
+        }
+    }
+    problems.extend(network_problems(manifest));
+    problems
+}
+
+/// A pipeline agent reaches no network. An operations agent reaches exactly one place, the relay
+/// to the MCP gateway, and nothing else; it also holds no file access.
+fn network_problems(manifest: &Value) -> Vec<String> {
+    let mut problems = Vec::new();
+    let network = text(manifest, "/permissions/network");
+    let allowlist = strings(manifest.pointer("/permissions/network_allowlist"));
+    if is_operations_role(text(manifest, "/role")) {
+        if network != "allowlist" || allowlist != [GATEWAY_NETWORK] {
+            problems.push(format!(
+                "an operations agent reaches only `{GATEWAY_NETWORK}`, but the manifest says network `{network}` with {allowlist:?}"
+            ));
+        }
+        for field in ["read", "write"] {
+            let paths = strings(manifest.pointer(&format!("/permissions/filesystem/{field}")));
+            if !paths.is_empty() {
+                problems.push(format!(
+                    "an operations agent has an empty workspace, but filesystem.{field} lists {paths:?}"
+                ));
+            }
+        }
+    } else {
+        if network != "none" {
+            problems.push(format!("permissions.network is `{network}`, not `none`"));
+        }
+        if !allowlist.is_empty() {
+            problems.push(format!(
+                "permissions.network_allowlist lists {allowlist:?}, but a pipeline agent reaches no network"
+            ));
         }
     }
     problems
@@ -660,10 +760,24 @@ pub fn placement_problems(manifest: &Value) -> Vec<String> {
 /// Skills exist only in the specification stage, and there only the allowed ones.
 pub fn skill_problems(manifest: &Value, policy: &SecurityPolicy) -> Vec<String> {
     let role = text(manifest, "/role");
-    let stage = STAGE_OF_ROLE
-        .iter()
-        .find(|(r, _)| *r == role)
-        .map_or("", |(_, s)| *s);
+    let skills = manifest["skills"].as_array().cloned().unwrap_or_default();
+    // An operations role has no stage, so no stage profile allows it a skill.
+    if is_operations_role(role) {
+        return skills
+            .iter()
+            .map(|s| {
+                format!(
+                    "the skill `{}` is held by the operations role `{role}`, which has no stage and no skill",
+                    text(s, "/id")
+                )
+            })
+            .collect();
+    }
+    let Some(stage) = stage_of_role(role) else {
+        return vec![format!(
+            "the role `{role}` is neither a pipeline role with a stage nor an operations role"
+        )];
+    };
     let profile = policy
         .agent_stage_profiles
         .profiles
@@ -685,7 +799,7 @@ pub fn skill_problems(manifest: &Value, policy: &SecurityPolicy) -> Vec<String> 
         .map(|s| s.denied.clone())
         .unwrap_or_default();
     let mut problems = Vec::new();
-    for skill in manifest["skills"].as_array().cloned().unwrap_or_default() {
+    for skill in skills {
         let id = text(&skill, "/id");
         if denied.iter().any(|d| d == id) {
             problems.push(format!("the skill `{id}` is denied in the {stage} stage"));

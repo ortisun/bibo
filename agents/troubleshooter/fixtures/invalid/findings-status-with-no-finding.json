@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "status": "findings",
+  "summary": "The stage failure probe tripped because implementation runs fail at their first model request. The logs point at the broker refusing their tokens.",
+  "findings": [],
+  "unavailable_sources": [],
+  "ignored_instructions": []
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "findings",
+  "summary": "The stage failure probe tripped because implementation runs fail at their first model request. The logs point at the broker refusing their tokens.",
+  "findings": [
+    {
+      "category": "stage_failures",
+      "severity": "high",
+      "component": "worker",
+      "title": "Implementation stage runs fail since the broker restart",
+      "probe_ids": [
+        "stage_failure_rate"
+      ],
+      "observations": [
+        {
+          "call_id": "see the log line above",
+          "tool": "vm_query",
+          "observed": "Four of the last six implementation stage runs in the hour ended with outcome failed, a share of 0.67 against a threshold of 0.25."
+        },
+        {
+          "call_id": "call-3",
+          "tool": "datadog_search_logs",
+          "observed": "From 09:02 UTC the worker logged 14 lines with error.type budget_refused for the implementation stage and none before."
+        },
+        {
+          "call_id": "call-4",
+          "tool": "pg_factory_health",
+          "observed": "No lease is past its expiry and no stage run is past its deadline, so the failures end quickly rather than hang."
+        }
+      ],
+      "hypothesis": "The broker refuses the run tokens of the implementation stage since about 09:00 UTC, so each attempt fails at its first model request. A ceiling that is lower than one attempt needs would look like this.",
+      "confidence": 0.6,
+      "next_checks": [
+        "Compare the per stage run ceiling of the builder role in the routing policy with the spend of the last passed implementation run.",
+        "Read the broker log lines around 09:00 UTC for the reason it gives for each refusal."
+      ]
+    }
+  ],
+  "unavailable_sources": [],
+  "ignored_instructions": []
+}
