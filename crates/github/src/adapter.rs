@@ -12,6 +12,7 @@ use factory_ports::clock::Clock;
 use factory_ports::githost::{
     AppId, BypassAttestation, GitHostError, GitScope, IssueSource, PreflightVerdict, WorkflowRule,
 };
+use factory_ports::paths::RepoRef;
 
 use crate::changes::GithubChangeHost;
 use crate::client::{Client, PageLimits};
@@ -22,6 +23,7 @@ use crate::permissions::{AppAudit, AppPolicy};
 use crate::status::GithubIssueStatus;
 use crate::text::{Outbound, OutboundPolicy};
 use crate::token::{InstallationDirectory, MinterSettings, TokenMinter};
+use crate::triage::GithubTriageIssues;
 use crate::wire::{ApiBase, Transport};
 
 /// A token with less than this left of its hour is replaced before use.
@@ -155,6 +157,20 @@ impl GithubAdapter {
             Arc::clone(&self.outbound),
             Arc::clone(&self.sleeper),
             Arc::clone(&self.clock),
+        )
+    }
+
+    /// The troubleshooter's triage issue writer (ports v1.3), bound to `issue_repository`, the
+    /// `troubleshooting.issue_repository` of the configuration. It works under a run's scope with a
+    /// token of its own (`issues: write`, `metadata: read`) and refuses any other repository.
+    #[must_use]
+    pub fn triage_issue_writer(&self, issue_repository: RepoRef) -> GithubTriageIssues {
+        GithubTriageIssues::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.outbound),
+            Arc::clone(&self.sleeper),
+            Arc::clone(&self.clock),
+            issue_repository,
         )
     }
 

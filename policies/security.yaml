@@ -1223,6 +1223,12 @@ credentials:
       mint: per_job
       repositories: exactly_one        # narrowed with the `repositories` body parameter
       permissions: narrowed_per_stage  # read-only for analysis stages; the intake stage asks for `issues: read` and `metadata: read` only (LB-03, crates/github/src/permissions.rs)
+      # Token classes that are not a stage's: `issue_status` and `protection_reader` (see their
+      # notes in crates/github/src/permissions.rs), and since ports v1.3 (ADR 0021, Decision 7)
+      # `troubleshoot_issue`: `issues: write` and `metadata: read`, minted for a troubleshooting
+      # run (not a job) and the configured issue repository only, refused for every job stage,
+      # kept apart from every job's tokens and revoked when the run ends
+      # (PermissionSet::troubleshoot_issue). The App needs no new permission for it.
       lifetime_s: 3600                 # fixed by GitHub (documented); factory revokes earlier
       revoke_on_job_end: true          # DELETE /installation/token
       # LB-04. `revoke_on_job_end` is the end of the JOB (completed, failed, cancelled, rejected).
