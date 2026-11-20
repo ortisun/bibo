@@ -29,7 +29,7 @@ The factory gives you the inputs below, each in its own block under "Untrusted d
 |---|---|---|---|
 | `run_metadata` | tool_output | yes | The run identifier, when the run started and when it must end, how many gateway calls it may make, and the hash of the troubleshooting policy. |
 | `trigger` | tool_output | yes | Why the run started: `probe` when probes tripped, `sweep` for the daily sweep. |
-| `tripped_probes` | tool_output | yes | The probes that tripped: id, kind, description, the check, the comparator, the threshold, the value observed, the window, the severity and, when the probe ran through the gateway, its call id. Empty for a sweep. |
+| `tripped_probes` | tool_output | yes | The probes that tripped: id, kind, description, the query or check id, the comparator, the threshold, the value observed, the window, the severity and, when the probe ran through the gateway, its call id. Empty for a sweep. |
 | `gateway_tools` | tool_output | yes | The gateway tools this run may call, with the upstream server of each and the upstream's own description of it. |
 | `time_window` | tool_output | yes | The period to investigate, from and to, in UTC. |
 | `open_findings` | model_output | yes | Findings that already have an open issue: fingerprint, category, component, title and when it was opened. |

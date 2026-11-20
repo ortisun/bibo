@@ -211,6 +211,62 @@ fn every_probe_metric_is_a_metric_of_the_conventions() {
     }
 }
 
+/// The agent cites a gateway tool by its gateway name and a probe by its id in `health-findings`,
+/// so every name and id of the policy must fit that schema, and every probe kind must be a kind of
+/// the agent's input schema.
+#[test]
+fn every_gateway_tool_and_probe_of_the_policy_fits_the_troubleshooter_schemas() {
+    use factory_contracts::schema_engine::Schema;
+    let schemas = repo_root().join("agents/schemas");
+    let findings =
+        Schema::compile_text(&read_text(&schemas.join("health-findings.v1.schema.json")))
+            .expect("the output schema compiles");
+    let policy = real();
+    for tool in &policy.tools {
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "status": "findings",
+            "summary": "One finding that cites one call of this gateway tool.",
+            "findings": [{
+                "category": "database",
+                "severity": "low",
+                "component": "database",
+                "title": "A finding that cites this tool",
+                "probe_ids": policy.probes.iter().map(|p| p.id.clone()).take(10).collect::<Vec<_>>(),
+                "observations": [{
+                    "call_id": "call-1",
+                    "tool": tool.gateway_name,
+                    "observed": "The tool returned a value worth reporting."
+                }],
+                "hypothesis": "The value is a hypothesis for a person to check.",
+                "confidence": 0.5,
+                "next_checks": ["Read the same value again an hour later."]
+            }],
+            "unavailable_sources": [],
+            "ignored_instructions": []
+        });
+        let (violations, _) = findings.validate(&report);
+        assert!(
+            violations.is_empty(),
+            "{}: {violations:#?}",
+            tool.gateway_name
+        );
+    }
+    let input: serde_json::Value = serde_json::from_str(&read_text(
+        &schemas.join("troubleshooter-input.v1.schema.json"),
+    ))
+    .expect("JSON");
+    let kinds = &input["properties"]["tripped_probes"]["items"]["properties"]["kind"]["enum"];
+    for probe in &policy.probes {
+        let kind = serde_json::to_value(probe.kind).expect("a kind");
+        assert!(
+            kinds.as_array().is_some_and(|k| k.contains(&kind)),
+            "{}: {kind}",
+            probe.id
+        );
+    }
+}
+
 // ---- the loader refuses a broken file ---------------------------------------------------------
 
 #[test]

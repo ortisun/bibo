@@ -133,7 +133,7 @@
   "inputs_schema": {
     "name": "troubleshooter-input",
     "version": 1,
-    "sha256": "sha256:4a7c99dd9febdc856f3868f89a7355c0ec869b1451c50c6dc6e38ee8cef72c48"
+    "sha256": "sha256:1489984c4a1cc25058cc133d07d05543fd31408f9228e41e74ea83ca3573463a"
   },
   "outputs_schema": {
     "name": "health-findings",
@@ -191,6 +191,6 @@
   "prompt": {
     "template_path": "agents/troubleshooter/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:349d4812013eab1f387748c035429cb93104ae21ef4a5a66d660883d5a6ebc5d"
+    "template_sha256": "sha256:54c1656bee9ab48c28cf20ae6c965327cfb9c204b89e7507aacf0331e9d3810e"
   }
 }

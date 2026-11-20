@@ -174,7 +174,7 @@ fn troubleshooter_probe_input() -> Value {
             "probe_id": "stage_failure_rate",
             "kind": "promql_threshold",
             "description": "Share of stage runs that failed in the last hour.",
-            "check": "sum(rate(factory_stage_runs_total{outcome=\"failed\"}[1h])) / sum(rate(factory_stage_runs_total[1h]))",
+            "query": "sum(rate(factory_stage_runs_total{outcome=\"failed\"}[1h])) / sum(rate(factory_stage_runs_total[1h]))",
             "comparator": "gt",
             "threshold": 0.25,
             "observed": 0.67,
