@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use factory_domain::redaction::{Registered, RegistryError};
 use serde::Deserialize;
 
 /// The usage text, on `--help` and after a usage error.
@@ -23,12 +24,14 @@ USAGE:
   --config FILE          JSON settings (see the README). Without it, the settings come from the environment:
                          FACTORY_MCP_PG_USER (required, normally factory_troubleshooter), FACTORY_MCP_PG_HOST
                          (127.0.0.1), FACTORY_MCP_PG_PORT (5432), FACTORY_MCP_PG_DATABASE (factory), FACTORY_MCP_PG_PASSWORD_FILE,
-                         FACTORY_MCP_PG_POLICY_CHECKOUT. FACTORY_MCP_PG_CONFIG may name the file instead.
+                         FACTORY_MCP_PG_POLICY_CHECKOUT, FACTORY_MCP_PG_BUDGET_WINDOW_S (3600: the call budget
+                         starts again after this many seconds). FACTORY_MCP_PG_CONFIG may name the file instead.
   --http ADDR:PORT       serve Streamable HTTP instead of stdio. A loopback address only, unless
   --allow-non-loopback   is also given.
   --token-file FILE      the bearer token, one line, at least 32 characters, mode 0600. Required with --http.
 
-  Secret files (the password file and the token file) must not be readable by group or others.";
+  Secret files (the password file and the token file) must not be readable by group or others. A password or
+  token too short for the redactor to recognise is refused.";
 
 /// What the command line asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -126,9 +129,13 @@ pub struct Settings {
     /// redactor its patterns. Without it only the password and the token are redacted.
     #[serde(default)]
     pub policy_checkout: Option<PathBuf>,
-    /// The call budget of this process (default 300).
+    /// The calls the server answers in one budget window (default 300).
     #[serde(default)]
     pub max_calls: Option<u64>,
+    /// The budget window in seconds (default 3600): the call budget starts again when it has
+    /// passed. One window for the process, whatever session or client the calls come from.
+    #[serde(default)]
+    pub budget_window_s: Option<u64>,
 }
 
 fn default_host() -> String {
@@ -175,6 +182,12 @@ impl Settings {
             password_file: lookup("FACTORY_MCP_PG_PASSWORD_FILE").map(PathBuf::from),
             policy_checkout: lookup("FACTORY_MCP_PG_POLICY_CHECKOUT").map(PathBuf::from),
             max_calls: None,
+            budget_window_s: match lookup("FACTORY_MCP_PG_BUDGET_WINDOW_S") {
+                Some(text) => Some(text.parse().map_err(|_| {
+                    format!("FACTORY_MCP_PG_BUDGET_WINDOW_S is not a number of seconds: {text:?}")
+                })?),
+                None => None,
+            },
         })
     }
 }
@@ -221,6 +234,29 @@ pub fn check_token(token: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// What registering a secret with the redactor gave, as a refusal to start unless the secret is
+/// registered (TR-9). A secret shorter than the redactor's minimum for exact values is not
+/// registered at all, so it would never be redacted from a result or an error message.
+///
+/// # Errors
+/// A sentence naming the secret (never its value) and the minimum.
+pub fn check_registered(
+    label: &str,
+    registered: Result<Registered, RegistryError>,
+) -> Result<(), String> {
+    match registered {
+        Ok(Registered::Added(_)) => Ok(()),
+        Ok(Registered::TooShort) => Err(format!(
+            "the {label} is shorter than the redactor's minimum for exact values (secrets.exact_values.min_length \
+             of policies/security.yaml, 8 characters by default), so it could not be redacted; use a longer one \
+             (`openssl rand -hex 24`)"
+        )),
+        Err(_) => Err(format!(
+            "the {label} cannot be registered with the redactor"
+        )),
+    }
 }
 
 /// Whether an `Authorization` header carries the token, compared in time that does not depend on
@@ -367,5 +403,50 @@ mod tests {
         ));
         assert!(!bearer_matches(Some(&format!("bearer {token}")), &token));
         assert!(!bearer_matches(None, &token));
+    }
+
+    #[test]
+    fn a_secret_too_short_to_redact_is_refused() {
+        use factory_domain::redaction::Redactor;
+        let redactor = Redactor::builder().build().expect("a redactor");
+        let short = check_registered(
+            "database_password",
+            redactor.register("database_password", "abc"),
+        )
+        .expect_err("too short");
+        assert!(
+            short.contains("shorter than the redactor's minimum"),
+            "{short}"
+        );
+        assert!(!short.contains("abc"), "the value is never shown: {short}");
+        assert_eq!(
+            check_registered(
+                "database_password",
+                redactor.register("database_password", "long-enough-password-value")
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn the_budget_window_comes_from_the_settings() {
+        let settings = Settings::from_env(|key| match key {
+            "FACTORY_MCP_PG_USER" => Some("observer".to_owned()),
+            "FACTORY_MCP_PG_BUDGET_WINDOW_S" => Some("600".to_owned()),
+            _ => None,
+        })
+        .expect("parsed");
+        assert_eq!(settings.budget_window_s, Some(600));
+        assert!(
+            Settings::from_env(|key| match key {
+                "FACTORY_MCP_PG_USER" => Some("observer".to_owned()),
+                "FACTORY_MCP_PG_BUDGET_WINDOW_S" => Some("soon".to_owned()),
+                _ => None,
+            })
+            .is_err()
+        );
+        let parsed =
+            Settings::from_json(r#"{"user": "observer", "budget_window_s": 60}"#).expect("parsed");
+        assert_eq!(parsed.budget_window_s, Some(60));
     }
 }
