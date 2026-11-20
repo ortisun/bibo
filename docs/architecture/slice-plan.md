@@ -2715,7 +2715,7 @@ The harness reads the database and GitHub, not log text. All of them must hold f
 The security specialist's catalog is the oracle. The validator parses it live, so a new or changed P0 test fails the check until it has an owner.
 
 <!-- GENERATED:begin negative-test-summary -->
-The catalog has 88 P0 tests. 88 are mapped to a work package and a crate: 83 with full scope and 5 with reduced scope, listed under gaps. 3 of the full ones have a part that stays BLOCKED until a spike has run. 0 have no owner. The catalog also has 42 P1 and 5 P2 tests, which it requires before Slice 2 and later (0 P1 mapped so far), and 10 static checks, all mapped.
+The catalog has 88 P0 tests. 88 are mapped to a work package and a crate: 83 with full scope and 5 with reduced scope, listed under gaps. 3 of the full ones have a part that stays BLOCKED until a spike has run. 0 have no owner. The catalog also has 56 P1 and 5 P2 tests, which it requires before Slice 2 and later (0 P1 mapped so far), and 10 static checks, all mapped.
 <!-- GENERATED:end negative-test-summary -->
 
 ### P0 tests and their owners
