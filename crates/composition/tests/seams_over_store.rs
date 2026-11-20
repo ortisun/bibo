@@ -222,6 +222,36 @@ async fn a_specification_rework_builds_on_the_draft_that_was_sent_back() {
     // The draft, and not the base of the job: the writer repairs what the reviewer read.
     assert_eq!(context.previous_head, commit('d'));
     assert_eq!(context.failed_reports.len(), 1, "{context:?}");
+
+    // The move also re-created the stages after the specification. Their runs are first runs over
+    // the new specification: no feedback, no round. In the thirtieth real run the implementation
+    // read the specification's failed gates as its own, and the builder asked a person to fix
+    // the specification.
+    for kind in [
+        StageKind::Architecture,
+        StageKind::TaskPlanning,
+        StageKind::Implementation,
+    ] {
+        let downstream = identity_of(&world, job, kind, 1).await;
+        assert!(
+            feedback(&world)
+                .of(&downstream)
+                .await
+                .expect("readable")
+                .is_none(),
+            "{kind:?} has no feedback of its own"
+        );
+        assert!(
+            factory_workflow::stages::architecture::seams::RoundSource::previous(
+                &feedback(&world),
+                &downstream
+            )
+            .await
+            .expect("readable")
+            .is_none(),
+            "{kind:?} is no round of its own"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
