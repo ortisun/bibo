@@ -24,7 +24,8 @@
 # the way to give a worker those programs is an open decision (docs/operations/local-deployment.md).
 #
 # Do not run `docker build` on this file by hand. build.sh passes every ARG from pins.env, from the
-# repository root as the build context. An ARG with no value fails the build on purpose.
+# repository root as the build context. An ARG with no value fails the build on purpose, except
+# FACTORY_BUILD_COMMIT, which build.sh leaves empty when the tree has changes that are not committed.
 
 ARG RUST_BASE
 ARG DISTROLESS_BASE
@@ -65,10 +66,16 @@ COPY migrations migrations
 COPY docs/database/tests/role_readiness.sql docs/database/tests/role_readiness.sql
 COPY fixtures/readability/rules.json fixtures/readability/rules.json
 
+# The commit the programs are built from, as a full Git object id. The API states it in every process
+# snapshot (ADR 0029) and answers 503 on that route when it is empty. It is declared here and given to
+# this one step only, so that a new commit does not rebuild the layers above.
+ARG FACTORY_BUILD_COMMIT=
+
 # The registry cache holds only downloaded crates, which Cargo.lock checks by hash, so it cannot
 # change what is built. The target directory is removed in the same step, so it never becomes a
 # layer. The programs are copied out before that.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=factory-service-images-registry \
+    FACTORY_BUILD_COMMIT="${FACTORY_BUILD_COMMIT}" \
     cargo build --release --locked -p factory-api -p factory-worker \
  && install -D -m 0555 /tmp/target/release/factory-api /out/factory-api \
  && install -D -m 0555 /tmp/target/release/factory-worker /out/factory-worker \

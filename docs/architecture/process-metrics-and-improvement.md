@@ -301,7 +301,7 @@ Every decision is the file `docs/knowledge/improvements/<identifier>-<name>.md`,
 | Tier A settings, the choice of jobs, promotion, rollback and the `improvement` entry | Built as pure rules: `metrics::experiment`. Nothing applies a setting to a running job yet |
 | The snapshot job that reads the facts of query version 1 from the store | Built: `process_metrics` in `crates/workflow` |
 | The operator's command and the API route behind it | Built: `factory-cli metrics snapshot`, `GET /v1/process-metrics/snapshot` |
-| Passing `FACTORY_BUILD_COMMIT` to the build of the service images (`infra/service-images/build.sh`) | Not built. Until then the API of those images answers `503` on the snapshot route; a binary built by hand with the variable set answers |
+| Passing `FACTORY_BUILD_COMMIT` to the build of the service images | Built: `infra/service-images/build.sh` passes the commit of a clean tree, and nothing for a tree with changes that are not committed. Checked by the static rules of the recipe only; the images were not built with it yet |
 | A schedule for the snapshot job | Not built |
 | Writing the entries into a project's knowledge base by pull request | Not built. It needs the knowledge base of [ADR 0028](../adr/0028-project-knowledge-base.md) |
 | The retrospective agent and the scheduled sweeps | Not built |
