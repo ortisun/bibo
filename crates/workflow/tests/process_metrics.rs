@@ -360,9 +360,9 @@ async fn the_snapshot_of_a_week_is_the_measurement_entry() {
          id: M-2026-W44\n\
          kind: measurement\n\
          title: Process numbers, week 44 of 2026\n\
-         window: { from: 2026-10-26T00:00:00Z, to: 2026-11-02T00:00:00Z }\n\
+         window: { from: \"2026-10-26T00:00:00Z\", to: \"2026-11-02T00:00:00Z\" }\n\
          query_version: 1\n\
-         computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d\n\
+         computed_at_commit: \"3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d\"\n\
          ---\n"
     ));
     // One job is far below the minimum of twenty samples, so no number is shown, only how many

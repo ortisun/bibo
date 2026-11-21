@@ -15,6 +15,7 @@ use super::catalogue::{Metric, Unit};
 use super::comparison::{Interval, Verdict};
 use super::sample::Measured;
 use crate::ids::JobId;
+use crate::knowledge::yaml_quoted;
 use crate::values::{Slug, Timestamp};
 
 /// How far the factory may make a change on its own (ADR 0029, Decision 3).
@@ -557,7 +558,7 @@ impl Improvement<'_> {
             "---\n\
              id: {id}\n\
              kind: improvement\n\
-             title: {hypothesis}\n\
+             title: {title}\n\
              status: active\n\
              tier: A\n\
              experiment: {experiment}\n\
@@ -580,12 +581,13 @@ impl Improvement<'_> {
              | Metric | Role | Difference | Interval | Samples | Shows |\n\
              |---|---|---|---|---|---|\n",
             id = self.identifier(),
-            experiment = self.experiment.identifier.as_str(),
+            title = yaml_quoted(hypothesis),
+            experiment = yaml_quoted(self.experiment.identifier.as_str()),
             setting = self.experiment.kind().as_str(),
-            from = self.experiment.baseline.value_text(),
-            to = self.experiment.variant.value_text(),
+            from = yaml_quoted(&self.experiment.baseline.value_text()),
+            to = yaml_quoted(&self.experiment.variant.value_text()),
             share = self.experiment.share.0,
-            decided_at = self.decided_at,
+            decided_at = yaml_quoted(&self.decided_at.as_text()),
         );
         let rows = std::iter::once(("target", &self.target))
             .chain(self.guards.iter().map(|guard| ("guard", guard)));

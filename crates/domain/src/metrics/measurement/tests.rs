@@ -269,9 +269,9 @@ fn the_entry_is_the_example_of_the_design_document() {
          id: M-2026-W47\n\
          kind: measurement\n\
          title: Process numbers, week 47 of 2026\n\
-         window: { from: 2026-11-16T00:00:00Z, to: 2026-11-23T00:00:00Z }\n\
+         window: { from: \"2026-11-16T00:00:00Z\", to: \"2026-11-23T00:00:00Z\" }\n\
          query_version: 3\n\
-         computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d\n\
+         computed_at_commit: \"3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d\"\n\
          ---\n\
          \n\
          | Metric | Value | Samples | Previous |\n\
