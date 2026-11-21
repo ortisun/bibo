@@ -52,6 +52,7 @@
 //!   recorded for that draft and freezes exactly that draft.
 
 pub mod contract;
+pub mod documented;
 pub mod evidence;
 pub mod feedback;
 mod gates;
@@ -63,6 +64,7 @@ pub mod seams;
 pub mod self_check;
 
 pub use contract::{GRANTED_TOOLS, gates as gate_ids};
+pub use documented::DOCUMENTED_FILE;
 pub use evidence::{Evidence, Failure, Refusal, ReviewRecord, Revision};
 pub use handler::{
     CommitIdentity, SpecificationConfig, SpecificationDeps, SpecificationHandler, StageBudget,

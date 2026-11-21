@@ -99,6 +99,9 @@ pub struct Evidence {
     /// before any review, as code and message, when a self-check pass ran to fix them. Empty when
     /// no pass ran. What the gates judge is the draft after the pass.
     pub self_check: Vec<(String, String)>,
+    /// The documented behaviour the writer was given: the hash of the file and the paths whose
+    /// text it holds. `None` in a document written before the stage gave it.
+    pub documented: Option<(String, Vec<String>)>,
     /// True when a fake component produced any of it.
     pub fake: bool,
 }
@@ -147,6 +150,7 @@ impl Evidence {
             draft_sha256: None,
             questions: Vec::new(),
             self_check: Vec::new(),
+            documented: None,
             fake: false,
         }
     }
@@ -196,6 +200,9 @@ impl Evidence {
             "draft_sha256": self.draft_sha256,
             "questions": self.questions.iter().map(|(i, t)| json!([i, t])).collect::<Vec<_>>(),
             "self_check": self.self_check.iter().map(|(c, m)| json!([c, m])).collect::<Vec<_>>(),
+            "documented_behaviour": self.documented.as_ref().map(|(sha256, paths)| json!({
+                "sha256": sha256, "paths": paths,
+            })),
             "fake": self.fake,
         })
     }
@@ -332,6 +339,19 @@ impl Evidence {
                 None => Vec::new(),
                 Some(_) => pairs("self_check")?,
             },
+            // A document written before the stage gave the documented behaviour records none.
+            documented: match value.get("documented_behaviour") {
+                None | Some(Value::Null) => None,
+                Some(other) => Some((
+                    other.get("sha256")?.as_str()?.to_owned(),
+                    other
+                        .get("paths")?
+                        .as_array()?
+                        .iter()
+                        .map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()?,
+                )),
+            },
             fake: value.get("fake")?.as_bool()?,
         })
     }
@@ -382,6 +402,7 @@ mod tests {
                 transcript: None,
             },
         ];
+        evidence.documented = Some(("sha256:d".to_owned(), vec!["README.md".to_owned()]));
         evidence.review = ReviewRecord::Answered {
             agent: "r".to_owned(),
             version: "1.0.0".to_owned(),
