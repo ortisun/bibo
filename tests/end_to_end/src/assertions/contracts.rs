@@ -154,7 +154,11 @@ pub fn a4(ev: &RunEvidence, _env: &Env) -> Verdict {
             "there is no single pull request whose body could carry the head hash",
         );
     };
-    if !pr.body.contains(stored_head) {
+    // The body writes a hash as its hexadecimal digits, without the `sha256:` prefix the ledger
+    // stores (`crates/workflow/src/stages/delivery/pr.rs`). The digits are the digest, so they
+    // are what is compared; the prefixed form is accepted too.
+    let head_digits = stored_head.strip_prefix("sha256:").unwrap_or(stored_head);
+    if head_digits.len() != 64 || !pr.body.contains(head_digits) {
         return Verdict::fail(
             ID,
             format!(
@@ -210,8 +214,9 @@ pub fn a4(ev: &RunEvidence, _env: &Env) -> Verdict {
 /// The Spec Kit skills a specification may record (`specification-contract.schema.json`).
 pub const ALLOWED_SKILLS: [&str; 4] = ["constitution", "specify", "clarify", "checklist"];
 
-/// A5: the specification contract validates, its artifact hashes match the files on the branch,
-/// and `skills_invoked` is a subset of the four allowed.
+/// A5: the specification contract validates, its artifact hashes match the files at the commit it
+/// was frozen at (read from the job's store), a cited file that is also on the head branch matches
+/// there too, and `skills_invoked` is a subset of the four allowed.
 #[must_use]
 pub fn a5(ev: &RunEvidence, _env: &Env) -> Verdict {
     const ID: &str = "A5";
@@ -257,33 +262,51 @@ pub fn a5(ev: &RunEvidence, _env: &Env) -> Verdict {
             "the specification cites no artifact, so nothing ties it to the branch",
         );
     }
+    let commit = text_at(spec, "/metadata/commit_sha").unwrap_or("(none)");
+    let mut on_head_branch = 0_usize;
     for artifact in &artifacts {
         let (Some(path), Some(hash)) = (text_at(artifact, "/path"), text_at(artifact, "/sha256"))
         else {
             return Verdict::fail(ID, "an artifact of the specification has no path or hash");
         };
-        match ev.github.head_files.get(path) {
+        // The specification is bound to the commit it was frozen at, which the job's store holds.
+        match ev.contracts.specification_files.get(path) {
             None => {
                 return Verdict::fail(
                     ID,
-                    format!("the specification cites {path}, which is not on the head branch"),
+                    format!(
+                        "the specification cites {path}, which the job's store does not hold at its commit {commit}"
+                    ),
                 );
             }
-            Some(on_branch) if on_branch != hash => {
+            Some(stored) if stored != hash => {
                 return Verdict::fail(
                     ID,
                     format!(
-                        "the specification cites {hash} for {path}, but the file on the branch hashes to {on_branch}"
+                        "the specification cites {hash} for {path}, but the file at its commit {commit} hashes to {stored}"
                     ),
                 );
             }
             Some(_) => {}
         }
+        // The head branch need not carry the specification (the code starts from the repository
+        // map's commit, ADR 0025). When it does carry a cited file, the file must be the same.
+        if let Some(on_branch) = ev.github.head_files.get(path) {
+            if on_branch != hash {
+                return Verdict::fail(
+                    ID,
+                    format!(
+                        "the specification cites {hash} for {path}, but the file on the head branch hashes to {on_branch}"
+                    ),
+                );
+            }
+            on_head_branch += 1;
+        }
     }
     Verdict::pass(
         ID,
         format!(
-            "the specification validates, is approved, records {} allowed skill(s), and its {} artifact hash(es) match the branch",
+            "the specification validates, is approved, records {} allowed skill(s), and its {} artifact hash(es) match the files at its commit {commit} ({on_head_branch} of them also on the head branch)",
             skills.len(),
             artifacts.len()
         ),
@@ -388,7 +411,8 @@ pub fn planner_problems(dag: &Value) -> Vec<String> {
 }
 
 /// A6: the task graph validates and passes the planner checks, every acceptance scenario is
-/// covered, and the changed paths are inside the union of owned files.
+/// covered, and the changed paths are inside the union of owned files. A page the documentation
+/// stage wrote (`facts.documentation_paths`) is judged by that stage's scope gate instead.
 #[must_use]
 pub fn a6(ev: &RunEvidence, _env: &Env) -> Verdict {
     const ID: &str = "A6";
@@ -473,25 +497,34 @@ pub fn a6(ev: &RunEvidence, _env: &Env) -> Verdict {
             "the branch changes no path, so ownership cannot be judged",
         );
     }
-    if let Some(stray) = ev
-        .github
-        .changed_paths
-        .iter()
-        .find(|path| !owned.iter().any(|pattern| glob_matches(pattern, path)))
-    {
+    // The pages the documentation stage wrote are judged by that stage's own scope gate against
+    // the documentation plan (`documenting-scope`), not by the ownership of a task.
+    let documented: BTreeSet<&str> = ev
+        .facts
+        .get("documentation_paths")
+        .and_then(Value::as_array)
+        .map(|paths| paths.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if let Some(stray) = ev.github.changed_paths.iter().find(|path| {
+        !owned.iter().any(|pattern| glob_matches(pattern, path))
+            && !documented.contains(path.as_str())
+    }) {
         return Verdict::fail(
             ID,
-            format!("the branch changes {stray}, which no task owns"),
+            format!(
+                "the branch changes {stray}, which no task owns and the documentation stage did not write"
+            ),
         );
     }
     Verdict::pass(
         ID,
         format!(
-            "the task graph validates, its {} task(s) cover all {} acceptance scenario(s) and {} requirement(s), and the {} changed path(s) are inside the owned files",
+            "the task graph validates, its {} task(s) cover all {} acceptance scenario(s) and {} requirement(s), and the {} changed path(s) are inside the owned files or among the {} page(s) the documentation stage wrote",
             tasks.len(),
             scenarios.len(),
             requirements.len(),
-            ev.github.changed_paths.len()
+            ev.github.changed_paths.len(),
+            documented.len()
         ),
     )
 }
@@ -606,98 +639,145 @@ pub fn a7(ev: &RunEvidence, _env: &Env) -> Verdict {
     )
 }
 
-/// The names that identify the checks of the documentation gate in its report. The documentation
-/// gate package (`s1-stage-documentation`) is not merged, so the report is read for a command whose
-/// argument vector names the check. When that package defines its own names, change them here.
-pub const DOCS_GATE_WORD: &str = "doc";
-/// The word that marks the link check among the commands of the documentation report.
-pub const LINK_CHECK_WORD: &str = "link";
-/// The word that marks the snippet execution among the commands of the documentation report.
-pub const SNIPPET_CHECK_WORD: &str = "snippet";
+/// The gate id of the link check of the Documentation Quality Gate. The gate writes one report
+/// for each check (`crates/workflow/src/gates/docs/check.rs`).
+pub const LINK_CHECK: &str = factory_workflow::gates::docs::check::LINKS;
+/// The gate id of the example (snippet) execution of the Documentation Quality Gate.
+pub const SNIPPET_CHECK: &str = factory_workflow::gates::docs::check::EXAMPLES;
+/// The stage whose run holds the reports of the Documentation Quality Gate.
+pub const DOCS_STAGE: &str = "DOCUMENTATION_REVIEW";
 
-fn command_ran(report: &Value, word: &str) -> bool {
+/// The recorded rule of a `NOT_APPLICABLE` report: the justification of `not_applicable_reason`
+/// (an object in `gate-report.schema.json`), or the text when an older report wrote a string.
+fn recorded_rule(report: &Value) -> &str {
+    let reason = report.get("not_applicable_reason");
+    reason
+        .and_then(|reason| reason.get("justification"))
+        .and_then(Value::as_str)
+        .or_else(|| reason.and_then(Value::as_str))
+        .unwrap_or_default()
+        .trim()
+}
+
+/// Whether a report ran at least one command, and every command it records ran and exited with 0.
+fn every_command_ran(report: &Value) -> bool {
     report
         .pointer("/commands")
         .and_then(Value::as_array)
         .is_some_and(|commands| {
-            commands.iter().any(|command| {
-                let argv = command
-                    .pointer("/argv")
-                    .and_then(Value::as_array)
-                    .map(|list| {
-                        list.iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .to_ascii_lowercase()
-                    })
-                    .unwrap_or_default();
-                argv.contains(word)
-                    && command.pointer("/executed").and_then(Value::as_bool) == Some(true)
-                    && command.pointer("/exit_code").and_then(Value::as_i64) == Some(0)
-            })
+            !commands.is_empty()
+                && commands.iter().all(|command| {
+                    command.pointer("/executed").and_then(Value::as_bool) == Some(true)
+                        && command.pointer("/exit_code").and_then(Value::as_i64) == Some(0)
+                })
         })
+}
+
+/// What one check of the documentation gate says: a sentence for the pass, or the failure.
+fn docs_check(
+    report: Option<&Value>,
+    gate: &str,
+    what: &str,
+    needs_commands: bool,
+) -> Result<String, String> {
+    let Some(report) = report else {
+        return Err(format!(
+            "the passed {DOCS_STAGE} run left no {gate} report, so the {what} cannot be judged"
+        ));
+    };
+    match text_at(report, "/outcome") {
+        Some("PASSED") if needs_commands && !every_command_ran(report) => Err(format!(
+            "the {gate} report is PASSED, but no {what} ran with exit code 0"
+        )),
+        Some("PASSED") => Ok(format!("the {what} is PASSED")),
+        Some("NOT_APPLICABLE") => {
+            let rule = recorded_rule(report);
+            if rule.is_empty() {
+                Err(format!(
+                    "the {gate} report is NOT_APPLICABLE with no recorded rule"
+                ))
+            } else {
+                Ok(format!(
+                    "the {what} is NOT_APPLICABLE by a recorded rule: {rule}"
+                ))
+            }
+        }
+        other => Err(format!(
+            "the {gate} report is {}, not PASSED",
+            other.unwrap_or("(none)")
+        )),
+    }
 }
 
 /// A12: the documentation gate report is `PASSED` with the link check and snippet execution
 /// actually run. `NOT_APPLICABLE` only with a recorded rule.
+///
+/// The gate writes one report for each of its checks, so this reads the `docs-links` and
+/// `docs-examples` reports of the passed `DOCUMENTATION_REVIEW` run (of its newest attempt). The
+/// link check runs in the factory's process and records no command, so its `PASSED` is the run.
+/// The example check runs each example as a command, so its `PASSED` needs at least one command,
+/// each executed with exit code 0. Either may instead be `NOT_APPLICABLE` with a recorded rule
+/// (documentation policy 9.8: the documents contain no links, no executable example).
 #[must_use]
 pub fn a12(ev: &RunEvidence, _env: &Env) -> Verdict {
     const ID: &str = "A12";
+    let Some(run) = ev
+        .stage_runs
+        .iter()
+        .rev()
+        .find(|run| run.kind == DOCS_STAGE && run.status == PASSED)
+    else {
+        return Verdict::fail(
+            ID,
+            format!("no {DOCS_STAGE} run passed, so there is no documentation gate report"),
+        );
+    };
     let reports: Vec<&Value> = ev
         .contracts
         .gate_reports
         .iter()
+        .filter(|record| record.stage_run_id == run.id)
         .map(|record| &record.report)
-        .filter(|report| {
-            text_at(report, "/metadata/gate_id")
-                .is_some_and(|id| id.to_ascii_lowercase().contains(DOCS_GATE_WORD))
-        })
         .collect();
-    let Some(report) = reports.last() else {
-        return Verdict::fail(ID, "the run left no documentation gate report");
-    };
-    match text_at(report, "/outcome") {
-        Some("PASSED") => {
-            if !command_ran(report, LINK_CHECK_WORD) {
-                return Verdict::fail(
-                    ID,
-                    "the documentation gate is PASSED, but the link check did not run and exit with 0",
-                );
-            }
-            if !command_ran(report, SNIPPET_CHECK_WORD) {
-                return Verdict::fail(
-                    ID,
-                    "the documentation gate is PASSED, but no snippet was executed with exit code 0",
-                );
-            }
-            Verdict::pass(
-                ID,
-                "the documentation gate is PASSED, and the link check and the snippet execution both ran with exit code 0",
-            )
-        }
-        Some("NOT_APPLICABLE") => {
-            let rule = text_at(report, "/not_applicable_reason").unwrap_or_default();
-            if rule.trim().is_empty() {
-                Verdict::fail(
-                    ID,
-                    "the documentation gate is NOT_APPLICABLE with no recorded rule",
-                )
-            } else {
-                Verdict::pass(
-                    ID,
-                    format!("the documentation gate is NOT_APPLICABLE by a recorded rule: {rule}"),
-                )
-            }
-        }
-        other => Verdict::fail(
+    if !reports.iter().any(|report| {
+        text_at(report, "/metadata/gate_id").is_some_and(|id| id.starts_with("docs-"))
+    }) {
+        return Verdict::fail(
             ID,
-            format!(
-                "the documentation gate outcome is {}, not PASSED",
-                other.unwrap_or("(none)")
-            ),
-        ),
+            format!("the passed {DOCS_STAGE} run left no documentation gate report"),
+        );
     }
+    // The report of the newest attempt: an attempt that ran again wrote its reports again.
+    let attempt = run.attempts.last().map(|attempt| attempt.id.as_str());
+    let newest = |gate: &str| -> Option<&Value> {
+        let of_gate: Vec<&Value> = reports
+            .iter()
+            .copied()
+            .filter(|report| text_at(report, "/metadata/gate_id") == Some(gate))
+            .collect();
+        of_gate
+            .iter()
+            .copied()
+            .rfind(|report| attempt.is_some() && text_at(report, "/metadata/attempt_id") == attempt)
+            .or_else(|| of_gate.last().copied())
+    };
+    let links = match docs_check(newest(LINK_CHECK), LINK_CHECK, "link check", false) {
+        Ok(sentence) => sentence,
+        Err(reason) => return Verdict::fail(ID, reason),
+    };
+    let snippets = match docs_check(
+        newest(SNIPPET_CHECK),
+        SNIPPET_CHECK,
+        "snippet execution",
+        true,
+    ) {
+        Ok(sentence) => sentence,
+        Err(reason) => return Verdict::fail(ID, reason),
+    };
+    Verdict::pass(
+        ID,
+        format!("in the passed {DOCS_STAGE} run, {links}, and {snippets}"),
+    )
 }
 
 /// A14: the ledger holds no entry with fidelity `fake` in a production-mode job, and no `fake`

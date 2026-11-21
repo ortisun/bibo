@@ -37,6 +37,11 @@ Commands:
   check-report [PATH]       Check the acceptance report against the recordings it cites.
   report-self-test          Prove that the report check fails on a report that claims more than
                             the recordings show.
+  judge --scenario ID PATH  Judge the stored evidence of a run again with the checks of the
+                            scenario, without a new run: PATH is an evidence JSON file, such as
+                            the answer.json or recording/ID/evidence.json of a real run. The
+                            evidence is read as it is; nothing proves where it came from, so the
+                            result is labelled a re-judgement and is never the proof.
   readability PATH...       Run the readability gate over Markdown documents (the first heading is
                             the title). Exit 1 when a rule that blocks is broken; warnings are
                             printed and do not change the exit code.
@@ -62,6 +67,7 @@ pub fn main(args: &[String]) -> i32 {
         Some("check-report") => check_report(&root, args.get(1).map(String::as_str)),
         Some("report-self-test") => report_self_test(),
         Some("readability") => readability(&root, &args[1..]),
+        Some("judge") => judge(&root, &args[1..]),
         Some("run") => run(&root, &args[1..]),
         Some(other) => {
             eprintln!("e2e: unknown command '{other}'\n");
@@ -287,6 +293,59 @@ fn preflight_self_test(root: &Path) -> i32 {
 fn preflight_self_test(_root: &Path) -> i32 {
     eprintln!("e2e: this build has no scripted wiring (the `scripted` feature is off)");
     2
+}
+
+/// Judges stored evidence again with the checks of one scenario. Exit 0 when every check holds,
+/// 1 when one fails, 2 on wrong usage or unreadable evidence.
+fn judge(root: &Path, args: &[String]) -> i32 {
+    let (id, path) = match args {
+        [flag, id, path] if flag == "--scenario" => (id, path),
+        _ => return usage("judge needs --scenario ID and the path of an evidence file"),
+    };
+    let Some(scenario) = crate::scenarios::by_id(id) else {
+        return usage(&format!("there is no scenario {id}; run `e2e list`"));
+    };
+    let env = match Env::load(root) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("e2e: {error}");
+            return 2;
+        }
+    };
+    let evidence: RunEvidence = match std::fs::read(path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+    {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            eprintln!("e2e: the evidence in {path} cannot be read: {error}");
+            return 2;
+        }
+    };
+    if evidence.scenario != scenario.id {
+        eprintln!(
+            "e2e: the evidence in {path} is of {}, not {}",
+            evidence.scenario, scenario.id
+        );
+        return 2;
+    }
+    println!(
+        "{} RE-JUDGED from stored evidence ({path}; {} wiring, {} mode). This is not a new run and not the proof.",
+        scenario.id,
+        evidence.wiring,
+        evidence.mode.as_str()
+    );
+    let verdicts: Vec<_> = scenario
+        .checks()
+        .iter()
+        .map(|check| check.apply(&evidence, &env))
+        .collect();
+    for verdict in &verdicts {
+        println!("  {verdict}");
+    }
+    let failed = verdicts.iter().filter(|verdict| !verdict.pass).count();
+    println!("SUMMARY: {} held, {failed} failed", verdicts.len() - failed);
+    i32::from(failed > 0)
 }
 
 fn readability(root: &Path, paths: &[String]) -> i32 {

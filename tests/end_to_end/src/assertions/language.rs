@@ -21,7 +21,14 @@ fn artifact_of(document: &Document) -> Option<Artifact<'_>> {
                 .as_deref()
                 .and_then(DocumentType::parse)
                 .unwrap_or(DocumentType::Reference);
-            Artifact::documentation(&document.title, doc_type, &document.body)
+            let artifact = Artifact::documentation(&document.title, doc_type, &document.body);
+            // A title the page had at the job's base is the project's, and the documentation
+            // review stage does not judge it either.
+            if document.title_kept {
+                artifact.with_title_kept()
+            } else {
+                artifact
+            }
         }
         _ => return None,
     };

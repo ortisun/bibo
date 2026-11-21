@@ -217,6 +217,20 @@ pub fn gate_report(
         })
         .collect();
     patch(&mut report, "/commands", Value::Array(commands));
+    if argvs.is_empty() {
+        // A check that runs in the factory's process records no command, as the link check of
+        // the documentation gate does.
+        let fidelity = report["environment"]["fidelity"].clone();
+        patch(
+            &mut report,
+            "/environment",
+            json!({
+                "executor_kind": "in_process",
+                "fidelity": fidelity,
+                "tool_versions": [{ "tool": "factory-validation-gates", "version": "1.0.0" }],
+            }),
+        );
+    }
     report
 }
 
@@ -251,6 +265,7 @@ pub fn task_documents(dag: &Value) -> Vec<Document> {
                     bullets("verification"),
                 ),
                 doc_type: None,
+        title_kept: false,
             }
         })
         .collect()
@@ -281,6 +296,7 @@ pub fn specification_document() -> Document {
         )
         .to_owned(),
         doc_type: None,
+        title_kept: false,
     }
 }
 
@@ -307,9 +323,10 @@ pub fn pull_request_document(head_hash: &str, issue: u64) -> Document {
                 "A person still has to approve this pull request. Nothing is merged or deployed by the factory."
             ),
             issue = issue,
-            head = head_hash
+            head = head_hash.strip_prefix("sha256:").unwrap_or(head_hash)
         ),
         doc_type: None,
+        title_kept: false,
     }
 }
 
@@ -332,6 +349,7 @@ pub fn documentation_documents() -> Vec<Document> {
             )
             .to_owned(),
             doc_type: Some("reference".to_owned()),
+            title_kept: false,
         },
         Document {
             kind: "documentation".to_owned(),
@@ -339,6 +357,7 @@ pub fn documentation_documents() -> Vec<Document> {
             title: "Changelog of the word count tool".to_owned(),
             body: "## Unreleased\n\n### Added\n\n- The `--json` option prints the line, word and character counts as one JSON object.".to_owned(),
             doc_type: Some("changelog".to_owned()),
+            title_kept: false,
         },
     ]
 }
@@ -556,6 +575,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             source: "audit".to_owned(),
             label: format!("{action} #{n}"),
             correlation_id: Some(CORRELATION.to_owned()),
+            in_job: true,
         });
     };
 
@@ -702,6 +722,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             source: "log".to_owned(),
             label: format!("{} attempt log", stage.kind),
             correlation_id: Some(CORRELATION.to_owned()),
+            in_job: true,
         });
         stage_runs.push(StageRunRecord {
             id: run_id.clone(),
@@ -841,17 +862,18 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
     });
     gate_reports.push(GateReportRecord {
         stage_run_id: docs_run.clone(),
+        report: gate_report(&job, &docs_run, &docs_attempt, "docs-links", &[], &o, 2),
+    });
+    gate_reports.push(GateReportRecord {
+        stage_run_id: docs_run.clone(),
         report: gate_report(
             &job,
             &docs_run,
             &docs_attempt,
-            "documentation-gate",
-            &[
-                &["docs-link-check", "--root", "."],
-                &["docs-snippet-run", "README.md"],
-            ],
+            "docs-examples",
+            &[&["word-count", "--json", "tests/fixtures/three-lines.txt"]],
             &o,
-            2,
+            3,
         ),
     });
 
@@ -912,7 +934,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             body: pull_request_document(&head_hash, ISSUE).body,
         }],
         head_commits: commits,
-        head_files: files,
+        head_files: files.clone(),
         changed_paths,
         check_runs: vec![CheckRun {
             name: "ci".to_owned(),
@@ -966,6 +988,16 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
     stored_hashes.insert("specification".to_owned(), spec_hash);
     stored_hashes.insert("task_dag".to_owned(), dag_hash);
 
+    // The worker loop sweeps the tokens of ended jobs outside any job's span, so its line carries
+    // no correlation id (`docs/observability/conventions.md`, section 7).
+    correlated.push(Correlated {
+        source: "log".to_owned(),
+        label: "event 1 (factory_composition::token_sweep: installation tokens of ended jobs were revoked)"
+            .to_owned(),
+        correlation_id: None,
+        in_job: false,
+    });
+
     RunEvidence {
         scenario: o.scenario.to_owned(),
         wiring: "canned".to_owned(),
@@ -989,6 +1021,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             evidence_manifest: Some(manifest),
             gate_reports,
             stored_hashes,
+            specification_files: files,
         },
         github,
         telemetry: Telemetry { spans, correlated },

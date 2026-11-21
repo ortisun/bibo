@@ -129,11 +129,16 @@ pub fn reseal(ev: &mut RunEvidence) {
         {
             *slot = json!(new);
         }
+        // The body writes the digits of the head without the `sha256:` prefix.
+        let (old, new) = (
+            old.trim_start_matches("sha256:"),
+            new.trim_start_matches("sha256:"),
+        );
         for pr in &mut ev.github.pull_requests {
-            pr.body = pr.body.replace(&old, &new);
+            pr.body = pr.body.replace(old, new);
         }
         for doc in ev.documents.iter_mut().filter(|d| d.kind == "pull_request") {
-            doc.body = doc.body.replace(&old, &new);
+            doc.body = doc.body.replace(old, new);
         }
     }
 }
@@ -509,9 +514,12 @@ pub fn all() -> Vec<Mutation> {
                             .map(str::to_owned)
                     })
                     .expect("a head");
+                // The body writes the digits without the prefix, as the delivery stage does.
+                let digits = head.trim_start_matches("sha256:");
+                let other = canned::sha(b"other");
                 ev.github.pull_requests[0].body = ev.github.pull_requests[0]
                     .body
-                    .replace(&head, &canned::sha(b"other"));
+                    .replace(digits, other.trim_start_matches("sha256:"));
             },
         },
         Mutation {
@@ -577,13 +585,28 @@ pub fn all() -> Vec<Mutation> {
             },
         },
         Mutation {
-            name: "specification-artifact-is-not-on-the-branch",
+            name: "specification-artifact-is-not-at-its-commit",
             assertion: "A5",
-            what: "A file the specification cites is not on the branch.",
-            expect: "not on the head branch",
+            what: "The job's store does not hold a file the specification cites at its commit.",
+            expect: "does not hold at its commit",
             base: Production,
             apply: |ev| {
-                ev.github.head_files.remove("specs/001-json-output/spec.md");
+                ev.contracts
+                    .specification_files
+                    .remove("specs/001-json-output/spec.md");
+            },
+        },
+        Mutation {
+            name: "specification-artifact-differs-at-its-commit",
+            assertion: "A5",
+            what: "The file at the specification's commit no longer matches the hash it cites.",
+            expect: "the file at its commit",
+            base: Production,
+            apply: |ev| {
+                ev.contracts.specification_files.insert(
+                    "specs/001-json-output/spec.md".to_owned(),
+                    canned::sha(b"edited at the commit"),
+                );
             },
         },
         Mutation {
@@ -1155,6 +1178,31 @@ pub fn all() -> Vec<Mutation> {
             },
         },
         Mutation {
+            name: "a-line-outside-the-job-is-counted-as-the-job-s",
+            assertion: "A11",
+            what: "The token sweep line, which carries no correlation id, is recorded as a line of the job.",
+            expect: "carries the correlation id None",
+            base: Production,
+            apply: |ev| {
+                if let Some(line) = ev.telemetry.correlated.iter_mut().find(|c| !c.in_job) {
+                    line.in_job = true;
+                }
+            },
+        },
+        Mutation {
+            name: "a-line-outside-the-job-carries-the-job-s-id",
+            assertion: "A11",
+            what: "A line recorded as written outside the job carries the job's correlation id.",
+            expect: "recorded as written outside the job",
+            base: Production,
+            apply: |ev| {
+                let id = ev.job.correlation_id.clone();
+                if let Some(line) = ev.telemetry.correlated.iter_mut().find(|c| !c.in_job) {
+                    line.correlation_id = Some(id);
+                }
+            },
+        },
+        Mutation {
             name: "an-audit-event-has-no-correlation-id",
             assertion: "A11",
             what: "An audit event carries no correlation id.",
@@ -1178,73 +1226,86 @@ pub fn all() -> Vec<Mutation> {
         Mutation {
             name: "no-documentation-gate-report",
             assertion: "A12",
-            what: "The run left no documentation gate report.",
+            what: "The passed DOCUMENTATION_REVIEW run left no report of the documentation gate.",
             expect: "no documentation gate report",
             base: Production,
             apply: |ev| {
                 ev.contracts.gate_reports.retain(|r| {
-                    r.report
+                    !r.report
                         .pointer("/metadata/gate_id")
                         .and_then(Value::as_str)
-                        != Some("documentation-gate")
+                        .is_some_and(|id| id.starts_with("docs-"))
                 })
             },
         },
         Mutation {
             name: "the-link-check-did-not-run",
             assertion: "A12",
-            what: "The documentation gate is PASSED but ran no link check.",
-            expect: "link check did not run",
+            what: "The documentation gate left no link check report.",
+            expect: "no docs-links report",
             base: Production,
             apply: |ev| {
-                gate_mut(ev, "documentation-gate")["commands"]
-                    .as_array_mut()
-                    .expect("commands")
-                    .remove(0);
+                ev.contracts.gate_reports.retain(|r| {
+                    r.report
+                        .pointer("/metadata/gate_id")
+                        .and_then(Value::as_str)
+                        != Some("docs-links")
+                })
             },
         },
         Mutation {
             name: "no-snippet-was-executed",
             assertion: "A12",
-            what: "The documentation gate is PASSED but executed no snippet.",
-            expect: "no snippet was executed",
+            what: "The example check is PASSED but executed no example.",
+            expect: "no snippet execution ran with exit code 0",
             base: Production,
-            apply: |ev| {
-                gate_mut(ev, "documentation-gate")["commands"]
-                    .as_array_mut()
-                    .expect("commands")
-                    .remove(1);
-            },
+            apply: |ev| gate_mut(ev, "docs-examples")["commands"] = json!([]),
         },
         Mutation {
             name: "the-snippet-command-was-not-executed",
             assertion: "A12",
-            what: "The snippet command is recorded with executed set to false.",
-            expect: "no snippet was executed",
+            what: "The example command is recorded with executed set to false.",
+            expect: "no snippet execution ran with exit code 0",
             base: Production,
-            apply: |ev| {
-                gate_mut(ev, "documentation-gate")["commands"][1]["executed"] = json!(false)
-            },
+            apply: |ev| gate_mut(ev, "docs-examples")["commands"][0]["executed"] = json!(false),
         },
         Mutation {
             name: "not-applicable-with-no-recorded-rule",
             assertion: "A12",
-            what: "The documentation gate is NOT_APPLICABLE and records no rule.",
+            what: "The example check is NOT_APPLICABLE and records no rule.",
             expect: "no recorded rule",
             base: Production,
             apply: |ev| {
-                let report = gate_mut(ev, "documentation-gate");
+                let report = gate_mut(ev, "docs-examples");
                 report["outcome"] = json!("NOT_APPLICABLE");
-                report["not_applicable_reason"] = json!("");
+                report["not_applicable_reason"] = json!({
+                    "code": "no_matching_files",
+                    "decided_by": "deterministic_rule",
+                    "justification": " ",
+                });
             },
         },
         Mutation {
             name: "the-documentation-gate-failed",
             assertion: "A12",
-            what: "The documentation gate outcome is FAILED.",
+            what: "The link check outcome is FAILED.",
             expect: "not PASSED",
             base: Production,
-            apply: |ev| gate_mut(ev, "documentation-gate")["outcome"] = json!("FAILED"),
+            apply: |ev| gate_mut(ev, "docs-links")["outcome"] = json!("FAILED"),
+        },
+        Mutation {
+            name: "the-documentation-review-did-not-pass",
+            assertion: "A12",
+            what: "No DOCUMENTATION_REVIEW run passed, so its reports are not the current ones.",
+            expect: "no DOCUMENTATION_REVIEW run passed",
+            base: Production,
+            apply: |ev| {
+                for run in &mut ev.stage_runs {
+                    if run.kind == "DOCUMENTATION_REVIEW" {
+                        run.status = "SUPERSEDED".to_owned();
+                    }
+                }
+            },
         },
         // ---- A13 -----------------------------------------------------------------------------
         Mutation {

@@ -179,6 +179,11 @@ pub struct Document {
     /// `changelog`.
     #[serde(default)]
     pub doc_type: Option<String>,
+    /// For `documentation`: the page kept the title it had at the job's base, so the title rules
+    /// do not judge it. The project chose that title, not the factory (the documentation review
+    /// stage judges a kept title the same way).
+    #[serde(default)]
+    pub title_kept: bool,
 }
 
 /// The contract documents of the run.
@@ -202,6 +207,13 @@ pub struct Contracts {
     /// manifest and the plan must cite these, not hashes the factory remembers.
     #[serde(default)]
     pub stored_hashes: BTreeMap<String, String>,
+    /// The SHA-256 of each file the specification cites, read from the job's own object store at
+    /// the commit the specification was frozen at (`metadata.commit_sha`), by path. A cited file
+    /// that the store does not hold at that commit is absent. The specification commits stay in
+    /// the job's store: the code starts from the repository map's commit (ADR 0025), so they are
+    /// not on the pull request's head branch.
+    #[serde(default)]
+    pub specification_files: BTreeMap<String, String>,
 }
 
 /// A gate report and the stage run it belongs to.
@@ -387,7 +399,30 @@ pub struct Correlated {
     pub label: String,
     /// The correlation id, or `None` when it carried none.
     pub correlation_id: Option<String>,
+    /// For a log line: whether it was written inside one of the job's spans (`factory.job` or a
+    /// span below it). A line written outside any job, such as the token sweep of the worker
+    /// loop, carries no correlation id by design (`docs/observability/conventions.md`, section 7).
+    /// An event of the outbox or the audit stream is always the job's. A recording made before
+    /// the field existed counts every line as the job's.
+    #[serde(default = "the_job_s")]
+    pub in_job: bool,
 }
+
+fn the_job_s() -> bool {
+    true
+}
+
+/// The spans of a job: the ones whose required attributes hold `factory.correlation_id`
+/// (`docs/observability/conventions.md`, the span table). A log line written inside one of them,
+/// or inside a span below one, is a line of the job.
+pub const JOB_SPANS: [&str; 6] = [
+    "factory.job",
+    "factory.stage_run",
+    "factory.attempt",
+    "factory.agent",
+    "factory.tool_call",
+    "factory.gate",
+];
 
 /// What the job spent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

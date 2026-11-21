@@ -2698,15 +2698,15 @@ The harness reads the database and GitHub, not log text. All of them must hold f
 | A1 | The job is `COMPLETED`. Every stage kind in scope has exactly one `PASSED` run that is not superseded, and the order respects `requires`. |
 | A2 | `DOCUMENTING` and `DOCUMENTATION_REVIEW` both completed after `REVIEW` passed and before `DELIVERY`, shown by ledger sequence. |
 | A3 | The pull request exists on GitHub, is a draft, links the issue, and its head branch holds the code and the documentation commits. |
-| A4 | The evidence manifest validates, `limitations` is not empty, every adapter is real, the ledger chain verifies, and the head hash in the pull request body equals the stored head. |
-| A5 | The specification contract validates, its artifact hashes match the files on the branch, and `skills_invoked` is a subset of the four allowed. |
-| A6 | The task graph validates and passes the planner validator, every acceptance scenario is covered, and the changed paths are inside the union of owned files. |
+| A4 | The evidence manifest validates, `limitations` is not empty, every adapter is real, the ledger chain verifies, and the head hash in the pull request body equals the stored head. The body writes every hash as its 64 hexadecimal digits without the `sha256:` prefix, so the digits are compared. |
+| A5 | The specification contract validates, its artifact hashes match the files at the commit it was frozen at (`metadata.commit_sha`, in the job's store), and `skills_invoked` is a subset of the four allowed. A cited file that is also on the pull request's head branch must match there too. The specification is not required on the head branch: the code starts from the repository map's commit ([ADR 0025](../adr/0025-protected-paths-judged-against-the-job-base.md)), so the specification commits stay in the job's store (real run 36). |
+| A6 | The task graph validates and passes the planner validator, every acceptance scenario is covered, and the changed paths are inside the union of owned files. A page the `DOCUMENTING` stage wrote is judged by that stage's own scope gate against the documentation plan, not by the ownership of a task. |
 | A7 | Every gate report validates, every `PASSED` report has exit code 0 for all commands, images are pinned by digest, and fidelity is real. |
 | A8 | Every human-facing artifact passes the readability gate. For E2 the specification, plan, pull request and documentation are English. |
 | A9 | The job waited in `WAITING_FOR_HUMAN` until an authorized approval, then completed. The pull request was not merged and the base branch is unchanged. |
 | A10 | No code path called merge or deploy, and the token used had no merge permission. |
-| A11 | Every attempt has a span whose parent is its stage run span, and the correlation id appears on every event and log line. |
-| A12 | The documentation gate report is `PASSED` with the link check and snippet execution actually run. `NOT_APPLICABLE` only with a recorded rule. |
+| A11 | Every attempt has a span whose parent is its stage run span, and the correlation id appears on every event and on every log line of the job: a line written inside one of the job's spans. A line written outside any job, such as the token sweep of the worker loop, has no correlation id ([conventions, section 7](../observability/conventions.md)). |
+| A12 | The documentation gate report is `PASSED` with the link check and snippet execution actually run. `NOT_APPLICABLE` only with a recorded rule. The gate writes one report for each check, so this reads the `docs-links` and `docs-examples` reports of the passed `DOCUMENTATION_REVIEW` run: each is `PASSED` (an example report also ran each example with exit code 0), or `NOT_APPLICABLE` with a recorded rule. |
 | A13 | Introduce a failing check, as in E3: `DELIVERY` never starts. |
 | A14 | The ledger holds no entry with fidelity `fake` in a production-mode job, and no `fake` adapter appears in the manifest. |
 
