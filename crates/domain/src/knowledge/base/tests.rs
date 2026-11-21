@@ -385,3 +385,77 @@ fn the_same_input_gives_the_same_sorted_findings() {
     assert_eq!(first.len(), 5, "{first:#?}");
     assert!(first.iter().all(|finding| !finding.to_string().is_empty()));
 }
+
+fn week_file(id: &str) -> KnowledgeFile {
+    let title = format!("Process numbers, {id}");
+    file(
+        &format!("measurements/{id}.md"),
+        Header::Factory(FactoryEntry::check(id, "measurement", &title, None).expect("valid")),
+    )
+}
+
+#[test]
+fn a_line_inserted_into_the_index_gives_the_index_the_factory_writes() {
+    // Into an existing section, before, between and after the rows already there.
+    let mut files = base().files().to_vec();
+    for id in ["M-2026-W45", "M-2026-W48", "M-2026-W46"] {
+        let before = KnowledgeBase::new(files.clone()).render_index();
+        let added = week_file(id);
+        files.push(added.clone());
+        let after = KnowledgeBase::new(files.clone()).render_index();
+        assert_eq!(
+            KnowledgeBase::insert_index_line(&before, &added),
+            after,
+            "{id}"
+        );
+    }
+    // A section that does not exist yet, at the end and before a later kind.
+    let empty = KnowledgeBase::new(vec![]);
+    let first = week_file("M-2026-W47");
+    assert_eq!(
+        KnowledgeBase::insert_index_line(&empty.render_index(), &first),
+        KnowledgeBase::new(vec![first.clone()]).render_index()
+    );
+    let improvement = file(
+        "improvements/IM-0001-targeted-tests-first.md",
+        Header::Factory(
+            FactoryEntry::check(
+                "IM-0001",
+                "improvement",
+                "Targeted tests first",
+                Some("active"),
+            )
+            .expect("valid"),
+        ),
+    );
+    let with_improvement = KnowledgeBase::new(vec![improvement.clone()]).render_index();
+    assert_eq!(
+        KnowledgeBase::insert_index_line(&with_improvement, &first),
+        KnowledgeBase::new(vec![improvement, first.clone()]).render_index()
+    );
+    // An index without the factory's sentence, as a person may have written it, keeps every line.
+    let by_hand = "# Our knowledge\n\nWritten by us.\n";
+    let added = KnowledgeBase::insert_index_line(by_hand, &first);
+    assert!(
+        added.starts_with("# Our knowledge\n\nWritten by us.\n\n## Measurements\n"),
+        "{added}"
+    );
+    // Inserting a line twice changes nothing.
+    let once = KnowledgeBase::insert_index_line(&empty.render_index(), &first);
+    assert_eq!(KnowledgeBase::insert_index_line(&once, &first), once);
+    assert_eq!(KnowledgeBase::new(vec![first]).check_index(Some(&once)), []);
+}
+
+#[test]
+fn the_measurements_an_index_lists_are_read_in_order() {
+    let files = vec![week_file("M-2026-W46"), week_file("M-2026-W47")];
+    let mut all = base().files().to_vec();
+    all.extend(files);
+    let index = KnowledgeBase::new(all).render_index();
+    let listed: Vec<String> = KnowledgeBase::listed_measurements(&index)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(listed, ["M-2026-W46", "M-2026-W47"]);
+    assert!(KnowledgeBase::listed_measurements("| [M-bad](x) | t | s |\nno table\n").is_empty());
+}

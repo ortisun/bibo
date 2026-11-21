@@ -180,6 +180,12 @@ fn cell(text: &str) -> String {
     text.replace('|', "\\|")
 }
 
+/// The identifier of an index line, `| [BR-0007](...) | ...`, or `None`.
+fn row_id(line: &str) -> Option<EntryId> {
+    let rest = line.strip_prefix("| [")?;
+    EntryId::parse(rest.get(..rest.find("](")?)?).ok()
+}
+
 impl KnowledgeBase {
     /// The knowledge base of these files, in the order of their identifiers and then of their
     /// files.
@@ -316,6 +322,95 @@ impl KnowledgeBase {
             }
         }
         out
+    }
+
+    /// The index `index` with the line of `file` added under the heading of its kind, in the
+    /// order of the identifiers; the section is added after the sections of the kinds that come
+    /// before it when it does not exist yet. Nothing else of `index` changes, and an index that
+    /// already holds the line is returned as it is.
+    pub fn insert_index_line(index: &str, file: &KnowledgeFile) -> String {
+        let line = Self::index_line(file);
+        if index.lines().any(|existing| existing.trim_end() == line) {
+            return index.to_owned();
+        }
+        let id = file.header.id();
+        let kind = id.kind();
+        let heading = format!("## {}", kind.heading());
+        let mut lines: Vec<String> = index.lines().map(str::to_owned).collect();
+        let start = lines
+            .iter()
+            .position(|existing| existing.trim_end() == heading);
+        match start {
+            Some(start) => {
+                let end = lines[start + 1..]
+                    .iter()
+                    .position(|existing| existing.starts_with("## "))
+                    .map_or(lines.len(), |offset| start + 1 + offset);
+                let rows: Vec<usize> = (start + 1..end)
+                    .filter(|&at| lines[at].starts_with("| ["))
+                    .collect();
+                let at = rows
+                    .iter()
+                    .copied()
+                    .find(|&at| row_id(&lines[at]).is_some_and(|row| row.as_str() > id.as_str()))
+                    .or_else(|| rows.last().map(|last| last + 1))
+                    .unwrap_or_else(|| {
+                        // A heading with no row yet: after its table header, or right after it.
+                        (start + 1..end)
+                            .find(|&at| lines[at].starts_with("|---"))
+                            .map_or(start + 1, |header| header + 1)
+                    });
+                lines.insert(at, line);
+            }
+            None => {
+                let section = vec![
+                    String::new(),
+                    heading,
+                    String::new(),
+                    "| Identifier | Title | Status |".to_owned(),
+                    "|---|---|---|".to_owned(),
+                    line,
+                ];
+                let later: Vec<String> = EntryKind::ALL
+                    .iter()
+                    .skip_while(|other| **other != kind)
+                    .skip(1)
+                    .map(|other| format!("## {}", other.heading()))
+                    .collect();
+                let at = lines.iter().position(|existing| {
+                    later.iter().any(|heading| existing.trim_end() == heading)
+                });
+                match at {
+                    Some(at) => {
+                        // Before the blank line that leads into the later section.
+                        let at = if at > 0 && lines[at - 1].is_empty() {
+                            at - 1
+                        } else {
+                            at
+                        };
+                        lines.splice(at..at, section);
+                    }
+                    None => {
+                        while lines.last().is_some_and(String::is_empty) {
+                            lines.pop();
+                        }
+                        lines.extend(section);
+                    }
+                }
+            }
+        }
+        let mut out = lines.join("\n");
+        out.push('\n');
+        out
+    }
+
+    /// The measurements an index lists, in the order of its lines.
+    pub fn listed_measurements(index: &str) -> Vec<EntryId> {
+        index
+            .lines()
+            .filter_map(row_id)
+            .filter(|id| id.kind() == EntryKind::Measurement)
+            .collect()
     }
 
     /// Check 5 on the index: every entry has its line, and no line is for nothing. `index` is the

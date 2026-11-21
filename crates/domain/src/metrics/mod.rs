@@ -16,6 +16,7 @@
 //! | The metric catalogue and the `metric` entry | [`Metric`], [`MetricDefinition`] |
 //! | The `measurement` entry | [`Measurement`], [`Window`], [`Row`] |
 //! | From the facts of a window to a snapshot | [`snapshot`], [`Samples`], [`WindowFacts`] |
+//! | The weekly measurement pull request: the week, the decision, the text | [`last_whole_week`], [`decide_weekly`], [`weekly_pull_request_text`] |
 //! | Experiments and the `improvement` entry | [`Experiment`], [`Setting`], [`Improvement`] |
 //!
 //! No function uses floating point. A result that does not fit its type or its valid range is a
@@ -34,6 +35,7 @@ mod quantity;
 mod rounding;
 mod sample;
 mod snapshot;
+mod weekly;
 mod wilson;
 
 pub use bootstrap::{Resamples, Seed, median_difference};
@@ -49,7 +51,11 @@ pub use proportion::Proportion;
 pub use quantity::{MicroUsd, Milliseconds};
 pub use rounding::divide_half_even;
 pub use sample::{Measured, MinimumSample};
-pub use snapshot::{ComparisonSettings, Samples, WindowFacts, snapshot};
+pub use snapshot::{ComparisonSettings, Samples, WindowFacts, has_any_sample, snapshot};
+pub use weekly::{
+    LatestMeasurement, NothingBecause as WeeklyNothingBecause, ProposalState, WeeklyDecision,
+    decide as decide_weekly, last_whole_week, pull_request_text as weekly_pull_request_text,
+};
 pub use wilson::{MAXIMUM_RATE_SAMPLE, MILLIONTHS, RateInterval, rate_difference, wilson_interval};
 
 /// Why a metric could not be computed. Each message names the rule that was broken.
