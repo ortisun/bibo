@@ -8,7 +8,12 @@ use super::support::{
 };
 
 /// A3: the pull request exists on GitHub, is a draft, links the issue, and its head branch holds
-/// the code and the documentation commits.
+/// the code and the documentation.
+///
+/// The documentation reaches the branch in one of two ways. The documenting stage writes pages in
+/// a commit of its own after the code; or the pages were written in the code commits, by a
+/// documentation task or by the builder, and the stage writes nothing (documentation policy 8.2,
+/// item 8). In the second case every page the documentation review judged must be on the branch.
 #[must_use]
 pub fn a3(ev: &RunEvidence, _env: &Env) -> Verdict {
     const ID: &str = "A3";
@@ -67,24 +72,101 @@ pub fn a3(ev: &RunEvidence, _env: &Env) -> Verdict {
             "no commit on the head branch changes code (src/ or tests/)",
         );
     };
-    let documentation_after_code = github.head_commits[last_code + 1..].iter().any(|commit| {
-        !commit.paths.is_empty() && commit.paths.iter().all(|path| is_documentation_path(path))
-    });
-    if !documentation_after_code {
-        return Verdict::fail(
+    let after_code = &github.head_commits[last_code + 1..];
+    let documentation_after_code: Vec<&str> = after_code
+        .iter()
+        .filter(|commit| {
+            !commit.paths.is_empty() && commit.paths.iter().all(|path| is_documentation_path(path))
+        })
+        .flat_map(|commit| commit.paths.iter().map(String::as_str))
+        .collect();
+    let opened = format!(
+        "pull request #{} is an open draft that links issue #{}, and its head branch has {} commits",
+        pr.number,
+        ev.job.issue_number,
+        github.head_commits.len()
+    );
+    match documentation_written(ev) {
+        // The documenting stage wrote pages: its commit changes only documentation, comes after
+        // the code, and holds every page it wrote.
+        Some(written) if !written.is_empty() => {
+            if documentation_after_code.is_empty() {
+                return Verdict::fail(
+                    ID,
+                    format!(
+                        "the documentation stage wrote {}, and no commit that changes only documentation follows the last code commit on the head branch",
+                        written.join(", ")
+                    ),
+                );
+            }
+            if let Some(missing) = written
+                .iter()
+                .find(|path| !documentation_after_code.contains(path))
+            {
+                return Verdict::fail(
+                    ID,
+                    format!(
+                        "the documentation stage wrote {missing}, and no documentation commit after the last code commit changes it"
+                    ),
+                );
+            }
+            Verdict::pass(
+                ID,
+                format!("{opened}: code, then the documentation stage's commit"),
+            )
+        }
+        // The documenting stage wrote nothing, because the pages were written in the code commits
+        // (documentation policy 8.2, item 8): every page the review judged is on the head branch.
+        Some(_) => {
+            let judged: Vec<&str> = ev
+                .documents
+                .iter()
+                .filter(|document| document.kind == "documentation")
+                .map(|document| document.path.as_str())
+                .collect();
+            if judged.is_empty() {
+                return Verdict::fail(
+                    ID,
+                    "the documentation stage wrote nothing and the documentation review judged no page, so the head branch holds no documentation",
+                );
+            }
+            if let Some(missing) = judged
+                .iter()
+                .find(|path| !github.changed_paths.iter().any(|changed| changed == *path))
+            {
+                return Verdict::fail(
+                    ID,
+                    format!(
+                        "the documentation stage wrote nothing, and the head branch does not change {missing}, which the documentation review judged"
+                    ),
+                );
+            }
+            Verdict::pass(
+                ID,
+                format!(
+                    "{opened}, and the documentation was written with the code: the documentation stage wrote nothing, and the head branch changes the {} page(s) the documentation review judged ({})",
+                    judged.len(),
+                    judged.join(", ")
+                ),
+            )
+        }
+        // The evidence does not say what the stage wrote: only a documentation commit after the
+        // code shows the documentation.
+        None if documentation_after_code.is_empty() => Verdict::fail(
             ID,
             "no commit that changes only documentation follows the last code commit on the head branch",
-        );
-    }
-    Verdict::pass(
-        ID,
-        format!(
-            "pull request #{} is an open draft that links issue #{}, and its head branch has {} commits: code, then documentation",
-            pr.number,
-            ev.job.issue_number,
-            github.head_commits.len()
         ),
-    )
+        None => Verdict::pass(ID, format!("{opened}: code, then documentation")),
+    }
+}
+
+/// The pages the documenting stage wrote, from its stored result. `None` when the evidence does
+/// not hold that record, which is not the same as a stage that wrote nothing.
+fn documentation_written(ev: &RunEvidence) -> Option<Vec<&str>> {
+    ev.facts
+        .get("documentation_paths")
+        .and_then(serde_json::Value::as_array)
+        .map(|paths| paths.iter().filter_map(serde_json::Value::as_str).collect())
 }
 
 /// A9: the job waited in `WAITING_FOR_HUMAN` until an authorized approval, then completed. The pull

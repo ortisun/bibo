@@ -302,6 +302,73 @@ fn a_rejection_is_judged_by_its_audit_record_its_one_plain_reply_and_the_absence
     );
 }
 
+// ---- A3: documentation written with the code -------------------------------------------------
+
+/// The head branch of real run 38: the plan's documentation tasks wrote the README and the
+/// changelog in commits of their own before the code, and the documenting stage, finding them
+/// covered, wrote nothing.
+fn documentation_written_by_the_plan() -> RunEvidence {
+    let mut evidence = honest(&env(), Options::e1_production());
+    let documentation = evidence
+        .github
+        .head_commits
+        .pop()
+        .expect("the documentation commit");
+    evidence.github.head_commits.insert(0, documentation);
+    evidence.github.pull_requests[0].head_sha = evidence
+        .github
+        .head_commits
+        .last()
+        .map(|commit| commit.sha.clone())
+        .expect("a tip");
+    evidence
+        .facts
+        .insert("documentation_paths".to_owned(), serde_json::json!([]));
+    evidence
+}
+
+#[test]
+fn documentation_written_by_the_plan_before_the_code_passes_when_the_review_judged_it() {
+    let env = env();
+    let verdict = by_id("A3")
+        .expect("A3")
+        .apply(&documentation_written_by_the_plan(), &env);
+    assert!(
+        verdict.pass && verdict.reason.contains("written with the code"),
+        "{verdict}"
+    );
+}
+
+#[test]
+fn documentation_before_the_code_fails_when_the_evidence_does_not_say_what_the_stage_wrote() {
+    let env = env();
+    let mut evidence = documentation_written_by_the_plan();
+    evidence.facts.remove("documentation_paths");
+    let verdict = by_id("A3").expect("A3").apply(&evidence, &env);
+    assert!(
+        !verdict.pass
+            && verdict
+                .reason
+                .contains("no commit that changes only documentation"),
+        "{verdict}"
+    );
+}
+
+#[test]
+fn documentation_before_the_code_fails_when_the_stage_says_it_wrote_a_page() {
+    let env = env();
+    let mut evidence = documentation_written_by_the_plan();
+    evidence.facts.insert(
+        "documentation_paths".to_owned(),
+        serde_json::json!(["CHANGELOG.md"]),
+    );
+    let verdict = by_id("A3").expect("A3").apply(&evidence, &env);
+    assert!(
+        !verdict.pass && verdict.reason.contains("wrote CHANGELOG.md"),
+        "{verdict}"
+    );
+}
+
 // ---- A13: one stage run with several attempts -------------------------------------------------
 
 /// The shape of the specification run of real run 38: several attempts in one run. The earlier

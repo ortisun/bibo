@@ -399,6 +399,68 @@ pub fn all() -> Vec<Mutation> {
             },
         },
         Mutation {
+            name: "the-documentation-stage-wrote-pages-and-no-commit-follows-the-code",
+            assertion: "A3",
+            what: "The documenting stage wrote the README, and no documentation commit follows the code.",
+            expect: "the documentation stage wrote README.md, and no commit",
+            base: Production,
+            apply: |ev| {
+                ev.facts
+                    .insert("documentation_paths".to_owned(), json!(["README.md"]));
+                ev.github.head_commits.pop();
+                ev.github.pull_requests[0].head_sha = ev
+                    .github
+                    .head_commits
+                    .last()
+                    .map(|c| c.sha.clone())
+                    .unwrap_or_default();
+            },
+        },
+        Mutation {
+            name: "the-documentation-commit-lacks-a-page-the-stage-wrote",
+            assertion: "A3",
+            what: "The documenting stage wrote a guide that its commit after the code does not hold.",
+            expect: "wrote docs/usage.md, and no documentation commit after the last code commit",
+            base: Production,
+            apply: |ev| {
+                ev.facts.insert(
+                    "documentation_paths".to_owned(),
+                    json!(["README.md", "docs/usage.md"]),
+                );
+            },
+        },
+        Mutation {
+            name: "documentation-written-with-the-code-misses-a-judged-page",
+            assertion: "A3",
+            what: "The documenting stage wrote nothing, and the head branch does not change the README the review judged.",
+            expect: "does not change README.md, which the documentation review judged",
+            base: Production,
+            apply: |ev| {
+                ev.facts.insert("documentation_paths".to_owned(), json!([]));
+                ev.github.head_commits.pop();
+                ev.github
+                    .changed_paths
+                    .retain(|path| path != "README.md" && path != "CHANGELOG.md");
+                ev.github.pull_requests[0].head_sha = ev
+                    .github
+                    .head_commits
+                    .last()
+                    .map(|c| c.sha.clone())
+                    .unwrap_or_default();
+            },
+        },
+        Mutation {
+            name: "no-documentation-written-and-none-judged",
+            assertion: "A3",
+            what: "The documenting stage wrote nothing and the documentation review judged no page.",
+            expect: "judged no page",
+            base: Production,
+            apply: |ev| {
+                ev.facts.insert("documentation_paths".to_owned(), json!([]));
+                ev.documents.retain(|d| d.kind != "documentation");
+            },
+        },
+        Mutation {
             name: "no-code-commit",
             assertion: "A3",
             what: "The head branch has only a documentation commit.",
