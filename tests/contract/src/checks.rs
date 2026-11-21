@@ -11,7 +11,7 @@ use crate::Finding;
 use crate::workdir::list_files;
 
 /// The files the fixture must have.
-pub const REQUIRED_FILES: [&str; 12] = [
+pub const REQUIRED_FILES: [&str; 13] = [
     "Cargo.toml",
     "Cargo.lock",
     "README.md",
@@ -24,6 +24,8 @@ pub const REQUIRED_FILES: [&str; 12] = [
     "tests/cli_usage.rs",
     "tests/golden/sample.txt",
     "tests/golden/sample.plain.txt",
+    // The file the README's examples count; the documentation gate runs them in a checkout.
+    "notes.txt",
 ];
 
 /// Files and directories that must not exist: they would make the build depend on more than the

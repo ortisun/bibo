@@ -183,14 +183,13 @@ pub fn probe_behaviour(copy: &Path, target: &Path) -> Behaviour {
     {
         behaviour.help = String::from_utf8_lossy(&output.stdout).into_owned();
     }
-    // The README's file example counts `notes.txt`. Give the tool a file of that name.
-    if let Ok(dir) = crate::workdir::TempDir::new("probe")
-        && std::fs::copy(&sample, dir.path().join("notes.txt")).is_ok()
-        && let Ok(output) = Command::new(&binary)
-            .arg("notes.txt")
-            .current_dir(dir.path())
-            .stdin(Stdio::null())
-            .output()
+    // The README's file example counts `notes.txt`, which the fixture holds at its root. It runs
+    // from the root of the copy, as the documentation gate runs it from the root of a checkout.
+    if let Ok(output) = Command::new(&binary)
+        .arg("notes.txt")
+        .current_dir(copy)
+        .stdin(Stdio::null())
+        .output()
     {
         behaviour.example_outputs.push(
             String::from_utf8_lossy(&output.stdout)
