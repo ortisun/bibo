@@ -130,7 +130,7 @@
   },
   "prompt": {
     "template_path": "agents/specification-writer/prompt.md",
-    "template_version": "1.3.0",
-    "template_sha256": "sha256:b073f7fac380dd81e19ceaeec1c8e124330b965beadc75de85f04c387fbc05e2"
+    "template_version": "1.3.1",
+    "template_sha256": "sha256:967a9cadd4cf64251e73823ae45299c7e058ff00e8ecca8f60e6922cf2d226ad"
   }
 }
