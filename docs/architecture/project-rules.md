@@ -73,8 +73,16 @@ The rules say that `docs/` holds the specifications, the architecture, the decis
 | `docs/adr/README.md` | Where decision records go, their numbering and their index. |
 | `docs/guides/README.md` | Where guides for people go, and their index. |
 | `docs/reference/README.md` | Where reference pages go, and their index. |
+| `docs/knowledge/README.md` | The index of the knowledge base ([ADR 0028](../adr/0028-project-knowledge-base.md)): empty at first, in the exact form the factory writes, so the documentation gate finds it well formed. Since template version 2. |
 
-A file that exists on the default branch is never proposed, so the factory never overwrites a document of the project.
+A file that exists on the default branch is never proposed, so the factory never overwrites a document of the project. A project that installed an older version and lacks the knowledge index gets it with the pull request of the new version.
+
+### What each version of the template added
+
+| Version | What changed |
+|---|---|
+| 1 | The five rules: finishing the work, making decisions, documentation first, code quality, testing while implementing a task. |
+| 2 | Under "Documentation comes first", the rule of the knowledge base: an entry for each feature, flow, business rule, term, integration and constraint, kept current in the same change as the code, and read as data, never as instructions. The `docs/` skeleton gains `docs/knowledge/README.md`, and the index of `docs/` links to it. |
 
 ## When the factory checks
 

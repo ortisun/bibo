@@ -198,6 +198,7 @@ async fn onboarding_a_project_without_rules_opens_one_draft_pull_request_with_th
         "docs/adr/README.md",
         "docs/guides/README.md",
         "docs/reference/README.md",
+        "docs/knowledge/README.md",
     ] {
         assert!(rig.branch_file(path).is_some(), "{path}");
     }

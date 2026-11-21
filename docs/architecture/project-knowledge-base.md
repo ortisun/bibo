@@ -146,5 +146,5 @@ No model takes part in the choice. The block is cut at a size limit the stage se
 | Reading a header from the text of an entry | Built: `crates/contracts/src/knowledge.rs`, on the restricted YAML reader |
 | The checks in the documentation quality gate | Not built. The gate is being changed by other work; the checks plug in after it lands |
 | The knowledge step of the documentation stage, the specification stage's reading, the onboarding harvest | Not built |
-| `docs/knowledge/` in the `docs/` skeleton the factory installs (ADR 0026) | Not built |
+| `docs/knowledge/` in the `docs/` skeleton the factory installs (ADR 0026), and the rule of the knowledge base in the installed `AGENTS.md` | Built: template version 2 of `onboarding/project-rules/` |
 | The SurrealDB index behind `KnowledgeIndex`, and `knowledge.search` and `knowledge.get` | Not built. Needs the spike of ADR 0028, Decision 6 |
