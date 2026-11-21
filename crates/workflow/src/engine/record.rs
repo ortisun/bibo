@@ -28,9 +28,9 @@ use factory_domain::values::{
 use factory_domain::vocabulary::StageKind;
 use factory_ports::store::{
     AppliedTransition, Attempt, AttemptEnd, AuditAction as PortAuditAction, AuditActor,
-    AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewArtifactIndexEntry, NewAuditEvent,
-    StageRun, StageRunEffects, StartAttempt, StartedAttempt, StoreError, Tx, Version, Versioned,
-    Witness, WorkerId,
+    AuditDecision as PortAuditDecision, Job, LeaseEpoch, MeteredUsage, NewArtifactIndexEntry,
+    NewAuditEvent, StageRun, StageRunEffects, StartAttempt, StartedAttempt, StoreError, Tx,
+    Version, Versioned, Witness, WorkerId,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -69,6 +69,9 @@ pub(crate) struct Cx<'e> {
     /// What the attempt that this decision records spent, in millionths of a US dollar. An
     /// attempt event carries it, so the job's spend can be rebuilt from its events.
     pub(crate) cost_micro_usd: u64,
+    /// What the broker metered for the attempt that this decision records, or `None` when it is
+    /// not known. The move that ends the attempt stores it (`AttemptEnd::metered`, ports v1.5).
+    pub(crate) metered: Option<MeteredUsage>,
     /// The last outbox event or audit record this decision wrote. If the answer to the commit is
     /// lost, the store is asked whether this is stored (`Store::committed`), and that settles
     /// whether the whole decision was applied.
@@ -154,6 +157,7 @@ impl<'e> Cx<'e> {
             causation,
             now: engine.deps.clock.now(),
             cost_micro_usd: 0,
+            metered: None,
             witness: Cell::new(None),
             blobs: RefCell::new(Vec::new()),
             ended: RefCell::new(Vec::new()),
@@ -269,6 +273,13 @@ impl<'e> Cx<'e> {
     /// The same context, recording what an attempt spent.
     pub(crate) const fn with_cost(mut self, micro_usd: u64) -> Self {
         self.cost_micro_usd = micro_usd;
+        self
+    }
+
+    /// The same context, recording what the broker metered for the attempt, for the row of the
+    /// attempt. `None` stores "not known" on the row, never zero.
+    pub(crate) const fn with_metered(mut self, metered: Option<MeteredUsage>) -> Self {
+        self.metered = metered;
         self
     }
 
@@ -392,6 +403,15 @@ impl<'e> Cx<'e> {
         let planned =
             AppliedTransition::plan(attempt.value.status, step.event, self.now, step.cleared)?;
         let seal = Seal::of(&planned);
+        // The metered use rides on the move that ends the attempt, and on no other (ports v1.5).
+        let end = AttemptEnd {
+            metered: if planned.to_status().is_terminal() {
+                self.metered
+            } else {
+                None
+            },
+            ..end
+        };
         let version = tx
             .transition_attempt(attempt.value.id, attempt.version, epoch, planned, end)
             .await?;

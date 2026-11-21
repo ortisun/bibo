@@ -29,10 +29,13 @@ use factory_domain::policy::RepoKind;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest, Slug};
 use factory_domain::vocabulary::{RiskTier, StageKind};
-use factory_ports::agent::{AgentRunRequest, Capability, Denial, RoutingNeed, Usage};
+use factory_ports::agent::{
+    AgentRunRequest, Capability, Denial, JobTokenRef, ModelBroker, RoutingNeed, Usage,
+};
 use factory_ports::paths::{CommitSha, PathMode};
 use factory_ports::registry::{LoadedPrompt, VersionReq};
 use factory_ports::sandbox::{SandboxSession, TeardownReason};
+use factory_ports::store::MeteredUsage;
 use factory_ports::workspace::{
     ChangeKind, CommitRequest, JobRepo, Workspace, WorkspaceError, WorkspacePurpose,
     WorkspaceRequest,
@@ -49,7 +52,8 @@ use super::plan;
 use super::report::ReportedCommand;
 use super::report::{BuilderReport, Status};
 use super::seams::{
-    Hold, LedgerError, PlannedTask, ReworkContext, SeamError, WorkspaceAccess, verify_spec,
+    Hold, LedgerError, PlannedTask, ReworkContext, SeamError, TaskRunRecord, WorkspaceAccess,
+    verify_spec,
 };
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::handlers::{
@@ -214,6 +218,25 @@ fn within_budget(contract: &StageContract, usage: &Usage) -> bool {
     let allowed = u64::try_from(budget.max_tokens.get()).unwrap_or(0);
     let spent_usd = usage.cost.0 as f64 / 1_000_000.0;
     tokens <= allowed && spent_usd <= budget.max_cost_usd.as_f64()
+}
+
+/// One reading of the meter of the attempt's token, or `None` when the broker cannot be read or
+/// holds a value above what the store keeps.
+async fn meter(broker: &dyn ModelBroker, token: JobTokenRef) -> Option<MeteredUsage> {
+    let usage = broker.usage(&token.id).await.ok()?.usage;
+    MeteredUsage::new(
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cost.0,
+        usage.requests,
+    )
+    .ok()
+}
+
+/// What was used between two readings of one meter. Not known (`None`) when either reading is
+/// missing, or when the later one is below the earlier one.
+fn used_between(before: Option<MeteredUsage>, after: Option<MeteredUsage>) -> Option<MeteredUsage> {
+    after?.since(before?)
 }
 
 fn spent_of(usage: &Usage) -> Spent {
@@ -828,6 +851,7 @@ async fn build_in(
         probed: handler.probes.probed(),
         author: None,
     };
+    let need_tier = need.tier;
     let route = match ports.router.route(&need) {
         Ok(route) => route,
         Err(_) => {
@@ -840,6 +864,7 @@ async fn build_in(
         route.model.runtime.as_str().to_owned(),
         route.model.model.as_str().to_owned(),
     );
+    let (runtime, model) = (route.model.runtime.clone(), route.model.model.clone());
     let request = AgentRunRequest {
         attempt: ctx.attempt,
         agent: VersionedRef {
@@ -857,15 +882,39 @@ async fn build_in(
         flag_set: route.flag_set,
         mcp_gateway: None,
     };
+    // What this one run uses is the difference of two readings of the meter of the attempt's
+    // token: the builder is the only thing that spends under it in between.
+    let before = meter(ports.broker, token).await;
     let report = ports.runtime.run(&mut *session, request, ctx.cancel).await;
+    let after = meter(ports.broker, token).await;
     tally.usage = tally.usage.saturating_add(report.usage);
     tally
         .denials
         .extend(report.permission_denials.iter().cloned());
 
+    // The run is recorded now, whatever becomes of the task: it used its tokens all the same.
+    let recorded = handler
+        .ledger
+        .record_run(
+            &identity,
+            &unit.key,
+            hold,
+            &TaskRunRecord {
+                runtime,
+                model,
+                tier: need_tier,
+                metered: used_between(before, after),
+            },
+        )
+        .await;
+
     // The container is gone before anything is read from the tree it wrote to. A container that
     // may still run is a reason to stop, not to read.
     close(session, report.outcome.is_ok()).await?;
+    if let Err(error) = recorded {
+        ctx.note_failed_run(&report);
+        return Err(ledger_error(error));
+    }
     let output = match &report.outcome {
         Ok(output) => output.clone(),
         Err(error) => {

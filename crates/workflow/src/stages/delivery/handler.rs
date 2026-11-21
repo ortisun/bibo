@@ -42,8 +42,8 @@ use crate::gates::framework::GateDecision;
 use crate::gates::readability::{Artifact, ReadabilityGate, Severity};
 use crate::gates::scope::hardening::PatchSignals;
 use crate::handlers::{
-    ContractContext, GateContext, OutputDocument, StageContext, StageError, StageHandler,
-    StageOutput,
+    ContractContext, GateContext, OpenedPullRequest, OutputDocument, StageContext, StageError,
+    StageHandler, StageOutput,
 };
 use crate::stages::validation::GATES as VALIDATION_GATES;
 
@@ -439,7 +439,14 @@ impl StageHandler for DeliveryHandler {
         result["title"] = json!(text.title);
         result["body"] = json!(text.body);
         result["check_runs"] = json!(check_log);
-        documents(result)
+        // The engine records the pull request with the result of the attempt, so that the fate a
+        // person gives it later can be read back (ports v1.5).
+        documents(result).map(|output| StageOutput {
+            pull_request: Some(OpenedPullRequest {
+                number: published.number,
+            }),
+            ..output
+        })
     }
 
     async fn evaluate(&self, ctx: &GateContext<'_>) -> Result<GateDecision, StageError> {
