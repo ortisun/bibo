@@ -301,3 +301,93 @@ fn a_rejection_is_judged_by_its_audit_record_its_one_plain_reply_and_the_absence
         "{verdict}"
     );
 }
+
+// ---- A13: one stage run with several attempts -------------------------------------------------
+
+/// The shape of the specification run of real run 38: several attempts in one run. The earlier
+/// ones failed their gates and waited at the rework limit, a person answered, and the newest
+/// passed. The canned run gives the build gate's run that shape.
+fn specification_run_with_an_earlier_failed_attempt() -> (RunEvidence, String) {
+    let mut evidence = honest(&env(), Options::e1_production());
+    let mut failed = evidence
+        .contracts
+        .gate_reports
+        .iter()
+        .find(|record| {
+            record.report["metadata"]["gate_id"].as_str() == Some("build-and-unit-tests")
+        })
+        .cloned()
+        .expect("the build gate report");
+    let run_id = failed.stage_run_id.clone();
+    let run = evidence
+        .stage_runs
+        .iter_mut()
+        .find(|run| run.id == run_id)
+        .expect("the run of the build gate");
+    let mut earlier = run.attempts.first().cloned().expect("an attempt");
+    earlier.id = "earlier-attempt".to_owned();
+    run.attempts.insert(0, earlier);
+    failed.report["metadata"]["attempt_id"] = serde_json::json!("earlier-attempt");
+    failed.report["outcome"] = serde_json::json!("FAILED");
+    evidence.contracts.gate_reports.insert(0, failed);
+    (evidence, run_id)
+}
+
+#[test]
+fn a_failed_report_of_an_earlier_attempt_of_a_passed_run_does_not_block_delivery() {
+    let env = env();
+    let (evidence, _) = specification_run_with_an_earlier_failed_attempt();
+    let verdict = by_id("A13").expect("A13").apply(&evidence, &env);
+    assert!(verdict.pass, "{verdict}");
+}
+
+#[test]
+fn a_failed_report_of_the_deciding_attempt_still_blocks_delivery() {
+    let env = env();
+    let (mut evidence, run_id) = specification_run_with_an_earlier_failed_attempt();
+    let newest = evidence
+        .stage_runs
+        .iter()
+        .find(|run| run.id == run_id)
+        .and_then(|run| run.attempts.last())
+        .map(|attempt| attempt.id.clone())
+        .expect("the newest attempt");
+    let record = evidence
+        .contracts
+        .gate_reports
+        .iter_mut()
+        .find(|record| {
+            record.stage_run_id == run_id
+                && record.report["metadata"]["attempt_id"].as_str() == Some(newest.as_str())
+        })
+        .expect("a report of the newest attempt");
+    record.report["outcome"] = serde_json::json!("FAILED");
+    let verdict = by_id("A13").expect("A13").apply(&evidence, &env);
+    assert!(
+        !verdict.pass
+            && verdict
+                .reason
+                .contains("deciding attempt with outcome FAILED"),
+        "{verdict}"
+    );
+}
+
+#[test]
+fn a_failed_report_that_names_no_attempt_is_judged_with_the_deciding_attempt() {
+    let env = env();
+    let (mut evidence, run_id) = specification_run_with_an_earlier_failed_attempt();
+    let mut unplaced = evidence
+        .contracts
+        .gate_reports
+        .iter()
+        .find(|record| record.stage_run_id == run_id)
+        .cloned()
+        .expect("a report");
+    if let Some(metadata) = unplaced.report["metadata"].as_object_mut() {
+        metadata.remove("attempt_id");
+    }
+    unplaced.report["outcome"] = serde_json::json!("FAILED");
+    evidence.contracts.gate_reports.push(unplaced);
+    let verdict = by_id("A13").expect("A13").apply(&evidence, &env);
+    assert!(!verdict.pass, "{verdict}");
+}

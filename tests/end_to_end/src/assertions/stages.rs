@@ -4,7 +4,7 @@ use crate::check::{Env, Verdict};
 use crate::evidence::RunEvidence;
 
 use super::support::{
-    PASSED, is_skipped, ledger_sequences_for, passed_at, runs_of, the_passed_run,
+    PASSED, deciding_reports, is_skipped, ledger_sequences_for, passed_at, runs_of, the_passed_run,
 };
 
 /// A1: the job is `COMPLETED`. Every stage kind in scope has exactly one `PASSED` run that is not
@@ -165,8 +165,10 @@ pub fn a2(ev: &RunEvidence, _env: &Env) -> Verdict {
     )
 }
 
-/// A13: `DELIVERY` starts only when every stage before it has a current run that passed with a
-/// gate report that passed. A failing check, as in E3, therefore keeps `DELIVERY` from starting.
+/// A13: `DELIVERY` starts only when every stage before it has a current run that passed, and every
+/// gate report of the attempt that decided the run passed. A failing check, as in E3, therefore
+/// keeps `DELIVERY` from starting. The reports of earlier attempts of the same run are history
+/// ([`deciding_reports`]): a person's answer started a new attempt, and the run passed on it.
 #[must_use]
 pub fn a13(ev: &RunEvidence, env: &Env) -> Verdict {
     const ID: &str = "A13";
@@ -193,16 +195,11 @@ pub fn a13(ev: &RunEvidence, env: &Env) -> Verdict {
             ));
             continue;
         }
-        for record in ev
-            .contracts
-            .gate_reports
-            .iter()
-            .filter(|record| record.stage_run_id == newest.id)
-        {
+        for record in deciding_reports(ev, newest) {
             let outcome = record.report.pointer("/outcome").and_then(|v| v.as_str());
             if matches!(outcome, Some("FAILED" | "BLOCKED")) {
                 blockers.push(format!(
-                    "the {} run {} has a gate report with outcome {}",
+                    "the {} run {} has a gate report of its deciding attempt with outcome {}",
                     stage.kind,
                     newest.id,
                     outcome.unwrap_or_default()
@@ -225,7 +222,7 @@ pub fn a13(ev: &RunEvidence, env: &Env) -> Verdict {
     if started {
         Verdict::pass(
             ID,
-            "DELIVERY started, and every stage before it has a current PASSED run with passing gate reports",
+            "DELIVERY started, and every stage before it has a current PASSED run whose deciding attempt passed every gate report",
         )
     } else if blockers.is_empty() {
         Verdict::pass(ID, "DELIVERY has not started, and nothing blocks it yet")

@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::evidence::{RunEvidence, StageRunRecord};
+use crate::evidence::{GateReportRecord, RunEvidence, StageRunRecord};
 
 /// The status a stage run has when it passed.
 pub const PASSED: &str = "PASSED";
@@ -72,6 +72,41 @@ pub fn job_reached(ev: &RunEvidence, status: &str) -> Option<u64> {
 /// The text at a JSON pointer, or `None`.
 pub fn text_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str)
+}
+
+/// The gate reports that decided a stage run: those of its newest attempt that wrote any.
+///
+/// One stage run can have several attempts. A person's answer, or a wait at the rework limit
+/// followed by an answer, starts a new attempt in the same run, and each attempt writes its own
+/// reports. The run went past the reports of the earlier attempts, so they are history (real run
+/// 38). A report that names no attempt is kept with the deciding ones, so a report that cannot be
+/// placed is never left out of a check. When no report names an attempt of the run, every report
+/// of the run is returned.
+pub fn deciding_reports<'a>(
+    ev: &'a RunEvidence,
+    run: &StageRunRecord,
+) -> Vec<&'a GateReportRecord> {
+    let of_run: Vec<&GateReportRecord> = ev
+        .contracts
+        .gate_reports
+        .iter()
+        .filter(|record| record.stage_run_id == run.id)
+        .collect();
+    let attempt_of = |record: &GateReportRecord| {
+        text_at(&record.report, "/metadata/attempt_id").map(str::to_owned)
+    };
+    let deciding = run.attempts.iter().rev().find(|attempt| {
+        of_run
+            .iter()
+            .any(|record| attempt_of(record).as_deref() == Some(attempt.id.as_str()))
+    });
+    match deciding {
+        Some(attempt) => of_run
+            .into_iter()
+            .filter(|record| attempt_of(record).is_none_or(|id| id == attempt.id))
+            .collect(),
+        None => of_run,
+    }
 }
 
 /// The ledger sequences of the entries about one stage run, in order.
