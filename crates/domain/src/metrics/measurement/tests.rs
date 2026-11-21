@@ -247,8 +247,8 @@ fn example() -> Measurement {
                 too_few(2),
             ),
             row(
-                Metric::CostPerAcceptedPullRequest,
-                Statistic::AmountPerItem,
+                Metric::EscapedDefects,
+                Statistic::Total,
                 Cell::NotMeasuredYet,
                 Cell::NotMeasuredYet,
             ),
@@ -280,7 +280,7 @@ fn the_entry_is_the_example_of_the_design_document() {
          | MT-0002 stage-duration, 90th percentile | 12.345 s | 88 | 15.020 s |\n\
          | MT-0006 first-pass-gate-success | 60.9 % (14 of 23) | 23 | 52.4 % (11 of 21) |\n\
          | MT-0007 rework-rounds | too few samples | 3 | too few samples |\n\
-         | MT-0012 cost-per-accepted-pull-request | not measured yet | | not measured yet |\n\
+         | MT-0009 escaped-defects | not measured yet | | not measured yet |\n\
          \n\
          ## What stands out\n\
          \n\

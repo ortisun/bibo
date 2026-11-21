@@ -2,36 +2,58 @@
 //! store and builds the `measurement` entry of a window.
 //!
 //! The contract is the section "The snapshot job" of
-//! `docs/architecture/process-metrics-and-improvement.md`. This module holds query version 1:
+//! `docs/architecture/process-metrics-and-improvement.md`. This module holds query version 2: the
+//! five metrics of version 1, unchanged, and four more whose facts the store keeps since ports
+//! v1.5 (the fate of a pull request, the metered use of an attempt, the runs of a task).
 //!
-//! * [`read_job_records`] reads every job of the tenant with its stage runs, task nodes and
-//!   events, through the listing operations of the `Store` port.
+//! * [`read_job_records`] reads every job of the tenant with its stage runs, their attempts, task
+//!   nodes and task runs, its pull requests and its events, through the listing operations of the
+//!   `Store` port.
 //! * [`window_facts`] is the pure half: from those records to the samples of each metric whose
 //!   facts are stored.
 //! * [`process_snapshot`] puts the two together and hands the samples of the window, and of the
 //!   window before, to `factory_domain::metrics::snapshot`.
 //!
 //! Every number is an integer, and a fact that cannot be right (an end before its start) stops
-//! the snapshot with an error that names the row.
+//! the snapshot with an error that names the row. A use that is not known (a meter that was not
+//! read) is never counted as zero: the attempt adds nothing to a sum of money, and the task is
+//! not a sample of the tokens of a task.
+//!
+//! | Quantity | Unit | Valid range | Rounding |
+//! |---|---|---|---|
+//! | The spend of a window | millionths of a US dollar | 0 to 2^53 - 1, or the snapshot stops | none: a sum of whole millionths |
+//! | The tokens of a task | tokens, input plus output | 0 to 2^53 - 1, or the snapshot stops | none: a sum of whole tokens |
+//! | A count of pull requests or tasks | things | 0 to 2^64 - 1, or the snapshot stops | none |
+//!
+//! The one division, the spend over the merged pull requests, is made by
+//! `factory_domain::metrics` when the entry is built, half to even to a whole millionth.
 
 use std::collections::HashMap;
 
 use factory_domain::contracts::domain_event::{AggregateKind, DomainEvent};
+use factory_domain::ids::TaskNodeId;
 use factory_domain::machines::limits::ReworkTrack;
 use factory_domain::metrics::{
-    ComparisonSettings, Measurement, Metric, MetricError, Milliseconds, Samples, Window,
+    ComparisonSettings, Measurement, Metric, MetricError, MicroUsd, Milliseconds, Samples, Window,
     WindowFacts, snapshot,
 };
 use factory_domain::state::{StageRunStatus, TaskNodeStatus};
 use factory_domain::values::{GitSha, Timestamp};
 use factory_domain::vocabulary::{GateOutcome, StageKind};
-use factory_ports::store::{Job, JobFilter, OutboxSeq, StageRun, StoreError, TaskNode, Tx};
+use factory_ports::store::{
+    Attempt, Job, JobFilter, OutboxSeq, PullRequestRecord, StageRun, StoreError, StoredFate,
+    TaskNode, TaskRun, Tx,
+};
 
 use crate::engine::timeline::rework_ledger;
 
 /// The version of the queries of this module. It goes up whenever the samples or the value of a
 /// metric change, so that two snapshots can be told apart.
-pub const QUERY_VERSION: u32 = 1;
+pub const QUERY_VERSION: u32 = 2;
+
+/// The largest number of tokens one task may have used for the snapshot to show it: 2^53 - 1, the
+/// valid range of a count in the process metrics.
+const LARGEST_COUNT: u64 = (1 << 53) - 1;
 
 /// The event a stage run emits when a worker starts it.
 const STARTED: &str = "stage_run.started";
@@ -51,6 +73,13 @@ pub struct JobRecord {
     pub stage_runs: Vec<StageRun>,
     /// The task nodes of all its stage runs.
     pub task_nodes: Vec<TaskNode>,
+    /// The attempts of all its stage runs, each with what the broker metered for it.
+    pub attempts: Vec<Attempt>,
+    /// The runs of the builder on its task nodes. The runs of one stage run are in the order they
+    /// were recorded.
+    pub task_runs: Vec<TaskRun>,
+    /// The pull requests its delivery stage opened, with what became of each.
+    pub pull_requests: Vec<PullRequestRecord>,
     /// Its events, in the order of the outbox.
     pub events: Vec<DomainEvent>,
 }
@@ -150,7 +179,42 @@ fn rework_rounds(record: &JobRecord) -> u64 {
         .sum()
 }
 
-/// The samples of query version 1 over `window`, from the records of every job of a tenant.
+/// What the runs of the builder on one task say: the tokens of all of them, and whether one ran
+/// on a higher tier than the first.
+struct TaskUse {
+    /// The input plus the output tokens of every run. `None` when the use of a run is not known:
+    /// a sum with a hole in it would be shown as less than the truth.
+    tokens: Option<u64>,
+    /// True when a run used a model of a higher tier than the first run did.
+    escalated: bool,
+}
+
+/// The use of the task `node`, from the task runs of its job in the order they were recorded, or
+/// `None` when the builder never ran on it.
+fn task_use(runs: &[TaskRun], node: TaskNodeId) -> Result<Option<TaskUse>, SnapshotError> {
+    let mut of_node = runs.iter().filter(|run| run.task_node_id == node);
+    let Some(first) = of_node.next() else {
+        return Ok(None);
+    };
+    let too_many = || MetricError::OutOfRange {
+        what: "the tokens of a task",
+    };
+    let mut tokens = first.metered.map(|used| used.tokens());
+    let mut escalated = false;
+    for run in of_node {
+        escalated |= run.tier > first.tier;
+        tokens = match (tokens, run.metered) {
+            (Some(sum), Some(used)) => Some(sum.checked_add(used.tokens()).ok_or_else(too_many)?),
+            _ => None,
+        };
+    }
+    if tokens.is_some_and(|sum| sum > LARGEST_COUNT) {
+        return Err(too_many().into());
+    }
+    Ok(Some(TaskUse { tokens, escalated }))
+}
+
+/// The samples of query version 2 over `window`, from the records of every job of a tenant.
 pub fn window_facts(records: &[JobRecord], window: Window) -> Result<WindowFacts, SnapshotError> {
     let inside = |instant: Timestamp| window.from() <= instant && instant < window.to();
     let overflow = || MetricError::OutOfRange {
@@ -162,6 +226,10 @@ pub fn window_facts(records: &[JobRecord], window: Window) -> Result<WindowFacts
     let mut human_waits = Vec::new();
     let (mut tasks, mut tasks_first_pass) = (0u64, 0u64);
     let (mut rounds, mut jobs_ended) = (0u64, 0u64);
+    let (mut decided, mut rejected, mut merged) = (0u64, 0u64, 0u64);
+    let mut spend = MicroUsd::ZERO;
+    let mut task_tokens = Vec::new();
+    let (mut tasks_run, mut tasks_escalated) = (0u64, 0u64);
 
     for record in records {
         let job = &record.job;
@@ -187,6 +255,31 @@ pub fn window_facts(records: &[JobRecord], window: Window) -> Result<WindowFacts
                 stage_durations.push(elapsed(*started, *ended, "a stage run", job)?);
             }
 
+            // MT-0013 and MT-0014: the tasks of every run of a stage, each with the runs of the
+            // builder on it.
+            for node in record
+                .task_nodes
+                .iter()
+                .filter(|node| node.stage_run_id == run.id)
+                .filter(|node| {
+                    matches!(
+                        node.status,
+                        TaskNodeStatus::Succeeded | TaskNodeStatus::Failed
+                    )
+                })
+            {
+                let Some(used) = task_use(&record.task_runs, node.id)? else {
+                    continue;
+                };
+                tasks_run = tasks_run.checked_add(1).ok_or_else(overflow)?;
+                if used.escalated {
+                    tasks_escalated = tasks_escalated.checked_add(1).ok_or_else(overflow)?;
+                }
+                if let Some(tokens) = used.tokens {
+                    task_tokens.push(tokens);
+                }
+            }
+
             // MT-0006: the tasks of the first run of a stage.
             if run.run_number != 1 {
                 continue;
@@ -210,6 +303,38 @@ pub fn window_facts(records: &[JobRecord], window: Window) -> Result<WindowFacts
                     tasks_first_pass = tasks_first_pass.checked_add(1).ok_or_else(overflow)?;
                 }
             }
+        }
+
+        // MT-0011, and the items of MT-0012: the pull requests whose fate the factory recorded in
+        // the window. One that is still open is not a sample.
+        for pull in &record.pull_requests {
+            let was_merged = match pull.fate {
+                StoredFate::Open => continue,
+                StoredFate::Merged { recorded_at, .. } if inside(recorded_at) => true,
+                StoredFate::Closed { recorded_at, .. } if inside(recorded_at) => false,
+                StoredFate::Merged { .. } | StoredFate::Closed { .. } => continue,
+            };
+            decided = decided.checked_add(1).ok_or_else(overflow)?;
+            if was_merged {
+                merged = merged.checked_add(1).ok_or_else(overflow)?;
+            } else {
+                rejected = rejected.checked_add(1).ok_or_else(overflow)?;
+            }
+        }
+
+        // The amount of MT-0012: what every attempt that ended in the window is known to have
+        // cost. An attempt whose meter was not read adds nothing, so the amount is a lower bound.
+        for attempt in &record.attempts {
+            let (Some(_ended), Some(used)) =
+                (attempt.ended_at.filter(|at| inside(*at)), attempt.metered)
+            else {
+                continue;
+            };
+            let cost =
+                i64::try_from(used.cost_micro_usd()).map_err(|_| MetricError::OutOfRange {
+                    what: "the cost of an attempt",
+                })?;
+            spend = spend.checked_add(MicroUsd::new(cost)?)?;
         }
 
         // MT-0003 and MT-0007: the jobs that ended in the window.
@@ -243,10 +368,33 @@ pub fn window_facts(records: &[JobRecord], window: Window) -> Result<WindowFacts
                 samples: jobs_ended,
             },
         ),
+        (
+            Metric::HumanRejectionRate,
+            Samples::Rate {
+                part: rejected,
+                whole: decided,
+            },
+        ),
+        (
+            Metric::CostPerAcceptedPullRequest,
+            Samples::Amount {
+                total: spend,
+                items: merged,
+            },
+        ),
+        (Metric::TokensPerTask, Samples::Counts(task_tokens)),
+        (
+            Metric::EscalationsToTheLargerModel,
+            Samples::Rate {
+                part: tasks_escalated,
+                whole: tasks_run,
+            },
+        ),
     ]))
 }
 
-/// Reads every job of the transaction's tenant with its stage runs, task nodes and events.
+/// Reads every job of the transaction's tenant with its stage runs, their attempts, task nodes and
+/// task runs, its pull requests and its events.
 pub async fn read_job_records(tx: &mut dyn Tx) -> Result<Vec<JobRecord>, StoreError> {
     let mut jobs = Vec::new();
     let mut after = None;
@@ -268,6 +416,8 @@ pub async fn read_job_records(tx: &mut dyn Tx) -> Result<Vec<JobRecord>, StoreEr
             .map(|run| run.value)
             .collect();
         let mut task_nodes = Vec::new();
+        let mut attempts = Vec::new();
+        let mut task_runs = Vec::new();
         for run in &stage_runs {
             task_nodes.extend(
                 tx.list_task_nodes(run.id)
@@ -275,7 +425,15 @@ pub async fn read_job_records(tx: &mut dyn Tx) -> Result<Vec<JobRecord>, StoreEr
                     .into_iter()
                     .map(|node| node.value),
             );
+            attempts.extend(
+                tx.list_attempts(run.id)
+                    .await?
+                    .into_iter()
+                    .map(|attempt| attempt.value),
+            );
+            task_runs.extend(tx.list_task_runs(run.id).await?);
         }
+        let pull_requests = tx.list_pull_requests(job.id).await?;
         let mut events = Vec::new();
         let mut from = OutboxSeq::START;
         loop {
@@ -293,6 +451,9 @@ pub async fn read_job_records(tx: &mut dyn Tx) -> Result<Vec<JobRecord>, StoreEr
             job,
             stage_runs,
             task_nodes,
+            attempts,
+            task_runs,
+            pull_requests,
             events,
         });
     }

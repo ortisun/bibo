@@ -90,10 +90,10 @@ Each metric has a fixed identifier (`MT` for metric, never reused), a short name
 | MT-0008 | review-precision | ratio | higher | rate | not stored: needs the fate of each finding |
 | MT-0009 | escaped-defects | count | lower | total | not stored: needs bugs linked to pull requests |
 | MT-0010 | flaky-tests | count | lower | total | not stored: needs test results by commit |
-| MT-0011 | human-rejection-rate | ratio | lower | rate | not stored: needs the fate of each pull request (merged or closed) |
-| MT-0012 | cost-per-accepted-pull-request | micro-USD | lower | amount per item | not stored: needs the fate of each pull request (merged or closed) |
-| MT-0013 | tokens-per-task | count | lower | median | not stored: needs the tokens of each task in the database |
-| MT-0014 | escalations-to-the-larger-model | ratio | lower | rate | not stored: needs the model tier of each task in the database |
+| MT-0011 | human-rejection-rate | ratio | lower | rate | stored |
+| MT-0012 | cost-per-accepted-pull-request | micro-USD | lower | amount per item | stored |
+| MT-0013 | tokens-per-task | count | lower | median | stored |
+| MT-0014 | escalations-to-the-larger-model | ratio | lower | rate | stored |
 | MT-0015 | knowledge-coverage | ratio | higher | rate | not stored: needs the knowledge base (ADR 0028) |
 | MT-0016 | knowledge-drift | count | lower | total | not stored: needs the knowledge base (ADR 0028) |
 | MT-0017 | knowledge-use | ratio | higher | rate | not stored: needs the knowledge base (ADR 0028) |
@@ -183,7 +183,7 @@ computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d
 | MT-0002 stage-duration, 90th percentile | 12.345 s | 88 | 15.020 s |
 | MT-0006 first-pass-gate-success | 60.9 % (14 of 23) | 23 | 52.4 % (11 of 21) |
 | MT-0007 rework-rounds | too few samples | 3 | too few samples |
-| MT-0012 cost-per-accepted-pull-request | not measured yet | | not measured yet |
+| MT-0009 escaped-defects | not measured yet | | not measured yet |
 
 ## What stands out
 ...
