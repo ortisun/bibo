@@ -488,3 +488,97 @@ async fn commit_messages_follow_the_projects_git_conventions() {
         "commit.header:Print counts as JSON when the flag is given"
     );
 }
+
+#[tokio::test]
+async fn each_run_of_the_builder_is_recorded_with_what_the_broker_metered_for_it() {
+    use factory_domain::contracts::agent_manifest::RecommendedTier;
+    use factory_domain::scope::TenantScope;
+    use factory_ports::agent::{CostMicroUsd, Usage};
+    use factory_ports::store::{MeteredUsage, Store as _};
+
+    let rig = Rig::new().await;
+    rig.run_until_implementation().await;
+    rig.builder_does_the_plan();
+    // What the model requests of each of the three tasks cost, as the broker meters them. The
+    // second task uses nothing: a run with no request is a run all the same.
+    let spends = [(1200, 300, 4_500, 2), (0, 0, 0, 0), (70, 9, 11, 1)];
+    for (input_tokens, output_tokens, cost, requests) in spends {
+        rig.runtime.spends(Usage {
+            input_tokens,
+            output_tokens,
+            cost: CostMicroUsd(cost),
+            requests,
+        });
+    }
+    let (claimed, outcome) = rig.run_next().await;
+    assert_eq!(claimed.kind, StageKind::Implementation);
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+
+    // One record for each task, in the order they ran, each with the difference of the two
+    // readings of the meter around its run, not with the total of the attempt so far.
+    let runs = lock(&rig.ledger.runs).clone();
+    let keys: Vec<&str> = runs.iter().map(|(task, _)| task.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "add-json-output-formatter",
+            "cover-unreadable-file-error",
+            "document-json-flag"
+        ]
+    );
+    for ((_, ran), (input, output, cost, requests)) in runs.iter().zip(spends) {
+        assert_eq!(
+            ran.metered,
+            Some(MeteredUsage::new(input, output, cost, requests).expect("in range"))
+        );
+        // The stage asks the router for the standard tier, and the record says so.
+        assert_eq!(ran.tier, RecommendedTier::Standard);
+        assert!(!ran.model.as_str().is_empty());
+    }
+    // The model of the record is the one the evidence names for the reviewer.
+    let evidence = rig
+        .deliverable(StageKind::Implementation, "implementation-evidence")
+        .await
+        .expect("the evidence manifest");
+    assert_eq!(evidence["builder_model"]["model"], runs[2].1.model.as_str());
+    assert_eq!(
+        evidence["builder_model"]["runtime"],
+        runs[2].1.runtime.as_str()
+    );
+
+    // The row of the attempt holds the whole of the token: the sum of the three runs.
+    let store = rig.world.memory_store();
+    let mut tx = store
+        .begin(TenantScope::new(claimed.tenant))
+        .await
+        .expect("a tx");
+    let attempt = tx.get_attempt(claimed.attempt).await.expect("the attempt");
+    assert_eq!(
+        attempt.value.metered,
+        Some(MeteredUsage::new(1270, 309, 4_511, 3).expect("in range"))
+    );
+}
+
+#[tokio::test]
+async fn a_builder_whose_work_is_refused_still_has_its_run_recorded() {
+    let rig = Rig::new().await;
+    rig.run_until_implementation().await;
+    // The builder says it is done and changes nothing: its word is contradicted and the attempt
+    // fails, after the run used its tokens.
+    rig.builder_will(
+        Vec::new(),
+        done("add-json-output-formatter", &["src/main.rs"]),
+    );
+    let (_claimed, outcome) = rig.run_next().await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    let runs = lock(&rig.ledger.runs).clone();
+    assert_eq!(
+        runs.len(),
+        1,
+        "the run is recorded whatever became of the task"
+    );
+    assert_eq!(runs[0].0, "add-json-output-formatter");
+}

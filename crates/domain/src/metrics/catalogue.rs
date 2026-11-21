@@ -279,8 +279,6 @@ macro_rules! catalogue {
 
 const NEEDS_TEST_TIMES: Facts = Facts::NotStored("needs test results with times");
 const NEEDS_KNOWLEDGE_BASE: Facts = Facts::NotStored("needs the knowledge base (ADR 0028)");
-const NEEDS_PULL_REQUEST_FATE: Facts =
-    Facts::NotStored("needs the fate of each pull request (merged or closed)");
 const NEEDS_PIPELINE: Facts = Facts::NotStored("is read from the project's pipeline");
 
 catalogue! {
@@ -318,19 +316,17 @@ catalogue! {
         Facts::NotStored("needs test results by commit"),
         "The tests whose result changed with no code change, in the window.";
     HumanRejectionRate = 11, "human-rejection-rate", "Human rejection rate", Quality, Ratio,
-        LowerIsBetter, [Rate], ["project", "pack"], NEEDS_PULL_REQUEST_FATE,
-        "The pull requests closed without a merge, out of the pull requests opened.";
+        LowerIsBetter, [Rate], ["project", "pack"], Facts::Stored,
+        "The pull requests closed without a merge, out of the pull requests a person decided about: merged, or closed without a merge.";
     CostPerAcceptedPullRequest = 12, "cost-per-accepted-pull-request", "Cost per accepted pull request", Cost, MicroUsd,
-        LowerIsBetter, [AmountPerItem], ["project", "pack"], NEEDS_PULL_REQUEST_FATE,
-        "The spend the broker metered for the jobs, divided by the merged pull requests.";
+        LowerIsBetter, [AmountPerItem], ["project", "pack"], Facts::Stored,
+        "The spend the broker metered for every attempt of every job, divided by the merged pull requests.";
     TokensPerTask = 13, "tokens-per-task", "Tokens per task", Cost, Count,
-        LowerIsBetter, [Median], ["agent", "model"],
-        Facts::NotStored("needs the tokens of each task in the database"),
-        "The input plus output tokens of all attempts of a task.";
+        LowerIsBetter, [Median], ["agent", "model"], Facts::Stored,
+        "The input plus output tokens of all the runs of the builder on a task.";
     EscalationsToTheLargerModel = 14, "escalations-to-the-larger-model", "Escalations to the larger model", Cost, Ratio,
-        LowerIsBetter, [Rate], ["agent"],
-        Facts::NotStored("needs the model tier of each task in the database"),
-        "The tasks that needed the larger model, out of all tasks.";
+        LowerIsBetter, [Rate], ["agent"], Facts::Stored,
+        "The tasks with a run on a higher model tier than their first run, out of all tasks that were run.";
     KnowledgeCoverage = 15, "knowledge-coverage", "Knowledge coverage", Knowledge, Ratio,
         HigherIsBetter, [Rate], ["project"], NEEDS_KNOWLEDGE_BASE,
         "The active business rules with at least one enforcing test, out of the active business rules.";

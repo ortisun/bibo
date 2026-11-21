@@ -343,7 +343,7 @@ struct Found {
 }
 
 /// Whether the fence names a live attempt held by that worker at that epoch.
-async fn fence_is_current(
+pub(super) async fn fence_is_current(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     fence: &Fence,

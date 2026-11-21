@@ -18,11 +18,13 @@ mod ledger;
 mod outbox;
 mod pool;
 mod principals;
+mod pull_requests;
 mod readiness;
 mod stage_runs;
 mod store;
 mod system;
 mod task_nodes;
+mod task_runs;
 pub mod troubleshooting;
 mod tx;
 

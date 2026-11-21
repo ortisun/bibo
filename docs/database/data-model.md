@@ -26,6 +26,10 @@ erDiagram
   jobs ||--o{ stage_runs : contains
   stage_runs ||--o{ attempts : "is tried by"
   stage_runs ||--o{ task_nodes : plans
+  task_nodes ||--o{ task_runs : "is built in"
+  attempts ||--o{ task_runs : "runs the builder in"
+  jobs ||--o{ pull_requests : opens
+  repositories ||--o{ pull_requests : "receives"
   task_nodes ||--o{ task_node_dependencies : "waits for"
   stage_runs ||--o{ stage_run_artifacts : "reads and writes"
   artifacts ||--o{ stage_run_artifacts : "is named by"
@@ -70,6 +74,25 @@ erDiagram
     bigint lease_epoch "epoch granted at"
     timestamptz lease_expires_at
     timestamptz deadline_at
+    bigint cost_micro_usd "metered, NULL when not known"
+    bigint input_tokens "metered, NULL when not known"
+  }
+  task_runs {
+    uuid tenant_id PK
+    uuid task_node_id PK
+    uuid attempt_id PK
+    text model
+    text model_tier "small, standard or large"
+    bigint input_tokens "metered, NULL when not known"
+  }
+  pull_requests {
+    uuid tenant_id PK
+    uuid repository_id PK
+    bigint pr_number PK
+    uuid job_id FK
+    text fate "open, merged or closed"
+    timestamptz decided_at "the code host's time"
+    timestamptz fate_recorded_at "the database's time"
   }
   ledger_entries {
     uuid tenant_id PK
@@ -136,8 +159,10 @@ erDiagram
 | `jobs` | One request. Status, version, execution mode, autonomy level, pipeline scope, correlation id, the ledger head pointer, the reference to the normalized request. | `webhook_delivery_id` and `idempotency_key` are unique per tenant, so one delivery or one API retry can create at most one job. |
 | `original_requests` | The request text exactly as received, with its SHA-256 hash. One row per revision. | Untrusted text lives only here. The database checks that the hash matches the text. Rows are never updated. |
 | `stage_runs` | One execution of one stage kind. Rework adds a new run with the next `run_number`. The gate record: outcome, report hash, `failing_set_sha256`. | Terminal runs are frozen. `lease_epoch` rises by one on every claim and holds no lease: the lease is on the attempt. `attempts_before_last_answer` is how many attempts came before the last human answer, set by the database at S13. |
-| `attempts` | One try at a stage run, with its lease: owner, epoch, expiry, deadline, heartbeat. | At most one live attempt per stage run. |
+| `attempts` | One try at a stage run, with its lease: owner, epoch, expiry, deadline, heartbeat. Since migration `2026-11-21-003200`, what the model broker metered for its token: input tokens, output tokens, cost in millionths of a US dollar and model requests. | At most one live attempt per stage run. The four metered values are written by the move that ends the attempt and never changed. They are empty together when the meter was not read, which means "not known" and never zero. |
 | `task_nodes`, `task_node_dependencies` | The nodes of the task graph of an implementation run and the edges between them. | The graph is acyclic. Edges stay inside one stage run. |
+| `task_runs` | One row for each time an attempt ran the builder on a task node: the runtime, the model and the tier the router chose, and what the broker metered for that run. | Written once: the application role cannot update or delete a row. The task node and the attempt belong to the same stage run. The process metrics read it ([ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md)). |
+| `pull_requests` | One row for each pull request a delivery stage opened: the job, the repository, the number, and what became of it (`open`, `merged` or `closed`), with the time the code host gives and the time the factory recorded it. | The factory never merges, so a step of the worker reads the fate from the code host. The first decision is final: a trigger refuses any later change of the fate, for every role. |
 | `artifacts` | Metadata of a stored blob: hash, size, media type, backend, retention class, the stage run that first stored it. | One row per tenant and hash. |
 | `stage_run_artifacts` | Which artifacts a run read (`input`) and wrote (`output`), under which role name. | Answers "which runs consumed this hash", which invalidation needs. |
 
@@ -185,6 +210,8 @@ Two steps with two roles ([ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-p
 Every write by a worker names its attempt, its owner and its epoch, and runs only while the attempt is live and `lease_expires_at > now()`, with `now()` read by the database. A worker that lost its lease finds its attempt terminal, and a trigger refuses any later write to a terminal attempt except the sandbox teardown facts.
 
 ### Who can see what
+
+The login of the HTTP API also reads `task_nodes`, `attempts`, `task_runs` and `pull_requests` since migration `2026-11-21-003200`, and writes none of them: the process snapshot it serves is computed from them.
 
 Four group roles share the tables ([tenancy.md](tenancy.md)). `factory_app` sees one tenant at a time. `factory_system` reads the few columns the claim, sweep and relay need. `factory_resolver` runs two lookup functions and reads no table. `factory_lookup` owns those functions. The state machine tables are readable by `factory_app` and have no policy.
 

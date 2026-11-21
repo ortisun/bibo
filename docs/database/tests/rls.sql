@@ -223,6 +223,11 @@ BEGIN
   INSERT INTO troubleshooting_issues (tenant_id, fingerprint, category, component, title, repository, issue_number, opened_at)
     VALUES (tn, dbtest.sha('finding-' || t), 'retries', 'worker', 'Retries pile up', 'example-org/fixture', t, now());
   INSERT INTO troubleshooting_daily_counters (tenant_id, day) VALUES (tn, current_date);
+  -- The facts of the process metrics (migration 2026-11-21-003200, ADR 0029).
+  INSERT INTO task_runs (tenant_id, task_node_id, attempt_id, job_id, stage_run_id, runtime, model, model_tier)
+    VALUES (tn, node_a, attempt, job, run, 'claude-code-cli', 'claude-sonnet-5-5', 'standard');
+  INSERT INTO pull_requests (tenant_id, repository_id, pr_number, job_id)
+    SELECT tn, j.repository_id, 10 + t, job FROM jobs j WHERE j.tenant_id = tn AND j.id = job;
 END
 $$;
 
@@ -248,15 +253,17 @@ BEGIN
   END IF;
   IF p.polcmd <> '*' THEN problems := problems || 'the policy does not cover all commands; '; END IF;
   IF NOT p.polpermissive THEN problems := problems || 'the policy is not permissive; '; END IF;
-  -- factory_app, and also factory_api_app for the eleven tables the HTTP API reads or writes (migrations
+  -- factory_app, and also factory_api_app for the fifteen tables the HTTP API reads or writes (migrations
   -- 2026-10-28-002000 and 2026-10-29-002300).
   IF (SELECT array_agg(r ORDER BY r) FROM unnest(p.polroles) r) IS DISTINCT FROM
      (SELECT array_agg(r ORDER BY r) FROM unnest(CASE
         WHEN p_tbl IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries',
-                     'artifacts', 'stage_run_artifacts', 'ledger_entries')
+                     'artifacts', 'stage_run_artifacts', 'ledger_entries',
+                     -- The facts of the process snapshot (migration 2026-11-21-003200).
+                     'task_nodes', 'attempts', 'task_runs', 'pull_requests')
         THEN ARRAY['factory_app'::regrole::oid, 'factory_api_app'::regrole::oid]
         ELSE ARRAY['factory_app'::regrole::oid] END) r) THEN
-    problems := problems || 'the policy does not name exactly the roles it should (factory_app, and factory_api_app on the eleven tables of the API); ';
+    problems := problems || 'the policy does not name exactly the roles it should (factory_app, and factory_api_app on the fifteen tables of the API); ';
   END IF;
   qual := pg_get_expr(p.polqual, p.polrelid);
   check_text := pg_get_expr(p.polwithcheck, p.polrelid);
@@ -366,9 +373,9 @@ $$;
 
 DO $$
 BEGIN
-  PERFORM dbtest.expect_eq('the catalog found the 21 tenant-owned tables, the four of the troubleshooter included (a new one must be added to mk_everything and to the policy migration)',
-    (SELECT count(*) FROM dbtest.tenant_tables()), 21::bigint);
-  PERFORM dbtest.expect_eq('all 21 tenant-owned tables are isolated: a tenant-1 session cannot read, insert, update or delete tenant 2 rows, and a session with no tenant sees nothing',
+  PERFORM dbtest.expect_eq('the catalog found the 23 tenant-owned tables, the four of the troubleshooter and the two of the process metrics included (a new one must be added to mk_everything and to the policy migration)',
+    (SELECT count(*) FROM dbtest.tenant_tables()), 23::bigint);
+  PERFORM dbtest.expect_eq('all 23 tenant-owned tables are isolated: a tenant-1 session cannot read, insert, update or delete tenant 2 rows, and a session with no tenant sees nothing',
     dbtest.all_table_problems(), '');
 END
 $$;
@@ -781,12 +788,14 @@ $$;
 -- missing one: the list is the review surface of the design.
 
 CREATE TEMP TABLE expected_policies (tbl text, policy text, cmd text, role text);
--- The roles of a policy are listed by name, joined with '+'. The eleven tables the HTTP API reads or writes
+-- The roles of a policy are listed by name, joined with '+'. The fifteen tables the HTTP API reads or writes
 -- name factory_api_app too (migration 2026-10-28-002000, finding API-3).
 INSERT INTO expected_policies
 SELECT t, 'tenant_isolation', '*',
        CASE WHEN t IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries',
-                     'artifacts', 'stage_run_artifacts', 'ledger_entries')
+                     'artifacts', 'stage_run_artifacts', 'ledger_entries',
+                     -- The facts of the process snapshot (migration 2026-11-21-003200).
+                     'task_nodes', 'attempts', 'task_runs', 'pull_requests')
             THEN 'factory_api_app+factory_app' ELSE 'factory_app' END
   FROM dbtest.tenant_tables() AS t;
 INSERT INTO expected_policies VALUES
@@ -810,7 +819,10 @@ SELECT t, 'observer_read', 'r', 'factory_observer'
                     'approvals',
                     -- The troubleshooter's own tables (migration 2026-11-20-003000), so it can read its history.
                     'troubleshooting_runs', 'troubleshooting_probe_state', 'troubleshooting_issues',
-                    'troubleshooting_daily_counters']) AS t;
+                    'troubleshooting_daily_counters',
+                    -- The facts of the process metrics (migration 2026-11-21-003200): identifiers, numbers,
+                    -- states and times, so the troubleshooter's agent can see what a job cost.
+                    'task_runs', 'pull_requests']) AS t;
 
 CREATE FUNCTION dbtest.policy_set() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' ||
@@ -824,7 +836,7 @@ BEGIN
   PERFORM dbtest.expect_eq('the policies in the database are exactly the policies on the list: no extra, none missing, none for PUBLIC, none restrictive',
     dbtest.policy_set(),
     (SELECT string_agg(tbl || '.' || policy || ' ' || cmd || ' ' || role, E'\n' ORDER BY tbl, policy) FROM expected_policies));
-  PERFORM dbtest.expect_eq('row-level security is enabled on exactly the 21 tenant-owned tables and tenants, and forced on the 21',
+  PERFORM dbtest.expect_eq('row-level security is enabled on exactly the 23 tenant-owned tables and tenants, and forced on the 23',
     (SELECT string_agg(relname || CASE WHEN relforcerowsecurity THEN '+force' ELSE '' END, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relrowsecurity),
     (SELECT string_agg(n, ',' ORDER BY sort_key) FROM (SELECT t || '+force' AS n, t AS sort_key FROM dbtest.tenant_tables() t UNION ALL SELECT 'tenants', 'tenants') x));
   PERFORM dbtest.expect_eq('the reference tables carry no policy and no row-level security, and the application role can only read them',

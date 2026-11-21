@@ -78,6 +78,10 @@ diesel::table! {
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         ended_at -> Nullable<Timestamptz>,
+        input_tokens -> Nullable<Int8>,
+        output_tokens -> Nullable<Int8>,
+        cost_micro_usd -> Nullable<Int8>,
+        model_requests -> Nullable<Int8>,
     }
 }
 
@@ -216,6 +220,20 @@ diesel::table! {
 }
 
 diesel::table! {
+    pull_requests (tenant_id, repository_id, pr_number) {
+        tenant_id -> Uuid,
+        repository_id -> Uuid,
+        pr_number -> Int8,
+        job_id -> Uuid,
+        opened_at -> Timestamptz,
+        fate -> Text,
+        decided_at -> Nullable<Timestamptz>,
+        fate_recorded_at -> Nullable<Timestamptz>,
+        last_checked_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     repositories (tenant_id, id) {
         tenant_id -> Uuid,
         id -> Uuid,
@@ -334,6 +352,24 @@ diesel::table! {
 }
 
 diesel::table! {
+    task_runs (tenant_id, task_node_id, attempt_id) {
+        tenant_id -> Uuid,
+        task_node_id -> Uuid,
+        attempt_id -> Uuid,
+        job_id -> Uuid,
+        stage_run_id -> Uuid,
+        runtime -> Text,
+        model -> Text,
+        model_tier -> Text,
+        input_tokens -> Nullable<Int8>,
+        output_tokens -> Nullable<Int8>,
+        cost_micro_usd -> Nullable<Int8>,
+        model_requests -> Nullable<Int8>,
+        recorded_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     tenants (id) {
         id -> Uuid,
         slug -> Text,
@@ -432,11 +468,13 @@ diesel::joinable!(ledger_entries -> tenants (tenant_id));
 diesel::joinable!(original_requests -> tenants (tenant_id));
 diesel::joinable!(outbox -> tenants (tenant_id));
 diesel::joinable!(principals -> tenants (tenant_id));
+diesel::joinable!(pull_requests -> tenants (tenant_id));
 diesel::joinable!(repositories -> tenants (tenant_id));
 diesel::joinable!(stage_run_artifacts -> tenants (tenant_id));
 diesel::joinable!(stage_runs -> tenants (tenant_id));
 diesel::joinable!(task_node_dependencies -> tenants (tenant_id));
 diesel::joinable!(task_nodes -> tenants (tenant_id));
+diesel::joinable!(task_runs -> tenants (tenant_id));
 diesel::joinable!(troubleshooting_daily_counters -> tenants (tenant_id));
 diesel::joinable!(troubleshooting_issues -> tenants (tenant_id));
 diesel::joinable!(troubleshooting_probe_state -> tenants (tenant_id));
@@ -455,6 +493,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     original_requests,
     outbox,
     principals,
+    pull_requests,
     repositories,
     stage_run_artifacts,
     stage_runs,
@@ -463,6 +502,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     state_machine_transitions,
     task_node_dependencies,
     task_nodes,
+    task_runs,
     tenants,
     troubleshooting_daily_counters,
     troubleshooting_issues,

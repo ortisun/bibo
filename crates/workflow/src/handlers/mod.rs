@@ -23,7 +23,9 @@ pub use context::{
     ContractContext, DurableRecords, GateContext, RunIdentity, SandboxReady, StageContext,
     StagePorts, UpstreamRun,
 };
-pub use output::{NamedArtifact, NeedsHumanRequest, OutputDocument, StageError, StageOutput};
+pub use output::{
+    NamedArtifact, NeedsHumanRequest, OpenedPullRequest, OutputDocument, StageError, StageOutput,
+};
 pub use registry::{HandlerRegistry, RegistryError};
 
 use crate::gates::framework::GateDecision;

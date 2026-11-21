@@ -567,7 +567,7 @@ All are in `crates/composition/src/`.
 | `CapabilityProbes` | implemented | `seams::CachedProbes` | the probes taken at start-up (`external::probe_at_startup`), or a declared list in the local and test profiles |
 | `AgentSandboxSpecs`, `VerifySandboxSpecs`, `WorkspaceAgentSpecs` | implemented | `sandbox_specs::PolicySpecs` | the policy |
 | `Authority` | implemented | `authority::StoreAuthority` | the allowlist and `PrincipalOps` |
-| `TaskLedger` | implemented | `ledger::StoreTaskLedger` | `TaskNodeOps`, fenced by attempt and epoch |
+| `TaskLedger` | implemented | `ledger::StoreTaskLedger` | `TaskNodeOps` and, for the record of each run of the builder, `TaskRunOps` (ports v1.5), fenced by attempt and epoch |
 | `ReworkSource`, `RoundSource` | implemented | `feedback::StoreFeedback` | stage runs, the ledger, stored gate reports and verdicts |
 | `RiskSource` | implemented | `risk::StoreRisk` | the stored intake |
 | `EvidenceDrift` | implemented | `drift::ChannelDrift` and `DriftPump` | a channel to the loop that owns the engine |

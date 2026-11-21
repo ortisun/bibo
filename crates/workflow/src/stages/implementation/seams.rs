@@ -7,15 +7,16 @@
 
 use async_trait::async_trait;
 use factory_domain::contracts::GateReport;
+use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::review_verdict::Finding;
 use factory_domain::ids::{AttemptId, JobId};
 use factory_domain::state::TaskNodeStatus;
-use factory_domain::values::{Sha256Digest, Slug};
+use factory_domain::values::{NonEmptyString, Sha256Digest, Slug};
 use factory_domain::vocabulary::Fidelity;
-use factory_ports::agent::JobTokenRef;
+use factory_ports::agent::{JobTokenRef, RuntimeId};
 use factory_ports::paths::CommitSha;
 use factory_ports::sandbox::{SandboxProfile, SandboxSpec};
-use factory_ports::store::LeaseEpoch;
+use factory_ports::store::{LeaseEpoch, MeteredUsage};
 use factory_ports::workspace::WorkspaceMounts;
 
 pub use crate::stages::intake::seams::{AgentOutputCheck, CapabilityProbes, SeamError};
@@ -107,6 +108,22 @@ pub struct TaskRecord {
     pub commit: Option<CommitSha>,
 }
 
+/// One run of the builder on a task: the model that ran, and what the model broker metered for
+/// it (ports v1.5). The process metrics read it: the tokens of a task and whether a task needed a
+/// larger model (ADR 0029).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRunRecord {
+    /// The runtime the router chose.
+    pub runtime: RuntimeId,
+    /// The model the router chose.
+    pub model: NonEmptyString,
+    /// The tier the stage asked the router for.
+    pub tier: RecommendedTier,
+    /// What the broker metered between the start and the end of the run. `None` when a reading
+    /// of the meter failed: the use is then not known, and it is never taken for zero.
+    pub metered: Option<MeteredUsage>,
+}
+
 /// The durable state of the tasks of one `IMPLEMENTATION` stage run. The composition root
 /// implements it with `TaskNodeOps` of the `Store` port: `insert_task_graph`, `list_task_nodes`
 /// and `transition_task_node` with a fence made from the hold.
@@ -151,6 +168,23 @@ pub trait TaskLedger: Send + Sync {
     /// # Errors
     /// [`LedgerError::Fenced`] when the epoch is stale.
     async fn confirm(&self, run: &RunIdentity, hold: &Hold) -> Result<(), LedgerError>;
+
+    /// Records that the attempt ran the builder on the node, with the model that ran and what it
+    /// used (`TaskRunOps::record_task_run`). The stage calls it once, when the builder has
+    /// stopped, whatever becomes of the task afterwards: a run that is refused by the audit, or
+    /// whose report is invalid, used its tokens all the same. The same record a second time
+    /// changes nothing.
+    ///
+    /// # Errors
+    /// [`LedgerError::Fenced`] when the epoch is stale, [`LedgerError::Illegal`] when the node is
+    /// not one of the stage run or the attempt already has another record for it.
+    async fn record_run(
+        &self,
+        run: &RunIdentity,
+        task: &Slug,
+        hold: &Hold,
+        ran: &TaskRunRecord,
+    ) -> Result<(), LedgerError>;
 
     /// Records the commit that finished the node (`SUCCEEDED`).
     ///

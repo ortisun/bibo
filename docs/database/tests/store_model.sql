@@ -477,3 +477,144 @@ BEGIN
     'SELECT s.id FROM stage_runs s WHERE s.status = ''READY'' FOR NO KEY UPDATE SKIP LOCKED', 'factory_system');
 END
 $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 12. The facts of the process metrics (migration 2026-11-21-003200, ports v1.5, ADR 0029): the rules the Store
+-- port states are rules of the data, for a statement the adapter would never write as well.
+
+DO $$
+DECLARE
+  tn uuid;
+  job uuid;
+  run uuid;
+  other_run uuid;
+  attempt uuid := dbtest.u(9301);
+  other_attempt uuid := dbtest.u(9302);
+  node uuid := dbtest.u(9401);
+  other_node uuid := dbtest.u(9402);
+  plan text := dbtest.sha('plan-9');
+  largest bigint := 9007199254740991;   -- 2^53 - 1
+  end_attempt text;
+  new_run text;
+  new_pull text;
+  sight text;
+BEGIN
+  PERFORM dbtest.mk_tenant(9);
+  tn := dbtest.u(9);
+  job := dbtest.mk_job(9, 1);
+  PERFORM dbtest.mk_tenant(8);
+  PERFORM dbtest.mk_job(8, 1);
+  run := dbtest.mk_stage_run(9, 1, 1, 'IMPLEMENTATION');
+  other_run := dbtest.mk_stage_run(9, 1, 2, 'VALIDATION');
+  PERFORM dbtest.set_status('jobs', 9, job, 'ACTIVE');
+  PERFORM dbtest.set_status('stage_runs', 9, run, 'READY');
+  PERFORM dbtest.set_status('stage_runs', 9, run, 'RUNNING', ', lease_epoch = lease_epoch + 1');
+  PERFORM dbtest.set_status('stage_runs', 9, other_run, 'READY');
+  PERFORM dbtest.set_status('stage_runs', 9, other_run, 'RUNNING', ', lease_epoch = lease_epoch + 1');
+  INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) VALUES (tn, plan, 10, 'text/plain', 'local-fs');
+  INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at)
+    VALUES (tn, attempt, job, run, 1, 'worker-m', 1, now() + interval '30 seconds', now() + interval '1 hour'),
+           (tn, other_attempt, job, other_run, 1, 'worker-m', 1, now() + interval '30 seconds', now() + interval '1 hour');
+  INSERT INTO task_nodes (tenant_id, id, job_id, stage_run_id, task_key, plan_sha256)
+    VALUES (tn, node, job, run, 't-001', plan), (tn, other_node, job, other_run, 't-001', plan);
+
+  -- A task run: one row for a task node and an attempt of the same stage run.
+  new_run := 'INSERT INTO task_runs (tenant_id, task_node_id, attempt_id, job_id, stage_run_id, runtime, model, model_tier, '
+          || 'input_tokens, output_tokens, cost_micro_usd, model_requests) VALUES (%L, %L, %L, %L, %L, ''claude-code-cli'', %L, %L, %s)';
+  PERFORM dbtest.expect_error('a task run with only some of its four metered values is refused',
+    format(new_run, tn, node, attempt, job, run, 'm', 'standard', '1, NULL, 1, 1'), '23514', 'factory_app', 'task_runs_metered_check', NULL, 9);
+  PERFORM dbtest.expect_error('a task run with a negative count is refused',
+    format(new_run, tn, node, attempt, job, run, 'm', 'standard', '-1, 0, 0, 0'), '23514', 'factory_app', 'task_runs_metered_check', NULL, 9);
+  PERFORM dbtest.expect_error('a task run above 2^53 - 1 is refused',
+    format(new_run, tn, node, attempt, job, run, 'm', 'standard', '0, 0, ' || (largest + 1) || ', 0'), '23514', 'factory_app', 'task_runs_metered_check', NULL, 9);
+  PERFORM dbtest.expect_error('a task run on a tier that does not exist is refused',
+    format(new_run, tn, node, attempt, job, run, 'm', 'huge', '0, 0, 0, 0'), '23514', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a task run with a model name of 201 characters is refused',
+    format(new_run, tn, node, attempt, job, run, repeat('m', 201), 'standard', '0, 0, 0, 0'), '23514', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a task run of a task node of another stage run than the attempt''s is refused (the two keys share the stage run)',
+    format(new_run, tn, other_node, attempt, job, run, 'm', 'standard', '0, 0, 0, 0'), '23503', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a task run of an attempt of another stage run than the task node''s is refused',
+    format(new_run, tn, node, other_attempt, job, run, 'm', 'standard', '0, 0, 0, 0'), '23503', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.exec(format(new_run, tn, node, attempt, job, run, repeat('m', 200), 'large',
+           largest || ', ' || largest || ', ' || largest || ', ' || largest), 'factory_app', 9);
+  PERFORM dbtest.exec(format(new_run, tn, other_node, other_attempt, job, other_run, 'm', 'small', 'NULL, NULL, NULL, NULL'), 'factory_app', 9);
+  PERFORM dbtest.expect_eq('a task run at the largest values with the longest model name, and one whose use is not known, are both stored',
+    (SELECT string_agg(model_tier || ':' || coalesce((input_tokens = largest AND cost_micro_usd = largest)::text, 'unknown') || ':' || length(model),
+                       ', ' ORDER BY model_tier) FROM task_runs WHERE tenant_id = tn), 'large:true:200, small:unknown:1');
+  PERFORM dbtest.expect_error('a second row for the same task node and attempt is a unique violation',
+    format(new_run, tn, node, attempt, job, run, 'm', 'standard', '0, 0, 0, 0'), '23505', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a task run is written once: the application role cannot update it',
+    format('UPDATE task_runs SET model_tier = ''small'' WHERE tenant_id = %L', tn), '42501', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('nor delete it',
+    format('DELETE FROM task_runs WHERE tenant_id = %L', tn), '42501', 'factory_app', NULL, NULL, 9);
+
+  -- What an attempt used rides on the move that ends it.
+  PERFORM dbtest.expect_error('a metered use on an attempt that has not ended is refused',
+    format('UPDATE attempts SET input_tokens = 1, output_tokens = 1, cost_micro_usd = 1, model_requests = 1, version = version + 1 WHERE tenant_id = %L AND id = %L', tn, attempt),
+    '23514', 'factory_app', 'attempts_metered_needs_an_end', NULL, 9);
+  end_attempt := 'UPDATE attempts SET status = ''FAILED'', failure_class = ''SANDBOX_ERROR'', ended_at = now(), version = version + 1, '
+              || 'input_tokens = %s, output_tokens = %s, cost_micro_usd = %s, model_requests = %s WHERE tenant_id = %L AND id = %L';
+  PERFORM dbtest.expect_error('an attempt that ends with only some of its four metered values is refused',
+    format(end_attempt, '1', 'NULL', '1', '1', tn, attempt), '23514', 'factory_app', 'attempts_metered_check', NULL, 9);
+  PERFORM dbtest.expect_error('an attempt that ends above 2^53 - 1 is refused',
+    format(end_attempt, largest + 1, '0', '0', '0', tn, attempt), '23514', 'factory_app', 'attempts_metered_check', NULL, 9);
+  PERFORM dbtest.exec(format(end_attempt, largest, largest, largest, largest, tn, attempt), 'factory_app', 9);
+  PERFORM dbtest.expect_eq('an attempt that ends at the largest values keeps them exactly',
+    (SELECT input_tokens = largest AND output_tokens = largest AND cost_micro_usd = largest AND model_requests = largest
+       FROM attempts WHERE tenant_id = tn AND id = attempt), true);
+  PERFORM dbtest.expect_error('an attempt that has ended keeps what it used: the terminal guard refuses a later change',
+    format('UPDATE attempts SET cost_micro_usd = 0, version = version + 1 WHERE tenant_id = %L AND id = %L', tn, attempt),
+    '23514', 'factory_app', 'attempts_terminal_is_immutable', NULL, 9);
+  PERFORM dbtest.exec(format(end_attempt, 'NULL', 'NULL', 'NULL', 'NULL', tn, other_attempt), 'factory_app', 9);
+  PERFORM dbtest.expect_eq('an attempt that ends with its meter not read stores four empty values, not zeros',
+    (SELECT input_tokens IS NULL AND output_tokens IS NULL AND cost_micro_usd IS NULL AND model_requests IS NULL
+       FROM attempts WHERE tenant_id = tn AND id = other_attempt), true);
+  PERFORM dbtest.expect_error('and cannot be given a use afterwards',
+    format('UPDATE attempts SET input_tokens = 0, output_tokens = 0, cost_micro_usd = 0, model_requests = 0, version = version + 1 WHERE tenant_id = %L AND id = %L', tn, other_attempt),
+    '23514', 'factory_app', 'attempts_terminal_is_immutable', NULL, 9);
+
+  -- A pull request: recorded once, and the first decision is final for every statement.
+  new_pull := 'INSERT INTO pull_requests (tenant_id, repository_id, pr_number, job_id) VALUES (%L, %L, %s, %L)';
+  PERFORM dbtest.expect_error('a pull request number of zero is refused',
+    format(new_pull, tn, dbtest.u(9001), 0, job), '23514', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a pull request number above 2^53 - 1 is refused',
+    format(new_pull, tn, dbtest.u(9001), largest + 1, job), '23514', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a pull request of a job of another tenant is refused (the composite key)',
+    format(new_pull, tn, dbtest.u(9001), 1, dbtest.u(8101)), '23503', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('a pull request in a repository of another tenant is refused (the composite key)',
+    format(new_pull, tn, dbtest.u(8001), 1, job), '23503', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.exec(format(new_pull, tn, dbtest.u(9001), 1, job), 'factory_app', 9);
+  PERFORM dbtest.exec(format(new_pull, tn, dbtest.u(9001), largest, job), 'factory_app', 9);
+  PERFORM dbtest.expect_eq('a new pull request is open, with no decision and no look',
+    (SELECT fate || ':' || (decided_at IS NULL)::text || ':' || (fate_recorded_at IS NULL)::text || ':' || (last_checked_at IS NULL)::text
+       FROM pull_requests WHERE tenant_id = tn AND pr_number = 1), 'open:true:true:true');
+  PERFORM dbtest.expect_error('the same repository and number a second time is a unique violation',
+    format(new_pull, tn, dbtest.u(9001), 1, job), '23505', 'factory_app', NULL, NULL, 9);
+  sight := 'UPDATE pull_requests SET %s WHERE tenant_id = ''' || tn::text || ''' AND pr_number = 1';
+  PERFORM dbtest.expect_error('a fate with no time is refused',
+    format(sight, 'fate = ''merged'''), '23514', 'factory_app', 'pull_requests_fate_has_its_times', NULL, 9);
+  PERFORM dbtest.expect_error('an open pull request with a decision time is refused',
+    format(sight, 'decided_at = now()'), '23514', 'factory_app', 'pull_requests_fate_has_its_times', NULL, 9);
+  PERFORM dbtest.expect_error('a fate that does not exist is refused',
+    format(sight, 'fate = ''reopened'', decided_at = now(), fate_recorded_at = now()'), '23514', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_error('the job of a pull request never changes',
+    format(sight, 'job_id = job_id'), '42501', 'factory_app', NULL, NULL, 9);
+  PERFORM dbtest.expect_ok('a look that finds it open records the look and nothing else',
+    format(sight, 'last_checked_at = now()'), 'factory_app', 9);
+  PERFORM dbtest.exec(format(sight, 'fate = ''merged'', decided_at = now() - interval ''1 hour'', fate_recorded_at = now(), last_checked_at = now()'), 'factory_app', 9);
+  PERFORM dbtest.expect_error('the first decision is final: a merge cannot become a close',
+    format(sight, 'fate = ''closed'''), '23514', 'factory_app', 'pull_requests_fate_is_final', NULL, 9);
+  PERFORM dbtest.expect_error('nor become open again',
+    format(sight, 'fate = ''open'', decided_at = NULL, fate_recorded_at = NULL'), '23514', 'factory_app', 'pull_requests_fate_is_final', NULL, 9);
+  PERFORM dbtest.expect_error('nor have its times rewritten',
+    format(sight, 'decided_at = now()'), '23514', 'factory_app', 'pull_requests_fate_is_final', NULL, 9);
+  PERFORM dbtest.expect_error('not for the owner of the tables either',
+    format(sight, 'fate = ''closed'''), '23514', NULL, 'pull_requests_fate_is_final');
+  PERFORM dbtest.expect_error('and the owner cannot move it to another job',
+    format(sight, format('job_id = %L', dbtest.u(9102))), '23514', NULL, 'pull_requests_identity_is_fixed');
+  PERFORM dbtest.expect_ok('a later look at a decided pull request still records the look',
+    format(sight, 'last_checked_at = now()'), 'factory_app', 9);
+  PERFORM dbtest.expect_error('the application role cannot delete a pull request',
+    format('DELETE FROM pull_requests WHERE tenant_id = %L', tn), '42501', 'factory_app', NULL, NULL, 9);
+END
+$$;

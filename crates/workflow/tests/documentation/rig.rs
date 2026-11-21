@@ -51,7 +51,7 @@ use factory_workflow::scheduler::ClaimedAttempt;
 use factory_workflow::stages::implementation::{
     CommitIdentity, Hold, ImplementationConfig, ImplementationDeps, ImplementationHandler,
     LedgerError, PlannedTask, ReworkContext, ReworkSource, SeamError, StageBudget, TaskLedger,
-    TaskRecord, WorkspaceAccess, WorkspaceAgentSpecs,
+    TaskRecord, TaskRunRecord, WorkspaceAccess, WorkspaceAgentSpecs,
 };
 use factory_workflow::stages::intake::{AgentOutputCheck, CapabilityProbes};
 use serde_json::{Value, json};
@@ -384,6 +384,8 @@ pub struct RigLedger {
     log: Log,
     /// The next call of `fail` does nothing, as when a process dies before it can write.
     skip_fail: Mutex<bool>,
+    /// The runs of the builder the stage recorded, with the task each was for, in order.
+    pub runs: Mutex<Vec<(String, TaskRunRecord)>>,
 }
 
 impl RigLedger {
@@ -393,6 +395,7 @@ impl RigLedger {
             fence: Mutex::new((0, 0)),
             log,
             skip_fail: Mutex::new(false),
+            runs: Mutex::new(Vec::new()),
         }
     }
 
@@ -502,6 +505,18 @@ impl TaskLedger for RigLedger {
 
     async fn confirm(&self, _run: &RunIdentity, hold: &Hold) -> Result<(), LedgerError> {
         self.current(hold)
+    }
+
+    async fn record_run(
+        &self,
+        _run: &RunIdentity,
+        task: &Slug,
+        hold: &Hold,
+        ran: &TaskRunRecord,
+    ) -> Result<(), LedgerError> {
+        self.current(hold)?;
+        lock(&self.runs).push((task.as_str().to_owned(), ran.clone()));
+        Ok(())
     }
 
     async fn finish(

@@ -1,6 +1,8 @@
 # Every column of every table that the group factory_observer can read (migrations 2026-11-20-002900_observer_role
 # and 2026-11-20-003100_observer_hardening, and the troubleshooter's own tables of migration
-# 2026-11-20-003000_troubleshooting_runs, every column but the agent-written issue title operational).
+# 2026-11-20-003000_troubleshooting_runs, every column but the agent-written issue title operational; the facts of
+# the process metrics of migration 2026-11-21-003200_process_metric_facts, all operational: counts and an amount the
+# broker metered, the name of a model from the routing policy, identifiers, a closed set of states and times).
 #
 # Format: <table> <column> <class> [# why, for a sensitive column]. Class is "operational" (granted) or
 # "sensitive" (never granted: a request text, a specification, an issue body, a token or token digest, a key, a
@@ -75,6 +77,10 @@ attempts sandbox_leaked operational
 attempts created_at operational
 attempts updated_at operational
 attempts ended_at operational
+attempts input_tokens operational
+attempts output_tokens operational
+attempts cost_micro_usd operational
+attempts model_requests operational
 audit_events tenant_id operational
 audit_events sequence operational
 audit_events event_id operational
@@ -164,6 +170,15 @@ principals github_user_id sensitive # a person
 principals login sensitive # a person
 principals created_at operational
 principals disabled_at operational
+pull_requests tenant_id operational
+pull_requests repository_id operational
+pull_requests pr_number operational
+pull_requests job_id operational
+pull_requests opened_at operational
+pull_requests fate operational
+pull_requests decided_at operational
+pull_requests fate_recorded_at operational
+pull_requests last_checked_at operational
 repositories tenant_id operational
 repositories id operational
 repositories github_installation_id sensitive # resolves to the customer's repository or account through GitHub's API (TR-11, migration 003100)
@@ -231,6 +246,19 @@ task_nodes commit_sha sensitive # a commit
 task_nodes created_at operational
 task_nodes updated_at operational
 task_nodes finished_at operational
+task_runs tenant_id operational
+task_runs task_node_id operational
+task_runs attempt_id operational
+task_runs job_id operational
+task_runs stage_run_id operational
+task_runs runtime operational
+task_runs model operational
+task_runs model_tier operational
+task_runs input_tokens operational
+task_runs output_tokens operational
+task_runs cost_micro_usd operational
+task_runs model_requests operational
+task_runs recorded_at operational
 tenants id operational
 tenants slug sensitive # names a customer
 tenants display_name sensitive # names a customer

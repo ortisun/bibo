@@ -126,6 +126,10 @@ pub struct Script {
     pub agent: bool,
     /// What the stage spends through its token, in millionths of a US dollar.
     pub spend_micro_usd: u64,
+    /// The input and the output tokens the stage uses through its token, with the spend.
+    pub spend_tokens: (u64, u64),
+    /// The pull request a succeeding attempt says it opened, as the delivery stage does.
+    pub pull_request: Option<u64>,
     /// The broker that meters the spend.
     pub broker: Option<std::sync::Arc<factory_testkit::broker::FakeModelBroker>>,
     /// The token each call of `execute` was given.
@@ -176,6 +180,8 @@ impl Default for Script {
             notes: Vec::new(),
             denials: 0,
             spend_micro_usd: 0,
+            spend_tokens: (0, 0),
+            pull_request: None,
             broker: None,
             tokens: Vec::new(),
             evals: VecDeque::new(),
@@ -241,6 +247,21 @@ impl ScriptHandle {
             script.agent = true;
             script.spend_micro_usd = micro_usd;
         });
+    }
+
+    /// Makes the stage run an agent that uses these tokens and spends this much through its job
+    /// token, in one model request.
+    pub fn agent_using(&self, input_tokens: u64, output_tokens: u64, micro_usd: u64) {
+        self.with(|script| {
+            script.agent = true;
+            script.spend_micro_usd = micro_usd;
+            script.spend_tokens = (input_tokens, output_tokens);
+        });
+    }
+
+    /// Makes a succeeding attempt of the stage say that it opened this pull request.
+    pub fn opens_pull_request(&self, number: u64) {
+        self.with(|script| script.pull_request = Some(number));
     }
 
     /// Makes `execute` start one agent run through the ports it was given, in a fake sandbox. The
@@ -411,15 +432,17 @@ impl StageHandler for ScriptedHandler {
     }
 
     async fn execute(&self, ctx: &mut StageContext<'_>) -> Result<StageOutput, StageError> {
-        let (report, extra, omit, denials, scripted_document) = self.script.with(|script| {
-            (
-                script.report_sandbox,
-                script.extra_document,
-                script.omit_deliverable,
-                script.denials,
-                script.document.clone(),
-            )
-        });
+        let (report, extra, omit, denials, scripted_document, opened) =
+            self.script.with(|script| {
+                (
+                    script.report_sandbox,
+                    script.extra_document,
+                    script.omit_deliverable,
+                    script.denials,
+                    script.document.clone(),
+                    script.pull_request,
+                )
+            });
         if report {
             ctx.report_sandbox_ready(SandboxReady {
                 posture_verified: true,
@@ -438,9 +461,10 @@ impl StageHandler for ScriptedHandler {
                 broker.meter(
                     &token.id,
                     Usage {
+                        input_tokens: script.spend_tokens.0,
+                        output_tokens: script.spend_tokens.1,
                         cost: CostMicroUsd(script.spend_micro_usd),
                         requests: 1,
-                        ..Usage::default()
                     },
                 );
             }
@@ -504,6 +528,8 @@ impl StageHandler for ScriptedHandler {
                         reason: "the path is protected".to_owned(),
                     })
                     .collect(),
+                pull_request: opened
+                    .map(|number| factory_workflow::handlers::OpenedPullRequest { number }),
                 ..StageOutput::default()
             }),
             Step::SucceedWithStoredArtifact | Step::SucceedWithUnstoredArtifact => {
