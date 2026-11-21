@@ -20,7 +20,8 @@ use factory_composition::issue_status::StatusStep;
 use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
 use factory_worker::pipeline::{
-    assemble_loop, external_ports, issue_status, project_rules, pull_request_fates, token_sweep,
+    assemble_loop, external_ports, issue_status, knowledge_measurements, project_rules,
+    pull_request_fates, token_sweep,
 };
 use factory_worker::run::exit_code;
 
@@ -115,6 +116,16 @@ fn main() -> ExitCode {
             Ok(None) => {}
             Err(error) => {
                 eprintln!("factory-worker: the pull request step cannot be built: {error}");
+                booted.broker.shutdown();
+                return ExitCode::from(1);
+            }
+        }
+        // The weekly measurement (ADR 0029, ADR 0031): before each claim, once an hour a tenant.
+        match knowledge_measurements(&booted, &config, &world) {
+            Ok(Some(weekly)) => sweep.push(weekly),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("factory-worker: the weekly measurement step cannot be built: {error}");
                 booted.broker.shutdown();
                 return ExitCode::from(1);
             }
