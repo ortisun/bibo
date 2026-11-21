@@ -98,6 +98,27 @@
         }
       }
     },
+    "/v1/process-metrics/snapshot": {
+      "get": {
+        "operationId": "getProcessSnapshot",
+        "tags": ["process-metrics"],
+        "summary": "The process numbers of the caller's tenant over a window, as a measurement entry.",
+        "description": "Computed from the stored facts when asked (ADR 0029). The window is compared with the window of the same length right before it. The answer is 503 when the build does not know its own commit, because a snapshot must name the commit that computed it.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "name": "from", "in": "query", "required": true, "description": "The first instant of the window, in UTC.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "required": true, "description": "The first instant after the window, in UTC. After `from`, and at most 366 days after it.", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": {
+          "200": { "description": "The snapshot.", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["id", "path", "query_version", "computed_at_commit", "window", "entry"], "properties": { "id": { "type": "string" }, "path": { "type": "string", "description": "The file of the entry under docs/knowledge/ of a project." }, "query_version": { "type": "integer", "minimum": 1 }, "computed_at_commit": { "type": "string" }, "window": { "type": "object", "additionalProperties": false, "required": ["from", "to"], "properties": { "from": { "type": "string", "format": "date-time" }, "to": { "type": "string", "format": "date-time" } } }, "entry": { "type": "string", "description": "The measurement entry, as Markdown." } } } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
     "/v1/jobs/{job_id}": {
       "get": {
         "operationId": "getJob",

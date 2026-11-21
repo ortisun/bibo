@@ -41,6 +41,7 @@ pub mod health;
 pub mod jobs;
 pub mod limits;
 pub mod openapi;
+pub mod process_metrics;
 pub mod reads;
 pub mod repositories;
 pub mod routes;

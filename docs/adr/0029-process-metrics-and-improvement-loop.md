@@ -1,6 +1,6 @@
 # 0029: The factory measures its own process, records the numbers in the knowledge base, and improves itself under evidence
 
-- Status: **Decided by the owner on 2026-11-20**: the owner confirmed the decisions listed under "Decisions the owner confirmed on 2026-11-20". Nothing is built yet. No independent review has covered it.
+- Status: **Decided by the owner on 2026-11-20**: the owner confirmed the decisions listed under "Decisions the owner confirmed on 2026-11-20". Built: the arithmetic of Decision 2, the metric catalogue, the snapshot of five metrics from stored facts with its route and command, and the rules of tier A experiments. Not built: writing the entries into a knowledge base, a schedule, applying a tier A setting to a job, the retrospective agent and the sweeps. The table "What is built and what is not" of the design has the detail. No independent review has covered it.
 - Date: 2026-11-20
 - Deciders: the owner set the goal; the engineer weighed the options.
 - Related: [ADR 0011](0011-canonical-time-and-numbers.md) (canonical numbers), [ADR 0013](0013-telemetry-wiring.md) (telemetry), [ADR 0027](0027-capability-packs.md) (packs and their evaluation), [ADR 0028](0028-project-knowledge-base.md) (the knowledge base), the master prompt section 12 (learning, evaluation and cost engineering), [observability conventions](../observability/conventions.md). The design is in [process-metrics-and-improvement.md](../architecture/process-metrics-and-improvement.md).
@@ -47,6 +47,8 @@ The owner's rule puts calculation errors first. Every metric follows these rules
 - **Ledger limit.** Every integer written to a ledger entry stays within 2^53 - 1 (ADR 0011).
 
 Every formula has tests at zero, one, the maximum, negative input where the type allows it, and the rounding edge.
+
+**Revision note, 2026-11-21.** Building the arithmetic made two points of this decision precise; neither changes it. The interval of a difference of two rates is Newcombe's hybrid score interval, which is built from the two Wilson intervals. The normal quantile is the conventional 1.96. The exact rules are in the section "How each number is computed" of the [design](../architecture/process-metrics-and-improvement.md).
 
 ## Decision 3: how far the improvement is automatic
 

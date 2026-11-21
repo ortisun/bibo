@@ -41,7 +41,7 @@ use crate::answers::{Answer, ApiError, CORRELATION_HEADER, Reply, render};
 use crate::auth::{Caller, authenticate};
 use crate::limits::Key;
 use crate::state::ApiState;
-use crate::{decisions, health, jobs, openapi, reads, repositories, webhook};
+use crate::{decisions, health, jobs, openapi, process_metrics, reads, repositories, webhook};
 
 /// The TCP peer of a connection, put in the request by the server. Nothing else is ever used as
 /// the source address.
@@ -64,6 +64,8 @@ pub enum Op {
     SubmitJob,
     /// `GET /v1/jobs`.
     ListJobs,
+    /// `GET /v1/process-metrics/snapshot`.
+    ProcessSnapshot,
     /// `GET /v1/jobs/{job_id}`.
     JobStatus,
     /// `GET /v1/jobs/{job_id}/timeline`.
@@ -159,6 +161,14 @@ pub const ROUTES: &[RouteSpec] = &[
         path: "/v1/jobs",
         op: Op::ListJobs,
         operation_id: "listJobs",
+        auth: Auth::Token,
+        has_body: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/v1/process-metrics/snapshot",
+        op: Op::ProcessSnapshot,
+        operation_id: "getProcessSnapshot",
         auth: Auth::Token,
         has_body: false,
     },
@@ -395,6 +405,10 @@ async fn run(
             jobs::submit(state, &caller, &parts.headers, &bytes, correlation).await
         }
         (Op::ListJobs, Some(caller)) => jobs::list(state, &caller, parts.uri.query()).await,
+        (Op::ProcessSnapshot, Some(caller)) => {
+            let commit = process_metrics::build_commit();
+            process_metrics::snapshot(state, &caller, parts.uri.query(), commit).await
+        }
         (Op::JobStatus, Some(caller)) => {
             jobs::status(state, &caller, job_id)
                 .instrument(job_span(&caller))
@@ -499,6 +513,7 @@ pub fn declared_statuses(op: Op) -> &'static [StatusCode] {
         Op::OpenApi => &[StatusCode::OK],
         Op::SubmitJob => &[StatusCode::OK, StatusCode::CREATED],
         Op::ListJobs
+        | Op::ProcessSnapshot
         | Op::JobStatus
         | Op::JobTimeline
         | Op::SpecificationDraft

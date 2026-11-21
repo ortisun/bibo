@@ -20,9 +20,12 @@ docs/knowledge/
   terms/T-0012-settlement-date.md
   integrations/I-0002-payment-provider.md
   constraints/C-0001-data-retention.md
+  metrics/MT-0001-lead-time-to-pull-request.md
+  measurements/M-2026-W47.md
+  improvements/IM-0001-targeted-tests-first.md
 ```
 
-The identifier prefixes stand for: `F` feature, `FL` flow, `BR` business rule, `T` term, `I` integration, `C` constraint. An identifier is never reused, and a title can change without changing it.
+The identifier prefixes stand for: `F` feature, `FL` flow, `BR` business rule, `T` term, `I` integration, `C` constraint, `MT` metric, `M` measurement, `IM` improvement. The last three kinds are written by the factory and are described in [process-metrics-and-improvement.md](process-metrics-and-improvement.md). An identifier is never reused, and a title can change without changing it.
 
 ## An entry
 

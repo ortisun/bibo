@@ -27,6 +27,7 @@
 //! | [`gates`] | The gate framework: how stored evidence becomes a gate outcome. The stage packages add gates under it |
 //! | [`prompts`] | The prompt assembler: where text that other people or programs wrote enters a model prompt, inside delimited, quoted blocks, with secrets removed and a record of what the model saw |
 //! | [`audit`] | The audit stream with actor, policy hash and correlation id, and the verifier that re-reads a job |
+//! | [`process_metrics`] | The snapshot job of the process metrics: the facts of a tenant read from the store, and the `measurement` entry of a window (ADR 0029) |
 //! | [`stages`] | The module lines of every stage directory. Each stage package fills its own directory |
 //!
 //! # Where the engine keeps what it knows about a job
@@ -43,6 +44,7 @@ pub mod conventions;
 pub mod engine;
 pub mod gates;
 pub mod handlers;
+pub mod process_metrics;
 pub mod prompts;
 pub mod scheduler;
 pub mod stages;
