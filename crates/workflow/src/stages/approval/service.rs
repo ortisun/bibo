@@ -243,7 +243,7 @@ impl ApprovalService {
         let run = crate::handlers::RunIdentity {
             tenant: cmd.tenant,
             job: cmd.job,
-            correlation: CorrelationId::from_uuid(d.ids.new_uuid()),
+            correlation: self.job_correlation(&cmd).await?,
             stage_run: cmd.stage_run,
             kind: StageKind::Approval,
         };
@@ -600,6 +600,9 @@ impl ApprovalService {
         reason: &str,
     ) -> Result<(), ServiceError> {
         let d = &self.deps;
+        // The record is about the job, so it carries the job's correlation id, read from the job
+        // row (`docs/observability/conventions.md`, section 7).
+        let correlation_id = tx.get_job(cmd.job).await?.value.correlation_id;
         tx.record_audit(NewAuditEvent {
             id: AuditEventId::from_uuid(d.ids.new_uuid()),
             actor,
@@ -610,10 +613,19 @@ impl ApprovalService {
             policy_hash: d.policy_hash.clone(),
             job: Some(cmd.job),
             stage_run: Some(cmd.stage_run),
-            correlation_id: CorrelationId::from_uuid(d.ids.new_uuid()),
+            correlation_id,
         })
         .await?;
         Ok(())
+    }
+
+    /// The correlation id of the command's job, as the job row holds it. Every span, log line,
+    /// event and audit record of the job carries this one id.
+    async fn job_correlation(&self, cmd: &ApprovalCommand) -> Result<CorrelationId, ServiceError> {
+        let mut tx = self.deps.store.begin(TenantScope::new(cmd.tenant)).await?;
+        let correlation = tx.get_job(cmd.job).await?.value.correlation_id;
+        tx.commit().await?;
+        Ok(correlation)
     }
 
     /// Audits a refusal, and applies what the refusal means for the approvals and the evidence.

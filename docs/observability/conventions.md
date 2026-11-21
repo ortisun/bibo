@@ -218,7 +218,9 @@ The factory writes two different things and keeps them apart.
 
 [ADR 0004](../adr/0004-event-model.md) describes domain events. Nothing in this crate writes one.
 
-A log line is one JSON object. When a line is written inside a job span, or inside a span below it, the line starts with the field `correlation_id`. The value is the same one that domain events carry in their `correlation_id` field and that spans carry as `factory.correlation_id`, so one search finds a job in the logs, the events and the traces. Lines written outside a job, such as start-up messages, have no such field.
+A log line is one JSON object. When a line is written inside a job span, or inside a span below it, the line starts with the field `correlation_id`. The value is the same one that domain events carry in their `correlation_id` field and that spans carry as `factory.correlation_id`, so one search finds a job in the logs, the events and the traces. Lines written outside a job, such as start-up messages and the sweep of the worker loop that revokes the installation tokens of ended jobs, have no such field.
+
+An audit record about a job carries the job's correlation id too, whatever wrote it: the engine, a stage, or the approval service that records a person's decision from a command or the API. The approval service reads the id from the job row; it does not make a new one. Real run 36 of scenario E1 found `approval.recorded` under a new random id, so a search by the job's id missed the approval.
 
 ```json
 {"correlation_id":"0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77","timestamp":"2026-10-27T08:15:14.502266Z","level":"INFO","fields":{"message":"stage run started","factory.stage_kind":"INTAKE"},"target":"factory_workflow::engine"}
