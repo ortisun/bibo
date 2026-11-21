@@ -754,6 +754,9 @@ pub struct LiveRig {
     pub delivery: Arc<factory_composition::delivery::StoreDeliverySources>,
     pub approvals: Arc<factory_composition::delivery::StoreApprovalSources>,
     pub spec_drafts: Arc<factory_composition::specs::StoreSpecDrafts>,
+    /// The workspaces, for the job's own object store: the evidence collector reads the
+    /// specification commits and the documentation pages there.
+    pub workspaces: Arc<dyn factory_ports::workspace::WorkspaceProvider>,
 }
 
 impl LiveRig {
@@ -771,6 +774,7 @@ impl LiveRig {
             world.blocked.join("\n")
         );
         let built = world.built.expect("a complete world");
+        let workspaces = Arc::clone(&world.providers.workspaces);
         let tenant = env.a.id;
         let logins = env.db.server.logins().await;
         let store = Arc::new(
@@ -863,6 +867,7 @@ impl LiveRig {
             delivery,
             approvals,
             spec_drafts,
+            workspaces,
         }
     }
 

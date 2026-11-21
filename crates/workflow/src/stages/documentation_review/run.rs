@@ -124,7 +124,11 @@ pub(crate) fn render_reports(reports: &[Value]) -> String {
     text
 }
 
-fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
+/// The document type the readability gate judges a page as: the changelog by its name, a planned
+/// page by the form the plan gives it, the README as reference, any other page as explanation.
+/// Public so that the end-to-end evidence collector judges a page as this stage does (A8).
+#[must_use]
+pub fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
     if path == "CHANGELOG.md" {
         return DocumentType::Changelog;
     }
@@ -148,7 +152,9 @@ fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
 /// The most bytes of a page that are read at the job's base to compare its title.
 const MAX_BASE_PAGE_BYTES: u64 = 1024 * 1024;
 
-fn title_of<'a>(path: &'a str, text: &'a str) -> &'a str {
+/// The title of a page: its first level-one heading, or its path when it has none.
+#[must_use]
+pub fn title_of<'a>(path: &'a str, text: &'a str) -> &'a str {
     text.lines()
         .find_map(|line| line.strip_prefix("# "))
         .map_or(path, str::trim)

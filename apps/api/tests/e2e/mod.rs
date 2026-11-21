@@ -20,12 +20,17 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use factory_domain::contracts::{ArtifactRef, Contract as _};
+use factory_domain::contracts::{ArtifactRef, Contract as _, TaskDag};
 use factory_domain::ids::JobId;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::store::{AuditActor, AuditFilter, OutboxSeq};
+use factory_ports::workspace::{JobRepo, ReadView};
+// The names the stages store their outputs under: the collector reads the documents the
+// delivery stage reads, by the same names (real run 36 looked for `task-dag`, which no stage
+// writes, and found no plan).
+use factory_workflow::stages::delivery::input::{SPECIFICATION_CONTRACT, TASK_PLAN};
 use serde_json::{Value, json};
 
 use crate::full::Rig;
@@ -101,6 +106,14 @@ pub trait Sources {
     fn artifacts(&self) -> &std::sync::Arc<dyn factory_ports::artifact::ArtifactStore>;
     /// The tenant of the run.
     fn tenant(&self) -> factory_domain::ids::TenantId;
+    /// The job's own object store, where the specification commits and the documentation pages
+    /// are read, or `None` when the rig holds none for the job. The specification commits stay
+    /// there: the code starts from the repository map's commit (ADR 0025), so they are not on the
+    /// pull request's head branch.
+    fn job_repo(
+        &self,
+        job: JobId,
+    ) -> impl std::future::Future<Output = Option<Box<dyn factory_ports::workspace::JobRepo>>>;
 }
 
 impl Sources for Rig {
@@ -118,6 +131,10 @@ impl Sources for Rig {
     }
     fn tenant(&self) -> factory_domain::ids::TenantId {
         self.tenant
+    }
+    async fn job_repo(&self, job: JobId) -> Option<Box<dyn factory_ports::workspace::JobRepo>> {
+        use factory_ports::workspace::WorkspaceProvider as _;
+        self.workspaces.repo(job).await.ok()
     }
 }
 
@@ -475,15 +492,24 @@ pub async fn collect_from<S: Sources>(
         (
             "specification",
             StageKind::Specification,
-            "specification-contract",
+            SPECIFICATION_CONTRACT,
         ),
-        ("task_dag", StageKind::TaskPlanning, "task-dag"),
+        ("task_dag", StageKind::TaskPlanning, TASK_PLAN),
     ] {
         if let Some(hash) = stage_outputs.get(&format!("{} {role}", kind.as_str())) {
             stored_hashes.insert(name.to_owned(), json!(hash));
         }
     }
+    let repo = match job {
+        Some(job) => rig.job_repo(job).await,
+        None => None,
+    };
+    let specification = document(StageKind::Specification, SPECIFICATION_CONTRACT);
+    let plan = document(StageKind::TaskPlanning, TASK_PLAN);
+    let specification_files = specification_files(repo.as_deref(), specification).await;
     let mut docs: Vec<Value> = Vec::new();
+    docs.extend(specification_document(repo.as_deref(), specification).await);
+    docs.extend(task_documents(plan));
     if let Some(delivery) = document(StageKind::Delivery, "delivery-result")
         && let (Some(title), Some(body)) = (delivery["title"].as_str(), delivery["body"].as_str())
     {
@@ -491,14 +517,23 @@ pub async fn collect_from<S: Sources>(
             json!({ "kind": "pull_request", "path": "pull_request", "title": title, "body": body }),
         );
     }
+    docs.extend(
+        documentation_documents(
+            repo.as_deref(),
+            document(StageKind::Documenting, "documentation-result"),
+            document(StageKind::Documenting, "documentation-plan"),
+            &github,
+        )
+        .await,
+    );
     let contracts = json!({
-        "specification": document(StageKind::Specification, "specification-contract"),
-        "task_dag": document(StageKind::TaskPlanning, "task-dag"),
+        "specification": specification,
+        "task_dag": plan,
         "evidence_manifest": document(StageKind::Delivery, "evidence-manifest"),
         "gate_reports": gate_records,
         "stored_hashes": stored_hashes,
+        "specification_files": specification_files,
     });
-
     // ---- telemetry -------------------------------------------------------------------------------
     let capture = spans::install();
     let spans_json: Vec<Value> = capture
@@ -522,6 +557,7 @@ pub async fn collect_from<S: Sources>(
                 "source": "log",
                 "label": line.label,
                 "correlation_id": line.correlation_id,
+                "in_job": line.in_job,
             })
         })
         .collect();
@@ -588,6 +624,19 @@ pub async fn collect_from<S: Sources>(
         facts.insert("refused_paths".to_owned(), json!(paths));
         facts.insert("refusal_code".to_owned(), refusal["code"].clone());
     }
+    // The paths the documentation stage changed, from its stored result. Its own scope gate
+    // judges them against the documentation plan, and no task of the plan owns them (A6).
+    if let Some(result) = document(StageKind::Documenting, "documentation-result") {
+        let mut paths: Vec<&str> = result["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|change| change["path"].as_str())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        facts.insert("documentation_paths".to_owned(), json!(paths));
+    }
     // The hashes of what the intake stage stored, as the artifact store holds them.
     for (fact, output) in [
         ("stored_original_sha256", "INTAKE original-request"),
@@ -627,13 +676,158 @@ pub async fn collect_from<S: Sources>(
     }
 }
 
-/// The stage outputs the recording keeps whole.
-const KEPT_DOCUMENTS: [(StageKind, &str); 4] = [
+/// The stage outputs the recording keeps whole. The specification, the plan and the documentation
+/// plan are kept so that a recording can be judged again after the run's artifact store is gone
+/// (the store of real run 36 was emptied when the run ended).
+const KEPT_DOCUMENTS: [(StageKind, &str); 7] = [
+    (StageKind::Specification, SPECIFICATION_CONTRACT),
+    (StageKind::TaskPlanning, TASK_PLAN),
     (StageKind::Implementation, "implementation-result"),
     (StageKind::Implementation, "implementation-evidence"),
+    (StageKind::Documenting, "documentation-plan"),
     (StageKind::Documenting, "documentation-result"),
     (StageKind::Delivery, "delivery-result"),
 ];
+
+/// The most bytes of one file the collector reads from the job's store.
+const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The bytes of `path` at `commit` in the job's store, or `None` when the store, the commit or
+/// the file is not there.
+async fn file_at(repo: Option<&dyn JobRepo>, commit: &str, path: &str) -> Option<Vec<u8>> {
+    let repo = repo?;
+    let commit = factory_ports::paths::CommitSha::parse(commit).ok()?;
+    let path = factory_ports::paths::RepoPath::new(path).ok()?;
+    repo.read_file_at(&commit, &path, MAX_FILE_BYTES, ReadView::Trusted)
+        .await
+        .ok()
+}
+
+/// The SHA-256 of each file the specification cites, at the commit it was frozen at, by path. A
+/// file the store does not hold there is left out, and assertion A5 names it.
+async fn specification_files(
+    repo: Option<&dyn JobRepo>,
+    specification: Option<&Value>,
+) -> serde_json::Map<String, Value> {
+    let mut found = serde_json::Map::new();
+    let Some(spec) = specification else {
+        return found;
+    };
+    let commit = spec["metadata"]["commit_sha"].as_str().unwrap_or_default();
+    for artifact in spec["provenance"]["artifacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let Some(path) = artifact["path"].as_str() else {
+            continue;
+        };
+        if let Some(bytes) = file_at(repo, commit, path).await {
+            found.insert(path.to_owned(), json!(Sha256Digest::of(&bytes).as_str()));
+        }
+    }
+    found
+}
+
+/// The specification as a person reads it: the `spec.md` the specification cites, at its commit,
+/// under the contract's title.
+async fn specification_document(
+    repo: Option<&dyn JobRepo>,
+    specification: Option<&Value>,
+) -> Option<Value> {
+    let spec = specification?;
+    let commit = spec["metadata"]["commit_sha"].as_str()?;
+    let path = spec["provenance"]["artifacts"]
+        .as_array()?
+        .iter()
+        .find(|artifact| artifact["role"].as_str() == Some("specification"))?["path"]
+        .as_str()?;
+    let bytes = file_at(repo, commit, path).await?;
+    Some(json!({
+        "kind": "specification",
+        "path": path,
+        "title": spec["title"].as_str().unwrap_or(path),
+        "body": String::from_utf8_lossy(&bytes),
+    }))
+}
+
+/// One document for each task of the plan, with the text the planning stage's readability gate
+/// judged (`factory_workflow::stages::planning::task_body`).
+fn task_documents(plan: Option<&Value>) -> Vec<Value> {
+    let Some(plan) = plan.and_then(|value| TaskDag::from_json_value(value.clone()).ok()) else {
+        return Vec::new();
+    };
+    plan.tasks
+        .iter()
+        .map(|task| {
+            json!({
+                "kind": "task",
+                "path": format!("tasks/{}", task.task_id.as_str()),
+                "title": task.title.as_str(),
+                "body": factory_workflow::stages::planning::task_body(task),
+            })
+        })
+        .collect()
+}
+
+/// The pages the documentation stage changed, at its documentation commit, typed and titled as
+/// the documentation review stage judges them. A page whose title is the one it had at the job's
+/// base keeps it: the project chose that title.
+async fn documentation_documents(
+    repo: Option<&dyn JobRepo>,
+    result: Option<&Value>,
+    plan: Option<&Value>,
+    github: &Value,
+) -> Vec<Value> {
+    use factory_workflow::stages::documentation_review::{document_type, title_of};
+    let mut found = Vec::new();
+    let Some(result) = result else {
+        return found;
+    };
+    let base = result["base_commit"].as_str().unwrap_or_default();
+    let head = result["head_commit"].as_str().unwrap_or_default();
+    let plan =
+        plan.and_then(|value| factory_workflow::gates::docs::plan::DocPlan::from_json(value).ok());
+    let mut pages: Vec<&str> = github["changed_paths"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| path.ends_with(".md") && !path.starts_with("specs/"))
+        .collect();
+    pages.sort_unstable();
+    pages.dedup();
+    for path in pages {
+        let Some(bytes) = file_at(repo, head, path).await else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let title = title_of(path, &text).to_owned();
+        let title_kept = match file_at(repo, base, path).await {
+            Some(old) => title_of(path, &String::from_utf8_lossy(&old)) == title,
+            None => false,
+        };
+        let doc_type = plan.as_ref().map_or_else(
+            || {
+                if path == "CHANGELOG.md" {
+                    "changelog"
+                } else {
+                    "reference"
+                }
+            },
+            |plan| document_type(plan, path).as_str(),
+        );
+        found.push(json!({
+            "kind": "documentation",
+            "path": path,
+            "title": title,
+            "body": text,
+            "doc_type": doc_type,
+            "title_kept": title_kept,
+        }));
+    }
+    found
+}
 
 fn ledger_json_components(evidence: &Value) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();

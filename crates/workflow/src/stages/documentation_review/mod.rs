@@ -53,4 +53,5 @@ pub use handler::{
     DocumentationReviewConfig, DocumentationReviewDeps, DocumentationReviewHandler, GRANTED_TOOLS,
     gate_ids,
 };
+pub use run::{document_type, title_of};
 pub use verify::DocsToolchain;

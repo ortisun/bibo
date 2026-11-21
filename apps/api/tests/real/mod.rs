@@ -1310,6 +1310,7 @@ fn real_github(
     let base_after = branch_tip(repo, base_branch).unwrap_or_default();
     let delivery = documents.get("DELIVERY delivery-result");
     let mut pull_requests = Vec::new();
+    let mut head_files = serde_json::Map::new();
     let mut head_commits = Vec::new();
     let mut changed_paths: Vec<String> = Vec::new();
     let mut check_runs = Vec::new();
@@ -1328,6 +1329,28 @@ fn real_github(
         && let Ok(pr) = gh_json(&["api", &format!("repos/{repo}/pulls/{number}")])
     {
         let head_sha = pr["head"]["sha"].as_str().unwrap_or_default().to_owned();
+        // The files the specification cites, as the head branch holds them. The specification
+        // commits stay in the job's store (the code starts from the repository map's commit,
+        // ADR 0025), so a file that is not on the branch is absent here and not an error.
+        for path in documents
+            .get("SPECIFICATION specification-contract")
+            .and_then(|spec| spec["provenance"]["artifacts"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|artifact| artifact["path"].as_str())
+        {
+            if let Ok(text) = gh(&[
+                "api",
+                "-H",
+                "Accept: application/vnd.github.raw+json",
+                &format!("repos/{repo}/contents/{path}?ref={head_sha}"),
+            ]) {
+                head_files.insert(
+                    path.to_owned(),
+                    json!(factory_domain::values::Sha256Digest::of(text.as_bytes()).as_str()),
+                );
+            }
+        }
         pull_requests.push(json!({
             "number": number,
             "draft": pr["draft"].as_bool().unwrap_or(false),
@@ -1410,7 +1433,7 @@ fn real_github(
         "base_sha_after": base_after,
         "pull_requests": pull_requests,
         "head_commits": head_commits,
-        "head_files": {},
+        "head_files": head_files,
         "changed_paths": changed_paths,
         "check_runs": check_runs,
         "comments": comments,
@@ -1777,6 +1800,9 @@ impl Sources for LiveRig {
     }
     fn tenant(&self) -> TenantId {
         self.tenant
+    }
+    async fn job_repo(&self, job: JobId) -> Option<Box<dyn factory_ports::workspace::JobRepo>> {
+        self.workspaces.repo(job).await.ok()
     }
 }
 
