@@ -198,6 +198,30 @@ Rules of the entry:
 - The section "What stands out" has one line for each metric whose comparison with the window before shows an improvement or a worsening by the rules of "The decision". A rate is compared by the interval of its difference, a duration and a count shown as a median by the bootstrap of the medians. A total and an amount per item have no interval in this design, so they never stand out; a person reads them from the two columns. With too few samples in either window, or no window before, nothing stands out.
 - The snapshot is a pure function of the facts of the two windows, the query version, the commit and the seed: the same input gives the same entry, byte for byte.
 
+## The snapshot job
+
+The snapshot job reads the facts of a tenant from the store, through the listing operations the `Store` port already has (the jobs, the stage runs of a job, the task nodes of a stage run and the events of a job). It needs no new port and no new query in the storage crate. Options weighed: a dedicated read port with aggregate queries in SQL was rejected for now, because it would add a second place that defines each metric, and the numbers of one tenant in one week are small; it becomes the right choice when the full read of a tenant's jobs gets slow, and the facts of this section are the contract such a port would have to keep. The code is `process_metrics` in `crates/workflow`.
+
+### Query version 1
+
+`from` and `to` are the bounds of the window; an instant is in the window when it is at or after `from` and before `to`. A duration is the difference of two stored instants in whole milliseconds; a part of a millisecond is dropped. An end before its start is a fault in the facts and stops the snapshot with an error that names the row: a wrong number is worse than no number.
+
+| Metric | Samples | Value of one sample |
+|---|---|---|
+| MT-0001 lead-time-to-pull-request | The jobs whose first delivery stage run with status `PASSED` finished in the window | The end of that stage run minus the creation of the job |
+| MT-0002 stage-duration | The stage runs that a worker started and that finished in the window, of any status | The time from the run's first event `stage_run.started` to its last event. It includes the time the run waited for a person, and leaves out the time it waited for a worker. The creation of the row is not used: the engine creates the rows of every stage run when it admits the job |
+| MT-0003 human-wait-time | The jobs that reached a terminal status in the window | The sum of the job's waits. A wait starts at an event `stage_run.waiting_for_human` and ends at the next event of the same stage run; a wait with no later event of its stage run ends at the last event of the job. A job that never waited counts as zero |
+| MT-0006 first-pass-gate-success | The task nodes with status `SUCCEEDED` or `FAILED` of the stage runs that finished in the window and are the first run of their stage (run number 1) | The part is the nodes that succeeded with no retry in a stage run that passed its gate (`gate_outcome` `PASSED`, status `PASSED`). A task whose stage was sent back had not passed every gate at once, whatever its own result |
+| MT-0007 rework-rounds | The jobs that reached a terminal status in the window | The total is the rework rounds of those jobs on every count, read from their stage runs by the engine's own rule (the same one that enforces the limits of ADR 0023) |
+
+The time of an event is the engine's clock; the times of rows are the database's clock. No value of this version subtracts one from the other: the lead time uses two times of rows, and the stage duration and the wait use two times of events. Which window a sample belongs to is always decided by a time of a row.
+
+The job reads every job of the tenant, so its cost grows with the tenant's history. That is accepted for a weekly run.
+
+### What the job hands back
+
+The `measurement` entry as text and its path. Writing it into the project's repository belongs to the knowledge base (ADR 0028) and is not built; until then the operator's command prints the entry.
+
 ## Tier A settings
 
 A setting can be changed automatically only if it is declared here with its safe range. The first candidates:
@@ -267,6 +291,7 @@ Every decision is the file `docs/knowledge/improvements/<identifier>-<name>.md`,
 | The `measurement` entry: its identifier, its rows and its text | Built: `metrics::measurement` |
 | The snapshot built from the facts of two windows, with "What stands out" | Built: `metrics::snapshot` |
 | Tier A settings, the choice of jobs, promotion, rollback and the `improvement` entry | Built as pure rules: `metrics::experiment`. Nothing applies a setting to a running job yet |
-| The snapshot job that reads the facts from the database | Not built |
+| The snapshot job that reads the facts of query version 1 from the store | Built: `process_metrics` in `crates/workflow` |
+| A schedule for the snapshot job and a command for the operator | Not built |
 | Writing the entries into a project's knowledge base by pull request | Not built. It needs the knowledge base of [ADR 0028](../adr/0028-project-knowledge-base.md) |
 | The retrospective agent and the scheduled sweeps | Not built |
