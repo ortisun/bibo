@@ -1137,10 +1137,24 @@ fn programs(sandbox: FakeSandbox, cli: &Arc<Mutex<Cli>>) -> FakeSandbox {
                 exit(0, "")
             }
         })
-        .with_program("target/debug/word-count", move |words, _| {
+        .with_program("target/debug/word-count", move |words, stdin| {
             let state = lock(&program).clone();
             match words.get(1).map(String::as_str) {
                 Some("--help") => exit(0, &state.help),
+                // With no file the program counts its standard input, so a test sees what the
+                // gate fed it.
+                Some("--json") if words.len() == 2 => {
+                    let text = String::from_utf8_lossy(stdin);
+                    exit(
+                        0,
+                        &format!(
+                            "{{\"lines\":{},\"words\":{},\"characters\":{}}}\n",
+                            text.matches('\n').count(),
+                            text.split_whitespace().count(),
+                            text.chars().count()
+                        ),
+                    )
+                }
                 Some("--json") => exit(0, &state.json),
                 Some(_) => exit(2, ""),
                 None => exit(0, "words\n"),

@@ -224,6 +224,104 @@ async fn an_example_that_needs_a_shell_is_not_passed() {
     ])
     .await;
     assert_eq!(gate_outcomes(&rig).await["docs-examples"], "FAILED");
+    let messages = failures_of(&rig, "docs-examples").await.join("\n");
+    assert!(
+        messages.contains("needs a shell, so it was not run"),
+        "{messages}"
+    );
+}
+
+/// A README in the fixture's own style: bare commands in `sh` blocks, each followed by a `text`
+/// block with its output, and standard input fed with `printf`. In the thirty-sixth and
+/// thirty-seventh real runs the gate found none of these examples and called the check not
+/// applicable (documentation policy 9.10).
+fn readme_in_the_fixture_style(piped_output: &str) -> String {
+    format!(
+        "# Word count\n\nWord count prints the number of lines, words and characters of a text file.\n\n## Usage\n\nAdd `--json` to print the counts as JSON.\n\n```sh\nword-count --json notes.txt\n```\n\nIt prints:\n\n```text\n{{\"lines\":1,\"words\":2,\"characters\":9}}\n```\n\nWithout a file it reads standard input:\n\n```sh\nprintf 'one two three\\n' | word-count --json\n```\n\n```text\n{piped_output}\n```\n\nThe [changelog](CHANGELOG.md#unreleased) lists what changed.\n"
+    )
+}
+
+/// The gate runs both examples of the fixture style, feeds the piped text to the program on its
+/// standard input, and compares each output with the block after it.
+#[tokio::test]
+async fn examples_in_the_fixture_style_are_run_and_compared() {
+    let readme = readme_in_the_fixture_style("{\"lines\":1,\"words\":3,\"characters\":14}");
+    let rig = documented_with(vec![
+        write("README.md", &readme),
+        write("CHANGELOG.md", CHANGELOG),
+    ])
+    .await;
+    let outcomes = gate_outcomes(&rig).await;
+    assert_eq!(outcomes["docs-examples"], "PASSED", "{outcomes:?}");
+    assert_eq!(outcomes["docs-commands"], "PASSED", "{outcomes:?}");
+    let document = rig
+        .deliverable(StageKind::DocumentationReview, "documentation-gate-report")
+        .await
+        .expect("the gate report is stored");
+    let report = document["reports"]
+        .as_array()
+        .expect("reports")
+        .iter()
+        .find(|report| report["metadata"]["gate_id"] == "docs-examples")
+        .expect("the examples report")
+        .clone();
+    // Both examples ran in the sandbox, as argument vectors of the program alone.
+    let argvs: Vec<Value> = report["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .map(|command| command["argv"].clone())
+        .collect();
+    assert_eq!(
+        argvs,
+        [
+            json!(["target/debug/word-count", "--json", "notes.txt"]),
+            json!(["target/debug/word-count", "--json"]),
+        ]
+    );
+}
+
+/// An output block that does not match what the program printed for the piped text fails the
+/// check: the gate compared it, it did not pass the page on trust.
+#[tokio::test]
+async fn a_fixture_style_example_whose_output_differs_fails_the_check() {
+    let readme = readme_in_the_fixture_style("{\"lines\":1,\"words\":2,\"characters\":9}");
+    let rig = documented_with(vec![
+        write("README.md", &readme),
+        write("CHANGELOG.md", CHANGELOG),
+    ])
+    .await;
+    assert_eq!(gate_outcomes(&rig).await["docs-examples"], "FAILED");
+    let messages = failures_of(&rig, "docs-examples").await.join("\n");
+    assert!(messages.contains("different output"), "{messages}");
+    assert!(
+        messages.contains("printf 'one two three\\n' | word-count --json"),
+        "{messages}"
+    );
+    assert!(!passed(&rig, StageKind::DocumentationReview).await);
+}
+
+/// A bare command the gate cannot run without a shell is reported and fails the check, instead
+/// of leaving the check not applicable.
+#[tokio::test]
+async fn a_fixture_style_example_that_needs_a_shell_is_reported_not_skipped() {
+    let readme = readme_in_the_fixture_style("{\"lines\":1,\"words\":3,\"characters\":14}")
+        .replace(
+            "printf 'one two three\\n' | word-count --json",
+            "cat notes.txt | word-count --json",
+        );
+    let rig = documented_with(vec![
+        write("README.md", &readme),
+        write("CHANGELOG.md", CHANGELOG),
+    ])
+    .await;
+    assert_eq!(gate_outcomes(&rig).await["docs-examples"], "FAILED");
+    let messages = failures_of(&rig, "docs-examples").await.join("\n");
+    assert!(
+        messages.contains("cat notes.txt | word-count --json"),
+        "{messages}"
+    );
+    assert!(messages.contains("needs a shell"), "{messages}");
 }
 
 // ---- NT-INJ-06: a reviewer cannot overrule a failed check -------------------------------------

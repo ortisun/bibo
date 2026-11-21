@@ -304,7 +304,7 @@ Master prompt section 10.4 lists what a PASS requires. This table says who decid
 |---|---|---|---|---|
 | Clear English and readable titles | The readability gate, then the reviewer | No blocking finding | The gate cannot load its word lists | The change adds no human-facing text |
 | Internal links and anchors resolve | Code | Every target exists on the branch | The link checker cannot run | The documents contain no links |
-| Examples run and print what the page says | Code, in the sandbox | Each example executed, exit code 0, output matches | The runtime or tool for an example is missing | No document contains an executable example |
+| Examples run and print what the page says | Code, in the sandbox ([9.10](#910-how-the-gate-finds-and-runs-examples)) | Each example executed, exit code 0, output matches | The runtime or tool for an example is missing | No changed document shows a command that names the program |
 | Named commands, flags, keys and variables exist | Code, against real help output and the source | Every name found | The program cannot be run | No document names one |
 | API, command line and schema references match the source | Code where generated, reviewer otherwise | The page equals the generated output | The generator is missing | No public interface changed |
 | Diagrams parse and render | Code | The diagram renders. A syntax check alone is reported as syntax-checked, not rendered | The parser or renderer is missing | No diagram exists |
@@ -351,6 +351,39 @@ The options weighed for where these answers come from:
 An answer to an earlier run may be about pages that later changed. It is still a decision of the people who own the job, and the reviewer reads it beside the pages as they are now.
 
 The record of the review stores the hash of each input it gave, the list of pages the documentation diff holds, and how many answers came from this run and how many from earlier runs.
+
+### 9.10 How the gate finds and runs examples
+
+The check `docs-examples` runs every example of the program that a changed page shows, and compares what the program prints with the output the page shows. It must never pass a page whose examples it did not run. In the thirty-sixth and thirty-seventh real runs it did: the README showed the new option in the fixture's own style, a `sh` block with `word-count notes.txt` and then a `text` block with the output, and also `printf 'one two three\n' | word-count --json`. The gate knew only lines that start with `$ word-count`, found nothing, and reported `NOT_APPLICABLE` ("no command of the program to run"). A page full of examples that nobody ran looked like a page with no examples.
+
+**What counts as an example.** A command line names the program when the program's name is the first word of the line, or of any command of its pipeline, after any variables set before it (such as `LANG=C`). The gate reads two forms of block.
+
+| Form | Where | The command | The output it compares |
+|---|---|---|---|
+| Prompt form | A block of language `console`, `shell-session`, `sh`, `bash`, `shell`, `zsh` or `text` | Each line that starts with `$ ` and names the program | The lines after it, up to the next `$ ` line or the end of the block |
+| Script form | A block of language `sh`, `bash`, `shell` or `zsh` that has no `$ ` line | Each line that names the program. Empty lines and lines that start with `#` are not commands. | The next block of the page, when its language is `text`, `output`, `plaintext` or `txt`, it has no `$ ` line, and no heading stands between the two blocks |
+
+An example with no output shown must still run and end with exit code 0. A script block that holds more than one command of the program and is followed by an output block is reported: the gate cannot tell which command printed that output. Lines that name another program, such as `cargo build`, are not examples of the program and are left alone.
+
+**How an example runs.** The gate runs the built program in the verify sandbox with the example's arguments, as an argument vector, never through a shell. Quotes and backslashes are read the way the standard Unix shell (`sh`, as the Portable Operating System Interface (POSIX) standard defines it) reads them, with no expansion. One pipeline is understood without a shell, because it is the usual way to show a program that reads standard input:
+
+* `printf 'TEXT' | program ARGUMENTS`, where `TEXT` is one argument whose only escapes are `\n`, `\t`, `\r`, `\\` and `%%`;
+* `echo WORDS | program ARGUMENTS` or `echo -n WORDS | program ARGUMENTS`, where no word holds a backslash.
+
+The factory works out the bytes `printf` or `echo` would print, and the sandbox gives them to the program as its standard input. The program is always the process whose output is compared.
+
+**An example the gate cannot run is reported, never passed.** Any other command that names the program is reported with the rule `example-not-runnable`, and the check fails: a pipe into another program, a redirect, a chain (`;`, `&&`, `||`), a background `&`, a command or variable substitution, a glob, a `~`, a variable set before the command, a line that continues on the next line, or a `printf` or `echo` the gate does not read. The message says which forms the gate runs, so the writer can show the example in one of them. An example that ran and printed other output fails with `example-output-differs`, and one that ended with another exit code fails with `example-failed`. `NOT_APPLICABLE` means only that no changed page shows a command that names the program.
+
+The report names every command it ran. Its evidence lines name each example by page, line and the command as written, and the hash of the standard input when the example had one, so the report vouches for exactly the examples it ran.
+
+The options weighed:
+
+| Option | What it would do | Why it was or was not chosen |
+|---|---|---|
+| Recognise the script form, paired with the next output block (chosen) | Reads examples in the style many projects already use. | The gate follows the project's style instead of making the writer change it, and the pairing rule is strict enough that an output block is never compared with the wrong command. |
+| Run the command line through `/bin/sh -c` in the verify sandbox | Any shell example would run. | The sandbox has no network and a read-only checkout, so a shell would not escape it. What a shell adds is that the page's text becomes a program: it could chain or substitute other commands and print the expected output itself, such as `word-count notes.txt > /dev/null; echo '{"lines":1}'`, and the gate would pass an example whose output the program never printed. The page is written by an agent, so the evidence would be the agent's word again. A shell also breaks the rule of the sandbox port that a command is never a shell string, and its behaviour depends on which shell the image has (`echo` and `printf` differ between them). |
+| Understand the `printf` and `echo` pipeline without a shell (chosen) | Covers the common way to show standard input. | The factory computes the input and the program alone produces the output, so the evidence stays about the program. Everything else stays reported. |
+| Require the writer to use `$ ` lines | One form only. | It puts the gate's limit on every project's style, and a page written another way would still need to be reported, not ignored. The prompt form stays supported. |
 
 ## 10. Changing this policy
 

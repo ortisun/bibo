@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use factory_domain::contracts::gate_report::{BlockedCode, NotApplicableCode};
+use factory_domain::values::Sha256Digest;
 use factory_ports::sandbox::ExecResult;
 
 use super::claims::{self, Claim, ClaimKind, Example};
@@ -785,7 +786,7 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
                 EXAMPLES,
                 title,
                 NotApplicableCode::NoMatchingFiles,
-                "No changed document shows a command of the program to run.",
+                "No changed document shows a command that names the program.",
             );
         }
         Observed::Absent { missing } => {
@@ -802,18 +803,19 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
     };
     let mut findings = Vec::new();
     let mut commands = Vec::new();
+    let mut compared = 0_usize;
     for (example, ran) in runs {
-        let Some(ran) = ran.as_ref().filter(|_| example.runnable) else {
-            findings.push(finding(
-                "example-not-runnable",
-                &example.file,
-                example.line,
-                format!(
-                    "The example `{}` needs a shell, and the gate runs one command without a shell. Show it as a single command.",
-                    example.written
-                ),
-            ));
-            continue;
+        let ran = match (example.refusal, ran.as_ref()) {
+            (None, Some(ran)) => ran,
+            (refusal, _) => {
+                findings.push(finding(
+                    "example-not-runnable",
+                    &example.file,
+                    example.line,
+                    not_runnable(&example.written, refusal),
+                ));
+                continue;
+            }
         };
         commands.push(ran.clone());
         if ran.exec.timed_out || ran.exec.exit_code != Some(0) {
@@ -831,9 +833,11 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
             ));
             continue;
         }
-        if let Some(expected) = &example.expected
-            && claims::normalized(expected) != claims::normalized(&ran.stdout)
-        {
+        let Some(expected) = &example.expected else {
+            continue;
+        };
+        compared = compared.saturating_add(1);
+        if claims::normalized(expected) != claims::normalized(&ran.stdout) {
             findings.push(finding(
                 "example-output-differs",
                 &example.file,
@@ -852,7 +856,7 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
             EXAMPLES,
             title,
             NotApplicableCode::NoMatchingFiles,
-            "No changed document shows a command of the program to run.",
+            "No changed document shows a command that names the program.",
         );
     }
     let mut result = CheckResult::decided(
@@ -860,7 +864,7 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
         title,
         findings,
         format!(
-            "All {} example(s) ran with exit code 0 and printed what the page shows.",
+            "All {} example(s) ran with exit code 0, and the {compared} that show their output printed it.",
             runs.len()
         ),
         "An example does not run, or prints something other than what the page shows.".to_owned(),
@@ -869,13 +873,32 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
     result.evidence = runs
         .iter()
         .map(|(example, _)| {
-            format!(
+            let line = format!(
                 "example={}:{}:{}",
                 example.file, example.line, example.written
-            )
+            );
+            match &example.stdin {
+                Some(stdin) => format!("{line}:stdin={}", Sha256Digest::of(stdin)),
+                None => line,
+            }
         })
         .collect();
     result
+}
+
+/// What the report says about an example the gate did not run: why, and the forms it runs
+/// (documentation policy 9.10).
+fn not_runnable(written: &str, refusal: Option<claims::Refusal>) -> String {
+    const FORMS: &str = "The gate runs the program without a shell, alone (`program ARGUMENTS`) or fed by one `printf 'TEXT' | program ARGUMENTS` or `echo WORDS | program ARGUMENTS`.";
+    match refusal {
+        Some(claims::Refusal::OutputNotPaired) => format!(
+            "The example `{written}` shares its block with other commands of the program, and an output block follows, so the gate cannot tell which command printed that output. Give each command its own block, or write the commands as `$ ` lines with their output."
+        ),
+        Some(claims::Refusal::NeedsAShell) => {
+            format!("The example `{written}` needs a shell, so it was not run. {FORMS}")
+        }
+        None => format!("The example `{written}` was not run. {FORMS}"),
+    }
 }
 
 fn diagrams(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
