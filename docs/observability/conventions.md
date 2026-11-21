@@ -301,13 +301,16 @@ The crate depends only on the external crates that `docs/architecture/crate-depe
 | `opentelemetry` | =0.33.1 | 2026-10-09 | The API. |
 | `opentelemetry_sdk` | =0.33.1 | 2026-10-09 | Providers, processors, views and the in-memory test exporters. |
 | `opentelemetry-otlp` | =0.33.1 | 2026-10-09 | The OTLP exporters, over HTTP with protobuf bodies. |
+| `reqwest` | 0.13.5 | the release in `Cargo.lock` | The blocking HTTP client of the exporters, built by this crate and handed to them. Features `blocking` and `rustls-no-provider`, and nothing else. |
+| `rustls` | 0.23.46 | the release in `Cargo.lock` | Only to build the explicit configuration that the client needs (see "A client with its own TLS configuration" below). Features `ring` and `std`. |
 
 The three OpenTelemetry crates are pinned with an exact version because they are 0.x crates that must move together. An upgrade changes all of them and `tracing-opentelemetry` in one commit and re-runs the whole test suite.
 
 Choices that go beyond the defaults:
 
 - **OTLP over HTTP with a blocking client, not gRPC.** The gRPC exporter needs `tokio` and `tonic`. The HTTP exporter with a blocking client runs on the batch processor's own thread, so this crate needs no async runtime. The dependency rules do not list `tokio` for `observability`. It is still in the build as a dependency of the HTTP client, but this crate does not name it.
-- **No TLS.** The exporter is built without a TLS feature, which keeps `rustls` and its cryptography libraries out of the build. The collector is expected on the same host or on a private network. A decision to send telemetry over the open network needs a TLS feature and a review.
+- **No TLS.** Only a plain `http://` collector address is accepted (`TelemetryConfig`). The collector is expected on the same host or on a private network. A decision to send telemetry over the open network needs trusted roots and a review.
+- **A client with its own TLS configuration.** Cargo merges the features of a dependency across everything it builds at once. The MCP gateway turns on `reqwest`'s `rustls-no-provider`, and from then on every `reqwest` client of the same build needs a TLS configuration. Without one, building the client panics with "No rustls crypto provider is configured". That is what happened to the exporters in a whole-workspace build and in the troubleshooter, which links both crates. So this crate builds the exporters' client itself, with `rustls-no-provider` on in every build, and hands it a configuration with the `ring` provider and an empty root store. The crate then behaves the same whether it is built alone or with the gateway, it sets no process-wide state, and no `https://` server can be trusted. The client is built on its own thread, because a blocking client may not be built inside an async runtime. It has the export timeout of the configuration, as the exporter's default client had.
 - **The SDK's `internal-logs` feature is on.** Without it a dead collector fails silently. With it the SDK writes export failures to the diagnostic log through `tracing`.
 - **The SDK's `spec_unstable_metrics_views` feature is on.** It provides the call that removes unlisted labels from a metric. The name says the specification for that part is not final, so an upgrade of the SDK must re-run the label tests in `crates/observability/tests/metrics.rs`.
 

@@ -313,9 +313,15 @@
         "tracing-opentelemetry",
         "opentelemetry",
         "opentelemetry_sdk",
-        "opentelemetry-otlp"
+        "opentelemetry-otlp",
+        "reqwest[blocking,rustls-no-provider]",
+        "rustls[ring,std]"
       ],
-      "responsibility": "Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming."
+      "responsibility": "Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming.",
+      "external_allow_notes": {
+        "reqwest": "0.13.5, the release in Cargo.lock (opentelemetry-otlp uses it). The crate builds the exporters' blocking client itself with an explicit rustls configuration, because the MCP gateway's rustls-no-provider is merged into every build that holds both crates (docs/observability/conventions.md, section 11).",
+        "rustls": "0.23.46, the release in Cargo.lock. Only the ring provider and an empty root store for that client: the collector address is plain http, so no server is trusted over TLS."
+      }
     },
     {
       "name": "composition",

@@ -55,6 +55,15 @@ opentelemetry-otlp = { version = "=0.33.1", default-features = false, features =
     "metrics",
     "internal-logs",
 ] }
+# The exporters' blocking client, which this crate builds itself. Cargo merges the features of a
+# dependency across one build, and the MCP gateway turns on `rustls-no-provider`: a `reqwest`
+# client built without a TLS configuration then panics. Turning the feature on here and handing
+# the client an explicit configuration makes this crate behave the same alone and next to the
+# gateway (docs/observability/conventions.md, section 11). The release already in Cargo.lock.
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls-no-provider"] }
+# Only the `ring` provider and an empty root store for that configuration: collector addresses
+# are plain `http://`, so no server is trusted over TLS. The release already in Cargo.lock.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 
 [dev-dependencies]
 # In-memory span and metric exporters for tests, so no unit test needs a network.
