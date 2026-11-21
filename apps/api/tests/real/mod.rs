@@ -58,6 +58,8 @@ use factory_composition::routing::{broker_caps, price_table};
 use factory_composition::startup::{LoadedPolicies, LoadedRouting, load_policy, load_routing};
 use factory_composition::system::{RandomIds, SystemClock};
 use factory_domain::ids::{JobId, TenantId};
+use factory_domain::machines::limits::{ReworkLedger, ReworkLimits, ReworkTrack};
+use factory_domain::machines::rework::{human_targets, open_human_targets};
 use factory_domain::policy::security::ProviderCredentialMode;
 use factory_domain::policy::solo::{SoloTarget, SoloWait};
 use factory_domain::redaction::Redactor;
@@ -1080,6 +1082,59 @@ pub fn answer_lines(
     text
 }
 
+/// The rounds each rework count of the job has used, as the engine counts them.
+fn rework_ledger(view: &JobView) -> ReworkLedger {
+    ReworkLedger::default()
+        .with_used(ReworkTrack::Specification, view.specification_rework_rounds)
+        .with_used(ReworkTrack::Design, view.design_rework_rounds)
+        .with_used(ReworkTrack::Code, view.code_rework_rounds)
+        .with_used(ReworkTrack::Documentation, view.documentation_rework_rounds)
+}
+
+/// The lines that offer a person the rework the engine would accept now, one for each stage the
+/// work may still be sent back to. When the table lists targets and every one of their counts is
+/// used up, one sentence says so plainly instead: the cap of ADR 0023 holds for a person too, and
+/// in real run 38 a printed rework command was refused with no word of why. Empty when the stage
+/// has no human rework route at all.
+fn rework_offer(
+    from: StageKind,
+    ledger: ReworkLedger,
+    limits: ReworkLimits,
+    command: &dyn Fn(StageKind) -> String,
+) -> String {
+    let listed = human_targets(from);
+    if listed.is_empty() {
+        return String::new();
+    }
+    let open = open_human_targets(from, ledger, limits);
+    if open.is_empty() {
+        let mut tracks: Vec<ReworkTrack> = Vec::new();
+        for target in listed {
+            let track = ReworkTrack::for_target(*target);
+            if !tracks.contains(&track) {
+                tracks.push(track);
+            }
+        }
+        let counts: Vec<String> = tracks
+            .iter()
+            .map(|track| {
+                format!(
+                    "the {track} phase has used {} of its {} rounds",
+                    ledger.used(*track),
+                    limits.cap(*track).get()
+                )
+            })
+            .collect();
+        return format!(
+            "\nThe rework rounds are used up ({}), so the factory refuses to send the work back. Answer the stage or reject the job.",
+            counts.join("; ")
+        );
+    }
+    open.iter()
+        .map(|target| format!("\nSend it back to {target}:  {}", command(*target)))
+        .collect()
+}
+
 /// What a person is asked to do while a stage run waits, with the exact command.
 async fn ask_the_owner(
     rig: &LiveRig,
@@ -1103,6 +1158,14 @@ async fn ask_the_owner(
     let decide = format!("--api {api} --token-file {}", decider_file.display());
     let job_id = job.as_text();
     let run_id = run.id.as_text();
+    let limits = rig.env().state.policies.engine.budget.rework_limits();
+    let send_back = |target: StageKind| {
+        format!(
+            "{cli} rework {decide} {job_id} {run_id} target={} \"<what to change>\"",
+            target.as_str()
+        )
+    };
+    let rework = rework_offer(run.kind, rework_ledger(view), limits, &send_back);
     let text = match run.kind {
         StageKind::Specification => {
             let evidence = rig.ledger_head(job, StageKind::Specification, run.id).await;
@@ -1122,10 +1185,18 @@ async fn ask_the_owner(
                     ),
                     None => String::new(),
                 };
+                // With no question to answer, as at the rework limit, the person still answers:
+                // the answer starts a new attempt of the same run and uses no round.
+                let free_answer = if reviewer.is_empty() && answer.is_empty() {
+                    format!(
+                        "\nAnswer it:      {cli} answer {opts} {job_id} {run_id} -- <what the stage should change>"
+                    )
+                } else {
+                    String::new()
+                };
                 tell(&format!(
                     "WAITING FOR YOU: the specification of job {job_id} waits for a person, with no draft to approve (reason: {reason}).{reviewer}\n\
-                     See why:        {cli} status {opts} --gates {job_id}\n\
-                     Send it back:   {cli} rework {decide} {job_id} {run_id} target=SPECIFICATION \"<what to change>\"\n\
+                     See why:        {cli} status {opts} --gates {job_id}{free_answer}{rework}\n\
                      Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"{answer}"
                 ));
                 return;
@@ -1191,8 +1262,7 @@ async fn ask_the_owner(
              No model other than the builder's own was available to review the work, at any tier\n\
              (policies/model_routing.yaml, independence). In subscription mode Claude Opus reviews\n\
              Claude Sonnet's work; check that the broker serves both Claude models.\n\
-             What you can do now:\n\
-             Send the work back:  {cli} rework {decide} {job_id} {run_id} target=IMPLEMENTATION \"<what to change>\"\n\
+             What you can do now:{rework}\n\
              Reject the job:      {cli} reject {decide} {job_id} {run_id} \"No independent reviewer is available.\"\n\
              The factory refuses an approval here: the review would pass with no review verdict.\n\
              See docs/guides/first-real-run.md, \"Who reviews the code\"."
@@ -1211,10 +1281,8 @@ async fn ask_the_owner(
             format!(
                 "WAITING FOR YOU: the stage {} of job {job_id} waits for a person (reason: {reason}).{said}\n\
                  See:            {cli} status {opts} --gates {job_id}\n\
-                 Answer it:      {cli} answer {opts} {job_id} {run_id} -- <answer>\n\
-                 Send it back:   {cli} rework {decide} {job_id} {run_id} target={} \"<what to change>\"\n\
+                 Answer it:      {cli} answer {opts} {job_id} {run_id} -- <answer>{rework}\n\
                  Or reject:      {cli} reject {decide} {job_id} {run_id} \"<why>\"",
-                other.as_str(),
                 other.as_str()
             )
         }
@@ -1817,4 +1885,59 @@ fn solo_minutes(rig: &LiveRig, which: SoloWait) -> u64 {
         .wait(which)
         .as_secs()
         / 60
+}
+
+#[cfg(test)]
+mod guidance {
+    use super::*;
+
+    fn command(target: StageKind) -> String {
+        format!("rework target={}", target.as_str())
+    }
+
+    #[test]
+    fn at_the_specification_limit_no_rework_is_offered_and_the_limit_is_named() {
+        // Real run 38: two specification rounds used, and the owner was shown a rework command.
+        let ledger = ReworkLedger::default().with_used(ReworkTrack::Specification, 2);
+        let text = rework_offer(
+            StageKind::Specification,
+            ledger,
+            ReworkLimits::default(),
+            &command,
+        );
+        assert!(!text.contains("rework target="), "{text}");
+        assert!(
+            text.contains("the specification phase has used 2 of its 2 rounds"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Answer the stage or reject the job"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn with_rounds_left_each_open_target_is_offered_and_no_full_one() {
+        let limits = ReworkLimits::default();
+        let one_left = ReworkLedger::default().with_used(ReworkTrack::Specification, 1);
+        let text = rework_offer(StageKind::Specification, one_left, limits, &command);
+        assert!(text.contains("rework target=SPECIFICATION"), "{text}");
+        assert!(!text.contains("used up"), "{text}");
+        // The code count full: the review offers the design and never the implementation.
+        let code_full = ReworkLedger::default().with_used(ReworkTrack::Code, 2);
+        let text = rework_offer(StageKind::Review, code_full, limits, &command);
+        assert!(text.contains("rework target=ARCHITECTURE"), "{text}");
+        assert!(!text.contains("rework target=IMPLEMENTATION"), "{text}");
+    }
+
+    #[test]
+    fn a_stage_with_no_human_route_offers_no_rework_at_all() {
+        let text = rework_offer(
+            StageKind::Intake,
+            ReworkLedger::default(),
+            ReworkLimits::default(),
+            &command,
+        );
+        assert!(text.is_empty(), "{text}");
+    }
 }

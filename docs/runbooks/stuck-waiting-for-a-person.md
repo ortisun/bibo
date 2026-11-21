@@ -12,6 +12,18 @@ A job waits for a person in these cases: the specification draft needs approval,
 
 The last case has the reason `independent-reviewer-unavailable`. Since the owner's amendment of 2026-11-13 to [the decision record on subscription mode](../adr/0020-subscription-mode-by-default.md), another Claude model reviews in subscription mode (Claude Opus reviews Claude Sonnet's work), so this wait means that no model other than the author's own was served at any tier: check that the broker serves both Claude models. No reviewer ran. Send the work back with `rework ... target=IMPLEMENTATION`, reject it, or cancel the job. The factory refuses an approval of this wait, because it would pass the review with no review verdict; the refusal is in the audit log. An answer only starts the review again, and it waits again for the same reason until the configuration changes.
 
+### When the reason is `rework-limit`
+
+The gates sent the work back as many times as the phase allows, and then the stage stopped to ask a person. Each phase has its own count of rework rounds: the specification, the design (architecture and task plan), the code and the documentation, two rounds each by default ([ADR 0023](../adr/0023-a-rework-count-for-each-phase.md)). The cap holds for a person too: the factory refuses a request to send the work back to a stage whose phase has used its rounds, with the code `rework_limit`.
+
+What you can do at the limit:
+
+- **Answer.** Tell the stage what to do, with `answer`. The stage runs again inside the same stage run. An answer starts a new attempt, not a new rework round, so it is not counted against the cap. Read the gate reports first (`status --gates`), so that the answer settles what the gates found.
+- **Reject** the job, with `reject`.
+- **Send the work back to a stage of another phase**, only where the table of human rework routes lists one and that phase still has rounds. From a code stage, for example, a person may send the work back to the architecture while the code rounds are used up. From `SPECIFICATION` there is no such stage: the specification can only be answered or rejected at its limit.
+
+The guidance the factory prints at a wait offers only the decisions the state accepts, and says when the rework rounds of a phase are used up.
+
 ## Before you begin
 
 - You hold the designation that the verb needs: `approver` for `approve`, `reject` and `rework`, `operator` for `pause`, `resume` and `cancel`, and for `answer` any of `requester` (of that job), `operator`, `approver` or `org_admin`. A designation comes from the protected allowlist. A GitHub role never grants one.
@@ -96,6 +108,7 @@ You should see `recorded: decision.requested` and then `recorded: decision.appli
 | Exit code 2 and `you are not permitted to do this` | You do not hold the designation, or you are not on the allowlist. | Ask an `org_admin` to check the allowlist. The answer never says which test failed. |
 | `recorded: decision.rejected` after your request | The worker refused it. The marker holds a fixed code, not a reason in words. Common codes: the request is not signed with the key the worker holds (`not_signed`), the specification draft moved since you read it (`draft_moved`), or the head is no longer the head the approval request names. | Read the head and the evidence again and repeat the decision. For `not_signed`, check that the API and the worker use the same decision key, see [rotate the decision key](rotate-the-decision-key.md). |
 | Nothing after `decision.requested` for several minutes | No worker serves the tenant, or the worker is stopped. | Start the worker. Check `worker.tenants`. A request that stays unapplied for 72 hours is rejected. |
+| `recorded: decision.rejected` with the code `rework_limit` after a `rework` | The phase of the target stage has used its rework rounds. | Answer the stage, or reject the job. Send the work back only to a stage of another phase that still has rounds, see "When the reason is `rework-limit`". |
 | You cannot find the head and the ledger hash of a specification draft | `factory-cli show-draft JOB` prints them. If it answers `503`, the API has no artifact root in its configuration. | Add `artifacts.root` to the API configuration. |
 | An approval is refused while a translation warning is open (`gates_not_clear`) | Each open warning needs a decision of the person who approves. | Read the warnings in the gate reports (`factory-cli status --gates JOB`, then `factory-cli artifact JOB HASH`), then decide on each one by its number: `factory-cli ack-translation-warning JOB APPROVAL_STAGE_RUN 1 The translation says what the original says.` Then repeat the approval. A new approval request has another manifest and needs its decisions again. |
 

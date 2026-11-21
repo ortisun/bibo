@@ -1070,3 +1070,65 @@ fn a_refused_target_is_reported_before_the_role_and_the_cap_are_looked_at() {
         HumanReworkDecision::NoRoute(NoReworkRoute::HumanTarget { .. })
     ));
 }
+
+// ---- what a person may still be offered -----------------------------------------------------------
+
+#[test]
+fn the_open_targets_are_the_listed_ones_whose_count_has_room() {
+    let limits = ReworkLimits::default();
+    // Nothing used: every listed target is open, in the order of the table.
+    assert_eq!(
+        open_human_targets(StageKind::Review, ReworkLedger::default(), limits),
+        human_targets(StageKind::Review).to_vec()
+    );
+    // The specification at its limit (real run 38): no target is open, so a person may only
+    // answer or reject.
+    let specification_full = ReworkLedger::default().with_used(ReworkTrack::Specification, 2);
+    assert!(open_human_targets(StageKind::Specification, specification_full, limits).is_empty());
+    // One round left: still open.
+    let one_left = ReworkLedger::default().with_used(ReworkTrack::Specification, 1);
+    assert_eq!(
+        open_human_targets(StageKind::Specification, one_left, limits),
+        vec![StageKind::Specification]
+    );
+    // The code count full: from the review a person may still send the work to the design, never
+    // to the implementation.
+    let open = open_human_targets(StageKind::Review, code_docs(2, 0), limits);
+    assert!(!open.contains(&StageKind::Implementation), "{open:?}");
+    assert!(open.contains(&StageKind::Architecture), "{open:?}");
+    // A stage with no human route has no open target, whatever the ledger.
+    assert!(open_human_targets(StageKind::Intake, ReworkLedger::default(), limits).is_empty());
+    // A cap of zero closes the count from the start.
+    let none = limits.with_policy(ReworkTrack::Specification, 0);
+    assert!(open_human_targets(StageKind::Specification, ReworkLedger::default(), none).is_empty());
+}
+
+#[test]
+fn every_open_target_is_one_the_engine_accepts_and_every_other_is_refused() {
+    let roles = [HumanRole::Approver];
+    let ledgers = [
+        ReworkLedger::default(),
+        code_docs(1, 1),
+        code_docs(2, 0),
+        code_docs(2, 2),
+        ReworkLedger::default().with_used(ReworkTrack::Specification, 2),
+        ReworkLedger::default().with_used(ReworkTrack::Design, 2),
+    ];
+    for route in HUMAN_REWORK_ROUTES {
+        for ledger in ledgers {
+            let open = open_human_targets(route.from, ledger, ReworkLimits::default());
+            for target in route.targets {
+                let accepted = matches!(
+                    decide_human_rework(&human_request(route.from, *target, &roles, ledger)),
+                    HumanReworkDecision::Rework(_)
+                );
+                assert_eq!(
+                    accepted,
+                    open.contains(target),
+                    "{} to {target} with {ledger:?}",
+                    route.from
+                );
+            }
+        }
+    }
+}

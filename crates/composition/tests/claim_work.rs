@@ -24,6 +24,7 @@ use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::{LoadedPolicies, load_policy};
 use factory_composition::system::SystemClock;
 use factory_domain::ids::{AuditEventId, CausationId, JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::machines::limits::{ReworkLimits, ReworkTrack};
 use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus};
@@ -2142,6 +2143,47 @@ async fn a_rework_to_a_stage_the_waiting_stage_has_no_route_to_is_refused_and_no
         StageRunStatus::WaitingForHuman
     );
     assert_eq!(rig.status(job).await, JobStatus::WaitingForHuman);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rework_beyond_the_cap_of_its_phase_is_refused_as_the_rework_limit() {
+    // Real run 38: the specification waited at the rework limit, the owner was shown a rework
+    // command, and the factory answered "The job is not in a state this decision applies to".
+    // The cap of ADR 0023 holds for a person too, and the refusal now says so. A cap of zero puts
+    // the specification at its limit from the start.
+    let mut rig = Rig::new().await;
+    let mut config = rig.world.config.clone();
+    config.rework_limits = ReworkLimits::default().with_policy(ReworkTrack::Specification, 0);
+    let mut deps = rig.world.deps.clone();
+    deps.authority = Arc::new(StoreAuthority::new(
+        rig.world.store.clone(),
+        rig.allowlist.clone(),
+        Arc::clone(&rig.policies.engine),
+        rig.world.deps.clock.clone(),
+    ));
+    rig.engine =
+        Arc::new(Engine::new(deps, config, rig.world.handlers.clone()).expect("the engine starts"));
+    let (job, run) = rig.asking().await;
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Rework,
+        Some(run),
+        Some("SPECIFICATION"),
+        "say what goes to standard error",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::ReworkLimit.text())
+    );
+    assert_eq!(
+        rig.run_status(job, run).await,
+        StageRunStatus::WaitingForHuman
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
