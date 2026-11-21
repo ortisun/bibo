@@ -222,6 +222,14 @@ The job reads every job of the tenant, so its cost grows with the tenant's histo
 
 The `measurement` entry as text and its path. Writing it into the project's repository belongs to the knowledge base (ADR 0028) and is not built; until then the operator's command prints the entry.
 
+### How a person asks for a snapshot
+
+`factory-cli metrics snapshot --api URL --token-file FILE --from 2026-11-16T00:00:00Z --to 2026-11-23T00:00:00Z` prints the entry. It calls `GET /v1/process-metrics/snapshot` of the API, which runs the snapshot job for the caller's tenant and stores nothing. Anyone on the allowlist of the tenant may ask: the answer holds only totals and medians of that tenant, less than the list of jobs the same person can already read.
+
+- The window is compared with the window of the same length right before it.
+- A window may be at most 366 days long. The cost of a snapshot grows with the tenant's history, not with the window, and the request runs under the API's ordinary deadline and rate limit.
+- A snapshot names the commit of the factory that computed it. The build sets it at compile time in the environment variable `FACTORY_BUILD_COMMIT` (a full Git object id). To build such a binary by hand: `FACTORY_BUILD_COMMIT=$(git rev-parse HEAD) cargo build --release -p factory-api`. A build without it answers `503`: an entry that cannot say which code computed it cannot be computed again, so it is not handed out. Options weighed: a commit sent by the caller was rejected, because the caller could name any commit; a value in the configuration file was rejected, because it can drift from the binary that runs.
+
 ## Tier A settings
 
 A setting can be changed automatically only if it is declared here with its safe range. The first candidates:
@@ -292,6 +300,8 @@ Every decision is the file `docs/knowledge/improvements/<identifier>-<name>.md`,
 | The snapshot built from the facts of two windows, with "What stands out" | Built: `metrics::snapshot` |
 | Tier A settings, the choice of jobs, promotion, rollback and the `improvement` entry | Built as pure rules: `metrics::experiment`. Nothing applies a setting to a running job yet |
 | The snapshot job that reads the facts of query version 1 from the store | Built: `process_metrics` in `crates/workflow` |
-| A schedule for the snapshot job and a command for the operator | Not built |
+| The operator's command and the API route behind it | Built: `factory-cli metrics snapshot`, `GET /v1/process-metrics/snapshot` |
+| Passing `FACTORY_BUILD_COMMIT` to the build of the service images (`infra/service-images/build.sh`) | Not built. Until then the API of those images answers `503` on the snapshot route; a binary built by hand with the variable set answers |
+| A schedule for the snapshot job | Not built |
 | Writing the entries into a project's knowledge base by pull request | Not built. It needs the knowledge base of [ADR 0028](../adr/0028-project-knowledge-base.md) |
 | The retrospective agent and the scheduled sweeps | Not built |

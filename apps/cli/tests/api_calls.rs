@@ -158,6 +158,60 @@ fn status_sends_the_token_as_a_bearer_header_and_prints_plain_english() {
 }
 
 #[test]
+fn metrics_snapshot_asks_for_the_window_and_prints_the_entry() {
+    let file = token_file(0o600);
+    // The entry holds a line break, which is kept, and an escape character, which is not.
+    let body = r#"{"id":"M-2026-W47","path":"measurements/M-2026-W47.md","query_version":1,"computed_at_commit":"3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d","window":{"from":"2026-11-16T00:00:00Z","to":"2026-11-23T00:00:00Z"},"entry":"---\nid: M-2026-W47\n---\n\n| Metric | Value |\n\u001b[2Jline\n"}"#;
+    let api = fake(vec![(200, body)]);
+    let ran = cli(&format!(
+        "metrics snapshot --api http://{} --token-file {} --from 2026-11-16T00:00:00Z --to 2026-11-23T00:00:00Z",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert_eq!(
+        ran.out,
+        "---\nid: M-2026-W47\n---\n\n| Metric | Value |\n\u{fffd}[2Jline\n\n\
+         This entry belongs in docs/knowledge/measurements/M-2026-W47.md of the project.\n"
+    );
+    let sent = api.requests.lock().expect("lock").clone();
+    assert_eq!(sent.len(), 1);
+    assert!(
+        sent[0].starts_with(
+            "GET /v1/process-metrics/snapshot?from=2026-11-16T00:00:00Z&to=2026-11-23T00:00:00Z "
+        ),
+        "{}",
+        sent[0]
+    );
+    assert!(sent[0].contains(&format!("Bearer {}", token())));
+}
+
+#[test]
+fn metrics_snapshot_sends_nothing_for_a_window_it_cannot_read() {
+    let file = token_file(0o600);
+    let api = fake(vec![(200, "{}")]);
+    for arguments in [
+        "metrics",
+        "metrics totals",
+        "metrics snapshot",
+        "metrics snapshot --from 2026-11-16T00:00:00Z",
+        "metrics snapshot --from yesterday --to 2026-11-23T00:00:00Z",
+        "metrics snapshot --from 2026-11-16T00:00:00Z --to 2026-11-23T00:00:00Z&x=1Z",
+        "metrics snapshot --from 2026-11-16T00:00:00Z --to 2026-11-23T00:00:00+00:00",
+        "metrics snapshot --from 2026-11-16T00:00:00Z --to 2026-11-23T00:00:00Z extra",
+        "metrics snapshot --from 2026-11-16T00:00:00Z --to 2026-11-23T00:00:00Z --limit 5",
+    ] {
+        let ran = cli(&format!(
+            "{arguments} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{arguments}: {}", ran.err);
+    }
+    assert!(api.requests.lock().expect("lock").is_empty());
+}
+
+#[test]
 fn a_refusal_a_blocked_service_and_an_unreachable_one_end_differently() {
     let file = token_file(0o600);
     for (status, body, expected) in [

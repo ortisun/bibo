@@ -59,6 +59,28 @@ fn text<'a>(value: &'a Value, key: &str) -> Cow<'a, str> {
     printable(value.get(key).and_then(Value::as_str).unwrap_or("unknown"))
 }
 
+/// The `measurement` entry of a process snapshot, as the API computed it, with the file it belongs
+/// in. The entry has many lines, so each line goes through [`printable`] on its own: a line break
+/// is kept and every other control character is replaced.
+#[must_use]
+pub fn measurement(body: &Value) -> String {
+    let entry = body.get("entry").and_then(Value::as_str).unwrap_or("");
+    let mut out = String::new();
+    for line in entry.split('\n') {
+        out.push_str(&printable(line));
+        out.push('\n');
+    }
+    // The entry ends with a line break, which the split turned into one empty line too many.
+    if entry.ends_with('\n') {
+        out.pop();
+    }
+    out.push_str(&format!(
+        "\nThis entry belongs in docs/knowledge/{} of the project.\n",
+        text(body, "path")
+    ));
+    out
+}
+
 /// The lines of a refusal of the solo mode (ADR 0022), or `None` for any other answer. Every
 /// field of the body goes through [`printable`].
 fn solo_refusal(status: u16, code: &str, body: &Value) -> Option<String> {
