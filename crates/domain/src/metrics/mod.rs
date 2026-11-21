@@ -13,6 +13,10 @@
 //! | Comparing a rate before and after | [`wilson_interval`], [`rate_difference`] |
 //! | Comparing a duration or a cost before and after | [`median_difference`] |
 //! | The decision | [`Interval::verdict`], [`Direction`], [`Verdict`] |
+//! | The metric catalogue and the `metric` entry | [`Metric`], [`MetricDefinition`] |
+//! | The `measurement` entry | [`Measurement`], [`Window`], [`Row`] |
+//! | From the facts of a window to a snapshot | [`snapshot`], [`Samples`], [`WindowFacts`] |
+//! | Experiments and the `improvement` entry | [`Experiment`], [`Setting`], [`Improvement`] |
 //!
 //! No function uses floating point. A result that does not fit its type or its valid range is a
 //! [`MetricError`], never a wrapped or a saturated number. Nothing here reads the clock, a file or
@@ -20,21 +24,32 @@
 //! caller passes, so the same input always gives the same output.
 
 mod bootstrap;
+mod catalogue;
 mod comparison;
+mod experiment;
+mod measurement;
 mod percentile;
 mod proportion;
 mod quantity;
 mod rounding;
 mod sample;
+mod snapshot;
 mod wilson;
 
 pub use bootstrap::{Resamples, Seed, median_difference};
+pub use catalogue::{Facts, Group, Metric, MetricDefinition, Statistic, Unit};
 pub use comparison::{Direction, Interval, Verdict};
+pub use experiment::{
+    Change, Comparison, DiscardReason, Experiment, Improvement, Outcome, PromotionDecision,
+    RollbackDecision, SafeRange, Setting, SettingKind, Share, Tier, Windows,
+};
+pub use measurement::{Cell, Measurement, Reading, Row, Window, duration_text};
 pub use percentile::{Percentile, median, nearest_rank};
 pub use proportion::Proportion;
 pub use quantity::{MicroUsd, Milliseconds};
 pub use rounding::divide_half_even;
 pub use sample::{Measured, MinimumSample};
+pub use snapshot::{ComparisonSettings, Samples, WindowFacts, snapshot};
 pub use wilson::{MAXIMUM_RATE_SAMPLE, MILLIONTHS, RateInterval, rate_difference, wilson_interval};
 
 /// Why a metric could not be computed. Each message names the rule that was broken.
@@ -79,6 +94,31 @@ pub enum MetricError {
         maximum: u64,
         /// The offered value.
         offered: u64,
+    },
+    /// An experiment, or the comparisons given to it, broke a rule of the design.
+    #[error("the experiment is refused: {reason}")]
+    ExperimentRefused {
+        /// The rule that was broken.
+        reason: &'static str,
+    },
+    /// A window ended at or before its start.
+    #[error("a window needs its end after its start")]
+    WindowOutOfOrder,
+    /// A row of a snapshot does not fit the catalogue.
+    #[error("{statistic} of {metric} cannot be a row of a snapshot: {reason}")]
+    RowDoesNotFit {
+        /// The name of the metric.
+        metric: &'static str,
+        /// The statistic of the row.
+        statistic: &'static str,
+        /// The rule that was broken.
+        reason: &'static str,
+    },
+    /// A text that must be one line of an entry was empty or held a line break.
+    #[error("{what} must be one line of text that is not empty")]
+    TextIsNotOneLine {
+        /// The text.
+        what: &'static str,
     },
     /// An interval was built with its bounds out of order.
     #[error(

@@ -1,6 +1,6 @@
 # Process metrics and the improvement loop
 
-- Status: decided by the owner on 2026-11-20. The arithmetic of the section "How each number is computed" is built in the `metrics` module of `crates/domain`. Nothing else is built: see "What is built and what is not". The decisions and the options weighed are in [ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md).
+- Status: decided by the owner on 2026-11-20. The pure rules (arithmetic, catalogue, entries, experiments) are built in the `metrics` module of `crates/domain`. Nothing reads the database or changes a running job yet: see "What is built and what is not". The decisions and the options weighed are in [ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md).
 - Form: design.
 
 ## Purpose
@@ -74,6 +74,40 @@ Each metric is an entry of kind `metric` in the knowledge base, with the fields 
 
 Lead time for changes, deployment frequency, change failure rate, time to restore service. The factory never deploys; it only reads these from the project's own pipeline when the project grants that read.
 
+### Identifiers, direction and where the facts come from
+
+Each metric has a fixed identifier (`MT` for metric, never reused), a short name, the direction in which it gets better, and the statistics a snapshot shows for it. The last column says whether the facts it needs are stored today. The typed catalogue in the `metrics` module of `crates/domain` holds exactly these rows, and a test compares the two.
+
+| Identifier | Name | Unit | Better | Shown as | Facts |
+|---|---|---|---|---|---|
+| MT-0001 | lead-time-to-pull-request | ms | lower | median, 90th percentile | stored |
+| MT-0002 | stage-duration | ms | lower | median, 90th percentile | stored |
+| MT-0003 | human-wait-time | ms | lower | median, 90th percentile | stored |
+| MT-0004 | time-to-first-failing-test | ms | lower | median | not stored: needs test results with times |
+| MT-0005 | test-run-time | ms | lower | median, 90th percentile | not stored: needs test results with times |
+| MT-0006 | first-pass-gate-success | ratio | higher | rate | stored |
+| MT-0007 | rework-rounds | count | lower | total | stored |
+| MT-0008 | review-precision | ratio | higher | rate | not stored: needs the fate of each finding |
+| MT-0009 | escaped-defects | count | lower | total | not stored: needs bugs linked to pull requests |
+| MT-0010 | flaky-tests | count | lower | total | not stored: needs test results by commit |
+| MT-0011 | human-rejection-rate | ratio | lower | rate | not stored: needs the fate of each pull request (merged or closed) |
+| MT-0012 | cost-per-accepted-pull-request | micro-USD | lower | amount per item | not stored: needs the fate of each pull request (merged or closed) |
+| MT-0013 | tokens-per-task | count | lower | median | not stored: needs the tokens of each task in the database |
+| MT-0014 | escalations-to-the-larger-model | ratio | lower | rate | not stored: needs the model tier of each task in the database |
+| MT-0015 | knowledge-coverage | ratio | higher | rate | not stored: needs the knowledge base (ADR 0028) |
+| MT-0016 | knowledge-drift | count | lower | total | not stored: needs the knowledge base (ADR 0028) |
+| MT-0017 | knowledge-use | ratio | higher | rate | not stored: needs the knowledge base (ADR 0028) |
+| MT-0018 | lead-time-for-changes | ms | lower | median | not stored: read from the project's pipeline |
+| MT-0019 | deployment-frequency | count | higher | total | not stored: read from the project's pipeline |
+| MT-0020 | change-failure-rate | ratio | lower | rate | not stored: read from the project's pipeline |
+| MT-0021 | time-to-restore-service | ms | lower | median | not stored: read from the project's pipeline |
+
+A snapshot shows a metric whose facts are not stored as "not measured yet". It never shows zero for it.
+
+The column was checked against the migrations and the code on 2026-11-21. Five metrics have their facts in PostgreSQL today: the two times of a job and of a stage run, the status changes with their times (the outbox holds one event for each transition), the gate outcome of each stage run, and the retries of each task. The time a pull request is opened is taken as the end of the delivery stage run that opened it, because the factory opens the pull request in that stage and stores no other time for it. What is missing for the others: whether a pull request was merged or closed (read live from GitHub, never stored), the tokens and the model of each task (kept only in artifact files and in the broker's log), and the spend as a column (it is in the payload of the outbox events).
+
+In the knowledge base a definition is the file `docs/knowledge/metrics/<identifier>-<name>.md`, of kind `metric`. The module renders it from the catalogue, so the file and the code cannot say different things.
+
 ## How each number is computed
 
 This section is the contract for the `metrics` module of `crates/domain`. The module is pure: it reads no clock, no file and no database, and every function gives the same answer for the same input. Each rule below has tests at zero, one, the largest value, a negative value where the type allows one, and the rounding edge.
@@ -128,6 +162,8 @@ Each metric states its direction: lower is better (durations, costs, defects) or
 
 ## A measurement entry
 
+A snapshot is the file `docs/knowledge/measurements/<identifier>.md`, of kind `measurement`. The module renders it from the computed numbers.
+
 ```markdown
 ---
 id: M-2026-W47
@@ -135,19 +171,32 @@ kind: measurement
 title: Process numbers, week 47 of 2026
 window: { from: 2026-11-16T00:00:00Z, to: 2026-11-23T00:00:00Z }
 query_version: 3
-computed_at_commit: 3f2a9c1
+computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d
 ---
 
-| Metric | Value | Samples | Previous week |
+| Metric | Value | Samples | Previous |
 |---|---|---|---|
-| Lead time to pull request, median | 41 min | 23 | 55 min |
-| First-pass gate success | 60.9 % (14 of 23) | 23 | 52.4 % (11 of 21) |
-| Cost per accepted pull request | 0.84 USD | 19 | 1.02 USD |
-| Escaped defects | too few samples | 3 | too few samples |
+| MT-0001 lead-time-to-pull-request, median | 41 min 12 s | 23 | 55 min 3 s |
+| MT-0002 stage-duration, 90th percentile | 12.345 s | 88 | 15.020 s |
+| MT-0006 first-pass-gate-success | 60.9 % (14 of 23) | 23 | 52.4 % (11 of 21) |
+| MT-0007 rework-rounds | too few samples | 3 | too few samples |
+| MT-0012 cost-per-accepted-pull-request | not measured yet | | not measured yet |
 
 ## What stands out
 ...
 ```
+
+Rules of the entry:
+
+- **The window** starts at `from` and ends before `to`; `to` must be after `from`.
+- **The identifier.** A window of exactly seven days that starts on a Monday at 00:00 UTC is a week: `M-<year>-W<week>`, with the year and the week of ISO 8601 (the week belongs to the year that holds its Thursday). Any other window is `M-<from date>-to-<to date>`.
+- **A duration** is shown as `850 ms` below one second, as `12.345 s` below one minute, and above that in hours, minutes and whole seconds (`41 min 12 s`, `2 h 0 min 5 s`), the seconds rounded half to even. The computation keeps the whole milliseconds; only this text rounds.
+- **A count** is shown as the number. **A rate** and **an amount of money** are shown as the section "How each number is computed" says.
+- **Samples** is the number of samples behind the value. With fewer than the metric's minimum, the value is "too few samples" and the samples are still shown.
+- **Previous** is the same statistic over the window before, or `n/a` when there is none.
+- The entry has one row for each statistic of each metric of the catalogue, in the order of the catalogue. A metric is never left out: without facts it says "not measured yet".
+- The section "What stands out" has one line for each metric whose comparison with the window before shows an improvement or a worsening by the rules of "The decision". A rate is compared by the interval of its difference, a duration and a count shown as a median by the bootstrap of the medians. A total and an amount per item have no interval in this design, so they never stand out; a person reads them from the two columns. With too few samples in either window, or no window before, nothing stands out.
+- The snapshot is a pure function of the facts of the two windows, the query version, the commit and the seed: the same input gives the same entry, byte for byte.
 
 ## Tier A settings
 
@@ -164,14 +213,60 @@ A setting outside this table is tier B or C.
 
 ## Experiments
 
-A tier A variant runs on a share of jobs (10 percent by default) chosen by a hash of the job identifier, so the choice is reproducible. It is promoted when the comparison of ADR 0029 Decision 2 shows an improvement on its target metric and no guard metric is worse beyond its interval. It is rolled back when, after promotion, a guard metric worsens beyond its interval over the next window. Both are recorded as `improvement` entries and ledger entries.
+A tier A variant runs on a share of jobs (10 percent by default) and is judged by the comparison of ADR 0029 Decision 2. The rules below are the contract of `metrics::experiment` in `crates/domain`.
+
+### Which jobs get the variant
+
+The choice is a pure function of the experiment and the job, so it can be recomputed at any time:
+
+1. Take the SHA-256 of the text `experiment:<experiment identifier>:job:<job identifier>`.
+2. Read its first eight bytes as an unsigned integer, most significant byte first, and take the remainder of the division by 10 000.
+3. The job gets the variant when the remainder is below the share, which is given in hundredths of a percent (1000 is 10 percent). The share may be from 1 to 5000: an experiment never takes more than half of the jobs.
+
+The experiment's identifier is part of the hash. Options weighed: hashing the job identifier alone, as a first reading of "a hash of the job identifier" suggests, was rejected, because the same tenth of the jobs would then carry every experiment at once and the effects could not be told apart.
+
+### Promotion
+
+After each window the experiment compares the jobs with the variant against the jobs without it, on its target metric and on each guard metric:
+
+| What the comparison shows | Decision |
+|---|---|
+| A guard metric is a worsening | Discard |
+| The target metric is a worsening | Discard |
+| The target is an improvement, and every guard has enough samples and is not a worsening | Promote |
+| Anything else (too few samples, or no clear change), and windows remain | Keep running |
+| Anything else, and the last window has passed | Discard |
+
+A guard with too few samples blocks a promotion: the variant has not shown that it is safe. An experiment runs for at most 4 windows unless its declaration says otherwise (from 1 to 12).
+
+### Rollback
+
+After a promotion each guard metric of the next window is compared with the window before the promotion. One worsening rolls the setting back to its earlier value. Too few samples or no clear change keeps it.
+
+### What may be an experiment at all
+
+Only a setting of the table "Tier A settings", with a value inside its safe range. Each value is checked when the experiment is declared:
+
+- test order: on or off;
+- parallel tasks per job: from 1 to the policy's limit;
+- starting model tier: one of the tiers that passed the evaluation for that agent;
+- order of reviewers: a reordering of the same reviewers, none added, none removed, none twice.
+
+A change to a prompt, a skill, an evaluation case or a default model is tier B. A change to a policy, a gate, a security rule or an approval is tier C, and the module refuses to build an experiment for either.
+
+### The improvement entry
+
+Every decision is the file `docs/knowledge/improvements/<identifier>-<name>.md`, of kind `improvement` (`IM` for improvement), with the hypothesis, the setting and its two values, the measured difference of the target and of each guard with its interval, and the decision. The module renders it.
 
 ## What is built and what is not
 
 | Part | State |
 |---|---|
 | The arithmetic of "How each number is computed" | Built: `crates/domain/src/metrics/`, with its tests |
-| The metric catalogue as typed definitions and as `metric` entries | Not built |
-| The snapshot job over the facts the database already holds | Not built. It needs the knowledge base of [ADR 0028](../adr/0028-project-knowledge-base.md) for its `measurement` entries |
-| Tier A settings, experiments, promotion and rollback | Not built. They come after enough jobs exist to measure |
+| The metric catalogue as typed definitions, and the `metric` entry | Built: `metrics::catalogue` |
+| The `measurement` entry: its identifier, its rows and its text | Built: `metrics::measurement` |
+| The snapshot built from the facts of two windows, with "What stands out" | Built: `metrics::snapshot` |
+| Tier A settings, the choice of jobs, promotion, rollback and the `improvement` entry | Built as pure rules: `metrics::experiment`. Nothing applies a setting to a running job yet |
+| The snapshot job that reads the facts from the database | Not built |
+| Writing the entries into a project's knowledge base by pull request | Not built. It needs the knowledge base of [ADR 0028](../adr/0028-project-knowledge-base.md) |
 | The retrospective agent and the scheduled sweeps | Not built |
