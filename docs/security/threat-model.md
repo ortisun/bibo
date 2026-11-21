@@ -229,7 +229,7 @@ Status of every control: REQUIRED, DESIGNED, not implemented. "Policy key" point
 | C-38 | Approval integrity: live authorization, bound to head SHA and evidence, no bot or self approval where prohibited, step-up for sensitive actions | `approval.yaml` | `workflow`, `api` |
 | C-39 | Dependency change policy and scanners | `supply_chain` | `quality`, `policy` |
 | C-40 | Pinned, factory-built, scanned images | `supply_chain.images` | `sandbox`, `infra` |
-| C-41 | Dashboard hardening: inert rendering of untrusted text, CSP, CSRF protection, per-tenant authorization | none (dashboard design, ADR) | `dashboard`, `api` |
+| C-41 | Dashboard hardening: inert rendering of untrusted text, CSP, CSRF protection, per-tenant authorization | none; designed in [ADR 0031](../adr/0031-control-plane-design-system.md) and [the security patterns](../design-system/security-patterns.md), not built | `dashboard`, `api` |
 | C-42 | SSRF guard for any factory-side fetch | `untrusted_content.web_fetch` | `runtime` |
 | C-43 | Policy integrity: load only from the protected source, tighten-only project overrides, record the policy hash | `policy` | `policy` |
 

@@ -1,0 +1,309 @@
+{
+  "color": {
+    "bg": {
+      "$type": "color",
+      "$value": "{palette.ink.50}",
+      "$description": "The page behind everything."
+    },
+    "surface": {
+      "$type": "color",
+      "$value": "{palette.ink.0}",
+      "$description": "Panels, tables, cards."
+    },
+    "surface-raised": {
+      "$type": "color",
+      "$value": "{palette.ink.0}",
+      "$description": "A panel on a panel: menus, the decision panel."
+    },
+    "surface-sunken": {
+      "$type": "color",
+      "$value": "{palette.ink.25}",
+      "$description": "Wells: code, inputs, the inside of the untrusted-content frame."
+    },
+    "surface-hover": {
+      "$type": "color",
+      "$value": "{palette.ink.50}",
+      "$description": "A row or item under the pointer."
+    },
+    "border": {
+      "$type": "color",
+      "$value": "{palette.ink.200}",
+      "$description": "Dividers and panel edges."
+    },
+    "border-strong": {
+      "$type": "color",
+      "$value": "{palette.ink.500}",
+      "$description": "Control edges; 3 to 1 against the surface."
+    },
+    "fg": {
+      "$type": "color",
+      "$value": "{palette.ink.900}",
+      "$description": "Body text and headings."
+    },
+    "fg-muted": {
+      "$type": "color",
+      "$value": "{palette.ink.600}",
+      "$description": "Secondary text and labels."
+    },
+    "fg-subtle": {
+      "$type": "color",
+      "$value": "{palette.ink.500}",
+      "$description": "Captions and placeholders."
+    },
+    "accent": {
+      "$type": "color",
+      "$value": "{palette.cobalt.600}",
+      "$description": "Links and the selected item."
+    },
+    "accent-solid": {
+      "$type": "color",
+      "$value": "{palette.cobalt.600}",
+      "$description": "Primary button background."
+    },
+    "accent-solid-hover": {
+      "$type": "color",
+      "$value": "{palette.cobalt.700}",
+      "$description": "Primary button under the pointer."
+    },
+    "on-accent": {
+      "$type": "color",
+      "$value": "{palette.ink.0}",
+      "$description": "Text on the primary button."
+    },
+    "accent-tint": {
+      "$type": "color",
+      "$value": "{palette.cobalt.100}",
+      "$description": "Selected navigation item."
+    },
+    "focus": {
+      "$type": "color",
+      "$value": "{palette.cobalt.500}",
+      "$description": "The focus ring."
+    },
+    "danger-solid": {
+      "$type": "color",
+      "$value": "{palette.red.600}",
+      "$description": "Danger button background."
+    },
+    "danger-solid-hover": {
+      "$type": "color",
+      "$value": "{palette.red.700}",
+      "$description": "Danger button under the pointer."
+    },
+    "on-danger": {
+      "$type": "color",
+      "$value": "{palette.ink.0}",
+      "$description": "Text on the danger button."
+    },
+    "nav-bg": {
+      "$type": "color",
+      "$value": "{palette.ink.900}",
+      "$description": "The side navigation."
+    },
+    "nav-fg": {
+      "$type": "color",
+      "$value": "{palette.ink.200}",
+      "$description": "Navigation text."
+    },
+    "nav-fg-strong": {
+      "$type": "color",
+      "$value": "{palette.ink.0}",
+      "$description": "The current navigation item."
+    },
+    "nav-item-active": {
+      "$type": "color",
+      "$value": "{palette.ink.800}",
+      "$description": "Background of the current navigation item."
+    },
+    "overlay": {
+      "$type": "color",
+      "$value": "rgba(11, 13, 18, 0.56)",
+      "$description": "Behind a dialog."
+    },
+    "state": {
+      "pass": {
+        "$description": "Done and proven.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.green.700}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.green.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.green.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.green.600}"
+        }
+      },
+      "active": {
+        "$description": "Working now.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.cobalt.700}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.cobalt.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.cobalt.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.cobalt.600}"
+        }
+      },
+      "human": {
+        "$description": "Waits for a person.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.orchid.700}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.orchid.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.orchid.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.orchid.600}"
+        }
+      },
+      "blocked": {
+        "$description": "Stopped until a person clears the cause.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.orange.700}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.orange.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.orange.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.orange.600}"
+        }
+      },
+      "fail": {
+        "$description": "Failed or refused.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.red.700}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.red.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.red.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.red.600}"
+        }
+      },
+      "warn": {
+        "$description": "Needs attention, does not stop work.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.amber.700}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.amber.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.amber.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.amber.600}"
+        }
+      },
+      "neutral": {
+        "$description": "Not started, not needed, or ended by a person.",
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.ink.600}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.ink.100}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.ink.300}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.ink.500}"
+        }
+      }
+    },
+    "env": {
+      "production": {
+        "$type": "color",
+        "$value": "{palette.crimson.600}",
+        "$description": "Banner of the production environment."
+      },
+      "on-production": {
+        "$type": "color",
+        "$value": "{palette.ink.0}",
+        "$description": "Text on the production banner."
+      },
+      "test": {
+        "$type": "color",
+        "$value": "{palette.amber.300}",
+        "$description": "Banner of a test or local environment."
+      },
+      "on-test": {
+        "$type": "color",
+        "$value": "{palette.ink.950}",
+        "$description": "Text on the test banner."
+      }
+    },
+    "untrusted": {
+      "edge": {
+        "$type": "color",
+        "$value": "{palette.amber.600}",
+        "$description": "Edge of the untrusted-content frame. Only that frame uses it."
+      },
+      "stripe": {
+        "$type": "color",
+        "$value": "{palette.amber.100}",
+        "$description": "Stripe of the untrusted-content frame."
+      },
+      "label": {
+        "$type": "color",
+        "$value": "{palette.amber.800}",
+        "$description": "Label text of the untrusted-content frame."
+      },
+      "ctl-bg": {
+        "$type": "color",
+        "$value": "{palette.red.100}",
+        "$description": "Background of a made-visible control character."
+      },
+      "ctl-fg": {
+        "$type": "color",
+        "$value": "{palette.red.800}",
+        "$description": "Text of a made-visible control character."
+      }
+    }
+  },
+  "$description": "Light theme. Every semantic colour token is first defined here."
+}

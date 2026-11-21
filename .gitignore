@@ -12,6 +12,8 @@ target/
 .tools/
 node_modules/
 dist/
+# The design system commits its generated CSS: scripts/ci.sh checks it is current (ADR 0031).
+!/design-system/dist/
 .env
 .env.*
 !.env.example

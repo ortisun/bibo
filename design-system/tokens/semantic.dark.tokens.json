@@ -1,0 +1,269 @@
+{
+  "color": {
+    "bg": {
+      "$type": "color",
+      "$value": "{palette.ink.1000}"
+    },
+    "surface": {
+      "$type": "color",
+      "$value": "{palette.ink.950}"
+    },
+    "surface-raised": {
+      "$type": "color",
+      "$value": "{palette.ink.900}"
+    },
+    "surface-sunken": {
+      "$type": "color",
+      "$value": "{palette.ink.1000}"
+    },
+    "surface-hover": {
+      "$type": "color",
+      "$value": "{palette.ink.925}"
+    },
+    "border": {
+      "$type": "color",
+      "$value": "{palette.ink.800}"
+    },
+    "border-strong": {
+      "$type": "color",
+      "$value": "{palette.ink.500}"
+    },
+    "fg": {
+      "$type": "color",
+      "$value": "{palette.ink.100}"
+    },
+    "fg-muted": {
+      "$type": "color",
+      "$value": "{palette.ink.300}"
+    },
+    "fg-subtle": {
+      "$type": "color",
+      "$value": "{palette.ink.400}"
+    },
+    "accent": {
+      "$type": "color",
+      "$value": "{palette.cobalt.300}"
+    },
+    "accent-solid": {
+      "$type": "color",
+      "$value": "{palette.cobalt.500}"
+    },
+    "accent-solid-hover": {
+      "$type": "color",
+      "$value": "{palette.cobalt.400}"
+    },
+    "on-accent": {
+      "$type": "color",
+      "$value": "{palette.ink.1000}"
+    },
+    "accent-tint": {
+      "$type": "color",
+      "$value": "{palette.cobalt.900}"
+    },
+    "focus": {
+      "$type": "color",
+      "$value": "{palette.cobalt.300}"
+    },
+    "danger-solid": {
+      "$type": "color",
+      "$value": "{palette.red.400}"
+    },
+    "danger-solid-hover": {
+      "$type": "color",
+      "$value": "{palette.red.300}"
+    },
+    "on-danger": {
+      "$type": "color",
+      "$value": "{palette.ink.1000}"
+    },
+    "nav-bg": {
+      "$type": "color",
+      "$value": "{palette.ink.950}"
+    },
+    "nav-fg": {
+      "$type": "color",
+      "$value": "{palette.ink.300}"
+    },
+    "nav-fg-strong": {
+      "$type": "color",
+      "$value": "{palette.ink.0}"
+    },
+    "nav-item-active": {
+      "$type": "color",
+      "$value": "{palette.ink.850}"
+    },
+    "overlay": {
+      "$type": "color",
+      "$value": "rgba(0, 0, 0, 0.66)"
+    },
+    "state": {
+      "pass": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.green.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.green.900}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.green.800}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.green.400}"
+        }
+      },
+      "active": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.cobalt.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.cobalt.900}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.cobalt.800}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.cobalt.400}"
+        }
+      },
+      "human": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.orchid.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.orchid.900}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.orchid.800}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.orchid.400}"
+        }
+      },
+      "blocked": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.orange.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.orange.900}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.orange.800}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.orange.400}"
+        }
+      },
+      "fail": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.red.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.red.900}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.red.800}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.red.400}"
+        }
+      },
+      "warn": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.amber.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.amber.900}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.amber.800}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.amber.400}"
+        }
+      },
+      "neutral": {
+        "fg": {
+          "$type": "color",
+          "$value": "{palette.ink.300}"
+        },
+        "bg": {
+          "$type": "color",
+          "$value": "{palette.ink.850}"
+        },
+        "border": {
+          "$type": "color",
+          "$value": "{palette.ink.700}"
+        },
+        "solid": {
+          "$type": "color",
+          "$value": "{palette.ink.400}"
+        }
+      }
+    },
+    "env": {
+      "production": {
+        "$type": "color",
+        "$value": "{palette.crimson.500}"
+      },
+      "on-production": {
+        "$type": "color",
+        "$value": "{palette.ink.0}"
+      },
+      "test": {
+        "$type": "color",
+        "$value": "{palette.amber.400}"
+      },
+      "on-test": {
+        "$type": "color",
+        "$value": "{palette.ink.1000}"
+      }
+    },
+    "untrusted": {
+      "edge": {
+        "$type": "color",
+        "$value": "{palette.amber.400}"
+      },
+      "stripe": {
+        "$type": "color",
+        "$value": "{palette.amber.900}"
+      },
+      "label": {
+        "$type": "color",
+        "$value": "{palette.amber.300}"
+      },
+      "ctl-bg": {
+        "$type": "color",
+        "$value": "{palette.red.900}"
+      },
+      "ctl-fg": {
+        "$type": "color",
+        "$value": "{palette.red.300}"
+      }
+    }
+  },
+  "$description": "Dark theme. Same token names as the light theme; only values differ."
+}

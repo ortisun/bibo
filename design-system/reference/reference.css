@@ -1,0 +1,80 @@
+/* Styles of the reference page only. Product screens do not import this file. */
+
+body.ds-root {
+  min-height: 100%;
+}
+
+.ref-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-6);
+  min-width: 0;
+}
+
+.ref-view[hidden] {
+  display: none;
+}
+
+.ref-demo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border: 1px dashed var(--ds-color-border-strong);
+  border-radius: var(--ds-radius-sm);
+}
+
+.ref-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--ds-space-2) var(--ds-space-4);
+  margin: 0;
+  font-size: var(--ds-font-size-sm);
+}
+
+.ref-facts dt {
+  color: var(--ds-color-fg-muted);
+}
+
+.ref-facts dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.ref-spark-grid {
+  stroke: var(--ds-color-border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.ref-swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--ds-space-3);
+}
+
+.ref-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+  font-size: var(--ds-font-size-xs);
+}
+
+.ref-swatch__chip {
+  height: 40px;
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-sm);
+}
+
+.ref-swatch__name {
+  font-family: var(--ds-font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+.ref-swatch__value {
+  font-family: var(--ds-font-family-mono);
+  color: var(--ds-color-fg-muted);
+}

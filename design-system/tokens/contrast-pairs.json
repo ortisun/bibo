@@ -1,0 +1,295 @@
+{
+  "$description": "Foreground and background pairs checked in both themes. min is the WCAG 2.2 contrast ratio: 4.5 for text, 3 for icons, borders and the focus ring.",
+  "pairs": [
+    {
+      "fg": "color.fg",
+      "bg": "color.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg-muted",
+      "bg": "color.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg-muted",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg",
+      "bg": "color.surface-raised",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg-muted",
+      "bg": "color.surface-raised",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg",
+      "bg": "color.surface-sunken",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg-muted",
+      "bg": "color.surface-sunken",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg",
+      "bg": "color.surface-hover",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg-muted",
+      "bg": "color.surface-hover",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg-subtle",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.accent",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.border-strong",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.focus",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.fg-subtle",
+      "bg": "color.surface-raised",
+      "min": 4.5
+    },
+    {
+      "fg": "color.accent",
+      "bg": "color.surface-raised",
+      "min": 4.5
+    },
+    {
+      "fg": "color.border-strong",
+      "bg": "color.surface-raised",
+      "min": 3
+    },
+    {
+      "fg": "color.focus",
+      "bg": "color.surface-raised",
+      "min": 3
+    },
+    {
+      "fg": "color.fg-subtle",
+      "bg": "color.surface-sunken",
+      "min": 4.5
+    },
+    {
+      "fg": "color.accent",
+      "bg": "color.surface-sunken",
+      "min": 4.5
+    },
+    {
+      "fg": "color.border-strong",
+      "bg": "color.surface-sunken",
+      "min": 3
+    },
+    {
+      "fg": "color.focus",
+      "bg": "color.surface-sunken",
+      "min": 3
+    },
+    {
+      "fg": "color.on-accent",
+      "bg": "color.accent-solid",
+      "min": 4.5
+    },
+    {
+      "fg": "color.on-accent",
+      "bg": "color.accent-solid-hover",
+      "min": 4.5
+    },
+    {
+      "fg": "color.on-danger",
+      "bg": "color.danger-solid",
+      "min": 4.5
+    },
+    {
+      "fg": "color.on-danger",
+      "bg": "color.danger-solid-hover",
+      "min": 4.5
+    },
+    {
+      "fg": "color.accent",
+      "bg": "color.accent-tint",
+      "min": 4.5
+    },
+    {
+      "fg": "color.fg",
+      "bg": "color.accent-tint",
+      "min": 4.5
+    },
+    {
+      "fg": "color.nav-fg",
+      "bg": "color.nav-bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.nav-fg-strong",
+      "bg": "color.nav-item-active",
+      "min": 4.5
+    },
+    {
+      "fg": "color.nav-fg",
+      "bg": "color.nav-item-active",
+      "min": 4.5
+    },
+    {
+      "fg": "color.env.on-production",
+      "bg": "color.env.production",
+      "min": 4.5
+    },
+    {
+      "fg": "color.env.on-test",
+      "bg": "color.env.test",
+      "min": 4.5
+    },
+    {
+      "fg": "color.untrusted.label",
+      "bg": "color.surface-sunken",
+      "min": 4.5
+    },
+    {
+      "fg": "color.untrusted.label",
+      "bg": "color.untrusted.stripe",
+      "min": 4.5
+    },
+    {
+      "fg": "color.untrusted.edge",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.untrusted.ctl-fg",
+      "bg": "color.untrusted.ctl-bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.pass.fg",
+      "bg": "color.state.pass.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.pass.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.pass.solid",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.state.active.fg",
+      "bg": "color.state.active.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.active.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.active.solid",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.state.human.fg",
+      "bg": "color.state.human.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.human.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.human.solid",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.state.blocked.fg",
+      "bg": "color.state.blocked.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.blocked.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.blocked.solid",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.state.fail.fg",
+      "bg": "color.state.fail.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.fail.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.fail.solid",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.state.warn.fg",
+      "bg": "color.state.warn.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.warn.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.warn.solid",
+      "bg": "color.surface",
+      "min": 3
+    },
+    {
+      "fg": "color.state.neutral.fg",
+      "bg": "color.state.neutral.bg",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.neutral.fg",
+      "bg": "color.surface",
+      "min": 4.5
+    },
+    {
+      "fg": "color.state.neutral.solid",
+      "bg": "color.surface",
+      "min": 3
+    }
+  ]
+}

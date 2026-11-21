@@ -293,6 +293,10 @@ register_builtin_steps() {
   internal_step workflow-policy "Workflows: actions pinned to commit SHAs, no pull_request_target, least privilege (ST-10)" "python3"
   internal_step tool-pins "Tool versions and archive hashes agree between scripts/lib/tool-pins.sh, the workflow and the pyright lockfile" "python3"
   internal_step policy-yaml "policies/*.yaml follow the parser contract and name only real threats (ST-06)" "uv python3"
+  step design-tokens "Design tokens: generated CSS is current and every contrast pair meets WCAG 2.2 AA (ADR 0031)" "python3" "" -- \
+    python3 -I design-system/tools/build_tokens.py --check
+  step design-tokens-tests "Design token generator: unit tests (references, cycles, contrast formula)" "python3" "" -- \
+    python3 -I design-system/tools/test_build_tokens.py
   step readability-corpus "Readability corpus is well formed and matches the master prompt" "python3" "" -- \
     python3 -I fixtures/readability/check_corpus.py --prompt-examples
   step readability-corpus-selftest "Readability corpus validator rejects malformed input" "python3" "" -- \

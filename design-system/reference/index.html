@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Bibo Control Plane</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="../dist/tokens.css">
+<link rel="stylesheet" href="../css/components.css">
+<link rel="stylesheet" href="reference.css">
+<script src="reference.js" defer></script>
+</head>
+<body class="ds-root">
+
+<svg class="ds-visually-hidden" aria-hidden="true" focusable="false">
+  <symbol id="i-overview" viewBox="0 0 16 16"><path d="M2 2h5v5H2zM9 2h5v3H9zM9 7h5v7H9zM2 9h5v5H2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+  <symbol id="i-decision" viewBox="0 0 16 16"><path d="M8 1.5 14.5 8 8 14.5 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="m5.6 8 1.7 1.7 3.1-3.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-jobs" viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-ledger" viewBox="0 0 16 16"><rect x="5" y="1.5" width="6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="5" y="10.5" width="6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 5.5v5" stroke="currentColor" stroke-width="1.4" stroke-dasharray="1.6 1.4"/></symbol>
+  <symbol id="i-gate" viewBox="0 0 16 16"><path d="M3 14V5l5-3 5 3v9M6 14V9h4v5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+  <symbol id="i-sandbox" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.2 1.6"/><rect x="5.5" y="5.5" width="5" height="5" rx="1" fill="currentColor"/></symbol>
+  <symbol id="i-repo" viewBox="0 0 16 16"><path d="M3.5 2.5h8a1 1 0 0 1 1 1v10H5a1.5 1.5 0 0 1-1.5-1.5z M3.5 12A1.5 1.5 0 0 1 5 10.5h7.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+  <symbol id="i-key" viewBox="0 0 16 16"><circle cx="5.5" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8.5 8h6M12.5 8v2.5M10.5 8v2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-people" viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M1.5 14c.4-2.6 2.2-4 4.5-4s4.1 1.4 4.5 4M11 3.2a2.4 2.4 0 0 1 0 4.6M12.5 10.3c1.1.6 1.8 1.8 2 3.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1 8.5h3l2-5 3 9 2-4h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5.5" cy="6.5" r="1" fill="currentColor"/><circle cx="8.5" cy="4.8" r="1" fill="currentColor"/><circle cx="11" cy="7" r="1" fill="currentColor"/><path d="M8 14.2a2 2 0 0 1 0-4h1.2" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-securitykey" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.5 15.5v4a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-4" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><path d="M5.2 1.5h5.6l3.7 3.7v5.6l-3.7 3.7H5.2l-3.7-3.7V5.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M5.5 8h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="currentColor"/><path d="M8 7v10M8 12h5.2a2.5 2.5 0 0 0 0-5H8M8 12h6a2.5 2.5 0 0 1 0 5H8" fill="none" stroke="#0b0d12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+
+<div class="ds-env-banner" data-env="test" role="note">
+  <span>Test environment</span>
+  <span aria-hidden="true">·</span>
+  <span>Example data, not connected to an API</span>
+</div>
+
+<div class="ds-app">
+  <nav class="ds-nav" aria-label="Main">
+    <div class="ds-brand">
+      <svg class="ds-brand__mark" aria-hidden="true"><use href="#i-mark"/></svg>
+      <span>Bibo<span class="ds-brand__sub">Control plane</span></span>
+    </div>
+
+    <div class="ds-nav__group">
+      <div class="ds-nav__label">Work</div>
+      <a class="ds-nav__item" href="#overview" data-view-link="overview"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-overview"/></svg>Overview</a>
+      <a class="ds-nav__item" href="#decision" data-view-link="decision"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-decision"/></svg>Decisions<span class="ds-nav__count" aria-label="3 waiting for you">3</span></a>
+      <a class="ds-nav__item" href="#overview" data-view-link="jobs"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-jobs"/></svg>Jobs</a>
+    </div>
+
+    <div class="ds-nav__group">
+      <div class="ds-nav__label">Assurance</div>
+      <a class="ds-nav__item" href="#ledger" data-view-link="ledger"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-ledger"/></svg>Evidence ledger</a>
+      <a class="ds-nav__item" href="#ledger" data-view-link="gates"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-gate"/></svg>Gates and policies</a>
+      <a class="ds-nav__item" href="#ledger" data-view-link="sandbox"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-sandbox"/></svg>Sandbox and egress</a>
+    </div>
+
+    <div class="ds-nav__group">
+      <div class="ds-nav__label">Administration</div>
+      <a class="ds-nav__item" href="#repositories" data-view-link="repositories"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-repo"/></svg>Repositories</a>
+      <a class="ds-nav__item" href="#repositories" data-view-link="credentials"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-key"/></svg>Credentials</a>
+      <a class="ds-nav__item" href="#repositories" data-view-link="access"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-people"/></svg>Access</a>
+      <a class="ds-nav__item" href="#overview" data-view-link="troubleshooter"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-pulse"/></svg>Troubleshooter</a>
+    </div>
+
+    <div class="ds-nav__group">
+      <div class="ds-nav__label">This system</div>
+      <a class="ds-nav__item" href="#components" data-view-link="components"><svg class="ds-nav__icon" aria-hidden="true"><use href="#i-palette"/></svg>Components</a>
+    </div>
+
+    <div class="ds-nav__foot">Design system 0.1 · ADR 0031 · proposed</div>
+  </nav>
+
+  <div class="ds-shell">
+    <header class="ds-topbar">
+      <span class="ds-tenant" title="Tenant">
+        <span class="ds-shape" data-tone="active" aria-hidden="true"></span>
+        <span>ortisun</span>
+        <span class="ds-tenant__id">tenant 7c41e2</span>
+      </span>
+      <div class="ds-search">
+        <label class="ds-visually-hidden" for="search">Search jobs, repositories and ledger entries</label>
+        <input class="ds-input" id="search" type="search" placeholder="Search jobs, repositories, digests" autocomplete="off">
+      </div>
+      <div class="ds-topbar__spacer"></div>
+      <div class="ds-segmented" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="system" aria-pressed="true">System</button>
+        <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+        <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+      </div>
+      <span class="ds-session" id="session" data-warn="false" title="Idle sign-out">
+        <span class="ds-visually-hidden">Session: </span>signs out in <span class="ds-num" id="session-left">14:52</span>
+      </span>
+      <span class="ds-actor" data-kind="human">
+        <span class="ds-actor__avatar" aria-hidden="true">MO</span>
+        <span>Marcelo O.</span>
+        <span class="ds-actor__role">approver</span>
+      </span>
+    </header>
+
+    <main class="ds-main" id="main">
+
+      <!-- ===================================================== OVERVIEW -->
+      <section class="ref-view" data-view="overview" aria-labelledby="h-overview">
+        <div class="ds-page-header">
+          <div class="ds-page-header__text">
+            <span class="ds-eyebrow">Overview</span>
+            <h1 id="h-overview">Factory health</h1>
+            <p class="ds-muted">What waits for you, what is blocked, and whether the evidence still holds. Read top to bottom.</p>
+          </div>
+          <div class="ds-page-header__actions">
+            <a class="ds-btn" href="#ledger">Open the ledger</a>
+            <a class="ds-btn ds-btn--primary" href="#decision">Review decisions (3)</a>
+          </div>
+        </div>
+
+        <div class="ds-callout ds-callout--strong" data-tone="blocked" role="status">
+          <span class="ds-shape" data-tone="blocked" aria-hidden="true"></span>
+          <div class="ds-callout__body">
+            <span class="ds-callout__title">Work stopped on ortisun/legacy-billing</span>
+            <span>Stopped by Ana S. (operator) at <span class="ds-time"><time datetime="2026-11-20T12:41:07Z">2026-11-20 12:41:07Z</time></span>: "Suspected leaked installation token, rotating." Two jobs were cancelled; nothing is running there.</span>
+          </div>
+          <a class="ds-btn ds-btn--sm" href="#repositories">View repository</a>
+        </div>
+
+        <div class="ds-grid ds-grid--stats">
+          <div class="ds-stat">
+            <span class="ds-stat__label"><span class="ds-shape" data-tone="active" aria-hidden="true"></span>Jobs active</span>
+            <span class="ds-stat__value">7</span>
+            <span class="ds-stat__note">4 in implementation, 3 in validation</span>
+          </div>
+          <div class="ds-stat">
+            <span class="ds-stat__label"><span class="ds-shape" data-tone="human" aria-hidden="true"></span>Waiting for a person</span>
+            <span class="ds-stat__value">3</span>
+            <span class="ds-stat__note">Oldest waits 2 h 14 min</span>
+          </div>
+          <div class="ds-stat">
+            <span class="ds-stat__label"><span class="ds-shape" data-tone="blocked" aria-hidden="true"></span>Blocked</span>
+            <span class="ds-stat__value">1</span>
+            <span class="ds-stat__note">Dependency decision on <code>serde_yaml</code></span>
+          </div>
+          <div class="ds-stat">
+            <span class="ds-stat__label"><span class="ds-shape" data-tone="pass" aria-hidden="true"></span>Gate pass rate, 7 days</span>
+            <span class="ds-stat__value">91.4<small> %</small></span>
+            <svg class="ds-spark" viewBox="0 0 120 32" preserveAspectRatio="none" role="img" aria-label="Pass rate per day over 7 days, from 86.0 to 91.4 percent">
+              <line class="ref-spark-grid" x1="0" x2="120" y1="16" y2="16"/>
+              <path class="ds-spark__area" d="M0 26 L20 22 L40 24 L60 15 L80 17 L100 10 L120 6 L120 32 L0 32 Z"/>
+              <path class="ds-spark__line" d="M0 26 L20 22 L40 24 L60 15 L80 17 L100 10 L120 6"/>
+              <circle class="ds-spark__end" cx="118" cy="6" r="2.5"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="ds-grid ds-grid--split">
+          <div class="ds-panel">
+            <div class="ds-panel__header">
+              <h2>Waiting for you</h2>
+              <span class="ds-subtle">Needs the approver designation</span>
+            </div>
+            <div class="ds-panel__body ds-panel__body--flush">
+              <div class="ds-table-wrap">
+                <table class="ds-table">
+                  <thead><tr><th scope="col">What</th><th scope="col">Waits for</th><th scope="col">Repository</th><th scope="col" class="ds-num">Waiting</th><th scope="col"><span class="ds-visually-hidden">Action</span></th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td><span class="ds-table__primary">Add password reset support</span><span class="ds-table__secondary">Pull request #118 · job 3f9a21</span></td>
+                      <td><span class="ds-state" data-tone="human">Pull request approval</span></td>
+                      <td>ortisun/bibo</td>
+                      <td class="ds-num">2 h 14 min</td>
+                      <td><a class="ds-btn ds-btn--sm" href="#decision">Review</a></td>
+                    </tr>
+                    <tr>
+                      <td><span class="ds-table__primary">Validate trading data before backtesting</span><span class="ds-table__secondary">Specification draft · job 8b02d7</span></td>
+                      <td><span class="ds-state" data-tone="human">Specification approval</span></td>
+                      <td>ortisun/quant-lab</td>
+                      <td class="ds-num">48 min</td>
+                      <td><a class="ds-btn ds-btn--sm" href="#decision">Review</a></td>
+                    </tr>
+                    <tr>
+                      <td><span class="ds-table__primary">Add offline progress saving</span><span class="ds-table__secondary">Two questions · job c4e990</span></td>
+                      <td><span class="ds-state" data-tone="human">Answer</span></td>
+                      <td>ortisun/puzzle-game</td>
+                      <td class="ds-num">12 min</td>
+                      <td><a class="ds-btn ds-btn--sm" href="#decision">Answer</a></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="ds-stack">
+            <div class="ds-panel">
+              <div class="ds-panel__header"><h2>Evidence</h2><span class="ds-state" data-tone="pass">Chain verified</span></div>
+              <div class="ds-panel__body">
+                <p class="ds-subtle">Last verification <span class="ds-time"><time datetime="2026-11-20T13:58:02Z">2026-11-20 13:58:02Z</time></span>, 4,812 entries.</p>
+                <div class="ds-row"><span class="ds-subtle">Head</span><span class="ds-digest" data-copy="sha256:4f1c9a0be27d55c81f63a2e09d7b4c11e8f02a6d39b57c0e1a84f6d2c90b3e57"><span class="ds-digest__alg">sha256</span><span class="ds-digest__value">4f1c9a0b…c90b3e57</span><button class="ds-copy" type="button" aria-label="Copy the full digest"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></span></div>
+              </div>
+            </div>
+            <div class="ds-panel">
+              <div class="ds-panel__header"><h2>Model budget today</h2><span class="ds-subtle">Subscription mode</span></div>
+              <div class="ds-panel__body">
+                <div class="ds-meter">
+                  <div class="ds-meter__head"><label for="m-tokens">Tokens</label><span class="ds-meter__value">1,284,000 of 2,000,000</span></div>
+                  <meter id="m-tokens" min="0" max="2000000" low="1500000" high="1800000" optimum="0" value="1284000">64 %</meter>
+                </div>
+                <div class="ds-meter">
+                  <div class="ds-meter__head"><label for="m-runs">Agent runs</label><span class="ds-meter__value">171 of 200</span></div>
+                  <meter id="m-runs" min="0" max="200" low="150" high="180" optimum="0" value="171">86 %</meter>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-panel">
+          <div class="ds-panel__header"><h2>Recent jobs</h2><a class="ds-btn ds-btn--ghost ds-btn--sm" href="#overview">All jobs</a></div>
+          <div class="ds-panel__body ds-panel__body--flush">
+            <div class="ds-table-wrap">
+              <table class="ds-table">
+                <thead><tr><th scope="col">Job</th><th scope="col">State</th><th scope="col">Stage</th><th scope="col">Repository</th><th scope="col">Started</th></tr></thead>
+                <tbody id="recent-jobs"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================== DECISION -->
+      <section class="ref-view" data-view="decision" aria-labelledby="h-decision" hidden>
+        <div class="ds-page-header">
+          <div class="ds-page-header__text">
+            <nav class="ds-breadcrumb" aria-label="Breadcrumb"><a href="#decision">Decisions</a><span>ortisun/bibo</span><span>Job 3f9a21</span></nav>
+            <h1 id="h-decision">Add password reset support</h1>
+            <p class="ds-muted">Pull request <a href="#decision">#118</a> waits for your approval. The factory never merges; approving lets the protected branch rules take over.</p>
+          </div>
+          <div class="ds-page-header__actions">
+            <span class="ds-state ds-state--lg" data-tone="human">Waiting for a person</span>
+          </div>
+        </div>
+
+        <div class="ds-panel">
+          <div class="ds-panel__header"><h2>Pipeline</h2><span class="ds-subtle">Assurance level reached: <strong>VERIFIED_IN_SANDBOX</strong></span></div>
+          <div class="ds-panel__body"><ol class="ds-pipeline" id="pipeline" aria-label="Stages of the job"></ol></div>
+        </div>
+
+        <div class="ds-grid ds-grid--split">
+          <div class="ds-stack">
+            <div class="ds-panel">
+              <div class="ds-panel__header"><h2>What the factory changed</h2><span class="ds-subtle">Written by the factory</span></div>
+              <div class="ds-panel__body">
+                <p>Adds a password reset flow: a request endpoint that sends a single-use link, a token table with a 30-minute lifetime, and a reset form. Tokens are stored as SHA-256 hashes and are invalidated on use and on password change.</p>
+                <div class="ds-row">
+                  <span class="ds-subtle">7 files, +412 −18</span>
+                  <span class="ds-subtle">·</span>
+                  <span class="ds-subtle">23 new tests, 100 % of changed lines covered</span>
+                  <span class="ds-subtle">·</span>
+                  <span class="ds-subtle">no new dependency</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="ds-untrusted" id="issue-frame" data-expanded="false">
+              <div class="ds-untrusted__head">
+                <span class="ds-untrusted__badge">Untrusted</span>
+                <span class="ds-untrusted__source">From issue ortisun/bibo#42, written by requester ana-souza (human)</span>
+                <span class="ds-untrusted__mode">Shown as text</span>
+              </div>
+              <pre class="ds-untrusted__body" id="issue-body"></pre>
+              <div class="ds-untrusted__foot">
+                <span id="issue-notes">Control characters are shown as markers. Links are not live.</span>
+                <button class="ds-btn ds-btn--ghost ds-btn--sm" type="button" id="issue-expand" aria-controls="issue-body" aria-expanded="false">Show all</button>
+              </div>
+            </div>
+
+            <div class="ds-panel">
+              <div class="ds-panel__header"><h2>Timeline</h2><a class="ds-btn ds-btn--ghost ds-btn--sm" href="#ledger">In the ledger</a></div>
+              <div class="ds-panel__body"><ol class="ds-ledger" id="job-timeline"></ol></div>
+            </div>
+          </div>
+
+          <aside class="ds-stack" aria-label="Decision">
+            <div class="ds-panel">
+              <div class="ds-panel__header"><h2>Gates</h2><span class="ds-subtle">9 passed, 1 warning</span></div>
+              <div class="ds-panel__body"><ul class="ds-gates" id="gates"></ul></div>
+            </div>
+
+            <form class="ds-decision" id="decision-panel" data-stale="false" novalidate>
+              <div class="ds-decision__head">
+                <span class="ds-eyebrow">Your decision</span>
+                <h2>Approve pull request #118</h2>
+              </div>
+              <dl class="ds-decision__binding">
+                <dt>Head</dt>
+                <dd><span class="ds-digest" data-copy="9f2c1e7a4b0d83c65e21f9a07c3d4b18e6a2f5c0"><span class="ds-digest__alg">commit</span><span class="ds-digest__value" id="bind-head">9f2c1e7…e6a2f5c0</span><button class="ds-copy" type="button" aria-label="Copy the full commit"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></span></dd>
+                <dt>Evidence</dt>
+                <dd><span class="ds-digest" data-copy="sha256:d81b0c4e9f2a73e6b5c1d08a4f97e2b3c6a5d40e1f8b92c7a3e6d5f04b1c9a28"><span class="ds-digest__alg">sha256</span><span class="ds-digest__value" id="bind-evidence">d81b0c4e…4b1c9a28</span><button class="ds-copy" type="button" aria-label="Copy the full digest"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></span></dd>
+              </dl>
+              <div class="ds-decision__body">
+                <div class="ds-callout ds-decision__stale" data-tone="warn" role="alert">
+                  <span class="ds-shape" data-tone="warn" aria-hidden="true"></span>
+                  <div class="ds-callout__body">
+                    <span class="ds-callout__title">The evidence changed since you opened this page</span>
+                    <span>A new commit reached the job branch. Read the new evidence before you decide.</span>
+                  </div>
+                  <button class="ds-btn ds-btn--sm" type="button" id="reload-evidence">Reload the evidence</button>
+                </div>
+
+                <div class="ds-field">
+                  <label class="ds-field__label" for="reason"><span>Reason</span><span class="ds-count" id="reason-count" data-state="short" aria-live="polite">0 / 500</span></label>
+                  <textarea class="ds-textarea" id="reason" name="reason" maxlength="600" aria-describedby="reason-hint">Reviewed the token lifetime and the hash at rest; tests cover reuse and expiry.</textarea>
+                  <span class="ds-field__hint" id="reason-hint">10 to 500 characters. Recorded in the audit log with your name.</span>
+                </div>
+
+                <div class="ds-sod">
+                  <span class="ds-shape" data-tone="pass" aria-hidden="true"></span>
+                  <span>You may approve: you are <strong>not the requester</strong> (ana-souza) and you hold the <strong>approver</strong> designation. A bot can never approve.</span>
+                </div>
+
+                <div class="ds-decision__actions">
+                  <button class="ds-btn ds-btn--primary ds-btn--lg" type="submit" id="approve">Approve with security key</button>
+                  <button class="ds-btn" type="button" id="rework">Request rework</button>
+                  <button class="ds-btn" type="button" id="reject">Reject</button>
+                </div>
+                <p class="ds-subtle">Bound to the head and the evidence above. If either changes, this decision is refused.</p>
+              </div>
+            </form>
+
+            <div class="ref-demo">
+              <span class="ds-eyebrow">Demonstration</span>
+              <button class="ds-btn ds-btn--sm" type="button" id="simulate-stale">Simulate a new commit</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ===================================================== LEDGER -->
+      <section class="ref-view" data-view="ledger" aria-labelledby="h-ledger" hidden>
+        <div class="ds-page-header">
+          <div class="ds-page-header__text">
+            <span class="ds-eyebrow">Assurance</span>
+            <h1 id="h-ledger">Evidence ledger</h1>
+            <p class="ds-muted">Every decision and state change, append-only and chained by digest. Nobody can edit an entry, including administrators.</p>
+          </div>
+          <div class="ds-page-header__actions">
+            <button class="ds-btn" type="button" id="verify-chain">Verify the chain now</button>
+          </div>
+        </div>
+
+        <div class="ds-callout" data-tone="pass" role="status" id="verify-result">
+          <span class="ds-shape" data-tone="pass" aria-hidden="true"></span>
+          <div class="ds-callout__body">
+            <span class="ds-callout__title">Chain verified</span>
+            <span>4,812 entries from genesis to head, checked <span class="ds-time"><time datetime="2026-11-20T13:58:02Z">2026-11-20 13:58:02Z</time></span> by <code>verify_audit_chain.py</code>. The external anchor matches.</span>
+          </div>
+        </div>
+
+        <div class="ds-panel">
+          <div class="ds-panel__header">
+            <h2>Latest entries</h2>
+            <div class="ds-row">
+              <label class="ds-visually-hidden" for="ledger-filter">Filter by verb</label>
+              <select class="ds-select" id="ledger-filter">
+                <option value="">All verbs</option>
+                <option value="approve">approve</option>
+                <option value="state">state change</option>
+                <option value="disable">disable</option>
+              </select>
+            </div>
+          </div>
+          <div class="ds-panel__body"><ol class="ds-ledger" id="ledger-list"></ol></div>
+        </div>
+      </section>
+
+      <!-- ===================================================== REPOSITORIES -->
+      <section class="ref-view" data-view="repositories" aria-labelledby="h-repos" hidden>
+        <div class="ds-page-header">
+          <div class="ds-page-header__text">
+            <span class="ds-eyebrow">Administration</span>
+            <h1 id="h-repos">Repositories</h1>
+            <p class="ds-muted">A repository takes tickets only after a person confirmed its project map and a different approver enabled it.</p>
+          </div>
+          <div class="ds-page-header__actions">
+            <button class="ds-btn ds-btn--primary" type="button">Register a repository</button>
+          </div>
+        </div>
+
+        <div class="ds-panel">
+          <div class="ds-panel__body ds-panel__body--flush">
+            <div class="ds-table-wrap">
+              <table class="ds-table">
+                <thead><tr><th scope="col">Repository</th><th scope="col">State</th><th scope="col">Map commit</th><th scope="col">Rule</th><th scope="col">Ceiling</th><th scope="col" class="ds-num">Jobs, 30 days</th></tr></thead>
+                <tbody>
+                  <tr><td><span class="ds-table__primary">ortisun/bibo</span><span class="ds-table__secondary">GitHub id 912044718 · installation 58120391</span></td><td><span class="ds-state" data-tone="pass">Enabled</span></td><td><span class="ds-digest"><span class="ds-digest__alg">commit</span><span class="ds-digest__value">5b5dcbe…a19c0e42</span></span></td><td>Strict</td><td>L0</td><td class="ds-num">38</td></tr>
+                  <tr><td><span class="ds-table__primary">ortisun/quant-lab</span><span class="ds-table__secondary">GitHub id 887301925 · installation 58120391</span></td><td><span class="ds-state" data-tone="human">Map confirmed, not enabled</span></td><td><span class="ds-digest"><span class="ds-digest__alg">commit</span><span class="ds-digest__value">c07e19a…3f2bd981</span></span></td><td>Strict</td><td>L0</td><td class="ds-num">0</td></tr>
+                  <tr><td><span class="ds-table__primary">ortisun/puzzle-game</span><span class="ds-table__secondary">GitHub id 874410263 · installation 58120391</span></td><td><span class="ds-state" data-tone="pass">Enabled</span></td><td><span class="ds-digest"><span class="ds-digest__alg">commit</span><span class="ds-digest__value">e4a2b70…07d1c3fe</span></span></td><td>Single maintainer</td><td>L0</td><td class="ds-num">11</td></tr>
+                  <tr><td><span class="ds-table__primary">ortisun/legacy-billing</span><span class="ds-table__secondary">GitHub id 650129874 · installation 58120391</span></td><td><span class="ds-state" data-tone="blocked">Stopped</span></td><td><span class="ds-digest"><span class="ds-digest__alg">commit</span><span class="ds-digest__value">1a9f3c2…b8e60d17</span></span></td><td>Strict</td><td>L0</td><td class="ds-num">4</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-grid ds-grid--halves">
+          <div class="ds-panel">
+            <div class="ds-panel__header"><h2>ortisun/quant-lab</h2><span class="ds-state" data-tone="human">Map confirmed, not enabled</span></div>
+            <div class="ds-panel__body">
+              <dl class="ref-facts">
+                <dt>Map attested by</dt><dd><span class="ds-actor" data-kind="human"><span class="ds-actor__avatar" aria-hidden="true">MO</span>Marcelo O.<span class="ds-actor__role">operator</span></span></dd>
+                <dt>Attested at</dt><dd><span class="ds-time"><time datetime="2026-11-20T11:20:44Z">2026-11-20 11:20:44Z</time></span></dd>
+                <dt>Rule</dt><dd>Strict: the enabler is not the attestor</dd>
+                <dt>Credential</dt><dd><span class="ds-fingerprint" title="SHA-256 fingerprint of the installation token">e1f07a92c4b3</span> <span class="ds-subtle">expires in 41 min</span></dd>
+              </dl>
+              <div class="ds-stack ds-stack--tight">
+                <button class="ds-btn ds-btn--primary" type="button" disabled aria-describedby="enable-why">Enable for map c07e19a</button>
+                <p class="ds-reason" id="enable-why">You confirmed this map. Another approver must enable the repository (rule <code>enabler_is_attestor</code>).</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="ds-panel">
+            <div class="ds-panel__header"><h2>ortisun/bibo</h2><span class="ds-state" data-tone="pass">Enabled</span></div>
+            <div class="ds-panel__body">
+              <dl class="ref-facts">
+                <dt>Enabled by</dt><dd><span class="ds-actor" data-kind="human"><span class="ds-actor__avatar" aria-hidden="true">AS</span>Ana S.<span class="ds-actor__role">approver</span></span></dd>
+                <dt>Webhook secret</dt><dd><span class="ds-fingerprint">93bd0e4471fa</span> <span class="ds-subtle">rotated 12 days ago</span></dd>
+                <dt>Last log line</dt><dd><code>token=</code><span class="ds-redacted">redacted: token</span></dd>
+              </dl>
+              <div class="ds-killswitch">
+                <div class="ds-killswitch__text">
+                  <span class="ds-killswitch__title">Stop work on this repository</span>
+                  <span class="ds-subtle">Drops its webhooks and refuses new jobs. Running jobs keep running: cancel each one.</span>
+                </div>
+                <button class="ds-btn ds-btn--danger" type="button" id="open-stop"><svg class="ds-btn__icon" aria-hidden="true"><use href="#i-stop"/></svg>Stop work</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================== COMPONENTS -->
+      <section class="ref-view" data-view="components" aria-labelledby="h-components" hidden>
+        <div class="ds-page-header">
+          <div class="ds-page-header__text">
+            <span class="ds-eyebrow">Design system 0.1</span>
+            <h1 id="h-components">Components</h1>
+            <p class="ds-muted">Every part the screens are built from. Rules for each are in <code>docs/design-system/components.md</code>; the security rules in <code>security-patterns.md</code>.</p>
+          </div>
+        </div>
+
+        <div class="ds-panel">
+          <div class="ds-panel__header"><h2>States</h2><span class="ds-subtle">Colour, shape and word together</span></div>
+          <div class="ds-panel__body">
+            <div class="ds-row">
+              <span class="ds-state" data-tone="pass">Passed</span>
+              <span class="ds-state" data-tone="active">Running</span>
+              <span class="ds-state" data-tone="human">Waiting for a person</span>
+              <span class="ds-state" data-tone="blocked">Blocked</span>
+              <span class="ds-state" data-tone="fail">Failed</span>
+              <span class="ds-state" data-tone="warn">Warning</span>
+              <span class="ds-state" data-tone="neutral">Skipped</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-panel">
+          <div class="ds-panel__header"><h2>Colour tokens</h2><span class="ds-subtle">Read live from <code>tokens.css</code>; switch the theme to compare</span></div>
+          <div class="ds-panel__body"><div class="ref-swatches" id="swatches"></div></div>
+        </div>
+
+        <div class="ds-grid ds-grid--halves">
+          <div class="ds-panel">
+            <div class="ds-panel__header"><h2>Buttons</h2></div>
+            <div class="ds-panel__body">
+              <div class="ds-row">
+                <button class="ds-btn ds-btn--primary" type="button">Approve</button>
+                <button class="ds-btn" type="button">Request rework</button>
+                <button class="ds-btn ds-btn--ghost" type="button">Cancel</button>
+                <button class="ds-btn ds-btn--danger" type="button">Stop work</button>
+              </div>
+              <div class="ds-row">
+                <button class="ds-btn ds-btn--primary" type="button" aria-busy="true">Approve</button>
+                <button class="ds-btn ds-btn--sm" type="button">Small</button>
+                <button class="ds-btn ds-btn--lg" type="button">Large</button>
+              </div>
+              <div class="ds-stack ds-stack--tight">
+                <button class="ds-btn" type="button" disabled aria-describedby="why-1">Approve build code</button>
+                <p class="ds-reason" id="why-1">Needs the security approver designation.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="ds-panel">
+            <div class="ds-panel__header"><h2>Fields</h2></div>
+            <div class="ds-panel__body">
+              <div class="ds-field">
+                <label class="ds-field__label" for="f-target"><span>Target stage</span></label>
+                <select class="ds-select" id="f-target"><option>IMPLEMENTATION</option><option>SPECIFICATION</option><option>ARCHITECTURE</option></select>
+              </div>
+              <div class="ds-field">
+                <label class="ds-field__label" for="f-reason"><span>Reason</span><span class="ds-count" data-state="short">4 / 500</span></label>
+                <input class="ds-input" id="f-reason" value="typo" aria-invalid="true" aria-describedby="f-reason-msg">
+                <span class="ds-field__message" id="f-reason-msg">Write at least 10 characters. Say what must change.</span>
+              </div>
+              <label class="ds-check"><input type="checkbox" id="f-check" checked><span>I read the dependency's licence and its build script.</span></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-grid ds-grid--halves">
+          <div class="ds-panel">
+            <div class="ds-panel__header"><h2>Evidence values</h2></div>
+            <div class="ds-panel__body">
+              <div class="ds-row"><span class="ds-subtle">Digest</span><span class="ds-digest" data-copy="sha256:d81b0c4e9f2a73e6b5c1d08a4f97e2b3c6a5d40e1f8b92c7a3e6d5f04b1c9a28"><span class="ds-digest__alg">sha256</span><span class="ds-digest__value">d81b0c4e…4b1c9a28</span><button class="ds-copy" type="button" aria-label="Copy the full digest"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></span></div>
+              <div class="ds-row"><span class="ds-subtle">Fingerprint</span><span class="ds-fingerprint">e1f07a92c4b3</span></div>
+              <div class="ds-row"><span class="ds-subtle">Redacted</span><span><code>Authorization: Bearer </code><span class="ds-redacted">redacted: token</span></span></div>
+              <div class="ds-row"><span class="ds-subtle">Time</span><span class="ds-time"><time datetime="2026-11-20T14:03:11Z">2026-11-20 14:03:11Z</time> <span class="ds-time__abs">6 minutes ago</span></span></div>
+              <div class="ds-row"><span class="ds-subtle">Actors</span><span class="ds-actor" data-kind="human"><span class="ds-actor__avatar" aria-hidden="true">AS</span>Ana S.<span class="ds-actor__role">requester</span></span><span class="ds-actor" data-kind="bot"><span class="ds-actor__avatar" aria-hidden="true">B</span>bibo-worker<span class="ds-actor__role">bot</span></span></div>
+            </div>
+          </div>
+
+          <div class="ds-panel">
+            <div class="ds-panel__header"><h2>Session and messages</h2></div>
+            <div class="ds-panel__body">
+              <div class="ds-row"><span class="ds-session" data-warn="false">signs out in 14:52</span><span class="ds-session" data-warn="true">signs out in 1:48</span><button class="ds-btn ds-btn--sm" type="button">Stay signed in</button></div>
+              <div class="ds-callout" data-tone="fail">
+                <span class="ds-shape" data-tone="fail" aria-hidden="true"></span>
+                <div class="ds-callout__body"><span class="ds-callout__title"><code>project_map_changed</code></span><span>The map commit is not the one confirmed now. Read the new map and confirm it.</span></div>
+              </div>
+              <div class="ds-callout" data-tone="active">
+                <span class="ds-shape" data-tone="active" aria-hidden="true"></span>
+                <div class="ds-callout__body"><span class="ds-callout__title">Step-up needed</span><span>Approvals ask for your security key, even inside a session.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-untrusted" data-expanded="true">
+          <div class="ds-untrusted__head">
+            <span class="ds-untrusted__badge">Untrusted</span>
+            <span class="ds-untrusted__source">From model output of stage IMPLEMENTATION, attempt 2 (bot)</span>
+            <span class="ds-untrusted__mode">Shown as text</span>
+          </div>
+          <pre class="ds-untrusted__body" id="model-body"></pre>
+        </div>
+
+        <div class="ds-empty">
+          <strong>No dependency decision waits for you</strong>
+          <span>When the validation stage finds a new direct dependency, it stops and the request appears here with its licence and checksum.</span>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Step-up dialog -->
+<dialog class="ds-dialog ds-stepup" id="stepup" data-phase="ready" aria-labelledby="stepup-title">
+  <form method="dialog" id="stepup-form">
+    <div class="ds-dialog__head">
+      <span class="ds-eyebrow">Confirm it is you</span>
+      <h2 id="stepup-title">Use your security key</h2>
+    </div>
+    <div class="ds-dialog__body">
+      <div class="ds-stepup__target">
+        <strong>Approve pull request #118 of ortisun/bibo</strong><br>
+        <span class="ds-subtle">at commit 9f2c1e7, evidence d81b0c4e…4b1c9a28</span>
+      </div>
+      <div class="ds-stepup__key">
+        <span class="ds-stepup__glyph" aria-hidden="true"><svg><use href="#i-securitykey"/></svg></span>
+        <p id="stepup-status" aria-live="polite">Touch your security key or use your passkey. Passwords and codes are not accepted here.</p>
+      </div>
+    </div>
+    <div class="ds-dialog__foot">
+      <button class="ds-btn ds-btn--ghost" type="submit" value="cancel">Cancel</button>
+      <button class="ds-btn ds-btn--primary" type="button" id="stepup-go">Use security key</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Typed confirmation dialog -->
+<dialog class="ds-dialog" id="stop-dialog" aria-labelledby="stop-title">
+  <form method="dialog" id="stop-form">
+    <div class="ds-dialog__head">
+      <span class="ds-eyebrow">Stop work</span>
+      <h2 id="stop-title">Stop work on ortisun/bibo?</h2>
+    </div>
+    <div class="ds-dialog__body">
+      <p>New webhooks are dropped and no job can be submitted. <strong>Running jobs are not stopped.</strong> Cancel each one from its page.</p>
+      <div class="ds-confirm">
+        <div class="ds-field">
+          <label class="ds-field__label" for="stop-reason"><span>Reason</span><span class="ds-count" id="stop-count" data-state="short">0 / 500</span></label>
+          <textarea class="ds-textarea" id="stop-reason" maxlength="600"></textarea>
+        </div>
+        <div class="ds-field">
+          <label class="ds-field__label" for="stop-type"><span>Type <span class="ds-confirm__phrase">ortisun/bibo</span> to confirm</span></label>
+          <input class="ds-input ds-input--mono" id="stop-type" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+    </div>
+    <div class="ds-dialog__foot">
+      <button class="ds-btn ds-btn--ghost" type="submit" value="cancel">Keep running</button>
+      <button class="ds-btn ds-btn--danger" type="button" id="stop-go" disabled>Stop work on ortisun/bibo</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="ds-toast-region" id="toasts" aria-live="polite"></div>
+</body>
+</html>
