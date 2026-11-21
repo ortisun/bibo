@@ -4,6 +4,7 @@
 - Date: 2026-11-20
 - Deciders: the owner chose a file in the project, delivered by a pull request the owner approves, over "only in the agents' prompts" and over "both". The engineer chose the rest, recorded below, for the owner to confirm.
 - Adds: ports v1.4, the `ProjectRulesHost` port ([ports v1.4](../architecture/ports-v1.4.md); it was v1.3 until develop's troubleshooter took that number in the merge of 2026-11-20). Related: [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md) decision 7 (the factory never marks a pull request ready), [ADR 0016](0016-design-phase-onboarding-and-issue-workflow.md) (onboarding), [ADR 0017](0017-ports-v1-2-issue-status-writer.md) (a port with a credential of its own), the design in [project-rules.md](../architecture/project-rules.md).
+- Revision note, 2026-11-21: [ADR 0031](0031-factory-documents-proposed-through-one-port.md) generalized the port of this record into `ProposalHost`, over a closed set of branches, so that the weekly measurement of ADR 0029 can use it too. The decisions of this record are unchanged; [ports v1.6](../architecture/ports-v1.6.md) lists the renames.
 
 ## Context and problem statement
 
