@@ -17,7 +17,7 @@ use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{CancelSignal, Clock, IdGenerator};
 use factory_ports::registry::{AgentRegistry, OutputValidator};
 use factory_ports::sandbox::SandboxProvider;
-use factory_ports::store::LeaseEpoch;
+use factory_ports::store::{LeaseEpoch, MeteredUsage};
 use factory_ports::workspace::WorkspaceProvider;
 
 use super::output::{NamedArtifact, StageError};
@@ -128,6 +128,9 @@ pub(crate) struct AttemptNotes {
     pub(crate) facts: Vec<(AuditAction, String)>,
     pub(crate) sandbox_ready: Option<SandboxReady>,
     pub(crate) cost_micro_usd: u64,
+    /// What the broker metered for the token of the attempt, when the engine could read it.
+    /// `None` until then, and when the read failed or a value was outside what the store keeps.
+    pub(crate) metered: Option<MeteredUsage>,
     /// The transcripts of runs the handler wants the tenant to be able to read back: those of a
     /// run that failed, and those a stage asks to keep (see `StageContext::note_transcript`).
     pub(crate) transcripts: Vec<ArtifactRef>,
@@ -162,6 +165,16 @@ impl Notes {
     /// What the attempt spent, in millionths of a US dollar.
     pub(crate) fn cost(&self) -> u64 {
         self.lock().cost_micro_usd
+    }
+
+    /// Records what the broker metered for the attempt's token, or that it is not known.
+    pub(crate) fn set_metered(&self, metered: Option<MeteredUsage>) {
+        self.lock().metered = metered;
+    }
+
+    /// What the broker metered for the attempt's token, or `None` when it is not known.
+    pub(crate) fn metered(&self) -> Option<MeteredUsage> {
+        self.lock().metered
     }
 
     /// The transcripts the handler noted so far, left in place.

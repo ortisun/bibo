@@ -21,6 +21,7 @@ use crate::issues::GithubIssueSource;
 use crate::jwt::JwtSigner;
 use crate::permissions::{AppAudit, AppPolicy};
 use crate::project_rules::GithubProjectRules;
+use crate::pull_request_fate::GithubPullRequestFates;
 use crate::status::GithubIssueStatus;
 use crate::text::{Outbound, OutboundPolicy};
 use crate::token::{InstallationDirectory, MinterSettings, TokenMinter};
@@ -186,6 +187,13 @@ impl GithubAdapter {
             Arc::clone(&self.sleeper),
             Arc::clone(&self.clock),
         )
+    }
+
+    /// The fate reader: what became of a pull request the factory opened, with a token of its own
+    /// that holds `pull_requests: read` for one repository and can write nothing (ports v1.5).
+    #[must_use]
+    pub fn pull_request_fates(&self) -> GithubPullRequestFates {
+        GithubPullRequestFates::new(Arc::clone(&self.client))
     }
 
     /// Reads the App's own permissions (`GET /app`, signed with the App JWT) and judges them

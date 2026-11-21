@@ -61,6 +61,18 @@ pub struct StageOutput {
     pub permission_denials: Vec<Denial>,
     /// A structured request for a person. The engine escalates (`S07`) and does not retry.
     pub needs_human: Option<NeedsHumanRequest>,
+    /// The pull request this run opened or updated, for the delivery stage. The engine records it
+    /// with the result of the attempt (`PullRequestOps::record_pull_request_opened`, ports v1.5),
+    /// so that the factory can later learn whether a person merged it or closed it. A handler
+    /// cannot write the row itself: it holds no transaction.
+    pub pull_request: Option<OpenedPullRequest>,
+}
+
+/// A pull request a stage opened on the code host, in the repository of its job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenedPullRequest {
+    /// The number of the pull request on the code host.
+    pub number: u64,
 }
 
 /// Why `execute`, `contract` or `evaluate` failed. The set is closed and carries no text.

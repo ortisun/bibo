@@ -1005,6 +1005,8 @@ pub(crate) fn pull_json(state: &State, repo: &Repo, pull: &Pull) -> Option<Value
         "merge_commit_sha": pull.merge_commit_sha,
         "created_at": iso(pull.created_at),
         "updated_at": iso(pull.updated_at),
+        "closed_at": pull.closed_at.map(iso),
+        "merged_at": pull.closed_at.filter(|_| pull.merged).map(iso),
         "html_url": format!("https://github.test/{}/pull/{}", repo.full_name, pull.number),
     }))
 }
@@ -1935,6 +1937,7 @@ fn create_pull(
             state: "open".to_owned(),
             draft,
             merged: false,
+            closed_at: None,
             merge_commit_sha: None,
             head_ref: head.to_owned(),
             head_sha,
@@ -2003,6 +2006,11 @@ fn update_pull(
         if pull.merged && new_state == "open" {
             return Err(ApiError::new(422, "Validation Failed"));
         }
+        // Closing sets the time of the close once; opening it again takes the time away.
+        pull.closed_at = match new_state {
+            "closed" => pull.closed_at.or(Some(now)),
+            _ => None,
+        };
         new_state.clone_into(&mut pull.state);
     }
     // `draft` is not accepted here, as on GitHub: marking a pull request ready needs GraphQL.
@@ -2114,6 +2122,7 @@ fn merge_pull(
     "closed".clone_into(&mut pull.state);
     pull.merge_commit_sha = Some(merge_sha.clone());
     pull.updated_at = now;
+    pull.closed_at = Some(now);
     let base = pull.base_ref.clone();
     repo.branches.insert(base, merge_sha.clone());
     if let Some(issue) = repo.issues.get_mut(&number) {

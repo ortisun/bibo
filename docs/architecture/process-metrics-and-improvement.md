@@ -1,6 +1,6 @@
 # Process metrics and the improvement loop
 
-- Status: decided by the owner on 2026-11-20. The pure rules (arithmetic, catalogue, entries, experiments) are built in the `metrics` module of `crates/domain`. Nothing reads the database or changes a running job yet: see "What is built and what is not". The decisions and the options weighed are in [ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md).
+- Status: decided by the owner on 2026-11-20. The pure rules (arithmetic, catalogue, entries, experiments) are built in the `metrics` module of `crates/domain`, and a snapshot job reads the facts of nine metrics from the database. Nothing changes a running job yet: see "What is built and what is not". The decisions and the options weighed are in [ADR 0029](../adr/0029-process-metrics-and-improvement-loop.md).
 - Form: design.
 
 ## Purpose
@@ -52,15 +52,15 @@ Each metric is an entry of kind `metric` in the knowledge base, with the fields 
 | Review precision | ratio | Findings a person or a later fix confirmed / findings raised | reviewer agent, model |
 | Escaped defects | count | Bugs linked to a merged factory pull request within 30 days of the merge | project, pack |
 | Flaky tests | count | Tests whose result changed with no code change, in the window | project |
-| Human rejection rate | ratio | Pull requests closed without merge / pull requests opened | project, pack |
+| Human rejection rate | ratio | Pull requests closed without merge / pull requests a person decided about (merged or closed) | project, pack |
 
 ### Cost
 
 | Metric | Unit | Formula | Cut by |
 |---|---|---|---|
-| Cost per accepted pull request | micro-USD | Broker-metered spend of the job / merged pull requests | project, pack |
-| Tokens per task | count | Input plus output tokens of all attempts of a task | agent, model |
-| Escalations to the larger model | ratio | Tasks that needed the larger model / tasks | agent |
+| Cost per accepted pull request | micro-USD | Broker-metered spend of every attempt of every job / merged pull requests | project, pack |
+| Tokens per task | count | Input plus output tokens of all the runs of the builder on a task | agent, model |
+| Escalations to the larger model | ratio | Tasks with a run on a higher model tier than their first run / tasks that were run | agent |
 
 ### Knowledge
 
@@ -90,10 +90,10 @@ Each metric has a fixed identifier (`MT` for metric, never reused), a short name
 | MT-0008 | review-precision | ratio | higher | rate | not stored: needs the fate of each finding |
 | MT-0009 | escaped-defects | count | lower | total | not stored: needs bugs linked to pull requests |
 | MT-0010 | flaky-tests | count | lower | total | not stored: needs test results by commit |
-| MT-0011 | human-rejection-rate | ratio | lower | rate | not stored: needs the fate of each pull request (merged or closed) |
-| MT-0012 | cost-per-accepted-pull-request | micro-USD | lower | amount per item | not stored: needs the fate of each pull request (merged or closed) |
-| MT-0013 | tokens-per-task | count | lower | median | not stored: needs the tokens of each task in the database |
-| MT-0014 | escalations-to-the-larger-model | ratio | lower | rate | not stored: needs the model tier of each task in the database |
+| MT-0011 | human-rejection-rate | ratio | lower | rate | stored |
+| MT-0012 | cost-per-accepted-pull-request | micro-USD | lower | amount per item | stored |
+| MT-0013 | tokens-per-task | count | lower | median | stored |
+| MT-0014 | escalations-to-the-larger-model | ratio | lower | rate | stored |
 | MT-0015 | knowledge-coverage | ratio | higher | rate | not stored: needs the knowledge base (ADR 0028) |
 | MT-0016 | knowledge-drift | count | lower | total | not stored: needs the knowledge base (ADR 0028) |
 | MT-0017 | knowledge-use | ratio | higher | rate | not stored: needs the knowledge base (ADR 0028) |
@@ -104,7 +104,10 @@ Each metric has a fixed identifier (`MT` for metric, never reused), a short name
 
 A snapshot shows a metric whose facts are not stored as "not measured yet". It never shows zero for it.
 
-The column was checked against the migrations and the code on 2026-11-21. Five metrics have their facts in PostgreSQL today: the two times of a job and of a stage run, the status changes with their times (the outbox holds one event for each transition), the gate outcome of each stage run, and the retries of each task. The time a pull request is opened is taken as the end of the delivery stage run that opened it, because the factory opens the pull request in that stage and stores no other time for it. What is missing for the others: whether a pull request was merged or closed (read live from GitHub, never stored), the tokens and the model of each task (kept only in artifact files and in the broker's log), and the spend as a column (it is in the payload of the outbox events).
+The column was checked against the migrations and the code on 2026-11-21. Nine metrics have their facts in PostgreSQL today.
+
+- Five have had them since the first schema: the two times of a job and of a stage run, the status changes with their times (the outbox holds one event for each transition), the gate outcome of each stage run, and the retries of each task. The time a pull request is opened is taken as the end of the delivery stage run that opened it for MT-0001, because that is the moment the job handed its work over.
+- Four have them since migration `2026-11-21-003200_process_metric_facts`: the fate of each pull request the factory opened (table `pull_requests`), what the broker metered for each attempt (four columns of `attempts`), and the model, the tier and the metered use of each run of a task (table `task_runs`). The section "Where the facts of query version 2 are stored" says why they are stored there.
 
 In the knowledge base a definition is the file `docs/knowledge/metrics/<identifier>-<name>.md`, of kind `metric`. The module renders it from the catalogue, so the file and the code cannot say different things.
 
@@ -180,7 +183,7 @@ computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d
 | MT-0002 stage-duration, 90th percentile | 12.345 s | 88 | 15.020 s |
 | MT-0006 first-pass-gate-success | 60.9 % (14 of 23) | 23 | 52.4 % (11 of 21) |
 | MT-0007 rework-rounds | too few samples | 3 | too few samples |
-| MT-0012 cost-per-accepted-pull-request | not measured yet | | not measured yet |
+| MT-0009 escaped-defects | not measured yet | | not measured yet |
 
 ## What stands out
 ...
@@ -198,9 +201,87 @@ Rules of the entry:
 - The section "What stands out" has one line for each metric whose comparison with the window before shows an improvement or a worsening by the rules of "The decision". A rate is compared by the interval of its difference, a duration and a count shown as a median by the bootstrap of the medians. A total and an amount per item have no interval in this design, so they never stand out; a person reads them from the two columns. With too few samples in either window, or no window before, nothing stands out.
 - The snapshot is a pure function of the facts of the two windows, the query version, the commit and the seed: the same input gives the same entry, byte for byte.
 
+## Where the facts of query version 2 are stored
+
+Four metrics could not be measured because the database did not hold their facts. This section says where each fact is kept now, who writes it, and which other places were weighed. The tables and columns are those of migration `2026-11-21-003200_process_metric_facts`; the operations are in [ports v1.5](ports-v1.5.md).
+
+### The fate of a pull request
+
+The factory opens a draft pull request and never merges it. A person merges it or closes it, often days after the job ended. So the fate is a fact about the world outside the factory, and the factory has to go and read it.
+
+**Where it is kept: the table `pull_requests`.** One row for each pull request a delivery stage opened: the job, the repository, the number, when the factory recorded that it was opened, the fate (`open`, `merged` or `closed`), the time GitHub gives for the merge or the close, the time the factory recorded the fate, and the time of the last look.
+
+| Option | Verdict | Why |
+|---|---|---|
+| A table of its own, `pull_requests` | **Chosen** | The fate arrives after the job is terminal, so it does not belong to the row of the job or of a stage run. A job can open a second pull request when a person closed the first and the work was sent back, so the key is the repository and the number, not the job. A row can be read by the snapshot with one listing, and by a later metric (escaped defects needs the merge time) |
+| Columns on `jobs` | Rejected | A job would hold one pull request only, and a fact from outside would change the version of a row that the state machine treats as finished |
+| Events in the outbox (`pull_request.merged`) | Rejected | The outbox is a notification record, not the source of truth for what exists (ports v1.1, `OutboxOps`). A metric that reads it breaks the day old events are archived. The spend has this weakness today, and this change removes it instead of copying it |
+| No storage: read the `delivery-result` artifact for the number, and GitHub for the fate, when the snapshot runs | Rejected | The snapshot is served by the API, which holds no GitHub credential on purpose. A snapshot would also stop being a pure function of stored facts: the same window would give another answer after a late merge, and no answer when GitHub is down |
+
+**Who writes that it was opened: the engine.** The delivery stage puts the number of the pull request in its output (`StageOutput::pull_request`), and the engine writes the row in the transaction that records the attempt. A handler cannot open a transaction, and the row must not exist without the attempt that made it. Recording the same pull request again, after a retry or a rework round that updated it, changes nothing.
+
+**Who learns the fate: a step of the worker that reads GitHub.**
+
+| Option | Verdict | Why |
+|---|---|---|
+| The worker asks GitHub for each pull request that is still open, at most once an hour for each | **Chosen** | The answer of the API is the fact itself, read with a credential of the factory. A look that fails, or a worker that was down, is repaired by the next look. It costs one request an hour for each open pull request, far below the limit of an installation (5000 an hour) |
+| Trust the `pull_request` `closed` webhook | Rejected as the source | A webhook is a hint, never a claim (the rule of the webhook endpoint). GitHub does not send a delivery again by itself, so one lost delivery would leave a pull request open in the books for ever, and the API login would need the right to write the new table. The webhook stays a possible trigger for an earlier look; it is not built |
+| Read it in the approval stage | Rejected | The approval stage ends before the merge, and a job that has ended can never mint a GitHub token again |
+
+The look needs a credential that does not belong to a job. It is a new, narrow one: `metadata: read` and `pull_requests: read` for one repository, minted for one pass and ended after it (`PullRequestFateSource`, ports v1.5). The GitHub App already holds `pull_requests: write` for the delivery stage, so the App needs no new permission.
+
+Rules of the fate:
+
+- **The first decision is final.** Once a row says `merged` or `closed` the worker stops looking. A pull request that is closed and later opened again is not followed. Options weighed: following it for ever was rejected, because a snapshot of a past week would then change after it was computed; the cost is that a pull request reopened and merged counts as a rejection.
+- **Two times are kept, and they answer different questions.** `decided_at` is the time GitHub gives for the merge or the close. `fate_recorded_at` is the database's clock when the factory wrote it. Which window a pull request belongs to is decided by `fate_recorded_at`: it only moves forward, so a window that has ended never gains a sample. `decided_at` is kept for the metrics that need the real moment (the 30 days of escaped defects).
+- **A look that fails is recorded as a look.** The row keeps the time, so a repository that was deleted is asked once an hour, not at every pass.
+
+**Who may read the facts.** The snapshot runs in the API, and the login of the API reads a narrow list of tables on purpose. The migration adds four tables to that list, read only: `task_nodes`, `attempts`, `task_runs` and `pull_requests`. Options weighed: running the snapshot in the worker and storing the entry was rejected for now, because storing entries belongs to the knowledge base (ADR 0028) and the worker has no route a person can call; a function that returns only the aggregates, owned by a stronger role, was rejected, because it would be the second place that defines each metric (the reason the section "The snapshot job" gives against queries of its own). The login gains no right to write. Query version 1 already read `task_nodes` with this login, which could not: the route failed on PostgreSQL as soon as a tenant had a stage run, and the tests did not see it because they asked for an empty tenant.
+
+### What an attempt spent
+
+The model broker meters every request under the job token of an attempt: input tokens, output tokens, cost and the number of requests. The engine reads that meter once, when the handler has stopped. Until now only the cost was kept, in the payload of the outbox event that ends the attempt.
+
+**Where it is kept: four columns of `attempts`** (`input_tokens`, `output_tokens`, `cost_micro_usd`, `model_requests`), written by the transition that ends the attempt (`AttemptEnd::metered`).
+
+| Option | Verdict | Why |
+|---|---|---|
+| Columns on `attempts`, written with the move that ends the attempt | **Chosen** | The token, and so the meter, belongs to exactly one attempt. The number is written in the same statement as the status, so an attempt cannot end with one and without the other. The engine's own notes already named this as the missing row (`Timeline::read_outbox`) |
+| Keep reading the payload of the outbox events | Rejected | See the outbox row above. The payload also carries the cost only, with no tokens |
+| Read the `implementation-evidence` artifact | Rejected | Only the implementation stage writes it, and only when the attempt succeeds. The tokens of a failed attempt, and of every other stage, are in no artifact |
+| A table with one row for each model request | Rejected for now | It is the broker's own log, at a volume a hundred times that of the attempts. No metric of the catalogue needs a single request |
+
+The four columns are empty (`NULL`) together when the meter was not read: the sweeper ended the attempt after a lost lease, or the broker could not be reached. **An empty value means "not known" and is never read as zero.** An attempt of a stage that runs no agent has no token, spent nothing, and stores four zeros. Each value is at most 2^53 − 1; a larger one is refused before it is written.
+
+The engine still sums a job's spend from the events for its budget check. Moving that read to the new columns changes how a budget is enforced after a lost lease, so it is left for a change of its own.
+
+### What a task used, and on which model
+
+One attempt of the implementation stage builds several tasks under one token, so the columns of the attempt cannot say what one task used. A task can also be built more than once: an attempt fails and the next one takes the task again.
+
+**Where it is kept: the table `task_runs`.** One row for each time an attempt ran the builder on a task: the task node, the attempt, the runtime and the model the router chose, the tier of the route, and what the broker metered between the start and the end of that run. A row is written once and never changed.
+
+| Option | Verdict | Why |
+|---|---|---|
+| A table with one row for each run of a task, `task_runs` | **Chosen** | It keeps every fact as it happened: which model built the task each time, and what each time used. "All attempts of a task" is a sum over rows, the cut by model is a filter, and an escalation is two rows with different tiers. Rows are only added, as in the ledger, so nothing is lost by a later write |
+| Running totals on `task_nodes` (tokens so far, first tier, highest tier) | Rejected | Smaller, but each write would replace what the one before knew: a task built by two models would show one, and the cut by model of the catalogue could not be computed. A total that is updated in place can also be wrong after a retry of the write |
+| Read the `implementation-evidence` artifact | Rejected | It names the model of a task only for the attempt that finished it, holds the tokens of the whole attempt and not of a task, and does not exist for an attempt that failed |
+| Trust the usage the runtime adapter reports for a run | Rejected | The broker's meter is the only spend the engine may believe (static check ST-14). The adapter's number is "as far as the adapter could tell" |
+
+How one run is metered: the stage reads the meter of the attempt's token right before the builder starts and right after it stops, and stores the difference. The builder is the only thing that spends under the token in between. When either read fails, or the second is below the first, the run is stored with no usage ("not known"); the model and the tier are stored in every case.
+
+When the row is written: as soon as the builder has stopped, before its work is audited, through the task ledger of the stage (`TaskLedger::record_run`) and under the fence of the attempt. A run whose report is invalid, or whose change the audit refuses, used its tokens all the same, so its row is written whatever becomes of the task.
+
+Rules of a task run:
+
+- **A row needs a model.** A task that fails before the router chose a model (the workspace could not be made) used nothing and leaves no row.
+- **A run that is cut short leaves no row.** A worker that crashes or loses its lease cannot write. What that run used is still in the total of its attempt whenever the engine could read the meter. The tokens of a task are therefore a lower bound when one of its attempts was lost.
+- **The tier is the tier of the route.** The stage asks the router for a tier (`small`, `standard` or `large`) and the router answers with a model of that route; the row stores the tier asked for.
+- **An escalation is a run on a higher tier than the first run of the same task.** Today the implementation stage always asks for `standard`, and nothing raises the tier after a failure. So MT-0014 reads zero escalations until the starting tier becomes a setting (the table "Tier A settings") and a retry may ask for more. The number is true, and it is not yet useful.
+
 ## The snapshot job
 
-The snapshot job reads the facts of a tenant from the store, through the listing operations the `Store` port already has (the jobs, the stage runs of a job, the task nodes of a stage run and the events of a job). It needs no new port and no new query in the storage crate. Options weighed: a dedicated read port with aggregate queries in SQL was rejected for now, because it would add a second place that defines each metric, and the numbers of one tenant in one week are small; it becomes the right choice when the full read of a tenant's jobs gets slow, and the facts of this section are the contract such a port would have to keep. The code is `process_metrics` in `crates/workflow`.
+The snapshot job reads the facts of a tenant from the store, through the listing operations of the `Store` port: the jobs, the stage runs of a job, the task nodes and the attempts of a stage run and the events of a job, and, since query version 2, the pull requests of a job and the task runs of a stage run ([ports v1.5](ports-v1.5.md)). It has no query of its own in the storage crate. Options weighed: a dedicated read port with aggregate queries in SQL was rejected for now, because it would add a second place that defines each metric, and the numbers of one tenant in one week are small; it becomes the right choice when the full read of a tenant's jobs gets slow, and the facts of this section are the contract such a port would have to keep. The code is `process_metrics` in `crates/workflow`.
 
 ### Query version 1
 
@@ -217,6 +298,26 @@ The snapshot job reads the facts of a tenant from the store, through the listing
 The time of an event is the engine's clock; the times of rows are the database's clock. No value of this version subtracts one from the other: the lead time uses two times of rows, and the stage duration and the wait use two times of events. Which window a sample belongs to is always decided by a time of a row.
 
 The job reads every job of the tenant, so its cost grows with the tenant's history. That is accepted for a weekly run.
+
+### Query version 2
+
+Query version 2 keeps every row of version 1 unchanged and adds four. An instant is in the window by the same rule.
+
+| Metric | Samples | Value of one sample |
+|---|---|---|
+| MT-0011 human-rejection-rate | The pull requests whose fate the factory recorded in the window (`fate_recorded_at`), merged or closed | The part is the pull requests closed without a merge. A pull request that is still open is not a sample: nobody decided yet |
+| MT-0012 cost-per-accepted-pull-request | The items are the pull requests whose merge the factory recorded in the window | The amount is the metered cost of every attempt of the tenant that ended in the window (`ended_at`), of every job, stage and outcome, divided by the items and rounded half to even to a whole millionth. Work that failed or was rejected is part of what an accepted pull request cost |
+| MT-0013 tokens-per-task | The task nodes with status `SUCCEEDED` or `FAILED`, of the stage runs that finished in the window, with at least one task run and a known usage on every one of them | The input tokens plus the output tokens of all its task runs |
+| MT-0014 escalations-to-the-larger-model | The task nodes with status `SUCCEEDED` or `FAILED`, of the stage runs that finished in the window, with at least one task run | The part is the tasks with a run on a higher tier than their first run. The first run is the one recorded first; the order of the tiers is `small`, `standard`, `large` |
+
+What the version leaves out, on purpose:
+
+- **An attempt whose meter was not read adds nothing to the amount of MT-0012.** The amount is then a lower bound. The other choice, refusing the snapshot, would make one outage of the broker cost every later reader the whole entry.
+- **A task with a run of unknown usage is not a sample of MT-0013.** A sum with a hole in it would be shown as a smaller number than the truth. It is still a sample of MT-0014, because the tier of a run is always known.
+- **MT-0013 takes every run of a stage, MT-0006 only the first.** A task that is built again in a rework round is another task node, and it used tokens of its own.
+- **The window of MT-0012 is cut twice by the database's clock**: the end of an attempt and the recording of a merge. The spend of a week and the merges of the same week are not the same work, since a pull request is merged after its job spent. Over several weeks the two meet; in one week the number moves with the delay of the people who merge.
+
+A sum of costs that leaves the valid range of money, or a sum of tokens that leaves the range of a count, stops the snapshot with an error, as in version 1.
 
 ### What the job hands back
 
@@ -299,7 +400,10 @@ Every decision is the file `docs/knowledge/improvements/<identifier>-<name>.md`,
 | The `measurement` entry: its identifier, its rows and its text | Built: `metrics::measurement` |
 | The snapshot built from the facts of two windows, with "What stands out" | Built: `metrics::snapshot` |
 | Tier A settings, the choice of jobs, promotion, rollback and the `improvement` entry | Built as pure rules: `metrics::experiment`. Nothing applies a setting to a running job yet |
-| The snapshot job that reads the facts of query version 1 from the store | Built: `process_metrics` in `crates/workflow` |
+| The snapshot job that reads the facts of query version 2 from the store | Built: `process_metrics` in `crates/workflow`. Nine metrics are measured |
+| Storing the fate of a pull request, the metered use of an attempt and the runs of a task | Built: migration `2026-11-21-003200_process_metric_facts`, [ports v1.5](ports-v1.5.md). The engine writes the opening of a pull request and the use of an attempt; the implementation stage writes the task runs |
+| Learning the fate of a pull request from GitHub | Built: `pull_request_fates` in `crates/composition`, a step of the worker before each claim, on by default (`github.follow_pull_requests`). Checked against the fake GitHub server of the test kit only, **not against the real GitHub** |
+| Reading a job's spend from the columns of `attempts` for the budget check | Not built. The engine still sums the events |
 | The operator's command and the API route behind it | Built: `factory-cli metrics snapshot`, `GET /v1/process-metrics/snapshot` |
 | Passing `FACTORY_BUILD_COMMIT` to the build of the service images | Built: `infra/service-images/build.sh` passes the commit of a clean tree, and nothing for a tree with changes that are not committed. Checked by the static rules of the recipe only; the images were not built with it yet |
 | A schedule for the snapshot job | Not built |

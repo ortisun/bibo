@@ -503,6 +503,9 @@ pub(crate) struct Pull {
     pub author: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When it was closed, merged or not, in seconds since the epoch. `None` while it is open.
+    /// GitHub reports it as `closed_at`, and as `merged_at` too when the close was a merge.
+    pub closed_at: Option<i64>,
     pub reviews: Vec<Review>,
 }
 
@@ -1197,6 +1200,7 @@ impl FakeGithub {
     /// # Panics
     /// Panics when the pull request is not known.
     pub fn close_pull(&self, repo: &str, number: u64, merged: bool) {
+        let now = self.now();
         let (head, base) = {
             let mut state = self.lock();
             let pull = state
@@ -1206,6 +1210,7 @@ impl FakeGithub {
                 .expect("a known pull request");
             pull.state = "closed".to_owned();
             pull.merged = merged;
+            pull.closed_at = Some(now);
             (pull.head_sha.clone(), pull.base_ref.clone())
         };
         if merged {
@@ -1255,6 +1260,7 @@ impl FakeGithub {
                 state: "open".to_owned(),
                 draft: false,
                 merged: false,
+                closed_at: None,
                 merge_commit_sha: None,
                 head_ref: head.to_owned(),
                 head_sha,

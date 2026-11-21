@@ -854,6 +854,7 @@ impl StageHandler for IntakeHandler {
             usage,
             permission_denials: denials,
             needs_human: None,
+            pull_request: None,
         })
     }
 

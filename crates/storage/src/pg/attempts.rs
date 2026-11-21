@@ -50,8 +50,8 @@ use uuid::Uuid;
 
 use super::cas::{Table, exists};
 use super::conv::{
-    corrupt, digest_from_column, epoch_from_column, epoch_to_column, from_column, micros,
-    status_from_column, version_from_column,
+    corrupt, digest_from_column, epoch_from_column, epoch_to_column, from_column,
+    metered_from_columns, metered_to_columns, micros, status_from_column, version_from_column,
 };
 use super::error::database;
 use super::stage_runs::{StageRunRow, stage_run_from_row};
@@ -60,7 +60,7 @@ use super::tx::{PgTx, call};
 const COLUMNS: &str = "tenant_id, id, job_id, stage_run_id, attempt_number, status, version, \
     lease_owner, lease_epoch, lease_expires_at, last_heartbeat_at, deadline_at, \
     teardown_deadline_at, failure_class, output_sha256, sandbox_id, sandbox_leaked, created_at, \
-    ended_at";
+    ended_at, input_tokens, output_tokens, cost_micro_usd, model_requests";
 
 const STAGE_RUN_COLUMNS: &str = "tenant_id, id, job_id, stage_kind, run_number, status, version, \
     lease_epoch, max_attempts, not_before, rework_of_stage_run_id, stage_contract_sha256, \
@@ -106,6 +106,14 @@ struct AttemptRow {
     created_at: OffsetDateTime,
     #[diesel(sql_type = Nullable<Timestamptz>)]
     ended_at: Option<OffsetDateTime>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    input_tokens: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    output_tokens: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    cost_micro_usd: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    model_requests: Option<i64>,
 }
 
 fn attempt_from_row(row: AttemptRow) -> Result<Versioned<Attempt>, StoreError> {
@@ -147,6 +155,12 @@ fn attempt_from_row(row: AttemptRow) -> Result<Versioned<Attempt>, StoreError> {
             }),
             created_at: from_column(row.created_at),
             ended_at: row.ended_at.map(from_column),
+            metered: metered_from_columns(
+                row.input_tokens,
+                row.output_tokens,
+                row.cost_micro_usd,
+                row.model_requests,
+            )?,
         },
         version: version_from_column(row.version)?,
     })
@@ -459,12 +473,14 @@ async fn refusal(
     })
 }
 
-/// The end record must be the one the transition requires, and no other.
-fn check_end(transition_id: &str, end: &AttemptEnd) -> Result<(), StoreError> {
+/// The end record must be the one the transition requires, and no other. A metered use rides
+/// only on a move into a terminal status (ports v1.5).
+fn check_end(transition_id: &str, ends: bool, end: &AttemptEnd) -> Result<(), StoreError> {
     let rule = attempt_end_rule(transition_id);
     if rule.failure_class == end.failure_class.is_some()
         && rule.output == end.output.is_some()
         && rule.teardown_grace == end.teardown_grace.is_some()
+        && (ends || end.metered.is_none())
     {
         Ok(())
     } else {
@@ -482,10 +498,12 @@ async fn transition(
     end: AttemptEnd,
 ) -> Result<Version, StoreError> {
     let from = t.from_status().to_string();
-    if let Err(rule) = check_end(t.transition_id(), &end) {
+    let to = t.to_status();
+    if let Err(rule) = check_end(t.transition_id(), to.is_terminal(), &end) {
         return Err(refusal(connection, tenant, id, expected, epoch, &from, Some(rule)).await?);
     }
-    let to = t.to_status();
+    let [input_tokens, output_tokens, cost_micro_usd, model_requests] =
+        metered_to_columns(end.metered);
     let transition_id = t.transition_id();
     let sandbox = end.sandbox.as_ref();
     let updated = sql_query(
@@ -496,7 +514,11 @@ async fn transition(
                 teardown_deadline_at = CASE WHEN $9::bigint IS NOT NULL \
                     THEN now() + $9 * interval '1 microsecond' ELSE teardown_deadline_at END, \
                 sandbox_id = coalesce($10, sandbox_id), \
-                sandbox_leaked = sandbox_leaked OR $11 \
+                sandbox_leaked = sandbox_leaked OR $11, \
+                input_tokens = coalesce($16, input_tokens), \
+                output_tokens = coalesce($17, output_tokens), \
+                cost_micro_usd = coalesce($18, cost_micro_usd), \
+                model_requests = coalesce($19, model_requests) \
           WHERE tenant_id = $1 AND id = $2 AND version = $3 AND lease_epoch = $4 \
             AND status = $12 \
             AND ($13 IS FALSE OR lease_expires_at < now()) \
@@ -520,6 +542,10 @@ async fn transition(
     .bind::<Bool, _>(transition_id == "A07")
     .bind::<Bool, _>(transition_id == "A06")
     .bind::<Bool, _>(transition_id == "A10")
+    .bind::<Nullable<BigInt>, _>(input_tokens)
+    .bind::<Nullable<BigInt>, _>(output_tokens)
+    .bind::<Nullable<BigInt>, _>(cost_micro_usd)
+    .bind::<Nullable<BigInt>, _>(model_requests)
     .get_result::<NewVersion>(connection)
     .await
     .optional()

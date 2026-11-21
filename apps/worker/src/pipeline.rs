@@ -31,6 +31,7 @@ use factory_composition::pipeline::{
 use factory_composition::policy_broker::{JobSpend, PolicyBroker};
 use factory_composition::profile::PortName;
 use factory_composition::project_rules::{ProjectRulesSync, ProjectRulesSyncDeps};
+use factory_composition::pull_request_fates::{PullRequestFateSync, PullRequestFateSyncDeps};
 use factory_composition::redaction::RegisteringBroker;
 use factory_composition::routing::{enabled_models, first_selection};
 use factory_composition::sandbox_specs::PolicySpecs;
@@ -43,6 +44,7 @@ use factory_domain::vocabulary::StageKind;
 use factory_ports::agent::ModelBroker;
 use factory_ports::issue_status::IssueStatusWriter;
 use factory_ports::project_rules::ProjectRulesHost;
+use factory_ports::pull_request_fate::PullRequestFateSource;
 use factory_ports::store::{Store, WorkerId};
 use factory_sandbox::container::images::ImageCatalog;
 
@@ -336,6 +338,49 @@ pub fn project_rules(
             ids: Arc::new(ids),
             tenants,
             policy_hash: booted.prepared.policies.hash.clone(),
+        },
+    ))))
+}
+
+/// The step that follows the pull requests the factory opened (ADR 0029, ports v1.5): it asks the
+/// code host whether a person merged or closed each one, and records the answer for the process
+/// metrics. `None` when the configuration turns it off (`github.follow_pull_requests: false`) or
+/// has no `github` table. The binary puts it before each claim.
+///
+/// # Errors
+/// [`StartupFailure`] when the tenants or the identifiers cannot be made, or the profile refuses
+/// the source.
+pub fn pull_request_fates(
+    booted: &Booted,
+    config: &FactoryConfig,
+    world: &ExternalWorld,
+) -> Result<Option<Arc<PullRequestFateSync>>, StartupFailure> {
+    if !config
+        .github
+        .as_ref()
+        .is_some_and(|g| g.follow_pull_requests)
+    {
+        return Ok(None);
+    }
+    let tenants = config
+        .worker
+        .served_tenants()
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let source: Arc<dyn PullRequestFateSource> = Arc::new(world.github.pull_request_fates());
+    config
+        .profile
+        .admit(PortName::Changes, source.fidelity())
+        .map_err(|refused| StartupFailure::Other(refused.to_string()))?;
+    let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
+    Ok(Some(Arc::new(PullRequestFateSync::new(
+        PullRequestFateSyncDeps {
+            store: booted.prepared.store.clone(),
+            source,
+            changes: Arc::clone(&world.ports.changes),
+            jobs: Arc::clone(&booted.jobs),
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(ids),
+            tenants,
         },
     ))))
 }

@@ -360,6 +360,28 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "unconfirmed",
         "a count: how many things in the routing policy still wait for the project owner",
     ),
+    // The four counts of one pass of the step that follows the pull requests of the factory
+    // (ADR 0029, ports v1.5), added with the step on 2026-11-21.
+    (
+        "crates/composition/src/pull_request_fates.rs",
+        "merged",
+        "a count: how many pull requests the pass found merged",
+    ),
+    (
+        "crates/composition/src/pull_request_fates.rs",
+        "closed",
+        "a count: how many pull requests the pass found closed without a merge",
+    ),
+    (
+        "crates/composition/src/pull_request_fates.rs",
+        "still_open",
+        "a count: how many pull requests the pass found still open",
+    ),
+    (
+        "crates/composition/src/pull_request_fates.rs",
+        "unread",
+        "a count: how many looks of the pass could not read the code host or store what it said",
+    ),
     (
         "crates/composition/src/token_sweep.rs",
         "revoked",

@@ -6,7 +6,7 @@
 //! headings, each followed by text. The sources are embedded with `include_str!`, so the test does
 //! no file I/O. The checker has tests of its own, so it is known to fail on a bad trait.
 
-const SOURCES: [(&str, &str); 13] = [
+const SOURCES: [(&str, &str); 14] = [
     ("agent.rs", include_str!("../src/agent.rs")),
     ("artifact.rs", include_str!("../src/artifact.rs")),
     ("clock.rs", include_str!("../src/clock.rs")),
@@ -14,6 +14,10 @@ const SOURCES: [(&str, &str); 13] = [
     ("issue_status.rs", include_str!("../src/issue_status.rs")),
     ("paths.rs", include_str!("../src/paths.rs")),
     ("process.rs", include_str!("../src/process.rs")),
+    (
+        "pull_request_fate.rs",
+        include_str!("../src/pull_request_fate.rs"),
+    ),
     ("registry.rs", include_str!("../src/registry.rs")),
     ("sandbox.rs", include_str!("../src/sandbox.rs")),
     ("spec.rs", include_str!("../src/spec.rs")),
@@ -24,8 +28,10 @@ const SOURCES: [(&str, &str); 13] = [
 
 /// The ports of work package `s0-ports-and-testkit`, plus the parts of `Tx`, and what ports v1.1
 /// adds: the read-only system transaction, the job repository, the process runner, the webhook
-/// verifier, the metering seam and the turn attestation (additions after v1.1).
-const EXPECTED_TRAITS: [&str; 40] = [
+/// verifier, the metering seam and the turn attestation (additions after v1.1), and what ports
+/// v1.5 adds: the task runs and the pull requests of the store, and the read of a pull request's
+/// fate.
+const EXPECTED_TRAITS: [&str; 43] = [
     "Clock",
     "IdGenerator",
     "CancelSignal",
@@ -39,6 +45,8 @@ const EXPECTED_TRAITS: [&str; 40] = [
     "StageRunOps",
     "AttemptOps",
     "TaskNodeOps",
+    "TaskRunOps",
+    "PullRequestOps",
     "StageArtifactOps",
     "ApprovalOps",
     "LedgerOps",
@@ -66,6 +74,7 @@ const EXPECTED_TRAITS: [&str; 40] = [
     "ChangeHost",
     "IssueStatusWriter",
     "TriageIssueWriter",
+    "PullRequestFateSource",
 ];
 
 const HEADINGS: [&str; 5] = [

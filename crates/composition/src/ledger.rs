@@ -44,12 +44,12 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::CommitSha;
 use factory_ports::store::{
-    AppliedTransition, Fence, NewTaskGraph, NewTaskNode, Store, StoreError, TaskNode,
+    AppliedTransition, Fence, NewTaskGraph, NewTaskNode, NewTaskRun, Store, StoreError, TaskNode,
     TaskNodeEffects, Tx, Versioned,
 };
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::implementation::seams::{
-    Hold, LedgerError, PlannedTask, TaskLedger, TaskRecord,
+    Hold, LedgerError, PlannedTask, TaskLedger, TaskRecord, TaskRunRecord,
 };
 
 /// The default number of times a failed task is retried.
@@ -363,6 +363,34 @@ impl TaskLedger for StoreTaskLedger {
         // A read: nothing to commit.
         let _ = tx.rollback().await;
         outcome
+    }
+
+    async fn record_run(
+        &self,
+        run: &RunIdentity,
+        task: &Slug,
+        hold: &Hold,
+        ran: &TaskRunRecord,
+    ) -> Result<(), LedgerError> {
+        let mut tx = self.begin(run).await?;
+        let outcome = async {
+            let (fence, _) = Self::fence(&mut *tx, hold).await?;
+            let node = Self::node(&mut *tx, run, task).await?;
+            tx.record_task_run(
+                fence,
+                NewTaskRun {
+                    task_node: node.value.id,
+                    runtime: ran.runtime.clone(),
+                    model: ran.model.clone(),
+                    tier: ran.tier,
+                    metered: ran.metered,
+                },
+            )
+            .await
+            .map_err(map)
+        }
+        .await;
+        Self::settle(tx, outcome).await
     }
 
     async fn finish(

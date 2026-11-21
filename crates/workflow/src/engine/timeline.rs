@@ -413,14 +413,15 @@ impl Timeline {
         Ok(timeline)
     }
 
-    /// Reads the three facts that the store has no row for yet, from the job's outbox events.
+    /// Reads three facts from the job's outbox events: two that the store has no row for yet, and
+    /// the spend, whose row exists since ports v1.5 and is not read here yet (see the table).
     /// Everything else in the timeline comes from rows, so these are the only reads of events, and
     /// each is a plain fold that skips an event type it does not know.
     ///
     /// | Fact | Read from | What the store lacks |
     /// |---|---|---|
     /// | Commands already applied | `causation_id` of every event: the envelope, not the payload | A record of applied commands that outlives the outbox. The event is written in the same transaction as the move (INV-03), so it is as durable as the move; it stops being enough if old events are ever archived. |
-    /// | What the job spent | `cost_micro_usd` in the payload of each attempt event | A cost on the attempt: `Attempt::cost_micro_usd`, written by `AttemptEnd::cost_micro_usd` in the transition that ends it (column `attempts.cost_micro_usd bigint not null default 0`). The job's spend is then the sum over `list_attempts`. The broker meters each token, but the store does not link an attempt to its token, so the broker cannot be summed per job either. |
+    /// | What the job spent | `cost_micro_usd` in the payload of each attempt event | Nothing any more: since ports v1.5 the attempt holds what the broker metered (`Attempt::metered`, written by `AttemptEnd::metered` in the transition that ends it), and the process metrics read it there. This fold still reads the events, because the two differ after a lost lease: the row then says "not known", and moving the budget check to the rows changes what a budget counts in that case. That move is a change of its own. |
     /// | Who approved or rejected | `transition_id` (`S14`, `S16`) of the stage run events: the envelope | The row says `PASSED` or `FAILED`, not whether a person decided. `ApprovalOps::record_approval` is the place, and an approval needs the pull request binding (head, tree, base) that Slice 1 does not have yet. |
     async fn read_outbox(&mut self, tx: &mut dyn Tx, job: JobId) -> Result<(), EngineError> {
         let mut from = OutboxSeq::START;
@@ -1100,6 +1101,7 @@ mod tests {
     #[test]
     fn a_timed_out_or_lease_lost_status_is_the_failure_class_of_the_same_name() {
         let row = |status, failure_class| Attempt {
+            metered: None,
             id: AttemptId::from_uuid(uuid::Uuid::from_u128(1)),
             tenant_id: factory_domain::ids::TenantId::from_uuid(uuid::Uuid::from_u128(2)),
             job_id: JobId::from_uuid(uuid::Uuid::from_u128(3)),
