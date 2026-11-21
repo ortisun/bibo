@@ -54,6 +54,9 @@ INSERT INTO expected_api_grants VALUES
   -- Read, since migration 2026-10-29-002300: the evidence a person reads before a decision. The index of the
   -- stored documents, the links from a stage run to them, and the ledger entries that cite the gate reports.
   ('artifacts', 'SELECT'), ('stage_run_artifacts', 'SELECT'), ('ledger_entries', 'SELECT'),
+  -- Read, since migration 2026-11-21-003200: the facts the process snapshot is computed from
+  -- (GET /v1/process-metrics/snapshot, ADR 0029). The answer holds totals and medians only.
+  ('task_nodes', 'SELECT'), ('attempts', 'SELECT'), ('task_runs', 'SELECT'), ('pull_requests', 'SELECT'),
   -- Read and write: the four tables the API writes.
   ('jobs', 'SELECT'), ('jobs', 'INSERT'),
   ('original_requests', 'SELECT'), ('original_requests', 'INSERT'),
@@ -135,9 +138,16 @@ BEGIN
 
   SELECT string_agg(t, ', ' ORDER BY t) INTO extra
     FROM unnest(ARRAY['api_tokens', 'active_api_tokens', 'approvals', 'ledger_current_claims',
-                      'ledger_assurance_levels', 'inbox', 'attempts', 'task_nodes', 'task_node_dependencies']) t
+                      'ledger_assurance_levels', 'inbox', 'task_node_dependencies']) t
    WHERE has_table_privilege('factory_api_app', t, 'SELECT');
-  PERFORM dbtest.expect_eq('factory_api_app cannot read the token, approval, claim, inbox or work tables', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app cannot read the token, approval, claim, inbox or task dependency tables', coalesce(extra, ''), '');
+
+  -- The tables it reads for the process snapshot (migration 2026-11-21-003200) stay read only for it.
+  SELECT string_agg(t, ', ' ORDER BY t) INTO extra
+    FROM unnest(ARRAY['task_nodes', 'attempts', 'task_runs', 'pull_requests']) t
+   WHERE has_table_privilege('factory_api_app', t, 'INSERT') OR has_any_column_privilege('factory_api_app', t, 'UPDATE')
+      OR has_table_privilege('factory_api_app', t, 'DELETE');
+  PERFORM dbtest.expect_eq('factory_api_app can only read the four tables of the process snapshot', coalesce(extra, ''), '');
 END
 $$;
 
@@ -267,7 +277,7 @@ BEGIN
         transition_id, correlation_id, occurred_at, producer, payload)
         VALUES (%L, %L, 'job.admitted', %L, 'job', %L, 2, 'J01', %L, now(), 'workflow.engine', '{}')$q$,
         dbtest.u(1), dbtest.u(1992), dbtest.u(1101), dbtest.u(1101), dbtest.u(1501)), 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table outbox');
-  FOR t IN SELECT x AS tbl FROM unnest(ARRAY['api_tokens', 'approvals', 'inbox', 'attempts', 'task_nodes']) x LOOP
+  FOR t IN SELECT x AS tbl FROM unnest(ARRAY['api_tokens', 'approvals', 'inbox', 'task_node_dependencies']) x LOOP
     PERFORM dbtest.expect_true('the group cannot read ' || t.tbl,
       dbtest.run_as('SELECT 1 FROM ' || t.tbl, 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table ' || t.tbl);
   END LOOP;

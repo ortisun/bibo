@@ -60,7 +60,11 @@ INSERT INTO expected_table_grants VALUES
   ('troubleshooting_runs', 'SELECT'), ('troubleshooting_runs', 'INSERT'),
   ('troubleshooting_probe_state', 'SELECT'), ('troubleshooting_probe_state', 'INSERT'),
   ('troubleshooting_issues', 'SELECT'), ('troubleshooting_issues', 'INSERT'),
-  ('troubleshooting_daily_counters', 'SELECT'), ('troubleshooting_daily_counters', 'INSERT');
+  ('troubleshooting_daily_counters', 'SELECT'), ('troubleshooting_daily_counters', 'INSERT'),
+  -- The facts of the process metrics (migration 2026-11-21-003200, ADR 0029). A task run is written once: no
+  -- UPDATE of any column. A pull request takes its fate and the time of the last look.
+  ('task_runs', 'SELECT'), ('task_runs', 'INSERT'),
+  ('pull_requests', 'SELECT'), ('pull_requests', 'INSERT');
 
 -- Column-level UPDATE grants. Anything not listed cannot be updated by the application role.
 CREATE TEMP TABLE expected_column_grants (tbl text, col text);
@@ -98,7 +102,12 @@ INSERT INTO expected_column_grants VALUES
   ('troubleshooting_issues', 'opened_at'), ('troubleshooting_issues', 'last_comment_day'),
   ('troubleshooting_issues', 'comments_on_last_day'),
   ('troubleshooting_daily_counters', 'agent_runs'), ('troubleshooting_daily_counters', 'new_issues'),
-  ('troubleshooting_daily_counters', 'comments'), ('troubleshooting_daily_counters', 'spend_micro_usd');
+  ('troubleshooting_daily_counters', 'comments'), ('troubleshooting_daily_counters', 'spend_micro_usd'),
+  -- What the broker metered for an attempt, written by the move that ends it (migration 2026-11-21-003200).
+  ('attempts', 'input_tokens'), ('attempts', 'output_tokens'), ('attempts', 'cost_micro_usd'),
+  ('attempts', 'model_requests'),
+  ('pull_requests', 'fate'), ('pull_requests', 'decided_at'), ('pull_requests', 'fate_recorded_at'),
+  ('pull_requests', 'last_checked_at');
 
 DO $$
 DECLARE

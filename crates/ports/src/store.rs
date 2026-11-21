@@ -48,6 +48,7 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::{ArtifactRef, DomainEvent, EvidenceLedgerEntry};
 use factory_domain::error::ValueError;
 use factory_domain::ids::{
@@ -62,10 +63,12 @@ use factory_domain::state::{
     AttemptStatus, Guard, IllegalTransition, JobStatus, StageRunStatus, Status, TaskNodeStatus,
 };
 use factory_domain::values::{
-    AggregateVersion, GitSha, MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp,
+    AggregateVersion, GitSha, MediaType, NonEmptyString, NonNegativeInt, Sha256Digest, Slug,
+    Timestamp,
 };
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, Fidelity, GateOutcome, StageKind};
 
+use crate::agent::RuntimeId;
 use crate::sandbox::SandboxId;
 
 /// The version counter of a mutable row. A new row starts at [`AggregateVersion::FIRST`].
@@ -1008,6 +1011,121 @@ pub struct SandboxRecord {
     pub leaked: bool,
 }
 
+/// The largest count or amount the store keeps for a metered use: 2^53 - 1. It is the valid range
+/// of a count and of an amount of money in the process metrics (ADR 0029), and every value up to
+/// it is exact in every reader.
+pub const MAX_METERED: u64 = 9_007_199_254_740_991;
+
+/// A metered value was above [`MAX_METERED`]. Nothing is stored: a value the store cannot keep
+/// exactly is refused, never cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{what} is above the largest value a metered use can hold (2^53 - 1)")]
+pub struct MeteredOutOfRange {
+    /// The value that was too large.
+    pub what: &'static str,
+}
+
+/// What the model broker metered for one job token, or for one run under it (ports v1.5).
+///
+/// | Field | Unit | Valid range |
+/// |---|---|---|
+/// | input tokens | tokens sent to the model | 0 to [`MAX_METERED`] |
+/// | output tokens | tokens the model wrote | 0 to [`MAX_METERED`] |
+/// | cost | millionths of a US dollar | 0 to [`MAX_METERED`] |
+/// | requests | model requests | 0 to [`MAX_METERED`] |
+///
+/// The fields are private, so a value outside the range cannot exist. "Not known" is not a
+/// `MeteredUsage`: it is the `None` of the field that holds one, and is never read as zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct MeteredUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_micro_usd: u64,
+    requests: u64,
+}
+
+impl MeteredUsage {
+    /// Nothing was used: the attempt of a stage that runs no agent.
+    pub const ZERO: Self = Self {
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_micro_usd: 0,
+        requests: 0,
+    };
+
+    /// Checks every value against [`MAX_METERED`].
+    ///
+    /// # Errors
+    /// [`MeteredOutOfRange`], naming the first value that is too large.
+    pub fn new(
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_micro_usd: u64,
+        requests: u64,
+    ) -> Result<Self, MeteredOutOfRange> {
+        for (value, what) in [
+            (input_tokens, "the number of input tokens"),
+            (output_tokens, "the number of output tokens"),
+            (cost_micro_usd, "the cost in millionths of a dollar"),
+            (requests, "the number of model requests"),
+        ] {
+            if value > MAX_METERED {
+                return Err(MeteredOutOfRange { what });
+            }
+        }
+        Ok(Self {
+            input_tokens,
+            output_tokens,
+            cost_micro_usd,
+            requests,
+        })
+    }
+
+    /// What was used between two readings of one meter: `self` minus `earlier`, field by field.
+    /// `None` when a field of `self` is below the same field of `earlier`: a meter only counts
+    /// up, so the two readings are not of one meter and no difference is known.
+    #[must_use]
+    pub fn since(self, earlier: Self) -> Option<Self> {
+        Some(Self {
+            input_tokens: self.input_tokens.checked_sub(earlier.input_tokens)?,
+            output_tokens: self.output_tokens.checked_sub(earlier.output_tokens)?,
+            cost_micro_usd: self.cost_micro_usd.checked_sub(earlier.cost_micro_usd)?,
+            requests: self.requests.checked_sub(earlier.requests)?,
+        })
+    }
+
+    /// Tokens sent to the model.
+    #[must_use]
+    pub const fn input_tokens(self) -> u64 {
+        self.input_tokens
+    }
+
+    /// Tokens the model wrote.
+    #[must_use]
+    pub const fn output_tokens(self) -> u64 {
+        self.output_tokens
+    }
+
+    /// The input tokens plus the output tokens. Each is at most 2^53 - 1, so the sum is at most
+    /// 2^54 - 2 and cannot overflow.
+    #[must_use]
+    pub const fn tokens(self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+
+    /// The cost in millionths of a US dollar.
+    #[must_use]
+    pub const fn cost_micro_usd(self) -> u64 {
+        self.cost_micro_usd
+    }
+
+    /// The number of model requests.
+    #[must_use]
+    pub const fn requests(self) -> u64 {
+        self.requests
+    }
+}
+
 /// What rides on an attempt transition. See [`attempt_end_rule`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AttemptEnd {
@@ -1021,6 +1139,10 @@ pub struct AttemptEnd {
     /// How long teardown may take, from the database time. Required for `A08`, which sets
     /// `teardown_deadline_at` in the same statement, forbidden elsewhere.
     pub teardown_grace: Option<Duration>,
+    /// What the broker metered for the attempt's token (ports v1.5). Allowed only on a move into
+    /// a terminal status, where it is written with the status; on any other move it is
+    /// `Constraint(AttemptEndRule)`. `None` stores "not known": the meter was not read.
+    pub metered: Option<MeteredUsage>,
 }
 
 /// What an attempt transition requires of its [`AttemptEnd`].
@@ -1082,6 +1204,9 @@ pub struct Attempt {
     pub created_at: Timestamp,
     /// When the attempt reached a terminal status.
     pub ended_at: Option<Timestamp>,
+    /// What the broker metered for the attempt's token (ports v1.5). `None` while the attempt
+    /// runs, and for an attempt that ended with the meter not read. Never read `None` as zero.
+    pub metered: Option<MeteredUsage>,
 }
 
 /// What a heartbeat found.
@@ -1151,6 +1276,127 @@ pub struct TaskNodeEffects {
     pub attempt: Option<AttemptId>,
     /// The commit that finished the node. Required on `T03`.
     pub commit: Option<GitSha>,
+}
+
+/// One run of the builder on a task node, to record (ports v1.5). The attempt is the one of the
+/// fence the write carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTaskRun {
+    /// The task node that was built.
+    pub task_node: TaskNodeId,
+    /// The runtime the router chose.
+    pub runtime: RuntimeId,
+    /// The model the router chose, as the provider spells it. At most 200 characters.
+    pub model: NonEmptyString,
+    /// The tier of the route the model was chosen from.
+    pub tier: RecommendedTier,
+    /// What the broker metered between the start and the end of the run. `None` when a reading
+    /// of the meter failed: the use is then not known.
+    pub metered: Option<MeteredUsage>,
+}
+
+/// A stored run of the builder on a task node. A row is written once and never changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRun {
+    /// The tenant that owns it.
+    pub tenant_id: TenantId,
+    /// The job it belongs to.
+    pub job_id: JobId,
+    /// The stage run of the task node and of the attempt.
+    pub stage_run_id: StageRunId,
+    /// The task node that was built.
+    pub task_node_id: TaskNodeId,
+    /// The attempt that built it.
+    pub attempt_id: AttemptId,
+    /// The runtime the router chose.
+    pub runtime: RuntimeId,
+    /// The model the router chose.
+    pub model: NonEmptyString,
+    /// The tier of the route the model was chosen from.
+    pub tier: RecommendedTier,
+    /// What the broker metered for the run, or `None` when it is not known.
+    pub metered: Option<MeteredUsage>,
+    /// When the database recorded the run.
+    pub recorded_at: Timestamp,
+}
+
+/// A pull request a delivery stage opened, to record (ports v1.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewPullRequest {
+    /// The job whose delivery stage opened it.
+    pub job: JobId,
+    /// The repository of the job.
+    pub repository: RepositoryId,
+    /// The number of the pull request on the code host, from 1 to [`MAX_METERED`].
+    pub number: u64,
+}
+
+/// What became of a pull request, as the store holds it. The first decision is final.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredFate {
+    /// Nobody decided yet, as far as the factory knows.
+    Open,
+    /// A person merged it.
+    Merged {
+        /// When it was merged, as the code host says.
+        decided_at: Timestamp,
+        /// When the factory recorded the merge, by the database clock.
+        recorded_at: Timestamp,
+    },
+    /// It was closed without a merge.
+    Closed {
+        /// When it was closed, as the code host says.
+        decided_at: Timestamp,
+        /// When the factory recorded the close, by the database clock.
+        recorded_at: Timestamp,
+    },
+}
+
+impl StoredFate {
+    /// When the factory recorded the decision, or `None` while the pull request is open. The
+    /// window of a snapshot is cut by this time: it only moves forward, so a window that has
+    /// ended never gains a sample.
+    #[must_use]
+    pub const fn recorded_at(&self) -> Option<Timestamp> {
+        match self {
+            Self::Open => None,
+            Self::Merged { recorded_at, .. } | Self::Closed { recorded_at, .. } => {
+                Some(*recorded_at)
+            }
+        }
+    }
+}
+
+/// A stored pull request of the factory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullRequestRecord {
+    /// The tenant that owns it.
+    pub tenant_id: TenantId,
+    /// The job whose delivery stage opened it.
+    pub job_id: JobId,
+    /// The repository.
+    pub repository: RepositoryId,
+    /// The number on the code host.
+    pub number: u64,
+    /// When the factory recorded that it was opened, by the database clock.
+    pub opened_at: Timestamp,
+    /// What became of it.
+    pub fate: StoredFate,
+    /// When the factory last asked the code host about it, whatever the answer.
+    pub last_checked_at: Option<Timestamp>,
+}
+
+/// What one look at the code host found about a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestSighting {
+    /// Still open.
+    Open,
+    /// Merged, at the time the code host gives.
+    Merged(Timestamp),
+    /// Closed without a merge, at the time the code host gives.
+    Closed(Timestamp),
+    /// The code host could not be read. Only the time of the look is recorded.
+    Unread,
 }
 
 /// Which side of a stage run a stored artifact is on.
@@ -1746,6 +1992,8 @@ pub trait Tx:
     + StageRunOps
     + AttemptOps
     + TaskNodeOps
+    + TaskRunOps
+    + PullRequestOps
     + StageArtifactOps
     + ApprovalOps
     + LedgerOps
@@ -2172,6 +2420,88 @@ pub trait TaskNodeOps {
         t: AppliedTransition<TaskNodeStatus>,
         effects: TaskNodeEffects,
     ) -> Result<Version, StoreError>;
+}
+
+/// The runs of the builder on the task nodes of a stage run (ports v1.5).
+///
+/// # Idempotency
+/// `record_task_run` is idempotent for the same task node, attempt and content. The same task
+/// node and attempt with other content is `Constraint(IdReusedWithDifferentContent)`.
+///
+/// # Preconditions
+/// Tenant transaction. The task node belongs to the stage run of the attempt of the fence.
+///
+/// # Postconditions
+/// After record_task_run, list_task_runs of the stage run returns the row, with the job and the
+/// stage run of the node and the database's time. A row is never changed or deleted.
+///
+/// # Errors
+/// StoreError::LeaseFenced (the attempt of the fence is not live, is held by another worker or has
+/// another epoch), NotFound (a task node or a stage run that is not the tenant's, or a task node of
+/// another stage run than the attempt's), Constraint (IdReusedWithDifferentContent, TextBounds for a model name over 200
+/// characters).
+///
+/// # Cancellation and timeouts
+/// If a method future is dropped before it completes, the transaction is poisoned: every later call
+/// returns Unavailable and the only safe step is to drop the transaction. The adapter sets a
+/// statement timeout on every call; a timeout is Unavailable and poisons the transaction.
+#[async_trait]
+pub trait TaskRunOps {
+    /// Records the run of the attempt of `by` on a task node.
+    async fn record_task_run(&mut self, by: Fence, run: NewTaskRun) -> Result<(), StoreError>;
+    /// The task runs of a stage run, in the order they were recorded, then by attempt.
+    async fn list_task_runs(&mut self, stage_run: StageRunId) -> Result<Vec<TaskRun>, StoreError>;
+}
+
+/// The pull requests the factory opened, and what became of them (ports v1.5).
+///
+/// # Idempotency
+/// `record_pull_request_opened` is idempotent for the same job, repository and number, whatever
+/// the fate of the row is by then. The same repository and number for another job is
+/// `Constraint(IdReusedWithDifferentContent)`. A sighting may be repeated.
+///
+/// # Preconditions
+/// Tenant transaction. The job and the repository belong to the tenant, and the repository is the
+/// job's.
+///
+/// # Postconditions
+/// A recorded pull request is open, with `opened_at` at the database's time and no look yet. Every
+/// sighting sets `last_checked_at` to the database's time. A `Merged` or `Closed` sighting sets
+/// the fate, with the database's time as `recorded_at`, when the row is still open; a row that has
+/// a fate keeps it. `list_pull_requests_to_check` never returns a row that has a fate.
+///
+/// # Errors
+/// StoreError::NotFound (a job, or a pull request, that is not the tenant's; a repository that is
+/// not the job's), Constraint (IdReusedWithDifferentContent; TextBounds for a number of zero or
+/// above `MAX_METERED`).
+///
+/// # Cancellation and timeouts
+/// If a method future is dropped before it completes, the transaction is poisoned: every later call
+/// returns Unavailable and the only safe step is to drop the transaction. The adapter sets a
+/// statement timeout on every call; a timeout is Unavailable and poisons the transaction.
+#[async_trait]
+pub trait PullRequestOps {
+    /// Records that the delivery stage of a job opened a pull request.
+    async fn record_pull_request_opened(&mut self, new: NewPullRequest) -> Result<(), StoreError>;
+    /// The pull requests of a job, oldest first.
+    async fn list_pull_requests(
+        &mut self,
+        job: JobId,
+    ) -> Result<Vec<PullRequestRecord>, StoreError>;
+    /// The open pull requests that were never looked at, or were last looked at before `before`,
+    /// the longest wait first, at most `limit`.
+    async fn list_pull_requests_to_check(
+        &mut self,
+        before: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<PullRequestRecord>, StoreError>;
+    /// Records what a look at the code host found, and returns the row as it stands afterwards.
+    async fn record_pull_request_sighting(
+        &mut self,
+        repository: RepositoryId,
+        number: u64,
+        sighting: PullRequestSighting,
+    ) -> Result<PullRequestRecord, StoreError>;
 }
 
 /// What a stage run consumed and produced, by role.
@@ -2694,6 +3024,81 @@ mod tests {
                 !rule.failure_class && !rule.output && !rule.teardown_grace,
                 "{id}"
             );
+        }
+    }
+
+    #[test]
+    fn a_metered_use_holds_values_up_to_two_to_the_53_minus_one_and_no_more() {
+        assert_eq!(MAX_METERED, (1u64 << 53) - 1);
+        assert_eq!(MeteredUsage::new(0, 0, 0, 0), Ok(MeteredUsage::ZERO));
+        assert_eq!(MeteredUsage::default(), MeteredUsage::ZERO);
+        let one = MeteredUsage::new(1, 1, 1, 1).expect("one");
+        assert_eq!(
+            (
+                one.input_tokens(),
+                one.output_tokens(),
+                one.cost_micro_usd(),
+                one.requests()
+            ),
+            (1, 1, 1, 1)
+        );
+        let largest =
+            MeteredUsage::new(MAX_METERED, MAX_METERED, MAX_METERED, MAX_METERED).expect("largest");
+        // The sum of the two token counts at their largest is 2^54 - 2 and does not overflow.
+        assert_eq!(largest.tokens(), (1u64 << 54) - 2);
+        let above = MAX_METERED + 1;
+        for (offered, what) in [
+            (MeteredUsage::new(above, 0, 0, 0), "input"),
+            (MeteredUsage::new(0, above, 0, 0), "output"),
+            (MeteredUsage::new(0, 0, above, 0), "cost"),
+            (MeteredUsage::new(0, 0, 0, above), "requests"),
+            (MeteredUsage::new(u64::MAX, 0, 0, 0), "input"),
+        ] {
+            let refused = offered.expect_err("above the range");
+            assert!(refused.what.contains(what), "{}", refused.what);
+        }
+    }
+
+    #[test]
+    fn the_use_between_two_readings_is_their_difference_and_unknown_when_the_meter_went_back() {
+        let reading = |i, o, c, r| MeteredUsage::new(i, o, c, r).expect("in range");
+        let earlier = reading(100, 40, 7, 2);
+        assert_eq!(
+            reading(150, 45, 9, 3).since(earlier),
+            Some(reading(50, 5, 2, 1))
+        );
+        // Nothing was used between two equal readings.
+        assert_eq!(earlier.since(earlier), Some(MeteredUsage::ZERO));
+        assert_eq!(earlier.since(MeteredUsage::ZERO), Some(earlier));
+        // One field below the earlier reading: the readings are not of one meter.
+        for later in [
+            reading(99, 40, 7, 2),
+            reading(100, 39, 7, 2),
+            reading(100, 40, 6, 2),
+            reading(100, 40, 7, 1),
+        ] {
+            assert_eq!(later.since(earlier), None);
+        }
+        let largest = reading(MAX_METERED, MAX_METERED, MAX_METERED, MAX_METERED);
+        assert_eq!(largest.since(MeteredUsage::ZERO), Some(largest));
+        assert_eq!(largest.since(largest), Some(MeteredUsage::ZERO));
+    }
+
+    #[test]
+    fn a_fate_has_a_recording_time_exactly_when_it_was_decided() {
+        let at = at();
+        assert_eq!(StoredFate::Open.recorded_at(), None);
+        for fate in [
+            StoredFate::Merged {
+                decided_at: at,
+                recorded_at: at,
+            },
+            StoredFate::Closed {
+                decided_at: at,
+                recorded_at: at,
+            },
+        ] {
+            assert_eq!(fate.recorded_at(), Some(at));
         }
     }
 
