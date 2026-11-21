@@ -16,6 +16,7 @@
 //! | [`vocabulary`] | Closed sets shared by the contracts: execution mode, fidelity, risk tier, gate outcome, review verdict, stage kind, assurance level |
 //! | [`state`] | The four state machines, their guards and actors, with the exact names and moves of `state-machine.json` |
 //! | [`contracts`] | One type for each schema in `schemas/` |
+//! | [`knowledge`] | The project knowledge base: typed entries, the index, the drift checks and the choice of relevant entries (ADR 0028) |
 //! | [`ledger`] | The evidence ledger hash chain |
 //! | [`patterns`] | The regular expressions the schemas declare, which the types compile |
 //! | [`policy`] | The typed policy documents and the pure rules that apply them |
@@ -43,6 +44,7 @@
 pub mod contracts;
 pub mod error;
 pub mod ids;
+pub mod knowledge;
 pub mod ledger;
 pub mod machines;
 pub mod metrics;
