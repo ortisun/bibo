@@ -122,7 +122,7 @@ The factory writes the smallest set of documents that covers what the change tou
 5. Add the domain content from 8.4 only when the change touches that behavior.
 6. Record the result in the documentation plan: audience, pages affected, owner, sources and acceptance criteria. The plan is the master prompt's `documentation_plan.json`. Its schema is defined by the documentation stage package. Until it exists, the information is kept in a structured record and never in titles.
 7. If nothing needs documenting, the answer is NOT_APPLICABLE with the rule that led there, not a blank PASSED. The PR text is still written and still checked.
-8. The documents may already be written when the documentation stage runs: the builder often updates the README and the changelog together with the code. The documentation writer then checks each page of the plan against the change, marks it covered, lists no file as written and changes nothing. The stage accepts that report and records that no documentation commit was needed; the documentation review still reads the pages. The writer's word is contradicted, and the attempt fails, only when it names a file as written and the tree shows no change. A file the writer changes outside the README, the changelog and `docs/` is a separate matter: the scope gate fails it and nothing is committed.
+8. The documents may already be written when the documentation stage runs: the builder often updates the README and the changelog together with the code. The documentation writer then checks each page of the plan against the change, marks it covered, lists no file as written and changes nothing. The stage accepts that report and records that no documentation commit was needed; the documentation review still reads the pages, because the reviewer is shown the pages the gates judged and not only what the writer committed (9.9). The writer's word is contradicted, and the attempt fails, only when it names a file as written and the tree shows no change. A file the writer changes outside the README, the changelog and `docs/` is a separate matter: the scope gate fails it and nothing is committed.
 
 For a significant new product, the full onboarding set applies (last row of 8.3).
 
@@ -316,6 +316,28 @@ Master prompt section 10.4 lists what a PASS requires. This table says who decid
 The result is stored with the source-to-document traceability, the documentation changes, the lint results and the reviewer decisions.
 
 How a named flag counts as the program's own: the program's help output lists it, or the program's source code at the documentation commit holds it as a quoted literal (for example `"--json"`). The help output is not enough on its own, because a project may decide that its help text does not change: in the thirty-fifth real run the owner kept the help text of the word count tool as it was, the README documented the new `--json` flag, and the check called the flag invented. A command counts as the program's when the help output names it. An environment variable counts when the source reads it or the help output names it.
+
+### 9.9 What the documentation reviewer reads
+
+The independent documentation reviewer must judge exactly the pages the gates judged, over the same commits. The gate report binds its result to three commits: the job's base commit, the code head and the documentation head. The reviewer's inputs are bound to the same three.
+
+| Input | What it holds | Commits |
+|---|---|---|
+| `frozen_specification` | The frozen specification. | None |
+| `documentation_plan` | The documentation plan. | None |
+| `code_diff` | The patch of the code change. | Base commit to code head |
+| `documentation_diff` | The patch of every page the gates judged: each Markdown file the change adds or modifies, and nothing else. | Base commit to documentation head |
+| `gate_reports` | The reports of the readability gate and of each check, in words. | Those of the gate report |
+| `people_answers` | What people answered when this documentation review asked them a question, from the factory's own record of their answers. It says so when nobody was asked. | None |
+| `project_rules` | The project's rules for agents ([project rules](../architecture/project-rules.md)). | Base commit |
+
+Why the documentation diff starts at the base commit and not at the code head. The builder often writes the README and the changelog together with the code, and the writer then changes nothing (8.2, item 8). A patch from the code head to the documentation head is empty in that case. The gates still judge those pages, because they read the change from the base commit. In the thirty-seventh real run the reviewer received the empty patch, could not see the pages, and stopped the job to ask a person whether a documentation commit was missing. A page written in the code commits is therefore in both diffs. That is intended: the code diff shows what the code does, the documentation diff shows every page under review.
+
+When no page changed, the documentation diff is not left empty. It says, in one sentence, that no documentation page changed between the base commit and the documentation head. An empty block means something went wrong; a stated absence does not.
+
+Why the reviewer receives people's answers. When the reviewer returns `NEEDS_HUMAN`, a person answers and the stage runs again. Without the answer the reviewer asks the same question again. The answers come from the factory's record, never from a file the writer wrote, so they are not the writer's account of its work. They are decisions of the people who own the job: the reviewer reads them as settled and does not ask them again.
+
+The record of the review stores the hash of each input it gave, and the list of pages the documentation diff holds.
 
 ## 10. Changing this policy
 

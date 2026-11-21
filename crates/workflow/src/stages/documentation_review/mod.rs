@@ -26,7 +26,10 @@
 //! * **The reviewer is independent by type.** Its prompt is assembled from `IndependentInput`
 //!   values, which cannot be made from an agent's account of its own work. The writer's result,
 //!   which holds its claims, is withheld by hash. The reviewer receives the frozen specification,
-//!   the plan, both patches and the gate reports.
+//!   the plan, both patches, the gate reports and what people answered this review. The
+//!   documentation patch runs from the job's base to the documentation head and holds the pages
+//!   the gates judged, so pages written in the code commits are reviewed too (documentation
+//!   policy 9.9).
 //! * **A reviewer never overrides a gate.** The engine reads the verdict only after every report: a
 //!   blocked gate blocks, a failed gate fails, and a `PASS` changes neither (NT-INJ-06).
 //! * **A reviewer changes nothing.** It is granted only tools that read, and its checkout is a copy

@@ -5,8 +5,12 @@
 //!
 //! 1. Read the implementation result, the frozen specification, the documentation plan and the
 //!    documentation result by the hash the contract pinned.
-//! 2. Read the tree at the documentation commit and export the three patches on the host: the
-//!    whole change (to know which pages changed), the code patch and the documentation patch.
+//! 2. Read the tree at the documentation commit and export two patches on the host: the whole
+//!    change from the job's base to the documentation head (to know which pages changed) and the
+//!    code patch. The documentation patch is the part of the whole change that touches the pages
+//!    the gates judge, so the reviewer sees exactly those pages over the same commits, also when
+//!    the pages were written in the code commits and the writer changed nothing (documentation
+//!    policy 9.9).
 //! 3. Run the programs the checks need in a fresh verify sandbox and remove it
 //!    ([`verify`](super::verify)), then run the checks and the readability gate. Each check
 //!    becomes one typed gate report, and the reports are stored in `documentation-gate-report`.
@@ -14,7 +18,9 @@
 //!    spec the seam returned. The reviewer is granted no tool that writes or runs a command, and
 //!    its checkout is a copy that is never ingested.
 //! 5. Assemble the prompt with `assemble_independent`. Its inputs are of a type that no writer
-//!    summary can have, and the hash of the writer's own result is withheld as well.
+//!    summary can have, and the hash of the writer's own result is withheld as well. What people
+//!    answered this review goes in as its own input, so a question they settled is not asked
+//!    again.
 //! 6. Run the reviewer, remove the sandbox, check the answer against the schema of the agent, wrap
 //!    it into the stored verdict with the factory's own fields, and check that every finding of a
 //!    verdict other than `PASS` points at a line one of the two patches shows.
@@ -43,7 +49,7 @@ use super::handler::DocumentationReviewHandler;
 use super::verify::{Io, observe_all};
 use crate::gates::command::report::{Subject, image_digest};
 use crate::gates::docs::check::{self, Inputs};
-use crate::gates::docs::plan::{DocPlan, Form, parse_patch};
+use crate::gates::docs::plan::{DocPlan, Form, parse_patch, select_files};
 use crate::gates::docs::report::{Reporter, SandboxFacts};
 use crate::gates::readability::{
     Artifact, DocumentType, Options, ReadabilityGate, ReportContext, ReviewerPolicy,
@@ -56,6 +62,7 @@ use crate::stages::documenting::input::{
     parse_candidate,
 };
 use crate::stages::documenting::repo::read_tree;
+use crate::stages::implementation::feedback::earlier_answers;
 use crate::stages::implementation::run::{close, open_sandbox, workspace_error};
 use crate::stages::implementation::seams::{WorkspaceAccess, verify_read_only_tools};
 use crate::stages::review::findings::{EngineFields, Reviewer, wrap};
@@ -149,6 +156,61 @@ pub fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
         })
 }
 
+/// What the documentation diff says when the change touches no documentation page. A stated
+/// absence, so that the reviewer never reads an empty block as a patch that went missing.
+pub(crate) const NO_PAGES: &str =
+    "No documentation page changed between the job's base commit and the documentation head.\n";
+
+/// What the reviewer reads when nobody answered a question of this documentation review.
+pub(crate) const NO_ANSWERS: &str =
+    "No person has answered a question of this documentation review.";
+
+/// The most bytes of one answer of a person that are read. An answer is short text typed by a
+/// person; the bound only stops a pasted file from filling the prompt.
+const ANSWER_MAX_BYTES: usize = 8 * 1024;
+
+/// The documentation diff the reviewer reads: the sections of the whole change, from the job's
+/// base to the documentation head, that touch the pages the gates judged. [`NO_PAGES`] when they
+/// are none (documentation policy 9.9).
+pub(crate) fn documentation_diff(
+    whole_patch: &[u8],
+    pages: &std::collections::BTreeSet<String>,
+) -> Vec<u8> {
+    let selected = select_files(whole_patch, pages);
+    if selected.is_empty() {
+        NO_PAGES.as_bytes().to_vec()
+    } else {
+        selected
+    }
+}
+
+/// What people answered this stage run, oldest first, as the reviewer reads it: the same text the
+/// other stages give their reviewers, or [`NO_ANSWERS`].
+async fn people_answers(ctx: &StageContext<'_>) -> Result<String, StageError> {
+    let scope = TenantScope::new(ctx.identity.tenant);
+    let mut answers = Vec::with_capacity(ctx.human_inputs.len());
+    for answer in ctx.human_inputs {
+        let bytes = ctx
+            .ports
+            .artifacts
+            .get(&scope, answer)
+            .await
+            .map_err(|_| StageError::Tool)?;
+        let bounded = bytes
+            .get(..bytes.len().min(ANSWER_MAX_BYTES))
+            .unwrap_or(&bytes);
+        answers.push(String::from_utf8_lossy(bounded).into_owned());
+    }
+    let text = earlier_answers(&answers);
+    Ok(if text.is_empty() {
+        NO_ANSWERS.to_owned()
+    } else {
+        format!(
+            "People answered questions this documentation review asked. Their decisions stand.\n{text}"
+        )
+    })
+}
+
 /// The most bytes of a page that are read at the job's base to compare its title.
 const MAX_BASE_PAGE_BYTES: u64 = 1024 * 1024;
 
@@ -240,9 +302,7 @@ pub(super) async fn execute(
     };
     let (whole_export, whole_patch) = export(candidate.base.clone(), docs_head.clone()).await?;
     let (code_export, code_patch) = export(candidate.base.clone(), candidate.head.clone()).await?;
-    let (docs_export, docs_patch) = export(candidate.head.clone(), docs_head.clone()).await?;
     let whole = parse_patch(&String::from_utf8_lossy(&whole_patch));
-    let _ = (&whole_export, &code_export);
     let changed_docs: std::collections::BTreeSet<String> = whole
         .iter()
         .filter(|file| {
@@ -250,6 +310,15 @@ pub(super) async fn execute(
         })
         .map(|file| file.path.clone())
         .collect();
+    // The reviewer's documentation diff: the pages the gates judge, from the same patch and so
+    // over the same commits as the gate report's binding. Stored, so that its hash in the record
+    // names an artifact.
+    let docs_patch = documentation_diff(&whole_patch, &changed_docs);
+    let docs_ref = ports
+        .artifacts
+        .put(docs_patch.clone(), whole_export.patch.media_type.clone())
+        .await
+        .map_err(|_| StageError::Tool)?;
     let changelog_added: String = whole
         .iter()
         .filter(|file| file.path == "CHANGELOG.md")
@@ -445,6 +514,8 @@ pub(super) async fn execute(
     let writer_result = input_artifact(ctx.contract, DOCUMENTATION_RESULT);
     // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
     let rules = crate::stages::project_rules::block(ctx).await?;
+    let answers = people_answers(ctx).await?;
+    let answers_sha = Sha256Digest::of(answers.as_bytes());
     let assembled = {
         let now = ports.clock.now();
         let tenant_id = identity.tenant;
@@ -460,11 +531,7 @@ pub(super) async fn execute(
             .iter()
             .map(|change| change.path.as_str().to_owned())
             .collect();
-        let doc_paths: Vec<String> = docs_export
-            .changes
-            .iter()
-            .map(|change| change.path.as_str().to_owned())
-            .collect();
+        let doc_paths: Vec<String> = changed_docs.iter().cloned().collect();
         let inputs = vec![
             independent(Input::untrusted(
                 "frozen_specification",
@@ -494,7 +561,7 @@ pub(super) async fn execute(
                 Input::untrusted(
                     "documentation_diff",
                     ContentClass::ModelOutput,
-                    artifact("diff", &docs_export.patch.sha256),
+                    artifact("diff", &docs_ref.sha256),
                     tenant_id,
                     docs_patch.clone(),
                 )
@@ -506,6 +573,15 @@ pub(super) async fn execute(
                 artifact("gate-reports", &Sha256Digest::of(rendered.as_bytes())),
                 tenant_id,
                 rendered.clone().into_bytes(),
+            )),
+            // What people decided comes from the factory's own record of their answers, never
+            // from a file the writer wrote.
+            independent(Input::untrusted(
+                "people_answers",
+                ContentClass::IssueComment,
+                artifact("people-answers", &answers_sha),
+                tenant_id,
+                answers.clone().into_bytes(),
             )),
             rules.into_independent(),
         ]
@@ -582,7 +658,7 @@ pub(super) async fn execute(
             fidelity: ports.runtime.fidelity(),
         },
         frozen_spec: spec_ref.sha256.clone(),
-        diff: docs_export.patch.sha256.clone(),
+        diff: docs_ref.sha256.clone(),
         gate_reports: gate_ids.clone(),
     };
     let wrapped = wrap(&validated.value, &fields).map_err(|_| StageError::InvalidOutput)?;
@@ -624,7 +700,10 @@ pub(super) async fn execute(
             "frozen_spec_sha256": spec_ref.sha256,
             "plan_sha256": plan_ref.sha256,
             "code_diff_sha256": code_export.patch.sha256,
-            "documentation_diff_sha256": docs_export.patch.sha256,
+            "documentation_diff_sha256": docs_ref.sha256,
+            "documentation_diff_pages": changed_docs.iter().collect::<Vec<_>>(),
+            "people_answers_sha256": answers_sha,
+            "people_answers_given": ctx.human_inputs.len(),
             "gate_report_ids": gate_ids.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>(),
             "writer_summary_given": false,
             "context": assembled.manifest().to_json(),

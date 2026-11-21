@@ -420,6 +420,133 @@ async fn a_writer_that_finds_the_pages_already_written_changes_nothing_and_passe
     assert!(passed(&rig, StageKind::Documenting).await, "{result}");
 }
 
+/// The builder wrote the README in the code commits and the writer changed nothing, so the code
+/// head and the documentation head are one commit. The reviewer still sees the README: its
+/// documentation diff runs from the job's base to the documentation head and holds the pages the
+/// gates judged (documentation policy 9.9). In the thirty-seventh real run it received an empty
+/// patch and stopped the job to ask whether a documentation commit was missing.
+#[tokio::test]
+async fn the_reviewer_sees_the_pages_the_builder_wrote_when_the_writer_changed_nothing() {
+    let rig = up_to_documenting().await;
+    writer_will(&rig, Vec::new(), writer_done(&[], "src/main.rs"));
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+    let prompts = rig.runtime.prompts("documentation-reviewer");
+    let diff = block(&prompts[0].instructions, "documentation_diff");
+    assert!(
+        diff.contains("diff --git a/README.md b/README.md"),
+        "{diff}"
+    );
+    assert!(diff.contains("+Use --json to print JSON."), "{diff}");
+    // Only pages: the code is in the code diff and nowhere else.
+    assert!(!diff.contains("src/main.rs"), "{diff}");
+    let record = rig
+        .deliverable(
+            StageKind::DocumentationReview,
+            "documentation-review-record",
+        )
+        .await
+        .expect("the record is stored");
+    assert_eq!(
+        record["inputs"]["documentation_diff_pages"],
+        json!(["README.md"])
+    );
+    // The record names the same commits the gate report is bound to.
+    let gate = rig
+        .deliverable(StageKind::DocumentationReview, "documentation-gate-report")
+        .await
+        .expect("the gate report is stored");
+    assert_eq!(
+        record["candidate"]["documentation_head"],
+        record["candidate"]["code_head"]
+    );
+    for key in ["base_commit", "code_head", "documentation_head"] {
+        assert_eq!(record["candidate"][key], gate["binding"][key], "{key}");
+    }
+    // The verdict names the hash of the patch the reviewer was given, which is not empty.
+    let verdict = verdict_of(&rig).await.expect("the verdict");
+    assert_eq!(
+        verdict["inputs_reviewed"]["diff_sha256"],
+        record["inputs"]["documentation_diff_sha256"]
+    );
+    assert_ne!(
+        record["inputs"]["documentation_diff_sha256"],
+        json!("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    );
+}
+
+/// The reviewer asks a person, the person answers, and the stage runs again. The reviewer of the
+/// second attempt reads the answer, so it does not ask the same question again (documentation
+/// policy 9.9). In the thirty-seventh real run the answer never reached it and it asked again.
+#[tokio::test]
+async fn a_persons_answer_reaches_the_documentation_reviewer() {
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::{Decision, Subject};
+    const ANSWER: &str = "There is no separate documentation commit: review the README.";
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    let mut ask = reviewer_passes();
+    ask["verdict"] = json!("NEEDS_HUMAN");
+    ask["human_question"] = json!("Is there a documentation commit that was not exported?");
+    reviewer_will(&rig, ask);
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+    let view = rig.world.view(rig.job).await;
+    assert_eq!(
+        view.newest(StageKind::DocumentationReview)
+            .expect("a run")
+            .status,
+        StageRunStatus::WaitingForHuman
+    );
+    let person = rig.world.person("operator-d", &[HumanRole::Operator]).await;
+    let review = rig.run_of(StageKind::DocumentationReview).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(person),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::Answer {
+                text: ANSWER.to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the answer applies");
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::DocumentationReview).await;
+    let prompts = rig.runtime.prompts("documentation-reviewer");
+    assert_eq!(prompts.len(), 2);
+    let first = block(&prompts[0].instructions, "people_answers");
+    assert!(first.contains("No person has answered"), "{first}");
+    let second = block(&prompts[1].instructions, "people_answers");
+    assert!(second.contains(ANSWER), "{second}");
+    assert!(passed(&rig, StageKind::DocumentationReview).await);
+    // Each attempt stored its record in the same run: the first one counts no answer, the second
+    // one the answer it was given.
+    let mut given = Vec::new();
+    for link in rig.world.links(review).await {
+        let reference = factory_domain::contracts::ArtifactRef {
+            sha256: link.sha256.clone(),
+            media_type: factory_domain::values::MediaType::parse("application/json")
+                .expect("a media type"),
+            size_bytes: None,
+        };
+        let tenant = factory_domain::scope::TenantScope::new(rig.world.tenant);
+        if let Ok(bytes) =
+            factory_ports::artifact::ArtifactStore::get(&*rig.artifacts, &tenant, &reference).await
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            && value["kind"] == "documentation-review-record"
+        {
+            given.push(value["inputs"]["people_answers_given"].clone());
+        }
+    }
+    given.sort_by_key(Value::to_string);
+    assert_eq!(given, [json!(0), json!(1)]);
+}
+
 /// A writer that names a file it wrote and leaves the tree as it was is contradicted.
 #[tokio::test]
 async fn a_writer_that_names_a_file_it_did_not_write_fails_the_attempt() {

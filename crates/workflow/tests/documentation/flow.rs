@@ -330,6 +330,7 @@ mod reviewer_independence {
             "code_diff",
             "documentation_diff",
             "gate_reports",
+            "people_answers",
         ] {
             let _ = block(prompt, name);
         }
