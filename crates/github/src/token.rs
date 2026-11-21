@@ -72,6 +72,10 @@ pub(crate) enum TokenClass {
     /// `issues: write` and `metadata: read` for a troubleshooting run
     /// ([`PermissionSet::troubleshoot_issue`]). Minted only for a [`RunScope`], never for a job.
     TroubleshootIssue,
+    /// `pull_requests: read` and `metadata: read`, for the one read of what became of a pull
+    /// request the factory opened ([`PermissionSet::pull_request_reader`], ports v1.5). It does
+    /// not depend on the stage in the scope, and it can write nothing.
+    PullRequestFate,
 }
 
 /// Whom a token is kept for: a job, or a troubleshooting run. The two never share a token.
@@ -296,6 +300,7 @@ impl TokenMinter {
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
             TokenClass::ProtectionRead => Ok(PermissionSet::protection_reader()),
             TokenClass::ProjectRules => Ok(PermissionSet::project_rules()),
+            TokenClass::PullRequestFate => Ok(PermissionSet::pull_request_reader()),
             // A troubleshooting run's class is never minted for a job, whatever its stage.
             TokenClass::TroubleshootIssue => Err(GitHostError::Forbidden),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),
