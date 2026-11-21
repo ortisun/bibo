@@ -387,16 +387,16 @@ fn the_entry_of_a_promoted_improvement() {
         "---\n\
          id: IM-0001\n\
          kind: improvement\n\
-         title: Running the targeted tests first shows a failure sooner.\n\
+         title: \"Running the targeted tests first shows a failure sooner.\"\n\
          status: active\n\
          tier: A\n\
-         experiment: targeted-tests-first\n\
+         experiment: \"targeted-tests-first\"\n\
          setting: test-order\n\
-         from: the suite's own order\n\
-         to: targeted tests first\n\
+         from: \"the suite's own order\"\n\
+         to: \"targeted tests first\"\n\
          share_of_jobs: 1000 hundredths of a percent\n\
          decision: promoted\n\
-         decided_at: 2026-11-23T00:05:00Z\n\
+         decided_at: \"2026-11-23T00:05:00Z\"\n\
          ---\n\
          \n\
          ## Hypothesis\n\

@@ -172,9 +172,9 @@ A snapshot is the file `docs/knowledge/measurements/<identifier>.md`, of kind `m
 id: M-2026-W47
 kind: measurement
 title: Process numbers, week 47 of 2026
-window: { from: 2026-11-16T00:00:00Z, to: 2026-11-23T00:00:00Z }
+window: { from: "2026-11-16T00:00:00Z", to: "2026-11-23T00:00:00Z" }
 query_version: 3
-computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d
+computed_at_commit: "3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d"
 ---
 
 | Metric | Value | Samples | Previous |
@@ -190,6 +190,8 @@ computed_at_commit: 3f2a9c1d5e7b9a1c3e5f7a9b1c3d5e7f9a1b3c5d
 ```
 
 Rules of the entry:
+
+- **The header is read back by the factory's own YAML reader** (the one of the policy files), so the instants and the commit id are written in quotes: unquoted, readers disagree on what they are, and that reader refuses them.
 
 - **The window** starts at `from` and ends before `to`; `to` must be after `from`.
 - **The identifier.** A window of exactly seven days that starts on a Monday at 00:00 UTC is a week: `M-<year>-W<week>`, with the year and the week of ISO 8601 (the week belongs to the year that holds its Thursday). Any other window is `M-<from date>-to-<to date>`.

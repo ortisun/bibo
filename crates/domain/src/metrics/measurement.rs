@@ -13,6 +13,7 @@ use super::proportion::Proportion;
 use super::quantity::{MicroUsd, Milliseconds};
 use super::rounding::divide_half_even;
 use super::sample::Measured;
+use crate::knowledge::yaml_quoted;
 use crate::values::{GitSha, Timestamp};
 
 /// Seven days in seconds.
@@ -338,10 +339,10 @@ impl Measurement {
              |---|---|---|---|\n",
             id = self.window.identifier(),
             title = self.window.title(),
-            from = self.window.from,
-            to = self.window.to,
+            from = yaml_quoted(&self.window.from.as_text()),
+            to = yaml_quoted(&self.window.to.as_text()),
             query_version = self.query_version,
-            commit = self.computed_at_commit.as_str(),
+            commit = yaml_quoted(self.computed_at_commit.as_str()),
         );
         for row in &self.rows {
             let cells = [

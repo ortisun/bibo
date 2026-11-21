@@ -14,6 +14,7 @@
 //! | [`validator`] | `SchemaOutputValidator`, the hard limits, the strict JSON parse, the path-safety rule | `OutputValidator` |
 //! | [`agent_schema`] | `AgentSchema` and `AgentSchemaLoader`: an agent's output checked against ITS OWN schema in `agents/schemas/`, with the same limits and strict parse | |
 //! | [`yaml`] | The restricted YAML reader, and the record of the YAML parser decision | parser contract in `policies/security.yaml` |
+//! | [`knowledge`] | The header of a knowledge base entry read from its text, on the restricted YAML reader (ADR 0028) | `docs/architecture/project-knowledge-base.md` |
 //! | [`loader`] | Agent manifests, capability profiles and project manifests into typed values, with file and field in every error | |
 //! | [`registry`] | `FileAgentRegistry`: manifests, prompts with checked hashes, profiles by tag | `AgentRegistry` |
 //! | [`policy`] | `policies/security.yaml` and `policies/approval.yaml` into typed values, with the policy hash | |
@@ -45,6 +46,7 @@
 //!    stop a parse that has happened.
 
 pub mod agent_schema;
+pub mod knowledge;
 pub mod loader;
 pub mod policy;
 pub mod registry;
