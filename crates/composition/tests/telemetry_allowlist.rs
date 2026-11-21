@@ -375,6 +375,13 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "error",
         "StoreError, a closed set",
     ),
+    // Added with the process snapshot route on 2026-11-21 (ADR 0029). Only the two variants that
+    // are not a store error reach the line.
+    (
+        "apps/api/src/process_metrics.rs",
+        "error",
+        "SnapshotError::Metric or EndsBeforeItStarts: fixed words of the code, numbers and a job id, no text from a person or a tool",
+    ),
     (
         "apps/api/src/boot.rs",
         "kind",
