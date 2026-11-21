@@ -43,7 +43,7 @@
     "people_answers": {
       "type": "string",
       "maxLength": 1048576,
-      "description": "What people answered when this documentation review asked them a question, from the factory's own record of their answers. It says so when nobody was asked."
+      "description": "What people answered when a documentation review of this job asked them a question, the answers to earlier runs first, from the factory's own record of their answers. It says so when nobody was asked."
     },
     "project_rules": {
       "type": "string",

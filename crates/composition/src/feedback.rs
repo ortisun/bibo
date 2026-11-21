@@ -1,5 +1,6 @@
 //! The seams that tell a stage run why it replaces another one: `ReworkSource` (implementation,
-//! documenting, specification) and `RoundSource` (architecture, planning).
+//! documenting, specification) and `RoundSource` (architecture, planning), and the seam that tells
+//! a reviewing stage what people answered its earlier runs: `AnswerHistory` (documentation review).
 //!
 //! The engine hands a handler no feedback. What happened is in the store, and this module reads it
 //! back from the evidence the engine itself wrote:
@@ -18,6 +19,10 @@
 //!
 //! 4. **What a person asked for.** When a person sent the run back and said what to change, the
 //!    engine linked their words to that run (`rework-request`); the new run reads them first.
+//! 5. **What people answered earlier runs.** Each answer is linked to the run it was given to
+//!    (`human-answer-<k>`). `AnswerHistory` reads the answers of every earlier run of the same
+//!    stage in the job, by run number, so a run re-created after a rework target or superseded by
+//!    a change still reads them.
 //!
 //! A run that replaces nothing has no feedback (`None`). A store that cannot be read is
 //! `Unavailable` and the stage fails closed, as the contract of both traits says: a rework run must
@@ -39,7 +44,7 @@ use factory_ports::store::{ArtifactDirection, Store, Tx};
 use factory_workflow::engine::links::{REWORK_REQUEST, answer_attempts_before};
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::architecture::seams::{PreviousRound, RoundSource};
-use factory_workflow::stages::implementation::seams::{ReworkContext, ReworkSource};
+use factory_workflow::stages::implementation::seams::{AnswerHistory, ReworkContext, ReworkSource};
 use factory_workflow::stages::intake::seams::SeamError;
 
 use crate::reading::Reader;
@@ -232,23 +237,36 @@ impl StoreFeedback {
         }
         let mut answers = Vec::new();
         for id in chain.into_iter().rev() {
-            let mut linked: Vec<(u32, Sha256Digest)> = tx
-                .list_stage_run_artifacts(id)
-                .await
-                .map_err(|_| SeamError::Unavailable)?
-                .into_iter()
-                .filter(|link| link.direction == ArtifactDirection::Input)
-                .filter_map(|link| {
-                    answer_attempts_before(link.role.as_str()).map(|before| (before, link.sha256))
-                })
-                .collect();
-            linked.sort_by_key(|(before, _)| *before);
-            for (_, sha256) in linked {
-                let bytes = self.reader.bytes(tx, run.tenant, &sha256).await?;
-                let text = String::from_utf8_lossy(&bytes).trim().to_owned();
-                if !text.is_empty() {
-                    answers.push(text);
-                }
+            answers.extend(self.answers_of(tx, run, id).await?);
+        }
+        Ok(answers)
+    }
+
+    /// The answers linked to one stage run, in the order they were given, with blank ones left
+    /// out.
+    async fn answers_of(
+        &self,
+        tx: &mut dyn Tx,
+        run: &RunIdentity,
+        id: StageRunId,
+    ) -> Result<Vec<String>, SeamError> {
+        let mut linked: Vec<(u32, Sha256Digest)> = tx
+            .list_stage_run_artifacts(id)
+            .await
+            .map_err(|_| SeamError::Unavailable)?
+            .into_iter()
+            .filter(|link| link.direction == ArtifactDirection::Input)
+            .filter_map(|link| {
+                answer_attempts_before(link.role.as_str()).map(|before| (before, link.sha256))
+            })
+            .collect();
+        linked.sort_by_key(|(before, _)| *before);
+        let mut answers = Vec::with_capacity(linked.len());
+        for (_, sha256) in linked {
+            let bytes = self.reader.bytes(tx, run.tenant, &sha256).await?;
+            let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+            if !text.is_empty() {
+                answers.push(text);
             }
         }
         Ok(answers)
@@ -358,6 +376,45 @@ impl ReworkSource for StoreFeedback {
                 round: replaced.round,
                 person_request,
             }))
+        }
+        .await;
+        end(tx, outcome).await
+    }
+}
+
+#[async_trait]
+impl AnswerHistory for StoreFeedback {
+    fn fidelity(&self) -> Fidelity {
+        self.reader.fidelity()
+    }
+
+    async fn earlier_answers(&self, run: &RunIdentity) -> Result<Vec<String>, SeamError> {
+        let mut tx = self.reader.begin(run.tenant).await?;
+        let outcome = async {
+            let runs = tx
+                .list_stage_runs(run.job)
+                .await
+                .map_err(|_| SeamError::Unavailable)?;
+            let this = runs
+                .iter()
+                .find(|candidate| candidate.value.id == run.stage_run)
+                .ok_or(SeamError::NotFound)?;
+            // Every earlier run of the same stage, whether a rework move re-created it or a change
+            // superseded it: only a rework names the run it replaces (documentation policy 9.9).
+            let mut earlier: Vec<(u32, StageRunId)> = runs
+                .iter()
+                .filter(|candidate| {
+                    candidate.value.kind == this.value.kind
+                        && candidate.value.run_number < this.value.run_number
+                })
+                .map(|candidate| (candidate.value.run_number, candidate.value.id))
+                .collect();
+            earlier.sort_by_key(|(number, _)| *number);
+            let mut answers = Vec::new();
+            for (_, id) in earlier {
+                answers.extend(self.answers_of(&mut *tx, run, id).await?);
+            }
+            Ok(answers)
         }
         .await;
         end(tx, outcome).await

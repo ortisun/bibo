@@ -824,6 +824,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             schemas: checker.clone(),
             specs: specs.clone(),
             probes: probes.clone(),
+            answers: feedback.clone(),
         },
     )))?;
     register(Arc::new(DeliveryHandler::new(

@@ -19,8 +19,9 @@
 //!    its checkout is a copy that is never ingested.
 //! 5. Assemble the prompt with `assemble_independent`. Its inputs are of a type that no writer
 //!    summary can have, and the hash of the writer's own result is withheld as well. What people
-//!    answered this review goes in as its own input, so a question they settled is not asked
-//!    again.
+//!    answered goes in as its own input, so a question they settled is not asked again: first
+//!    the answers to the earlier documentation review runs of the job, read through the
+//!    `AnswerHistory` seam, then the answers to this run.
 //! 6. Run the reviewer, remove the sandbox, check the answer against the schema of the agent, wrap
 //!    it into the stored verdict with the factory's own fields, and check that every finding of a
 //!    verdict other than `PASS` points at a line one of the two patches shows.
@@ -63,7 +64,7 @@ use crate::stages::documenting::input::{
 };
 use crate::stages::documenting::repo::read_tree;
 use crate::stages::implementation::feedback::earlier_answers;
-use crate::stages::implementation::run::{close, open_sandbox, workspace_error};
+use crate::stages::implementation::run::{close, open_sandbox, seam_error, workspace_error};
 use crate::stages::implementation::seams::{WorkspaceAccess, verify_read_only_tools};
 use crate::stages::review::findings::{EngineFields, Reviewer, wrap};
 use crate::stages::review::locate::PatchIndex;
@@ -161,7 +162,8 @@ pub fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
 pub(crate) const NO_PAGES: &str =
     "No documentation page changed between the job's base commit and the documentation head.\n";
 
-/// What the reviewer reads when nobody answered a question of this documentation review.
+/// What the reviewer reads when nobody answered a question of this documentation review or of
+/// an earlier run of it in the job.
 pub(crate) const NO_ANSWERS: &str =
     "No person has answered a question of this documentation review.";
 
@@ -184,11 +186,51 @@ pub(crate) fn documentation_diff(
     }
 }
 
-/// What people answered this stage run, oldest first, as the reviewer reads it: the same text the
-/// other stages give their reviewers, or [`NO_ANSWERS`].
-async fn people_answers(ctx: &StageContext<'_>) -> Result<String, StageError> {
+/// The heading of the answers people gave to earlier documentation review runs of the job.
+pub(crate) const EARLIER_RUNS: &str = "People answered questions that earlier runs of this documentation review asked, in this job. Their decisions stand.";
+
+/// The heading of the answers people gave to this documentation review run.
+pub(crate) const THIS_RUN: &str =
+    "People answered questions this documentation review asked. Their decisions stand.";
+
+/// What the reviewer reads in `people_answers`, and how many answers it holds from where.
+pub(crate) struct PeopleAnswers {
+    /// The text of the input.
+    pub text: String,
+    /// How many answers came from earlier runs of the stage in the job.
+    pub earlier: usize,
+    /// How many answers came from this run.
+    pub this_run: usize,
+}
+
+/// The text of `people_answers`: the answers of the earlier runs under [`EARLIER_RUNS`], then the
+/// answers of this run under [`THIS_RUN`], each group in the same form the other stages give their
+/// reviewers. A group with no answer is left out, and [`NO_ANSWERS`] stands for both being empty
+/// (documentation policy 9.9).
+pub(crate) fn render_answers(earlier: &[String], this_run: &[String]) -> String {
+    let earlier = earlier_answers(earlier);
+    let this_run = earlier_answers(this_run);
+    match (earlier.is_empty(), this_run.is_empty()) {
+        (true, true) => NO_ANSWERS.to_owned(),
+        (true, false) => format!("{THIS_RUN}\n{this_run}"),
+        (false, true) => format!("{EARLIER_RUNS}\n{earlier}"),
+        (false, false) => format!("{EARLIER_RUNS}\n{earlier}\n{THIS_RUN}\n{this_run}"),
+    }
+}
+
+/// What people answered the earlier documentation review runs of the job, from the store through
+/// the seam, and this run, from the stage's own context, as the reviewer reads it.
+async fn people_answers(
+    handler: &DocumentationReviewHandler,
+    ctx: &StageContext<'_>,
+) -> Result<PeopleAnswers, StageError> {
+    let earlier = handler
+        .answers
+        .earlier_answers(&ctx.identity)
+        .await
+        .map_err(seam_error)?;
     let scope = TenantScope::new(ctx.identity.tenant);
-    let mut answers = Vec::with_capacity(ctx.human_inputs.len());
+    let mut this_run = Vec::with_capacity(ctx.human_inputs.len());
     for answer in ctx.human_inputs {
         let bytes = ctx
             .ports
@@ -199,15 +241,12 @@ async fn people_answers(ctx: &StageContext<'_>) -> Result<String, StageError> {
         let bounded = bytes
             .get(..bytes.len().min(ANSWER_MAX_BYTES))
             .unwrap_or(&bytes);
-        answers.push(String::from_utf8_lossy(bounded).into_owned());
+        this_run.push(String::from_utf8_lossy(bounded).into_owned());
     }
-    let text = earlier_answers(&answers);
-    Ok(if text.is_empty() {
-        NO_ANSWERS.to_owned()
-    } else {
-        format!(
-            "People answered questions this documentation review asked. Their decisions stand.\n{text}"
-        )
+    Ok(PeopleAnswers {
+        text: render_answers(&earlier, &this_run),
+        earlier: earlier.len(),
+        this_run: this_run.len(),
     })
 }
 
@@ -514,7 +553,8 @@ pub(super) async fn execute(
     let writer_result = input_artifact(ctx.contract, DOCUMENTATION_RESULT);
     // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
     let rules = crate::stages::project_rules::block(ctx).await?;
-    let answers = people_answers(ctx).await?;
+    let people = people_answers(handler, ctx).await?;
+    let answers = people.text;
     let answers_sha = Sha256Digest::of(answers.as_bytes());
     let assembled = {
         let now = ports.clock.now();
@@ -703,7 +743,8 @@ pub(super) async fn execute(
             "documentation_diff_sha256": docs_ref.sha256,
             "documentation_diff_pages": changed_docs.iter().collect::<Vec<_>>(),
             "people_answers_sha256": answers_sha,
-            "people_answers_given": ctx.human_inputs.len(),
+            "people_answers_given": people.this_run,
+            "people_answers_of_earlier_runs": people.earlier,
             "gate_report_ids": gate_ids.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>(),
             "writer_summary_given": false,
             "context": assembled.manifest().to_json(),
@@ -825,4 +866,50 @@ async fn review_in(
         Some(model),
         independence,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn no_answer_anywhere_says_so() {
+        assert_eq!(render_answers(&[], &[]), NO_ANSWERS);
+    }
+
+    #[test]
+    fn answers_of_this_run_alone_come_under_their_heading() {
+        let text = render_answers(&[], &texts(&["Review the README."]));
+        assert!(text.starts_with(THIS_RUN), "{text}");
+        assert!(text.contains("Answer 1 from a person:\n    Review the README.\n"));
+        assert!(!text.contains(EARLIER_RUNS), "{text}");
+    }
+
+    #[test]
+    fn answers_of_earlier_runs_alone_come_under_their_heading() {
+        let text = render_answers(&texts(&["Under Unreleased."]), &[]);
+        assert!(text.starts_with(EARLIER_RUNS), "{text}");
+        assert!(text.contains("    Under Unreleased.\n"));
+        assert!(!text.contains(THIS_RUN), "{text}");
+    }
+
+    #[test]
+    fn earlier_answers_come_before_the_answers_of_this_run_in_the_order_given() {
+        let text = render_answers(
+            &texts(&["First decision.", "Second decision."]),
+            &texts(&["Third decision."]),
+        );
+        let now = text.find(THIS_RUN).expect("this run's heading");
+        assert!(text.find(EARLIER_RUNS).expect("the earlier heading") < now);
+        let first = text.find("First decision.").expect("the first answer");
+        let second = text.find("Second decision.").expect("the second answer");
+        let third = text.find("Third decision.").expect("the third answer");
+        assert!(first < second && second < now && now < third, "{text}");
+        // Each group numbers its own answers from one.
+        assert_eq!(text.matches("Answer 1 from a person:").count(), 2);
+    }
 }

@@ -328,7 +328,7 @@ The independent documentation reviewer must judge exactly the pages the gates ju
 | `code_diff` | The patch of the code change. | Base commit to code head |
 | `documentation_diff` | The patch of every page the gates judged: each Markdown file the change adds or modifies, and nothing else. | Base commit to documentation head |
 | `gate_reports` | The reports of the readability gate and of each check, in words. | Those of the gate report |
-| `people_answers` | What people answered when this documentation review asked them a question, from the factory's own record of their answers. It says so when nobody was asked. | None |
+| `people_answers` | What people answered when a documentation review of this job asked them a question: the earlier runs of the stage first, then this run. It comes from the factory's own record of their answers, and it says so when nobody was asked. | None |
 | `project_rules` | The project's rules for agents ([project rules](../architecture/project-rules.md)). | Base commit |
 
 Why the documentation diff starts at the base commit and not at the code head. The builder often writes the README and the changelog together with the code, and the writer then changes nothing (8.2, item 8). A patch from the code head to the documentation head is empty in that case. The gates still judge those pages, because they read the change from the base commit. In the thirty-seventh real run the reviewer received the empty patch, could not see the pages, and stopped the job to ask a person whether a documentation commit was missing. A page written in the code commits is therefore in both diffs. That is intended: the code diff shows what the code does, the documentation diff shows every page under review.
@@ -337,7 +337,20 @@ When no page changed, the documentation diff is not left empty. It says, in one 
 
 Why the reviewer receives people's answers. When the reviewer returns `NEEDS_HUMAN`, a person answers and the stage runs again. Without the answer the reviewer asks the same question again. The answers come from the factory's record, never from a file the writer wrote, so they are not the writer's account of its work. They are decisions of the people who own the job: the reviewer reads them as settled and does not ask them again.
 
-The record of the review stores the hash of each input it gave, and the list of pages the documentation diff holds.
+Why the answers of earlier runs come too. A documentation review run does not live for the whole job. When a later round sends the work back to documenting, to implementation or to the specification, the engine creates a new documentation review run, and when the code changes it supersedes the run and creates another. The new run has no answers of its own yet, so without the earlier ones the reviewer asks a settled question again. The reviewer therefore receives the answers given to every earlier documentation review run of the same job, oldest run first and each run's answers in the order they were given, and then the answers given to this run. The two groups have their own headings, so the reviewer can tell an answer to an earlier round from an answer to this one.
+
+The options weighed for where these answers come from:
+
+| Option | What it would do | Why it was or was not chosen |
+|---|---|---|
+| A new, narrow seam that reads the answers of the earlier runs of the stage from the store (chosen) | The composition root implements it over the stored links of a person's answers, the same records the specification stage reads. | It gives the stage exactly what it needs and nothing else, it does not change what a rework round means to any other stage, and it can serve another reviewer later without a change to its callers. |
+| The rework seam (`ReworkSource`) that the specification stage reads | It already carries `earlier_answers`. | It answers only for the run a rework move sent the work back to. The documentation review run is re-created after its target, so it would get no answers, and widening the seam would make every re-created run look like a rework round to the stages that use it. |
+| Only the chain of runs a rework names (`rework_of`) | The answers of the runs this run replaced one by one. | A run superseded because the code changed is not named by the run after it, so its answers would be lost. Every earlier run of the stage in the same job covers both ways a run is replaced. |
+| The engine adds the earlier answers to the answers of this run | The stage would read them with its own. | Every stage counts the answers of its own run to know which round it is in. Mixing in earlier runs would change that count for all of them. |
+
+An answer to an earlier run may be about pages that later changed. It is still a decision of the people who own the job, and the reviewer reads it beside the pages as they are now.
+
+The record of the review stores the hash of each input it gave, the list of pages the documentation diff holds, and how many answers came from this run and how many from earlier runs.
 
 ## 10. Changing this policy
 

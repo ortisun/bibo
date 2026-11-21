@@ -547,6 +547,88 @@ async fn a_persons_answer_reaches_the_documentation_reviewer() {
     assert_eq!(given, [json!(0), json!(1)]);
 }
 
+/// The reviewer asks a person, the person answers, and the reviewer then sends the work back to
+/// documenting. The engine creates a new documentation review run, which has no answers of its
+/// own. Its reviewer still reads the earlier answer, under its own heading, so it does not ask
+/// the settled question again (documentation policy 9.9).
+#[tokio::test]
+async fn an_answer_survives_a_rework_round_that_re_creates_the_documentation_review() {
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::{Decision, Subject};
+    const ANSWER: &str = "The changelog entry belongs under Unreleased.";
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    let mut ask = reviewer_passes();
+    ask["verdict"] = json!("NEEDS_HUMAN");
+    ask["human_question"] = json!("Which section of the changelog should the entry go under?");
+    reviewer_will(&rig, ask);
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+    let person = rig.world.person("operator-e", &[HumanRole::Operator]).await;
+    let first_review = rig.run_of(StageKind::DocumentationReview).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(person),
+            Subject {
+                job: rig.job,
+                stage_run: first_review,
+            },
+            Decision::Answer {
+                text: ANSWER.to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the answer applies");
+    // The second attempt finds a documentation defect, which sends the work back to documenting.
+    reviewer_will(&rig, reviewer_asks("documentation", "README.md", 5));
+    run(&rig, StageKind::DocumentationReview).await;
+    assert_eq!(rig.runs_of(StageKind::Documenting).await.len(), 2);
+    writer_will_document(&rig);
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+
+    let reviews = rig.runs_of(StageKind::DocumentationReview).await;
+    assert_eq!(reviews.len(), 2, "the rework made a new review run");
+    assert_ne!(reviews[1].0, first_review);
+    let prompts = rig.runtime.prompts("documentation-reviewer");
+    assert_eq!(prompts.len(), 3);
+    let third = block(&prompts[2].instructions, "people_answers");
+    assert!(third.contains(ANSWER), "{third}");
+    assert!(
+        third.contains("earlier runs of this documentation review"),
+        "{third}"
+    );
+    // The new run's own answers are none, and the heading of this run's answers is not there.
+    assert!(
+        !third.contains("People answered questions this documentation review asked"),
+        "{third}"
+    );
+    assert!(passed(&rig, StageKind::DocumentationReview).await);
+    let record = rig
+        .deliverable_in(reviews[1].0, "documentation-review-record")
+        .await
+        .expect("the record of the new run");
+    assert_eq!(record["inputs"]["people_answers_given"], json!(0));
+    assert_eq!(record["inputs"]["people_answers_of_earlier_runs"], json!(1));
+}
+
+/// A store that cannot say what people answered earlier runs fails the attempt. The review must
+/// not run as if nobody had answered, because that brings back a settled question.
+#[tokio::test]
+async fn a_review_that_cannot_read_earlier_answers_does_not_run_the_reviewer() {
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::Documenting).await;
+    *crate::rig::lock(&rig.answers.unavailable) = true;
+    let outcome = run(&rig, StageKind::DocumentationReview).await;
+    assert!(!matches!(outcome, AttemptOutcome::Succeeded), "{outcome:?}");
+    assert!(rig.runtime.prompts("documentation-reviewer").is_empty());
+    assert!(!passed(&rig, StageKind::DocumentationReview).await);
+}
+
 /// A writer that names a file it wrote and leaves the tree as it was is contradicted.
 #[tokio::test]
 async fn a_writer_that_names_a_file_it_did_not_write_fails_the_attempt() {

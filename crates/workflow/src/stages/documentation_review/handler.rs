@@ -30,7 +30,7 @@ use crate::stages::documenting::input::{
 };
 use crate::stages::implementation::StageBudget;
 use crate::stages::implementation::seams::{
-    AgentOutputCheck, CapabilityProbes, WorkspaceAgentSpecs,
+    AgentOutputCheck, AnswerHistory, CapabilityProbes, WorkspaceAgentSpecs,
 };
 use crate::stages::validation::{POLICY_INPUT, VerifySandbox};
 
@@ -83,6 +83,8 @@ pub struct DocumentationReviewDeps {
     pub specs: Arc<dyn WorkspaceAgentSpecs>,
     /// The runtime probes.
     pub probes: Arc<dyn CapabilityProbes>,
+    /// What people answered to the earlier documentation review runs of the job.
+    pub answers: Arc<dyn AnswerHistory>,
 }
 
 /// The `DOCUMENTATION_REVIEW` handler. See the module notes for what it does.
@@ -93,6 +95,7 @@ pub struct DocumentationReviewHandler {
     pub(super) schemas: Arc<dyn AgentOutputCheck>,
     pub(super) specs: Arc<dyn WorkspaceAgentSpecs>,
     pub(super) probes: Arc<dyn CapabilityProbes>,
+    pub(super) answers: Arc<dyn AnswerHistory>,
 }
 
 impl DocumentationReviewHandler {
@@ -106,6 +109,7 @@ impl DocumentationReviewHandler {
             schemas: deps.schemas,
             specs: deps.specs,
             probes: deps.probes,
+            answers: deps.answers,
         }
     }
 }
@@ -297,7 +301,12 @@ fn resolve(
 #[async_trait]
 impl StageHandler for DocumentationReviewHandler {
     fn fidelity(&self) -> Fidelity {
-        self.schemas.fidelity()
+        // A stand-in for either collaborator makes the whole handler a stand-in.
+        if [self.schemas.fidelity(), self.answers.fidelity()].contains(&Fidelity::Fake) {
+            Fidelity::Fake
+        } else {
+            Fidelity::Real
+        }
     }
 
     fn kind(&self) -> StageKind {

@@ -21,7 +21,7 @@ use factory_ports::store::{ArtifactDirection, NewArtifactIndexEntry, Store};
 use factory_workflow::engine::links::output_role;
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::architecture::seams::{RiskSource, RoundSource};
-use factory_workflow::stages::implementation::seams::ReworkSource;
+use factory_workflow::stages::implementation::seams::{AnswerHistory, ReworkSource};
 use factory_workflow::stages::specification::seams::{
     DraftRecord, SeamError, SpecApprovals, SpecDrafts, SpecHistory,
 };
@@ -441,6 +441,25 @@ async fn what_people_answered_reaches_every_run_that_replaces_the_one_they_answe
         .expect("a rework run has feedback");
     assert_eq!(context.round, 2);
     assert_eq!(context.earlier_answers, answers);
+
+    // The history of answers reads the same records for every earlier run of the stage, whether
+    // or not the run is the target of a rework: the first run has none before it, and each later
+    // run reads what the first was told, oldest run first (documentation policy 9.9).
+    let history = feedback(&world);
+    assert!(
+        AnswerHistory::earlier_answers(&history, &first)
+            .await
+            .expect("readable")
+            .is_empty()
+    );
+    for later in [&second, &third] {
+        assert_eq!(
+            AnswerHistory::earlier_answers(&history, later)
+                .await
+                .expect("readable"),
+            answers
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
