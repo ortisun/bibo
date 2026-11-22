@@ -10,6 +10,8 @@
 target/
 # The factory's own pinned tools, installed by scripts/setup-tools.sh
 .tools/
+# The host worker's folder (scripts/worker-host.sh): its configuration, workspaces, artifacts and URL files
+.local/
 node_modules/
 dist/
 .env

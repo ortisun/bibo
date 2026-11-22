@@ -41,6 +41,7 @@ This directory is `docs/adr/`, as the master prompt's workspace layout (section 
 | [0033](0033-documentation-site-on-github-pages.md) | The documentation is published as a site on GitHub Pages, built from `docs/` with MkDocs Material at hash-pinned versions, from the `develop` branch; one narrow exception lets the deploy job hold `pages: write` and `id-token: write`. | Decided by the owner, 2026-11-21 |
 | [0034](0034-github-ci-on-arm64-with-a-database-and-built-images.md) | The GitHub CI runs on an arm64 runner, the platform the sandbox images are pinned for; PostgreSQL is a service container, and the sandbox, service and `alpine/git` images are built or pulled in the job before `scripts/ci.sh`, whose test step shows every failure. | Decided by the owner, 2026-11-22 |
 | [0035](0035-the-worker-holds-cap-chown-on-linux.md) | On a Linux host the worker holds `CAP_CHOWN` (and the CI runs the gate with it as an ambient capability), so it can hand the `0400` job token file to the sandbox user; the file is unchanged. | Decided by the owner, 2026-11-22 |
+| [0036](0036-the-local-worker-runs-on-the-host.md) | In the local deployment the worker that runs sandboxes runs on the host (`scripts/worker-host.sh`), and only PostgreSQL and the API run in Compose; no container holds the Docker socket. | Decided by the owner, 2026-11-22 |
 
 ## Rules for this directory
 
