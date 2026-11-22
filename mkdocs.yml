@@ -208,6 +208,7 @@ nav:
       - "0031 Factory documents proposed through one port": adr/0031-factory-documents-proposed-through-one-port.md
       - "0032 Knowledge index in PostgreSQL": adr/0032-knowledge-index-in-postgresql.md
       - "0033 Documentation site on GitHub Pages": adr/0033-documentation-site-on-github-pages.md
+      - "0034 GitHub CI on arm64 with built images": adr/0034-github-ci-on-arm64-with-a-database-and-built-images.md
   - Security:
       - Security policy: SECURITY.md
       - security/negative-test-catalog.md

@@ -1091,15 +1091,16 @@ for tool in ("GITLEAKS", "ACTIONLINT"):
         value = hashes.get(f"{tool}_{platform}")
         if value is None or not re.fullmatch(r"[0-9a-f]{64}", value):
             problems.append(f"{pins_path}: SHA256_{tool}_{platform} is missing or is not 64 lower-case hex digits")
-for tool, archive in (("gitleaks", "linux_x64"), ("actionlint", "linux_amd64")):
+# The workflow runs on an arm64 runner (ADR 0034), so it downloads the linux arm64 archives.
+for tool, archive in (("gitleaks", "linux_arm64"), ("actionlint", "linux_arm64")):
     match = re.search(rf"/{tool}_[0-9.]+_{archive}\.tar\.gz\"\s*\\\s*\n\s*([0-9a-f]{{64}})", workflow)
-    want = hashes.get(f"{tool.upper()}_LINUX_AMD64")
+    want = hashes.get(f"{tool.upper()}_LINUX_ARM64")
     if match is None:
         problems.append(f"{workflow_path}: no SHA-256 found after the {tool} {archive} download")
     elif match.group(1) != want:
-        problems.append(f"{tool} linux amd64: the workflow checks {match.group(1)}, but {pins_path} records {want}")
+        problems.append(f"{tool} linux arm64: the workflow checks {match.group(1)}, but {pins_path} records {want}")
     else:
-        print(f"ok    {tool} linux amd64 SHA-256 {want[:12]}...")
+        print(f"ok    {tool} linux arm64 SHA-256 {want[:12]}...")
 
 
 tool_line = re.search(r"^\s*tool:\s*(\S+)\s*$", workflow, re.M)
@@ -1945,7 +1946,7 @@ EOF
   sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
   st_equal "a pyright version changed only in package.json is rejected" "$SUB_CODE" 1
   cp .github/tools/pyright/package.json "$ST_TMP/pins/package.json"
-  sed 's/551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb/551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470ec/' \
+  sed 's/e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080/e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b081/' \
     .github/workflows/ci.yml >"$ST_TMP/pins/ci.yml"
   sub_ci --internal tool-pins scripts/lib/tool-pins.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
   st_equal "a gitleaks archive hash changed only in the workflow is rejected" "$SUB_CODE" 1

@@ -39,12 +39,21 @@ concurrency:
 jobs:
   ci:
     name: scripts/ci.sh
-    runs-on: ubuntu-24.04
-    # One stuck step must not hold a runner for the default six hours.
-    timeout-minutes: 60
+    # arm64, the platform the sandbox images are pinned for (infra/sandbox-images/images.json), so
+    # the images built below can be checked against the committed digests (ADR 0034).
+    runs-on: ubuntu-24.04-arm
+    # One stuck step must not hold a runner for the default six hours. Building the images and
+    # running every test takes most of an hour on this runner.
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
+    # The database tests use the server that FACTORY_DB_ADMIN_URL names (docs/database/running.md),
+    # started in a step below. It accepts any local connection without a password ("trust", as the
+    # private server of the tests does), listens on the runner's loopback only and lives as long as
+    # the job, so no password is written anywhere.
+    env:
+      FACTORY_DB_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
     steps:
       # v7.0.1 (2026-07-20). The whole history is needed: scripts/ci.sh scans every commit for
       # secrets and reports BLOCKED on a shallow clone.
@@ -82,11 +91,11 @@ jobs:
             curl --fail --silent --show-error --location --retry 3 --output "$archive" "$url"
             echo "$sha256  $archive" | sha256sum --check --strict -
           }
-          fetch "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
-            551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gitleaks.tar.gz
+          fetch "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_arm64.tar.gz" \
+            e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 gitleaks.tar.gz
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$bin_dir" gitleaks
-          fetch "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz" \
-            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint.tar.gz
+          fetch "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz" \
+            325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 actionlint.tar.gz
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$bin_dir" actionlint
           echo "$bin_dir" >> "$GITHUB_PATH"
 
@@ -100,6 +109,60 @@ jobs:
           cp .github/tools/pyright/package.json .github/tools/pyright/package-lock.json "$RUNNER_TEMP/pyright/"
           (cd "$RUNNER_TEMP/pyright" && npm ci --ignore-scripts --no-audit --no-fund)
           echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # The image is the one infra/compose/local.yml pins, by the digest of its multi-platform index.
+      # The settings are those of the tests' own private server: no fsync, room for the connections
+      # of many test processes at once. A GitHub service container cannot pass them, so this is a step.
+      - name: Start the PostgreSQL server of the database tests
+        run: |
+          set -euo pipefail
+          docker run -d --name factory-ci-postgres -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 \
+            postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6 \
+            -c fsync=off -c max_connections=300
+          for _ in $(seq 60); do
+            if docker exec factory-ci-postgres pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then exit 0; fi
+            sleep 2
+          done
+          docker logs factory-ci-postgres
+          exit 1
+
+      # The images the tests run, made here because making them changes the machine and a check
+      # must not (ADR 0034). The sandbox build writes its digests to a file of its own, never to the
+      # committed images.json: the tests look the images up by the committed digests, so an image
+      # that does not reproduce on this runner stays absent and its tests report BLOCKED.
+      - name: Pull the pinned alpine/git image of the testkit
+        run: docker pull alpine/git@sha256:ac6c828f15d82775d204d3d75112e1d34af8945da80ccf922713c9891ba68e7a
+
+      - name: Build the sandbox images
+        env:
+          FACTORY_IMAGES_JSON: ${{ runner.temp }}/built-images.json
+        run: |
+          set -euo pipefail
+          cp infra/sandbox-images/images.json "$FACTORY_IMAGES_JSON"
+          infra/sandbox-images/build.sh --only verify --only agent
+          # The sidecar program, compiled in the verify image as infra/sandbox-images/egress-sidecar/README.md says.
+          verify=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["platforms"]["linux/arm64"]["images"]["verify"]["reference"])' "$FACTORY_IMAGES_JSON")
+          out="$RUNNER_TEMP/sidecar" && mkdir -p "$out" && chmod 777 "$out"
+          docker run --rm --pull=never --user 10000:10000 --cap-drop ALL --security-opt no-new-privileges --read-only \
+            -v "$PWD":/src:ro -v "$out":/target --tmpfs /home/agent:rw,exec,uid=10000,gid=10000,size=1g --tmpfs /tmp:rw,exec,size=512m \
+            --workdir /src -e CARGO_TARGET_DIR=/target -e CARGO_HOME=/home/agent/.cargo -e HOME=/home/agent -e CARGO_INCREMENTAL=0 \
+            "$verify" cargo build --release --locked -p factory-egress-sidecar
+          sha=$(sha256sum "$out/release/factory-egress-sidecar" | cut -d' ' -f1)
+          infra/sandbox-images/build.sh --only egress-sidecar --sidecar-binary "$out/release/factory-egress-sidecar" --sidecar-sha256 "$sha"
+
+      # Shows whether each recipe reproduced the committed digest. It decides nothing: the tests do.
+      - name: Compare the built sandbox digests with the committed ones
+        run: |
+          python3 - "$RUNNER_TEMP/built-images.json" infra/sandbox-images/images.json <<'PY'
+          import json, sys
+          built, pinned = (json.load(open(p))["platforms"]["linux/arm64"]["images"] for p in sys.argv[1:])
+          for role in sorted(pinned):
+              a, b = built.get(role, {}).get("digest"), pinned[role].get("digest")
+              print(f"{'same     ' if a == b else 'DIFFERENT'} {role}: built {a}, pinned {b}")
+          PY
+
+      - name: Build the API and worker images
+        run: infra/service-images/build.sh
 
       # The one command that matters. It exits 0 only if every step passed, 1 if a step failed,
       # and 3 if a step was BLOCKED (for example a missing tool). The summary is also saved.
