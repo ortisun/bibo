@@ -1,0 +1,5 @@
+# The documentation site tools. Compile with:
+#   uv pip compile requirements.in --python-version 3.12 --generate-hashes --no-header \
+#     --exclude-newer <date 14 days ago> -o requirements.txt
+mkdocs==1.6.1
+mkdocs-material==9.8.1

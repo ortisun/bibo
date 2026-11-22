@@ -320,6 +320,8 @@ register_builtin_steps() {
   internal_step rust-deny "cargo deny: licenses, bans, advisories and sources" "cargo-deny"
   internal_step rust-audit "cargo audit: no known vulnerable or unmaintained dependency" "cargo-audit"
   internal_step mermaid "Mermaid diagrams in the documents parse" "node npm"
+  step docs-site "The documentation site builds with no warning (scripts/docs-site.sh, ADR 0033)" "uv" "" -- \
+    scripts/docs-site.sh build
   internal_step secret-scan "No secret in the full git history (ST-08)" "gitleaks git"
   internal_step ci-self-test "This script's own tests pass (BLOCKED, FAILED, drop-ins, secrets, pinning, Compose)" "python3"
 }
@@ -912,10 +914,48 @@ def scalar(value):
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
+# The one exception to "no write permission" (ADR 0033): a GitHub Pages deploy needs these two scopes.
+# They are allowed only in a workflow that nothing from a pull request can start: its triggers must all
+# be in DEPLOY_TRIGGERS. A trigger list that cannot be read counts as not allowed.
+PAGES_SCOPES = {"pages", "id-token"}
+DEPLOY_TRIGGERS = {"push", "workflow_dispatch", "schedule"}
+
+
+def strip_comment(raw):
+    return "" if raw.lstrip().startswith("#") else re.split(r"\s+#", raw, maxsplit=1)[0]
+
+
+def triggers(lines):
+    """The event names under the top-level 'on:' key, or None when there is no such key."""
+    for index, raw in enumerate(lines):
+        match = re.match(r"^(?:on|\"on\"|'on'|true)\s*:\s*(.*)$", strip_comment(raw))
+        if not match:
+            continue
+        rest = match.group(1).strip()
+        if rest:
+            return set(re.findall(r"[A-Za-z_]+", rest))
+        events, indent = set(), None
+        for follower in lines[index + 1:]:
+            code = strip_comment(follower)
+            if not code.strip():
+                continue
+            depth = len(code) - len(code.lstrip())
+            if depth == 0:
+                break
+            indent = depth if indent is None else indent
+            if depth == indent:
+                name = re.match(r"^\s*-?\s*([A-Za-z_]+)", code)
+                events.add(name.group(1) if name else "?")
+        return events
+    return None
+
+
 def check(path, text):
     problems = []
     lines = text.splitlines()
     is_workflow = "workflows" in path.parts
+    events = triggers(lines) if is_workflow else None
+    deploy_only = bool(events) and events <= DEPLOY_TRIGGERS
     for index, raw in enumerate(lines):
         number = index + 1
         if raw.lstrip().startswith("#"):
@@ -948,8 +988,10 @@ def check(path, text):
             continue
         if re.search(r"\b(pull_request_target|workflow_run)\b", code):
             problems.append(f"{path}:{number}: the trigger 'pull_request_target' or 'workflow_run' runs with secrets for code from a pull request and is not allowed")
-        if re.search(r":\s*write\b|\bwrite-all\b", code):
-            problems.append(f"{path}:{number}: this workflow may not request write permission")
+        write = re.search(r"([A-Za-z-]*)\s*:\s*write\b", code)
+        if re.search(r"\bwrite-all\b", code) or (write and not (deploy_only and write.group(1) in PAGES_SCOPES)):
+            problems.append(f"{path}:{number}: this workflow may not request write permission (the one exception: "
+                            f"pages and id-token in a workflow started only by {', '.join(sorted(DEPLOY_TRIGGERS))}; ADR 0033)")
         for secret in re.finditer(r"\bsecrets\.([A-Za-z0-9_]+)", code):
             if secret.group(1) != "GITHUB_TOKEN":
                 problems.append(f"{path}:{number}: the workflow reads secret {secret.group(1)}; CI for pull requests must hold no secrets")
@@ -1817,6 +1859,46 @@ st_pinning() {
   sed -i.bak 's/contents: read/contents: write/' "$ST_TMP/pin/workflows/ci.yml"
   sub_ci --internal workflow-policy "$ST_TMP/pin"
   st_equal "a write permission is rejected" "$SUB_CODE" 1
+
+  # The one exception (ADR 0033): pages and id-token, in a workflow that nothing from a pull request starts.
+  deploy_fixture() { # deploy_fixture DIR TRIGGER_BLOCK EXTRA_PERMISSION_LINE
+    mkdir -p "$1/workflows"
+    cat >"$1/workflows/pages.yml" <<EOF
+name: fixture
+$2
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+$3
+    steps:
+      - uses: actions/deploy-pages@$sha
+EOF
+  }
+  deploy_case() { # deploy_case LABEL EXPECTED_CODE TRIGGER_BLOCK [EXTRA_PERMISSION_LINE]
+    rm -rf "$ST_TMP/pin"
+    deploy_fixture "$ST_TMP/pin" "$3" "${4:-}"
+    sub_ci --internal workflow-policy "$ST_TMP/pin"
+    st_equal "$1" "$SUB_CODE" "$2"
+  }
+  deploy_case "control: pages and id-token in a workflow started by push and by hand pass" 0 \
+    "$(printf 'on:\n  push:\n    branches: [develop]\n  workflow_dispatch:')"
+  deploy_case "control: the same in flow style passes" 0 "on: [push, workflow_dispatch]"
+  deploy_case "the Pages scopes in a workflow a pull request starts are rejected" 1 \
+    "$(printf 'on:\n  push:\n  pull_request:')"
+  deploy_case "the Pages scopes in flow style with pull_request are rejected" 1 "on: [push, pull_request]"
+  deploy_case "the Pages scopes in a reusable workflow are rejected (a pull request workflow could call it)" 1 \
+    "$(printf 'on:\n  workflow_call:')"
+  deploy_case "the Pages scopes with a trigger outside push, workflow_dispatch and schedule are rejected" 1 \
+    "$(printf 'on:\n  push:\n  issue_comment:')"
+  deploy_case "contents: write next to the Pages scopes is rejected" 1 \
+    "$(printf 'on:\n  push:')" "      contents: write"
+  deploy_case "write-all in a deploy workflow is rejected" 1 "$(printf 'on:\n  push:')" "      actions: write-all"
+  deploy_case "the Pages scopes with no trigger at all are rejected" 1 ""
   rm -rf "$ST_TMP/pin"
   pin_fixture "$ST_TMP/pin" "- uses: actions/checkout@$sha"
   sed -i.bak '/^permissions:/,/contents: read/d' "$ST_TMP/pin/workflows/ci.yml"
