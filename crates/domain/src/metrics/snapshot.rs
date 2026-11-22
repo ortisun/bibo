@@ -73,7 +73,7 @@ impl Samples {
     }
 
     /// The number of samples.
-    fn count(&self) -> u64 {
+    pub fn count(&self) -> u64 {
         match self {
             Self::Durations(samples) => samples.len() as u64,
             Self::Counts(samples) => samples.len() as u64,
@@ -102,6 +102,12 @@ impl Samples {
 
 /// The facts of one window: the samples of every metric whose facts are stored.
 pub type WindowFacts = BTreeMap<Metric, Samples>;
+
+/// Whether any metric of `facts` has at least one sample. A week of a repository without one says
+/// nothing worth recording.
+pub fn has_any_sample(facts: &WindowFacts) -> bool {
+    facts.values().any(|samples| samples.count() > 0)
+}
 
 /// The settings of the comparison between two windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

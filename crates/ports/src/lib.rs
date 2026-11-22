@@ -26,7 +26,7 @@
 //! | [`issue_status`] | `IssueStatusWriter`: one `factory: <state>` label and one status comment on the issue a job came from (v1.2) |
 //! | [`triage_issue`] | `TriageIssueWriter`: the troubleshooter's triage issues, found by a fingerprint marker, under a `RunScope` that is not a job's (v1.3) |
 //! | [`process`] | `ProcessRunner` |
-//! | [`project_rules`] | `ProjectRulesHost`: the draft pull request that installs or updates the project's rules for agents in `AGENTS.md` (v1.4) |
+//! | [`proposal`] | `ProposalHost`: the draft pull requests of the factory's own documents in a project, from a closed set of branches: the rules for agents in `AGENTS.md` (v1.4) and the weekly measurement (v1.6) |
 //! | [`pull_request_fate`] | `PullRequestFateSource`: what became of a pull request the factory opened, read outside any job (v1.5) |
 //! | [`paths`] | Checked names shared by the ports: `RepoPath`, `RepoGlob`, `BranchName`, `RepoRef`, and the policy's `PathRules` |
 //!
@@ -73,7 +73,7 @@ pub mod githost;
 pub mod issue_status;
 pub mod paths;
 pub mod process;
-pub mod project_rules;
+pub mod proposal;
 pub mod pull_request_fate;
 pub mod registry;
 pub mod sandbox;

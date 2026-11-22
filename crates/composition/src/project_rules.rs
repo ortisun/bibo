@@ -45,9 +45,9 @@ use factory_domain::values::{Sha256Digest, Slug, Timestamp};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::githost::{ChangeHost, GitHostError, PullRequestLifecycle, PullRequestRef};
 use factory_ports::paths::{RepoPath, RepoRef};
-use factory_ports::project_rules::{
-    FileAt, MAX_RULES_FILE_BYTES, ProjectRulesHost, ProposedFile, RULES_FILE, RulesProposal,
-    RulesScope,
+use factory_ports::proposal::{
+    FileAt, MAX_RULES_FILE_BYTES, ProposalBranch, ProposalHost, ProposalMarker, ProposalScope,
+    ProposedFile, PullRequestProposal, RULES_FILE,
 };
 use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, JobFilter, NewAuditEvent, Store,
@@ -76,7 +76,7 @@ pub struct ProjectRulesSyncDeps {
     /// The store, on the worker's tenant pool.
     pub store: Arc<dyn Store>,
     /// The code host, through the port of the rules pull request.
-    pub host: Arc<dyn ProjectRulesHost>,
+    pub host: Arc<dyn ProposalHost>,
     /// The change host, to end the credential of each check (`revoke_job_tokens`).
     pub changes: Arc<dyn ChangeHost>,
     /// The jobs the process is working on: a check's session is noted there while it runs, so the
@@ -176,7 +176,7 @@ impl ProjectRulesSync {
             session,
             tenant,
         );
-        let scope = RulesScope {
+        let scope = ProposalScope {
             tenant,
             session,
             repo: repo.clone(),
@@ -269,7 +269,7 @@ impl ProjectRulesSync {
         RepoRef::parse(&found.ok()?.value.full_name).ok()
     }
 
-    async fn decide_and_propose(&self, scope: &RulesScope) -> Result<Checked, GitHostError> {
+    async fn decide_and_propose(&self, scope: &ProposalScope) -> Result<Checked, GitHostError> {
         let host = &self.deps.host;
         let base = host.default_branch(scope).await?;
         let rules_path = RepoPath::new(RULES_FILE).map_err(|_| GitHostError::Unavailable)?;
@@ -288,14 +288,22 @@ impl ProjectRulesSync {
                 Decision::Propose => Checked::Nothing(NothingBecause::UpToDate),
             });
         }
-        let latest = host.latest_rules_pull_request(scope).await?;
+        let latest = host
+            .latest_pull_request(scope, ProposalBranch::ProjectRules)
+            .await?;
         let proposal = match latest {
             None => Proposal::None,
-            Some(found) => match found.lifecycle {
-                PullRequestLifecycle::Open => Proposal::Open(found.proposed_version),
-                PullRequestLifecycle::Merged => Proposal::Merged(found.proposed_version),
-                PullRequestLifecycle::Closed => Proposal::Closed(found.proposed_version),
-            },
+            Some(found) => {
+                let version = match found.marker {
+                    Some(ProposalMarker::RulesVersion(version)) => Some(version),
+                    _ => None,
+                };
+                match found.lifecycle {
+                    PullRequestLifecycle::Open => Proposal::Open(version),
+                    PullRequestLifecycle::Merged => Proposal::Merged(version),
+                    PullRequestLifecycle::Closed => Proposal::Closed(version),
+                }
+            }
         };
         if let Decision::Nothing(because) = decide(state, proposal, self.template.version) {
             return Ok(Checked::Nothing(because));
@@ -328,9 +336,10 @@ impl ProjectRulesSync {
         let pr = host
             .propose(
                 scope,
-                &RulesProposal {
+                &PullRequestProposal {
+                    branch: ProposalBranch::ProjectRules,
                     base,
-                    version: self.template.version,
+                    marker: ProposalMarker::RulesVersion(self.template.version),
                     files,
                     title,
                     body,

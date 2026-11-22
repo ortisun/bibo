@@ -21,11 +21,9 @@ use crate::state::ApiState;
 const LONGEST_WINDOW: Duration = Duration::from_secs(366 * 24 * 60 * 60);
 
 /// The commit this build was made from, when the build said so in `FACTORY_BUILD_COMMIT`. A value
-/// that is not a full Git object id counts as none.
-#[must_use]
-pub fn build_commit() -> Option<GitSha> {
-    option_env!("FACTORY_BUILD_COMMIT").and_then(|text| GitSha::parse(text).ok())
-}
+/// that is not a full Git object id counts as none. The worker's weekly measurement reads the
+/// same value, from the same function.
+pub use factory_composition::knowledge_measurements::build_commit;
 
 /// Reads `from` and `to` from the query. Each must be there exactly once, nothing else may be, and
 /// the window must be in order and at most 366 days long.

@@ -125,7 +125,7 @@ The pull request is a **draft**, like every pull request of the factory (ADR 001
 
 ## The credential
 
-The check uses a port of its own, `ProjectRulesHost` ([ports v1.4](ports-v1.4.md)), with a token of its own, minted for one repository: `contents: write`, `pull_requests: write` and the `metadata: read` every token carries (`PermissionSet::project_rules`). It is not a stage token, so no stage token is widened and the delivery token is not borrowed. The App already holds these two permissions for the delivery stage, so the App needs no new permission and the audit of the App's permissions is unchanged.
+The check uses the proposal port, `ProposalHost` with the branch `ProposalBranch::ProjectRules` ([ports v1.4](ports-v1.4.md), generalized in [ports v1.6](ports-v1.6.md)), with a token of its own, minted for one repository: `contents: write`, `pull_requests: write` and the `metadata: read` every token carries (`PermissionSet::project_rules`). It is not a stage token, so no stage token is widened and the delivery token is not borrowed. The App already holds these two permissions for the delivery stage, so the App needs no new permission and the audit of the App's permissions is unchanged.
 
 The factory gains no right to write to the default branch:
 
