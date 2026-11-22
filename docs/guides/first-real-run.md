@@ -116,6 +116,16 @@ The ruleset protects the default branch the way the protection preflight require
 
 The script keeps its copy in `target/e2e-fixture/OWNER/NAME`. The harness reads its `CODEOWNERS` from there.
 
+**A fixture made before 2026-11-21 lacks `notes.txt`.** The README of the fixture runs `word-count notes.txt`, and the documentation gate runs that example from the root of the checkout. It creates no file an example names (documentation policy 9.10). Without the file, the example fails, the gate fails, and the documentation reviewer objects to a file that no patch shows, so its answer is refused and the run stops at `DOCUMENTATION_REVIEW`. The first real run of 2026-11-22 stopped this way. Add the file once, with the same bytes as `tests/golden/sample.txt` (3 lines, 7 words, 31 characters). The ruleset lets nothing reach the default branch without an approving review, and nobody may approve their own pull request, so pause the ruleset for that one commit:
+
+```bash no-run reason="it changes the ruleset and the default branch of your fixture repository"
+gh api --method PUT repos/OWNER/NAME/rulesets/RULESET_ID -f enforcement=disabled
+gh api --method PUT repos/OWNER/NAME/contents/notes.txt -f message="test: add the file the README's example reads" -f content="$(base64 < fixtures/repos/word-count/notes.txt)"
+gh api --method PUT repos/OWNER/NAME/rulesets/RULESET_ID -f enforcement=active
+```
+
+`gh api repos/OWNER/NAME/rulesets` prints the id. Run the third line even when the second fails, so the branch is never left unprotected.
+
 ### 5. Install the App on the fixture repository
 
 Open your App's settings page (the script of step 3 printed it). Choose "Install App", and install it on the fixture repository only. The run finds the installation itself.
