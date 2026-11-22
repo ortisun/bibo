@@ -110,13 +110,27 @@ jobs:
           (cd "$RUNNER_TEMP/pyright" && npm ci --ignore-scripts --no-audit --no-fund)
           echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
 
-      # The image builds below record the manifest digest of each image, which only the containerd
-      # image store reports (the default of Docker 29 and Docker Desktop; the runner's Docker 28
-      # still uses the classic store). It is switched on before anything is pulled, because a
-      # restart of the daemon with the other store hides every image pulled before it.
-      - name: Switch Docker to the containerd image store
+      # The image builds below need the Docker engine the images were pinned with: Docker 28, which
+      # the runner ships, has a BuildKit that refuses the reproducible export of the recipes with the
+      # containerd image store ("rewrite-timestamp conflicts with unpack"), and its classic store
+      # does not report the manifest digest the build records. So the engine, buildx and containerd
+      # are the versions of the owner's machine (Docker Desktop: engine 29.9.3, buildx 0.38.1,
+      # containerd 2.4.2), from Docker's signed apt repository, whose key is checked by fingerprint.
+      # The containerd image store is switched on before anything is pulled, because a restart of
+      # the daemon with the other store hides every image pulled before it.
+      - name: Install the pinned Docker engine with the containerd image store
         run: |
           set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/docker.asc" https://download.docker.com/linux/ubuntu/gpg
+          gpg --show-keys --with-colons "$RUNNER_TEMP/docker.asc" | grep -q '^fpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:$'
+          sudo install -m 0644 "$RUNNER_TEMP/docker.asc" /etc/apt/keyrings/factory-docker.asc
+          echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/factory-docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+            | sudo tee /etc/apt/sources.list.d/factory-docker.list >/dev/null
+          sudo rm -f /etc/apt/sources.list.d/docker.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --allow-downgrades \
+            docker-ce=5:29.9.3-1~ubuntu.24.04~noble docker-ce-cli=5:29.9.3-1~ubuntu.24.04~noble \
+            containerd.io=2.4.2-4~ubuntu.24.04~noble docker-buildx-plugin=0.38.1-1~ubuntu.24.04~noble
           sudo python3 - <<'PY'
           import json, os
           path = "/etc/docker/daemon.json"
@@ -125,6 +139,8 @@ jobs:
           json.dump(config, open(path, "w"), indent=2)
           PY
           sudo systemctl restart docker
+          docker version --format 'engine {{.Server.Version}}'
+          docker buildx version
           docker info --format '{{.DriverStatus}}' | grep -q 'io.containerd.snapshotter' || { docker info; exit 1; }
 
       # The image is the one infra/compose/local.yml pins, by the digest of its multi-platform index.
