@@ -163,8 +163,13 @@ jobs:
       # must not (ADR 0034). The sandbox build writes its digests to a file of its own, never to the
       # committed images.json: the tests look the images up by the committed digests, so an image
       # that does not reproduce on this runner stays absent and its tests report BLOCKED.
-      - name: Pull the pinned alpine/git image of the testkit
-        run: docker pull alpine/git@sha256:ac6c828f15d82775d204d3d75112e1d34af8945da80ccf922713c9891ba68e7a
+      - name: Pull the pinned public images of the tests
+        run: |
+          set -euo pipefail
+          # alpine/git: the hostile git configuration test of the testkit.
+          docker pull alpine/git@sha256:ac6c828f15d82775d204d3d75112e1d34af8945da80ccf922713c9891ba68e7a
+          # python: the fake provider of the runtime and egress tests.
+          docker pull python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
 
       - name: Build the sandbox images
         env:
