@@ -114,7 +114,7 @@ The factory never merges. Knowledge becomes `active` only when a person merges i
 - Agents may call `knowledge.search` and `knowledge.get` on the MCP gateway (read-only, this repository, this base commit) to look further.
 - Agents may still read the files directly.
 
-The index lives in SurrealDB, behind the `KnowledgeIndex` port: entries as documents, their links as graph edges, full-text search over the bodies, one namespace and database per tenant and repository (ADR 0028, Decision 6, pending a spike). It is rebuilt from the files and holds nothing else. PostgreSQL stays the source of truth for jobs, the ledger and the raw numbers. Semantic search (vectors) is a trial in [agentic-practices.md](../reference/agentic-practices.md) until an evaluation shows it finds entries the lexical search misses.
+The index lives in PostgreSQL, behind the `KnowledgeIndex` port ([ADR 0032](../adr/0032-knowledge-index-in-postgresql.md), which supersedes ADR 0028, Decision 6): one snapshot for each repository and commit, its entries with a full-text column (configuration `simple`, ranked by `ts_rank_cd` then by identifier), and its links in a table walked by a recursive query capped at three links. Every table carries the tenant and is under row-level security (ADR 0012). It is rebuilt from the files and holds nothing else. PostgreSQL stays the source of truth for jobs, the ledger and the raw numbers. Semantic search (vectors) is a trial in [agentic-practices.md](../reference/agentic-practices.md) until an evaluation shows it finds entries the lexical search misses.
 
 ## How it stays true
 
@@ -147,4 +147,4 @@ No model takes part in the choice. The block is cut at a size limit the stage se
 | The checks in the documentation quality gate | Not built. The gate is being changed by other work; the checks plug in after it lands |
 | The knowledge step of the documentation stage, the specification stage's reading, the onboarding harvest | Not built |
 | `docs/knowledge/` in the `docs/` skeleton the factory installs (ADR 0026), and the rule of the knowledge base in the installed `AGENTS.md` | Built: template version 2 of `onboarding/project-rules/` |
-| The SurrealDB index behind `KnowledgeIndex`, and `knowledge.search` and `knowledge.get` | Not built. Needs the spike of ADR 0028, Decision 6 |
+| The PostgreSQL index behind `KnowledgeIndex` (ADR 0032), and `knowledge.search` and `knowledge.get` | Not built |
