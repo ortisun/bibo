@@ -54,6 +54,17 @@ jobs:
     # the job, so no password is written anywhere.
     env:
       FACTORY_DB_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
+      # Build settings of this runner only; they change no result. Line tables keep panics and
+      # backtraces readable and cut the test build from about 9 to about 6 minutes; incremental
+      # compilation is of no use in a fresh checkout. (A cache of the build output was measured and
+      # dropped: 23 GB, about 3 minutes to restore and save, and no faster build, because a fresh
+      # checkout gives every workspace file a new time stamp.)
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # Most tests wait on PostgreSQL or Docker rather than on a CPU, so twice the runner's four
+      # CPUs run at once: the tests took about 17 minutes instead of 21.
+      NEXTEST_TEST_THREADS: "8"
     steps:
       # v7.0.1 (2026-07-20). The whole history is needed: scripts/ci.sh scans every commit for
       # secrets and reports BLOCKED on a shallow clone.
