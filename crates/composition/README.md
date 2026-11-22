@@ -258,7 +258,8 @@ below, and the test keeps them true.
 4. **Paths the daemon mounts.** `sandbox.token_root` and `sandbox.workspace_root` are mounted into sandbox
    containers by the Docker daemon, so they must be paths on the machine where the daemon runs, and must not
    be under a forbidden mount source of the policy (`/var`, `/etc`, `/home`, `/usr`, `/root`, `/`). On macOS
-   that rules out the system temporary directory.
+   that rules out the system temporary directory; on Linux it rules out a user's home directory, where a
+   checkout usually lives. The tests use `factory_testkit::fx::scratch::mountable_scratch` for these roots.
 5. **The sidecar.** A deployment that runs agents sets `sandbox.sidecar_command` (`--mode`, `--listen`,
    `--upstream` pointing at the broker as the sidecar sees it, `--max-bytes`, `--allow` hosts). With none the
    real sidecar refuses to start.

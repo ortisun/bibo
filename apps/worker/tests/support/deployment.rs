@@ -95,8 +95,7 @@ pub async fn deployment_in(
             db.name
         )
     };
-    let dir = repository_root()
-        .join("target/prepare-test")
+    let dir = factory_testkit::fx::scratch::mountable_scratch("prepare-test")
         .join(format!("{profile}-{run}"));
     std::fs::create_dir_all(&dir).expect("a scratch directory");
     write_private(&dir.join("tenant.url"), &url(&worker));

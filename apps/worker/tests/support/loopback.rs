@@ -280,11 +280,12 @@ impl Lab {
         // The protected checkout is a copy, so that a test can damage one policy file.
         let root = repository_root();
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let protected = root.join("target/loopback-e2e").join(format!(
-            "protected-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
+        let protected =
+            factory_testkit::fx::scratch::mountable_scratch("loopback-e2e").join(format!(
+                "protected-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
         let _ = std::fs::remove_dir_all(&protected);
         copy_dir(&root.join("policies"), &protected.join("policies"));
         copy_dir(&root.join(".specify"), &protected.join(".specify"));

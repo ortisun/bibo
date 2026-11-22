@@ -333,7 +333,7 @@ impl Lab {
         // for a while ("bind source path does not exist"), which looked like a lag of the file
         // sharing and was this.
         static LABS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let scratch = root().join("target/live").join(format!(
+        let scratch = factory_testkit::fx::scratch::mountable_scratch("live").join(format!(
             "{run}-{}",
             LABS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
