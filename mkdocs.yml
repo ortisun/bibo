@@ -1,0 +1,237 @@
+# The documentation site, served by GitHub Pages at site_url.
+# Build or preview it with scripts/docs-site.sh; ADR 0033 records why it is built this way.
+site_name: Bibo
+site_description: An agentic software factory that turns an approved GitHub issue into a reviewed draft pull request with an evidence trail.
+site_url: https://ortisun.github.io/bibo/
+repo_url: https://github.com/ortisun/bibo
+repo_name: ortisun/bibo
+edit_uri: edit/develop/docs/
+copyright: Copyright &copy; 2026 The Bibo Authors. Released under the <a href="https://github.com/ortisun/bibo/blob/develop/LICENSE">MIT License</a>.
+
+docs_dir: docs
+exclude_docs: |
+  architecture/tools/
+  reference/tools/
+
+# A broken link or anchor is a warning, and scripts/docs-site.sh builds with --strict, so it fails.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+hooks:
+  - .github/tools/mkdocs/hooks.py
+
+theme:
+  name: material
+  logo: assets/bibo-logo.svg
+  favicon: assets/bibo-logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to the dark theme
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to the light theme
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ortisun/bibo
+      name: Bibo on GitHub
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Core concepts: concepts.md
+      - Quickstart: guides/quickstart.md
+      - Walkthrough of a test-mode run: walkthroughs/test-mode-run.md
+      - Install into a project: guides/onboarding.md
+      - Prepare a repository: guides/prepare-a-repository.md
+  - Guides:
+      - guides/design-with-egm.md
+      - guides/claude-and-codex.md
+      - guides/project-board.md
+      - guides/spec-kit.md
+      - guides/troubleshooter.md
+      - guides/production.md
+      - guides/first-real-run.md
+  - Operations:
+      - operations/local-deployment.md
+      - operations/backup-and-restore.md
+      - operations/troubleshooting.md
+      - Runbooks:
+          - runbooks/README.md
+          - runbooks/dependency-decision-waiting.md
+          - runbooks/environment-block.md
+          - runbooks/leaked-test-clusters.md
+          - runbooks/restore-from-backup.md
+          - runbooks/rotate-the-decision-key.md
+          - runbooks/stop-work-on-a-repository.md
+          - runbooks/stuck-waiting-for-a-person.md
+          - runbooks/suspected-leaked-token.md
+      - Observability:
+          - observability/conventions.md
+          - observability/runbook-first-run-signals.md
+  - Reference:
+      - reference/agentic-practices.md
+      - reference/artifacts.md
+      - reference/commands.md
+      - reference/configuration.md
+      - reference/documentation-checks.md
+      - reference/documentation-policy.md
+      - reference/policies.md
+  - Architecture:
+      - architecture/overview.md
+      - architecture/state-machine.md
+      - architecture/capability-packs.md
+      - architecture/ports-v1.1.md
+      - architecture/ports-v1.2.md
+      - architecture/ports-v1.4.md
+      - architecture/ports-v1.5.md
+      - architecture/ports-v1.6.md
+      - architecture/process-metrics-and-improvement.md
+      - architecture/project-knowledge-base.md
+      - architecture/project-rules.md
+      - architecture/quality-ratchet.md
+      - architecture/slice-plan.md
+      - Database:
+          - database/README.md
+          - database/adr-0012-open-items.md
+          - database/constraints-and-indexes.md
+          - database/data-model.md
+          - database/for-the-storage-crate.md
+          - database/ledger-and-audit.md
+          - database/migration-safety.md
+          - database/not-covered.md
+          - database/operating-settings.md
+          - database/performance.md
+          - database/query-plans.md
+          - database/retention-and-partitioning.md
+          - database/running.md
+          - database/tenancy.md
+      - Spec Kit:
+          - spec-kit/integration-guide.md
+          - spec-kit/worked-example.md
+      - Spikes:
+          - spikes/agent-runtime.md
+  - Decisions:
+      - adr/README.md
+      - "0001 Orchestration engine": adr/0001-orchestration-engine.md
+      - "0002 Workspace layout and dependency rule": adr/0002-workspace-layout-and-dependency-rule.md
+      - "0003 Sandbox strategy": adr/0003-sandbox-strategy.md
+      - "0004 Event model": adr/0004-event-model.md
+      - "0005 Agent runtime adapter boundary": adr/0005-agent-runtime-adapter-boundary.md
+      - "0006 Spec Kit boundary": adr/0006-spec-kit-boundary.md
+      - "0007 Persistence access and tenancy": adr/0007-persistence-access-and-tenancy.md
+      - "0008 Artifact store and evidence ledger": adr/0008-artifact-store-and-evidence-ledger.md
+      - "0009 Operating defaults pending confirmation": adr/0009-operating-defaults-pending-confirmation.md
+      - "0010 Failure escalation routing and invalidation": adr/0010-failure-escalation-routing-and-invalidation.md
+      - "0011 Canonical time and numbers": adr/0011-canonical-time-and-numbers.md
+      - "0012 Row-level security in Slice 1": adr/0012-row-level-security-in-slice-1.md
+      - "0013 Telemetry wiring": adr/0013-telemetry-wiring.md
+      - "0014 Ports v1.1 claim protocol and port revision": adr/0014-ports-v1-1-claim-protocol-and-port-revision.md
+      - "0015 Composition library": adr/0015-composition-library.md
+      - "0016 Design phase onboarding and issue workflow": adr/0016-design-phase-onboarding-and-issue-workflow.md
+      - "0017 Ports v1.2 issue status writer": adr/0017-ports-v1-2-issue-status-writer.md
+      - "0018 Project board mirror that adapts": adr/0018-project-board-mirror-that-adapts.md
+      - "0019 Claude Code and Codex alike": adr/0019-claude-code-and-codex-alike.md
+      - "0020 Subscription mode by default": adr/0020-subscription-mode-by-default.md
+      - "0021 Troubleshooter agent and MCP sources": adr/0021-troubleshooter-agent-and-mcp-sources.md
+      - "0022 Solo approval mode": adr/0022-solo-approval-mode.md
+      - "0023 A rework count for each phase": adr/0023-a-rework-count-for-each-phase.md
+      - "0024 Agent builds outside the workspace": adr/0024-agent-builds-outside-the-workspace.md
+      - "0025 Protected paths judged against the job base": adr/0025-protected-paths-judged-against-the-job-base.md
+      - "0026 Project rules installed by pull request": adr/0026-project-rules-installed-by-pull-request.md
+      - "0027 Capability packs": adr/0027-capability-packs.md
+      - "0028 Project knowledge base": adr/0028-project-knowledge-base.md
+      - "0029 Process metrics and improvement loop": adr/0029-process-metrics-and-improvement-loop.md
+      - "0030 Quality ratchet for structure tests and modularity": adr/0030-quality-ratchet-for-structure-tests-and-modularity.md
+      - "0031 Factory documents proposed through one port": adr/0031-factory-documents-proposed-through-one-port.md
+      - "0032 Knowledge index in PostgreSQL": adr/0032-knowledge-index-in-postgresql.md
+      - "0033 Documentation site on GitHub Pages": adr/0033-documentation-site-on-github-pages.md
+  - Security:
+      - Security policy: SECURITY.md
+      - security/negative-test-catalog.md
+      - security/p0-coverage.md
+      - security/sandbox-policy.md
+      - security/secrets-and-credentials.md
+      - security/threat-model.md
+      - Reviews:
+          - reviews/api-security-review.md
+          - reviews/architecture-foundation-review.md
+          - reviews/authority-and-evidence-security-review.md
+          - reviews/authority-api-supply-chain-security-rereview.md
+          - reviews/database-review.md
+          - reviews/design-gate-round-two-and-runtime-security-review.md
+          - reviews/design-gate-security-review.md
+          - reviews/engine-registration-and-status-security-review.md
+          - reviews/isolation-core-security-rereview.md
+          - reviews/isolation-core-security-review.md
+          - reviews/process-layer-security-review.md
+          - reviews/registration-hardening-security-review.md
+          - reviews/supply-chain-and-delivery-security-review.md
+          - reviews/troubleshooter-security-review.md
+      - Reports:
+          - reports/real-adapter-loopback-e2e.md
+          - reports/slice-1-acceptance.md
+          - reports/slice-1-findings.md
+  - Contributing: CONTRIBUTING.md

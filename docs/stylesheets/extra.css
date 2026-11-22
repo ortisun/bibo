@@ -1,0 +1,59 @@
+/* Bibo's colours come from the logo: the grey coat for the primary colour and the tongue for the accent. */
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #4f5864;
+  --md-primary-fg-color--light: #87909b;
+  --md-primary-fg-color--dark: #353c45;
+  --md-accent-fg-color: #c94f60;
+  --md-accent-fg-color--transparent: rgba(201, 79, 96, 0.1);
+  --md-typeset-a-color: #3f5f8a;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #353c45;
+  --md-primary-fg-color--light: #6b7480;
+  --md-primary-fg-color--dark: #22272e;
+  --md-accent-fg-color: #f08c9a;
+  --md-accent-fg-color--transparent: rgba(240, 140, 154, 0.1);
+  --md-typeset-a-color: #8fb3e6;
+}
+
+.bibo-hero {
+  text-align: center;
+  padding: 1rem 0 1.5rem;
+}
+
+.bibo-hero__logo {
+  width: 9rem;
+  height: auto;
+}
+
+.bibo-hero h1 {
+  margin: 0.5rem 0 0.25rem;
+  font-weight: 700;
+  font-size: 2.6rem;
+  color: var(--md-default-fg-color);
+}
+
+.bibo-hero p {
+  max-width: 40rem;
+  margin-left: auto;
+  margin-right: auto;
+  font-size: 0.95rem;
+}
+
+.bibo-hero .md-button {
+  margin: 0.25rem;
+}
+
+/* In the dark theme the primary grey is too dark for an outlined button, so those use the light coat grey. */
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary) {
+  color: #c9cfd6;
+  border-color: #6b7480;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .md-button:not(.md-button--primary):hover {
+  color: #ffffff;
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+}
