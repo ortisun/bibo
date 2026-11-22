@@ -31,6 +31,7 @@ The failures had four causes, and none was a defect of the factory itself:
   - the sandbox images by `infra/sandbox-images/build.sh`, with the sidecar program compiled in the verify image as `infra/sandbox-images/egress-sidecar/README.md` describes. The build writes its digests to a file of its own, **never to the committed `images.json`**: the tests look the images up by the committed digests, so an image that does not reproduce stays absent and its tests report `BLOCKED`. A step prints the built and the pinned digest of each image side by side;
   - the API and worker images by `infra/service-images/build.sh`;
   - `alpine/git` pulled by the pinned index digest.
+- **The image store.** A first step switches the runner's Docker to the containerd image store, which the sandbox build needs to read the manifest digest of an image it made (Docker 28 on the runner still defaults to the classic store; Docker 29 and Docker Desktop do not).
 - **The time limit** of the job is 120 minutes.
 - **The gate itself does not change**, except that its test step runs with `--no-fail-fast`, so that one failing test does not hide the others. The checks still live in `scripts/ci.sh` only.
 
