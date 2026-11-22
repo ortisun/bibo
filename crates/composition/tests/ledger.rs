@@ -18,7 +18,9 @@ use factory_ports::store::{
 };
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::scheduler::ClaimedAttempt;
-use factory_workflow::stages::implementation::seams::{Hold, LedgerError, PlannedTask, TaskLedger};
+use factory_workflow::stages::implementation::seams::{
+    Hold, LedgerError, PlannedTask, TaskLedger, TaskRunRecord,
+};
 use support::engine::PgWorld;
 use support::pg_world;
 
@@ -411,4 +413,92 @@ async fn an_unfenced_task_write_is_refused_by_the_store() {
         statuses(&h.world, &h.run).await[0],
         ("t-001".to_owned(), TaskNodeStatus::Pending)
     );
+}
+
+fn ran(
+    tier: factory_domain::contracts::agent_manifest::RecommendedTier,
+    tokens: u64,
+) -> TaskRunRecord {
+    TaskRunRecord {
+        runtime: factory_ports::agent::RuntimeId::new("claude-code-cli").expect("a runtime"),
+        model: factory_domain::values::NonEmptyString::parse("claude-sonnet-5-5").expect("a model"),
+        tier,
+        metered: Some(
+            factory_ports::store::MeteredUsage::new(tokens, 300, 4_500, 2).expect("in range"),
+        ),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_of_the_builder_becomes_one_row_of_the_task_and_the_attempt() {
+    use factory_domain::contracts::agent_manifest::RecommendedTier::{Large, Standard};
+
+    let h = held().await;
+    let plan_1 = plan_artifact(&h.world, &h.run, "{\"plan\": 1}").await;
+    h.ledger
+        .open(&h.run, &plan_1, &tasks())
+        .await
+        .expect("the graph opens");
+    let first = slug("t-001");
+    h.ledger
+        .start(&h.run, &first, &h.hold)
+        .await
+        .expect("the task starts");
+
+    h.ledger
+        .record_run(&h.run, &first, &h.hold, &ran(Standard, 1200))
+        .await
+        .expect("the run is recorded");
+    // The same record a second time changes nothing.
+    h.ledger
+        .record_run(&h.run, &first, &h.hold, &ran(Standard, 1200))
+        .await
+        .expect("a repeat is accepted");
+    // The attempt has one record for the task: another content is refused, and so is a task the
+    // plan does not have.
+    for other in [ran(Large, 1200), ran(Standard, 1201)] {
+        assert_eq!(
+            h.ledger.record_run(&h.run, &first, &h.hold, &other).await,
+            Err(LedgerError::Illegal)
+        );
+    }
+    assert_eq!(
+        h.ledger
+            .record_run(&h.run, &slug("t-999"), &h.hold, &ran(Standard, 1))
+            .await,
+        Err(LedgerError::Illegal)
+    );
+    // A worker that lost its lease records nothing.
+    let stale = Hold {
+        attempt: h.hold.attempt,
+        epoch: LeaseEpoch::new(h.hold.epoch.get() + 1),
+    };
+    assert_eq!(
+        h.ledger
+            .record_run(&h.run, &first, &stale, &ran(Standard, 1200))
+            .await,
+        Err(LedgerError::Fenced)
+    );
+
+    let mut tx = h
+        .world
+        .store
+        .begin(TenantScope::new(h.run.tenant))
+        .await
+        .expect("a transaction");
+    let rows = tx.list_task_runs(h.run.stage_run).await.expect("the runs");
+    let nodes = tx
+        .list_task_nodes(h.run.stage_run)
+        .await
+        .expect("the nodes");
+    let _ = tx.rollback().await;
+    assert_eq!(rows.len(), 1, "one row for the task and the attempt");
+    let row = &rows[0];
+    assert_eq!(row.attempt_id, h.claimed.attempt);
+    assert_eq!((row.job_id, row.stage_run_id), (h.run.job, h.run.stage_run));
+    assert_eq!(row.task_node_id, nodes[0].value.id);
+    assert_eq!(row.tier, Standard);
+    assert_eq!(row.model.as_str(), "claude-sonnet-5-5");
+    assert_eq!(row.metered.map(|used| used.tokens()), Some(1500));
+    assert_eq!(row.metered.map(|used| used.cost_micro_usd()), Some(4_500));
 }

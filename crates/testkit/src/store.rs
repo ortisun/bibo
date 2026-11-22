@@ -175,10 +175,52 @@ pub enum StoreDefect {
     /// A repository that is enabled already can be enabled again, which moves its version and
     /// names a second enabler (finding RH-7).
     EnablesWhatIsEnabled,
+    /// An attempt that ends with its meter not read is stored as having used nothing.
+    UnknownMeterReadsAsZero,
+    /// A metered use is accepted on a move that does not end the attempt.
+    AcceptsMeteredOnALiveAttempt,
+    /// A task run is recorded without a current fence.
+    IgnoresTaskRunFence,
+    /// A task run recorded again with other content replaces the first.
+    OverwritesTaskRun,
+    /// A later sighting replaces the fate of a pull request that was already decided.
+    RewritesPullRequestFate,
+    /// A pull request that has a fate is still listed to be looked at.
+    ChecksDecidedPullRequests,
+    /// Recording the opening of a pull request again makes it open again and forgets its fate.
+    ReopensOnReplay,
 }
 
 /// Each defect and the checks of `contracts::store` that must fail when the fake has it.
 pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
+    (
+        StoreDefect::UnknownMeterReadsAsZero,
+        &["an_attempt_keeps_what_it_metered_and_unknown_is_not_zero"],
+    ),
+    (
+        StoreDefect::AcceptsMeteredOnALiveAttempt,
+        &["an_attempt_keeps_what_it_metered_and_unknown_is_not_zero"],
+    ),
+    (
+        StoreDefect::IgnoresTaskRunFence,
+        &["a_task_run_is_fenced_written_once_and_listed_in_order"],
+    ),
+    (
+        StoreDefect::OverwritesTaskRun,
+        &["a_task_run_is_fenced_written_once_and_listed_in_order"],
+    ),
+    (
+        StoreDefect::RewritesPullRequestFate,
+        &["the_first_fate_of_a_pull_request_is_final"],
+    ),
+    (
+        StoreDefect::ReopensOnReplay,
+        &["a_pull_request_is_recorded_once_for_its_job"],
+    ),
+    (
+        StoreDefect::ChecksDecidedPullRequests,
+        &["only_open_pull_requests_are_listed_to_check_the_longest_wait_first"],
+    ),
     (
         StoreDefect::KeepsEnabledOnReattest,
         &["an_attestation_of_another_map_switches_an_enabled_repository_off"],
@@ -485,6 +527,8 @@ struct Tables {
     attempts: BTreeMap<AttemptId, Row<Attempt>>,
     task_nodes: BTreeMap<TaskNodeId, Row<TaskNode>>,
     task_deps: BTreeMap<StageRunId, Vec<(TaskNodeId, TaskNodeId)>>,
+    task_runs: BTreeMap<(TaskNodeId, AttemptId), TaskRun>,
+    pull_requests: BTreeMap<(RepositoryId, u64), PullRequestRecord>,
     stage_artifacts: Vec<(TenantId, StageRunArtifact)>,
     approvals: BTreeMap<ApprovalId, (TenantId, Approval)>,
     principals: BTreeMap<PrincipalId, Principal>,
@@ -1170,6 +1214,8 @@ impl InMemoryTx {
         let attempts = changed(&c.attempts, &b.attempts, &w.attempts, merge)?;
         let nodes = changed(&c.task_nodes, &b.task_nodes, &w.task_nodes, merge)?;
         let deps = changed(&c.task_deps, &b.task_deps, &w.task_deps, merge)?;
+        let task_runs = changed(&c.task_runs, &b.task_runs, &w.task_runs, merge)?;
+        let pulls = changed(&c.pull_requests, &b.pull_requests, &w.pull_requests, merge)?;
         let approvals = changed(&c.approvals, &b.approvals, &w.approvals, merge)?;
         let principals = changed(&c.principals, &b.principals, &w.principals, merge)?;
         let index = changed(&c.index, &b.index, &w.index, merge)?;
@@ -1225,6 +1271,8 @@ impl InMemoryTx {
         c.attempts.extend(attempts);
         c.task_nodes.extend(nodes);
         c.task_deps.extend(deps);
+        c.task_runs.extend(task_runs);
+        c.pull_requests.extend(pulls);
         c.approvals.extend(approvals);
         c.principals.extend(principals);
         c.index.extend(index);
@@ -2212,6 +2260,7 @@ impl AttemptOps for InMemoryTx {
                 sandbox: None,
                 created_at: now,
                 ended_at: None,
+                metered: None,
             };
             let row = Row {
                 value: attempt,
@@ -2303,16 +2352,27 @@ impl AttemptOps for InMemoryTx {
             let rule = attempt_end_rule(t.transition_id());
             let class_ok = rule.failure_class == end.failure_class.is_some()
                 || (self.has(StoreDefect::AcceptsFailedWithoutClass) && rule.failure_class);
+            // A metered use rides only on the move that ends the attempt (ports v1.5).
+            let ends = t.to_status().is_terminal();
+            let metered_ok = end.metered.is_none()
+                || ends
+                || self.has(StoreDefect::AcceptsMeteredOnALiveAttempt);
             if !class_ok
                 || rule.output != end.output.is_some()
                 || rule.teardown_grace != end.teardown_grace.is_some()
+                || !metered_ok
             {
                 return Err(StoreError::Constraint(ConstraintRule::AttemptEndRule));
             }
             let mut next = row;
             next.value.status = t.to_status();
-            if t.to_status().is_terminal() {
+            if ends {
                 next.value.ended_at = Some(now);
+            }
+            if end.metered.is_some() {
+                next.value.metered = end.metered;
+            } else if ends && self.has(StoreDefect::UnknownMeterReadsAsZero) {
+                next.value.metered = Some(MeteredUsage::ZERO);
             }
             next.value.failure_class = end.failure_class.or(next.value.failure_class);
             next.value.output = end.output.clone().or(next.value.output.take());
@@ -2506,6 +2566,202 @@ impl TaskNodeOps for InMemoryTx {
             let version = next.version;
             self.work.task_nodes.insert(id, next);
             Ok(version)
+        })
+    }
+}
+
+// ---- task runs and pull requests (ports v1.5) --------------------------------------------------
+
+/// The longest model name a task run keeps.
+const MODEL_MAX_CHARS: usize = 200;
+
+#[async_trait]
+impl TaskRunOps for InMemoryTx {
+    async fn record_task_run(&mut self, by: Fence, run: NewTaskRun) -> Result<(), StoreError> {
+        call!(self, {
+            if run.model.as_str().chars().count() > MODEL_MAX_CHARS {
+                return Err(StoreError::Constraint(ConstraintRule::TextBounds));
+            }
+            if !self.has(StoreDefect::IgnoresTaskRunFence) {
+                self.fence_is_current(&by)?;
+            }
+            let attempt = self
+                .attempt(by.attempt)
+                .map_err(|_| StoreError::LeaseFenced)?
+                .value
+                .clone();
+            let node = self.task_node(run.task_node)?.value.clone();
+            if node.stage_run_id != attempt.stage_run_id {
+                return Err(StoreError::NotFound);
+            }
+            let key = (run.task_node, by.attempt);
+            if let Some(stored) = self.work.task_runs.get(&key) {
+                let same = stored.runtime == run.runtime
+                    && stored.model == run.model
+                    && stored.tier == run.tier
+                    && stored.metered == run.metered;
+                if same {
+                    return Ok(());
+                }
+                if !self.has(StoreDefect::OverwritesTaskRun) {
+                    return Err(StoreError::Constraint(
+                        ConstraintRule::IdReusedWithDifferentContent,
+                    ));
+                }
+            }
+            let stored = TaskRun {
+                tenant_id: node.tenant_id,
+                job_id: node.job_id,
+                stage_run_id: node.stage_run_id,
+                task_node_id: run.task_node,
+                attempt_id: by.attempt,
+                runtime: run.runtime,
+                model: run.model,
+                tier: run.tier,
+                metered: run.metered,
+                recorded_at: self.now(),
+            };
+            self.work.task_runs.insert(key, stored);
+            Ok(())
+        })
+    }
+
+    async fn list_task_runs(&mut self, stage_run: StageRunId) -> Result<Vec<TaskRun>, StoreError> {
+        call!(self, {
+            self.stage_run(stage_run)?;
+            let mut rows: Vec<TaskRun> = self
+                .work
+                .task_runs
+                .values()
+                .filter(|run| run.stage_run_id == stage_run && self.sees(run.tenant_id))
+                .cloned()
+                .collect();
+            rows.sort_by_key(|run| (run.recorded_at, run.attempt_id, run.task_node_id));
+            Ok(rows)
+        })
+    }
+}
+
+#[async_trait]
+impl PullRequestOps for InMemoryTx {
+    async fn record_pull_request_opened(&mut self, new: NewPullRequest) -> Result<(), StoreError> {
+        call!(self, {
+            if new.number == 0 || new.number > MAX_METERED {
+                return Err(StoreError::Constraint(ConstraintRule::TextBounds));
+            }
+            let job = self.job(new.job)?.value.clone();
+            if job.repository != new.repository {
+                return Err(StoreError::NotFound);
+            }
+            let key = (new.repository, new.number);
+            if let Some(stored) = self.work.pull_requests.get(&key) {
+                if stored.job_id != new.job || stored.tenant_id != job.tenant_id {
+                    return Err(StoreError::Constraint(
+                        ConstraintRule::IdReusedWithDifferentContent,
+                    ));
+                }
+                if !self.has(StoreDefect::ReopensOnReplay) {
+                    return Ok(());
+                }
+            }
+            let stored = PullRequestRecord {
+                tenant_id: job.tenant_id,
+                job_id: new.job,
+                repository: new.repository,
+                number: new.number,
+                opened_at: self.now(),
+                fate: StoredFate::Open,
+                last_checked_at: None,
+            };
+            self.work.pull_requests.insert(key, stored);
+            Ok(())
+        })
+    }
+
+    async fn list_pull_requests(
+        &mut self,
+        job: JobId,
+    ) -> Result<Vec<PullRequestRecord>, StoreError> {
+        call!(self, {
+            self.job(job)?;
+            let mut rows: Vec<PullRequestRecord> = self
+                .work
+                .pull_requests
+                .values()
+                .filter(|pull| pull.job_id == job && self.sees(pull.tenant_id))
+                .copied()
+                .collect();
+            rows.sort_by_key(|pull| (pull.opened_at, pull.number));
+            Ok(rows)
+        })
+    }
+
+    async fn list_pull_requests_to_check(
+        &mut self,
+        before: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<PullRequestRecord>, StoreError> {
+        call!(self, {
+            let decided_too = self.has(StoreDefect::ChecksDecidedPullRequests);
+            let mut rows: Vec<PullRequestRecord> = self
+                .work
+                .pull_requests
+                .values()
+                .filter(|pull| self.sees(pull.tenant_id))
+                .filter(|pull| decided_too || pull.fate == StoredFate::Open)
+                .filter(|pull| pull.last_checked_at.is_none_or(|at| at < before))
+                .copied()
+                .collect();
+            // `None` sorts before every `Some`: a pull request never looked at comes first.
+            rows.sort_by_key(|pull| {
+                (
+                    pull.last_checked_at,
+                    pull.opened_at,
+                    pull.repository,
+                    pull.number,
+                )
+            });
+            rows.truncate(limit as usize);
+            Ok(rows)
+        })
+    }
+
+    async fn record_pull_request_sighting(
+        &mut self,
+        repository: RepositoryId,
+        number: u64,
+        sighting: PullRequestSighting,
+    ) -> Result<PullRequestRecord, StoreError> {
+        call!(self, {
+            let now = self.now();
+            let key = (repository, number);
+            let mut next = *self
+                .work
+                .pull_requests
+                .get(&key)
+                .filter(|pull| self.sees(pull.tenant_id))
+                .ok_or(StoreError::NotFound)?;
+            next.last_checked_at = Some(now);
+            // The first decision is final.
+            if next.fate == StoredFate::Open || self.has(StoreDefect::RewritesPullRequestFate) {
+                match sighting {
+                    PullRequestSighting::Merged(decided_at) => {
+                        next.fate = StoredFate::Merged {
+                            decided_at,
+                            recorded_at: now,
+                        };
+                    }
+                    PullRequestSighting::Closed(decided_at) => {
+                        next.fate = StoredFate::Closed {
+                            decided_at,
+                            recorded_at: now,
+                        };
+                    }
+                    PullRequestSighting::Open | PullRequestSighting::Unread => {}
+                }
+            }
+            self.work.pull_requests.insert(key, next);
+            Ok(next)
         })
     }
 }

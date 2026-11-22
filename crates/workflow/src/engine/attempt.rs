@@ -34,9 +34,9 @@ use factory_domain::scope::TenantScope;
 use factory_domain::state::{AttemptEvent, AttemptStatus, Guard, Status};
 use factory_domain::values::Slug;
 use factory_ports::agent::{
-    CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRef, JobTokenRequest,
+    CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRef, JobTokenRequest, Usage,
 };
-use factory_ports::store::{AttemptEnd, AuditActor, Tx};
+use factory_ports::store::{AttemptEnd, AuditActor, MeteredUsage, NewPullRequest, Tx};
 use serde_json::{Value, json};
 use tracing::Instrument;
 
@@ -342,11 +342,27 @@ impl Engine {
         // What the model cost is read once the handler has stopped, so the events of this attempt
         // can carry it.
         if let Some(token) = job_token {
-            let cost = self.token_cost(token.id).await;
+            let metered = self.token_usage(token.id).await;
+            let cost = metered.map_or(0, |usage| usage.cost.0);
             notes.set_cost(cost);
+            // The whole reading goes on the row of the attempt with the move that ends it (ports
+            // v1.5). A meter that could not be read, or a value above what the store keeps, is
+            // stored as "not known" and never as zero.
+            notes.set_metered(metered.and_then(|usage| {
+                MeteredUsage::new(
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cost.0,
+                    usage.requests,
+                )
+                .ok()
+            }));
             // Money was spent whether or not the attempt is later recorded, so the spend is
             // counted here and not with the result: an attempt that lost its lease still cost it.
             self.record_spend(claimed, prepared, cost);
+        } else {
+            // A stage that runs no agent has no token: nothing could be spent, and that is known.
+            notes.set_metered(Some(MeteredUsage::ZERO));
         }
 
         if watched.lease_lost {
@@ -780,13 +796,16 @@ impl Engine {
         );
     }
 
-    /// What the token has spent, in millionths of a US dollar. A broker that cannot be reached
-    /// reads as no spend, and the broker's own ceiling still holds.
-    async fn token_cost(&self, token: JobTokenId) -> u64 {
-        match self.deps.broker.usage(&token).await {
-            Ok(usage) => usage.usage.cost.0,
-            Err(_) => 0,
-        }
+    /// What the broker metered for the token: tokens, cost and requests. `None` when the broker
+    /// cannot be reached. The budget then counts no spend for the attempt, and the broker's own
+    /// ceiling still holds; the row of the attempt says that its use is not known.
+    async fn token_usage(&self, token: JobTokenId) -> Option<Usage> {
+        self.deps
+            .broker
+            .usage(&token)
+            .await
+            .ok()
+            .map(|metered| metered.usage)
     }
 
     /// Revokes the token, and records the revocation and, when a threshold was crossed, the
@@ -1207,7 +1226,9 @@ impl Engine {
             return Ok(AttemptOutcome::LeaseLost);
         }
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
+        let cx = Cx::new(self, &job.value, self.new_causation_id())
+            .with_cost(notes.cost())
+            .with_metered(notes.metered());
         let recorded = async {
             let facts = GuardFacts::Output(OutputFacts {
                 attempt_succeeded: true,
@@ -1279,7 +1300,9 @@ impl Engine {
         }
         let run = tx.get_stage_run(claimed.stage_run).await?;
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
+        let cx = Cx::new(self, &job.value, self.new_causation_id())
+            .with_cost(notes.cost())
+            .with_metered(notes.metered());
         let recorded = async {
             let facts = GuardFacts::Output(OutputFacts {
                 attempt_succeeded: true,
@@ -1417,7 +1440,9 @@ impl Engine {
             return Ok(AttemptOutcome::LeaseLost);
         }
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
+        let cx = Cx::new(self, &job.value, self.new_causation_id())
+            .with_cost(notes.cost())
+            .with_metered(notes.metered());
         let recorded = async {
             Self::end_attempt_failed(&mut *tx, &cx, claimed, &attempt, class).await?;
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
@@ -1527,7 +1552,9 @@ impl Engine {
             return Ok(AttemptOutcome::LeaseLost);
         }
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
+        let cx = Cx::new(self, &job.value, self.new_causation_id())
+            .with_cost(notes.cost())
+            .with_metered(notes.metered());
         let recorded = async {
             Self::end_attempt_failed(&mut *tx, &cx, claimed, &attempt, FailureClass::PolicyDenied)
                 .await?;
@@ -1597,6 +1624,17 @@ impl Engine {
                 actor.clone(),
                 AuditAction::new(AuditKind::ToolCallDenied, AuditDecision::Denied),
             )
+            .await?;
+        }
+        // The pull request the delivery stage opened, in the repository of the job (ports v1.5).
+        // Recording the same one again, after a retry or a rework round, changes nothing.
+        if let Some(opened) = output.pull_request {
+            let job = tx.get_job(claimed.job).await?;
+            tx.record_pull_request_opened(NewPullRequest {
+                job: claimed.job,
+                repository: job.value.repository,
+                number: opened.number,
+            })
             .await?;
         }
         Ok(())

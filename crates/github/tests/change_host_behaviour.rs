@@ -146,8 +146,8 @@ async fn nothing_the_adapter_does_merges_marks_ready_or_touches_a_branch_it_may_
 }
 
 #[test]
-fn the_rules_host_writes_references_of_the_rules_branch_only() {
-    let source = include_str!("../src/project_rules.rs");
+fn the_proposal_host_writes_references_of_its_proposal_branch_only() {
+    let source = include_str!("../src/proposals.rs");
     let code: Vec<&str> = source
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -157,12 +157,14 @@ fn the_rules_host_writes_references_of_the_rules_branch_only() {
     for line in reference_lines {
         assert!(
             line.contains("{encoded}")
-                || line.contains("{RULES_BRANCH}")
+                || line.contains("{name}")
                 || line.ends_with("/git/refs\", repo_path(&scope.repo));"),
-            "a reference path not built from the rules branch: {line}"
+            "a reference path not built from the proposal's branch: {line}"
         );
     }
-    assert!(source.contains("let encoded = percent_encode_component(RULES_BRANCH);"));
+    // The name of a reference comes from the closed set `ProposalBranch` and from nothing else.
+    assert!(source.contains("let name = branch.name();"));
+    assert!(source.contains("let encoded = percent_encode_component(name);"));
     assert!(!code.iter().any(|l| l.contains("Method::Delete")));
 }
 
@@ -188,13 +190,10 @@ fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
             "/git/refs",
             "pulls/{number}/merge",
         ] {
-            // The rules pull request (ports v1.4, ADR 0026) creates or moves one reference, the
-            // branch `factory/project-rules`, in `project_rules.rs`. Every reference path there is
-            // built from the constant `RULES_BRANCH`; the test below holds it to that.
-            if needle == "/git/refs"
-                && path
-                    .file_name()
-                    .is_some_and(|name| name == "project_rules.rs")
+            // A proposal (ports v1.4 and v1.6, ADR 0026 and 0031) creates or moves one reference,
+            // the branch of its `ProposalBranch`, in `proposals.rs`. Every reference path there is
+            // built from `ProposalBranch::name`; the test above holds it to that.
+            if needle == "/git/refs" && path.file_name().is_some_and(|name| name == "proposals.rs")
             {
                 continue;
             }

@@ -541,6 +541,19 @@ pub struct GithubConfig {
     /// the factory's built-in copy when the project has none.
     #[serde(default = "default_true")]
     pub propose_project_rules: bool,
+    /// Asks the code host, once an hour for each, whether a person merged or closed the pull
+    /// requests the factory opened, and records the answer for the process metrics (ADR 0029,
+    /// ports v1.5). The read needs no permission the App does not hold already. False stops the
+    /// worker from asking: the pull requests then stay open in the store, and the rejection rate
+    /// and the cost of an accepted pull request show too few samples.
+    #[serde(default = "default_true")]
+    pub follow_pull_requests: bool,
+    /// Once a week for each project, proposes the process numbers of the last whole ISO week into
+    /// the project's knowledge base as a draft pull request (ADR 0029, ADR 0031). Only for an
+    /// enabled repository whose default branch has `docs/knowledge/README.md`. False stops the
+    /// worker from proposing them; no job depends on it.
+    #[serde(default = "default_true")]
+    pub propose_knowledge_measurements: bool,
     /// The address of GitHub's web pages, `scheme://host[:port]` with no path, from which the
     /// factory builds the links it writes (the link to the draft pull request in the status
     /// comment of a finished job). The default is `https://github.com`; a GitHub Enterprise server
@@ -1851,6 +1864,32 @@ mod tests {
         assert_ne!(off_world, LOOPBACK_WORLD, "the edit applied");
         let off = FactoryConfig::from_yaml(&with_world("local", &off_world)).expect("loads");
         assert!(!off.github.expect("github").propose_project_rules);
+    }
+
+    #[test]
+    fn proposing_the_weekly_measurement_is_on_unless_the_file_turns_it_off() {
+        let on = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(on.github.expect("github").propose_knowledge_measurements);
+        let off_world = LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            "  api_base_url: http://127.0.0.1:9\n  propose_knowledge_measurements: false\n",
+        );
+        assert_ne!(off_world, LOOPBACK_WORLD, "the edit applied");
+        let off = FactoryConfig::from_yaml(&with_world("local", &off_world)).expect("loads");
+        assert!(!off.github.expect("github").propose_knowledge_measurements);
+    }
+
+    #[test]
+    fn following_the_pull_requests_is_on_unless_the_file_turns_it_off() {
+        let on = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(on.github.expect("github").follow_pull_requests);
+        let off_world = LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            "  api_base_url: http://127.0.0.1:9\n  follow_pull_requests: false\n",
+        );
+        assert_ne!(off_world, LOOPBACK_WORLD, "the edit applied");
+        let off = FactoryConfig::from_yaml(&with_world("local", &off_world)).expect("loads");
+        assert!(!off.github.expect("github").follow_pull_requests);
     }
 
     #[test]

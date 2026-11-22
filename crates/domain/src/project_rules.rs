@@ -29,12 +29,12 @@ use crate::values::Sha256Digest;
 pub const TEMPLATE: &str = include_str!("../../../onboarding/project-rules/AGENTS.md");
 
 /// The version of [`TEMPLATE`]. Raise it with every change to the text.
-pub const TEMPLATE_VERSION: u32 = 1;
+pub const TEMPLATE_VERSION: u32 = 2;
 
 /// The SHA-256 digest of [`TEMPLATE`], 64 lowercase hexadecimal characters. A test compares it
 /// with the text, so the text cannot change under the same version.
 pub const TEMPLATE_SHA256: &str =
-    "183b516faf8e6602208bf126c8e5d27af2a7596815a32e2a88503f9a88a711b2";
+    "d3c5321980081a6bb005a3759666c34a6643402e1a9c464418ac5824b67e8b3c";
 
 /// The file the rules live in, at the root of the repository.
 pub const RULES_FILE: &str = "AGENTS.md";
@@ -56,7 +56,7 @@ pub const DEFAULT_PROJECT_SECTION: &str = "\n## Rules of this project\n\nAdd the
 
 /// The skeleton of `docs/` that the rules ask for: the path in the target repository and the text.
 /// A file is proposed only when the default branch does not have it.
-pub const SKELETON: [(&str, &str); 6] = [
+pub const SKELETON: [(&str, &str); 7] = [
     (
         "docs/README.md",
         include_str!("../../../onboarding/project-rules/docs/README.md"),
@@ -80,6 +80,12 @@ pub const SKELETON: [(&str, &str); 6] = [
     (
         "docs/reference/README.md",
         include_str!("../../../onboarding/project-rules/docs/reference/README.md"),
+    ),
+    // Since template version 2: the empty index of the knowledge base (ADR 0028), in the exact
+    // form `knowledge::KnowledgeBase::render_index` writes.
+    (
+        "docs/knowledge/README.md",
+        include_str!("../../../onboarding/project-rules/docs/knowledge/README.md"),
     ),
 ];
 
@@ -598,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn the_skeleton_is_six_index_files_under_docs() {
+    fn the_skeleton_is_seven_index_files_under_docs() {
         for (path, text) in SKELETON {
             assert!(
                 path.starts_with("docs/") && path.ends_with("/README.md")
@@ -606,6 +612,26 @@ mod tests {
             );
             assert!(text.starts_with("# "), "{path}");
         }
+    }
+
+    #[test]
+    fn the_knowledge_index_of_the_skeleton_is_the_one_the_factory_writes() {
+        use crate::knowledge::{INDEX_FILE, KNOWLEDGE_ROOT, KnowledgeBase};
+        let (path, text) = SKELETON
+            .iter()
+            .find(|(path, _)| *path == format!("{KNOWLEDGE_ROOT}{INDEX_FILE}"))
+            .expect("the skeleton holds the knowledge index");
+        let empty = KnowledgeBase::new(vec![]);
+        assert_eq!(*text, empty.render_index(), "{path}");
+        assert_eq!(empty.check_index(Some(text)), []);
+        // The index of docs/ links to it, and the template names the knowledge base.
+        let docs_index = SKELETON
+            .iter()
+            .find(|(path, _)| *path == "docs/README.md")
+            .expect("docs index")
+            .1;
+        assert!(docs_index.contains("(knowledge/README.md)"));
+        assert!(TEMPLATE.contains("**The knowledge base.**"));
     }
 
     #[test]

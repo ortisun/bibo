@@ -1,6 +1,6 @@
 # 0028: Each project keeps a knowledge base in its own repository, and every job adds to it
 
-- Status: **Decided by the owner on 2026-11-20**: the owner confirmed the decisions listed under "Decisions the owner confirmed on 2026-11-20". Nothing is built yet. No independent review has covered it.
+- Status: **Decided by the owner on 2026-11-20**: the owner confirmed the decisions listed under "Decisions the owner confirmed on 2026-11-20". Decision 6 and confirmed item 4 are **superseded by [ADR 0032](0032-knowledge-index-in-postgresql.md)** (2026-11-21): the index lives in PostgreSQL, not in SurrealDB. Nothing is built yet. No independent review has covered it.
 - Date: 2026-11-20
 - Deciders: the owner set the goal; the engineer weighed the options.
 - Related: [ADR 0026](0026-project-rules-installed-by-pull-request.md) (the `docs/` skeleton the factory installs), [ADR 0027](0027-capability-packs.md) (capability packs and the MCP gateway), the master prompt section 12 (memory with provenance). The design is in [project-knowledge-base.md](../architecture/project-knowledge-base.md).
@@ -125,3 +125,7 @@ The knowledge base is text from the repository. It is **data, not instructions**
 
 - How large a real project's knowledge base grows, and whether the documentation stage's budget covers the extra step.
 - Whether the onboarding harvest produces entries a person would accept. It must be measured on a real repository.
+
+## Revision note (2026-11-21): the index moves to PostgreSQL
+
+The owner reversed Decision 6 on 2026-11-21: the knowledge index uses PostgreSQL, and SurrealDB is not used. [ADR 0032](0032-knowledge-index-in-postgresql.md) records the decision and how the index works in PostgreSQL (full-text search, a link table walked by a bounded recursive query, row-level security). Decision 6 and item 4 of "Decisions the owner confirmed on 2026-11-20" are kept above as they were decided, and no longer hold. The approval of the SurrealDB Rust client as a dependency is withdrawn. The other decisions of this record stand.

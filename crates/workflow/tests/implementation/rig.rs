@@ -22,6 +22,7 @@ use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::{
     AgentRunReport, AgentRuntime, BrokerEndpoint, JobTokenRef, ModelRouter, ProbeError,
     ProbedCapabilities, RoutingDecision, RoutingError, RoutingNeed, RuntimeCapabilities, RuntimeId,
+    Usage,
 };
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
 use factory_ports::clock::CancelSignal;
@@ -51,7 +52,7 @@ use factory_workflow::scheduler::ClaimedAttempt;
 use factory_workflow::stages::implementation::{
     CommitIdentity, Hold, ImplementationConfig, ImplementationDeps, ImplementationHandler,
     LedgerError, PlannedTask, ReworkContext, ReworkSource, SeamError, StageBudget, TaskLedger,
-    TaskRecord, WorkspaceAccess, WorkspaceAgentSpecs,
+    TaskRecord, TaskRunRecord, WorkspaceAccess, WorkspaceAgentSpecs,
 };
 use factory_workflow::stages::intake::{AgentOutputCheck, CapabilityProbes};
 use serde_json::{Value, json};
@@ -369,6 +370,8 @@ pub struct RigLedger {
     log: Log,
     /// The next call of `fail` does nothing, as when a process dies before it can write.
     skip_fail: Mutex<bool>,
+    /// The runs of the builder the stage recorded, with the task each was for, in order.
+    pub runs: Mutex<Vec<(String, TaskRunRecord)>>,
 }
 
 impl RigLedger {
@@ -378,6 +381,7 @@ impl RigLedger {
             fence: Mutex::new((0, 0)),
             log,
             skip_fail: Mutex::new(false),
+            runs: Mutex::new(Vec::new()),
         }
     }
 
@@ -487,6 +491,18 @@ impl TaskLedger for RigLedger {
 
     async fn confirm(&self, _run: &RunIdentity, hold: &Hold) -> Result<(), LedgerError> {
         self.current(hold)
+    }
+
+    async fn record_run(
+        &self,
+        _run: &RunIdentity,
+        task: &Slug,
+        hold: &Hold,
+        ran: &TaskRunRecord,
+    ) -> Result<(), LedgerError> {
+        self.current(hold)?;
+        lock(&self.runs).push((task.as_str().to_owned(), ran.clone()));
+        Ok(())
     }
 
     async fn finish(
@@ -875,10 +891,18 @@ pub struct Runtime {
     dirs: Arc<Mutex<Vec<PathBuf>>>,
     edits: Mutex<VecDeque<(String, Vec<TreeEdit>)>>,
     hooks: Mutex<VecDeque<(String, Hook)>>,
+    /// What the next runs spend through the job token, one entry for each run, as the model
+    /// requests of a real builder would be metered by the broker.
+    spends: Mutex<VecDeque<Usage>>,
+    broker: Arc<factory_testkit::broker::FakeModelBroker>,
     log: Log,
 }
 
 impl Runtime {
+    /// The next run that has no spend queued before it meters this through the broker.
+    pub fn spends(&self, usage: Usage) {
+        lock(&self.spends).push_back(usage);
+    }
     /// The next run of `agent` changes the tree like this.
     pub fn edits(&self, agent: &str, edits: Vec<TreeEdit>) {
         lock(&self.edits).push_back((agent.to_owned(), edits));
@@ -938,6 +962,9 @@ impl AgentRuntime for Runtime {
                     .edit_tree(&dir, edit)
                     .expect("the workspace of the sandbox has a tree");
             }
+        }
+        if let Some(usage) = lock(&self.spends).pop_front() {
+            let _ = self.broker.meter(&req.job_token.id, usage);
         }
         let report = self.inner.run(session, req, cancel).await;
         let hook = {
@@ -1150,6 +1177,8 @@ impl Rig {
             dirs: specs.dirs.clone(),
             edits: Mutex::new(VecDeque::new()),
             hooks: Mutex::new(VecDeque::new()),
+            spends: Mutex::new(VecDeque::new()),
+            broker: world.broker.clone(),
             log: log.clone(),
         });
         let mut registry = InMemoryAgentRegistry::new();

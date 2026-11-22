@@ -28,6 +28,7 @@ usage: factory-cli <command> [options]
   show-draft  --api URL --token-file FILE [--stage-run ID] JOB
   artifact --api URL --token-file FILE JOB SHA256
   timeline --api URL --token-file FILE JOB
+  metrics snapshot  --api URL --token-file FILE --from TIME --to TIME
   approve  --api URL --token-file FILE [--key K] [--confirm PHRASE] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
@@ -1256,6 +1257,51 @@ fn is_commit(text: &str) -> bool {
     text.len() == 40 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// True for a UTC instant as the API reads it, such as `2026-11-16T00:00:00Z`: digits, the marks of
+/// a date and a time, and nothing a query would have to escape. The API checks the value itself;
+/// this only keeps a word that is no instant out of the address the command builds.
+fn is_instant(text: &str) -> bool {
+    (20..=40).contains(&text.len())
+        && text.ends_with('Z')
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'-' | b':' | b'.' | b'T' | b'Z'))
+}
+
+/// `metrics snapshot`: the process numbers of the caller's tenant over a window, printed as the
+/// `measurement` entry the API computes (ADR 0029).
+fn metrics(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let Some(("snapshot", rest)) = args.split_first().map(|(word, rest)| (word.as_str(), rest))
+    else {
+        ctx.complain("metrics needs the subcommand snapshot");
+        return Exit::Failed;
+    };
+    let parsed = match split(rest, &["api", "token-file", "from", "to"]) {
+        Ok(parsed) if parsed.positional.is_empty() => parsed,
+        Ok(_) => {
+            ctx.complain("metrics snapshot takes --from and --to and no other word");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let instant = |name: &str| parsed.options.get(name).filter(|value| is_instant(value));
+    let (Some(from), Some(to)) = (instant("from"), instant("to")) else {
+        ctx.complain(
+            "metrics snapshot needs --from and --to, each a UTC instant such as 2026-11-16T00:00:00Z",
+        );
+        return Exit::Failed;
+    };
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let path = format!("/v1/process-metrics/snapshot?from={from}&to={to}");
+    finish(client.get(&path), ctx, render::measurement)
+}
+
 /// Runs one command line. `args` excludes the program name.
 pub fn run(
     args: &[String],
@@ -1279,6 +1325,7 @@ pub fn run(
             decide(verb, rest, env, &mut ctx)
         }
         "repository" => repository(rest, env, &mut ctx),
+        "metrics" => metrics(rest, env, &mut ctx),
         "unblock" => unblock(rest, env, &mut ctx),
         "approve-project-build-code" => approve_project_build_code(rest, env, &mut ctx),
         "ack-translation-warning" => ack_translation_warning(rest, env, &mut ctx),

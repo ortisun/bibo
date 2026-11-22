@@ -27,6 +27,8 @@ infra/service-images/test.sh --self-test       # every damage to the files must 
 
 `build.sh` never reads or mounts a host credential. It downloads the two pinned base images and the public crates that `Cargo.lock` names, and nothing else. It builds with `--provenance=false --sbom=false` and `rewrite-timestamp=true`, so that a rebuild does not change a digest because of the clock; `--check-reproducible` builds each image a second time with `--no-cache` and fails if the image id differs. `--jobs` (default 4) limits the parallel compile jobs, because a release build of this workspace on all cores can use more memory than the Docker VM of a laptop has.
 
+`build.sh` also tells the build which commit it is made from (`FACTORY_BUILD_COMMIT`, the full object id of `HEAD`), and the API states that commit in every process snapshot ([ADR 0029](../../docs/adr/0029-process-metrics-and-improvement-loop.md)). When the tree holds a change that is not committed, the script says so and passes nothing: such an image is the build of no commit, and its API answers `503` on the snapshot route. Two builds of the same clean commit get the same value, so the reproducibility check is not affected. The cost: a commit that changes only documents now compiles the programs again, because the value is part of the compile step.
+
 A throwaway builder is the way to keep the cache removable: `docker buildx create --name factory-svc --driver docker-container`, then `build.sh --builder factory-svc`, then `docker buildx rm --force --keep-state=false factory-svc` removes the cache, the downloaded crates and the base images it pulled. The image that was loaded into the daemon is separate and is removed with `docker image rm`.
 
 ## What is pinned, and where

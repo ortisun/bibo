@@ -106,6 +106,16 @@ cargo nextest run -p factory-storage --test store_contract
 cargo nextest run -p factory-worker --test engine_scenarios_all_on_postgres
 ```
 
+Every Rust test that needs PostgreSQL clones its database from one migrated template. With `cargo nextest` every test is its own process, so on a server you provide (`FACTORY_DB_ADMIN_URL`) many processes share the server, and the template is shared too:
+
+- Its name carries the first 16 hexadecimal characters of the SHA-256 of the migration files: `factory_tpl_<digest>`. A changed or added migration gives a new name, so a template never holds an older schema.
+- The first process that finds no template builds it. It takes a PostgreSQL advisory lock first, so only one process migrates at a time. The cluster-wide statements of the migrations, such as `CREATE ROLE factory_app`, then never race. Before this, parallel processes on a fresh server failed with `duplicate key value violates unique constraint "pg_authid_rolname_index"`.
+- The builder migrates a database named `factory_tpl_<digest>_building_<run>` and renames it to the template name only when every migration has run. A template therefore always holds the whole schema. A builder that died leaves only its building database, which the next builder drops under the same lock.
+- The other processes wait for the lock, find the template and clone it. The migrations run once per server and set of migrations, not once per test process.
+- The template stays on the server when the tests end, because another run may still clone it. When nothing runs, drop the `factory_tpl_*` databases of older migrations by hand.
+
+A private cluster or a Docker server belongs to one process, so nothing is shared there and the same code simply builds the template once.
+
 The scenario suite connects with the API login, because one scenario records a webhook rejection under the platform tenant and only that login may. `FACTORY_SCENARIO_LOGIN=worker` connects as the worker does; that scenario is then refused by design and the rest pass.
 
 The server's clock cannot be set, so a scenario that waits past a lease, a deadline, a back-off or an approval's expiry moves every stored time that those rules read back by the same amount (the same repair the contract runner makes, with the triggers off for one transaction). The engine must therefore decide on the row it read in its transaction, never on a copy it carried from before the clock moved.
@@ -150,7 +160,7 @@ A failing check prints `NOT OK - <what was expected>: <what happened>` and the s
 | `initdb: error: program "postgres" is needed by initdb` | The `initdb` on `PATH` comes from a client-only package such as Homebrew `libpq`. The script skips it and looks for a full install. |
 | `crates/storage/src/schema.rs differs from diesel print-schema` | A migration changed and the file was not regenerated, or the CLI version differs. Run `write-schema` and read the diff. |
 | `the race barrier failed` | Fewer sessions than expected reached the start line, usually because `max_connections` is too low. The script's own cluster allows 120. Raise it on a server you provide. |
-| Tests leave databases behind | They are named `factory_t_*` or `factory_tpl_*`. Drop them. A normal run and a Ctrl-C both clean up. |
+| Tests leave databases behind | They are named `factory_t_*` or `factory_tpl_*`. A normal run and a Ctrl-C both drop the `factory_t_*` clones. The shared template `factory_tpl_<digest>` stays on a server you provide on purpose (see the Rust suites above); drop the ones of older migrations when nothing runs. |
 | `role "factory_app" already exists` with other attributes (or `factory_system`, `factory_lookup`, `factory_resolver`) | The migration refuses a role with superuser, create-role, create-database, replication or bypass-RLS rights, and the three newer groups also with the right to log in. Fix the role. |
 | `run this migration as a superuser, or as the role that created factory_lookup` | Migration 14 hands two functions to `factory_lookup` and needs the right to become it. See [migration-safety.md](migration-safety.md). |
 | `permission denied for table ...` in the `rls` output for the system role | Intended in most places. The suite lists what the system role may read; a new loop needs a migration. |

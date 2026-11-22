@@ -4,7 +4,7 @@
 - Date: 2026-10-27, revised 2026-10-29
 - Author: software_architect
 - Decisions behind this document: [ADR index](../adr/README.md)
-- Companion documents: [state machines](state-machine.md), [slice plan](slice-plan.md), [the project's rules for agents](project-rules.md), [capability packs](capability-packs.md) (proposed), [the project knowledge base](project-knowledge-base.md) (proposed), [process metrics and the improvement loop](process-metrics-and-improvement.md) (proposed), [ports v1.1](ports-v1.1.md), [ports v1.2](ports-v1.2.md), [ports v1.4](ports-v1.4.md), [contract schemas](../../schemas/README.md). The detailed threat model is written by the security specialist under `docs/security/` and is not duplicated here.
+- Companion documents: [state machines](state-machine.md), [slice plan](slice-plan.md), [the project's rules for agents](project-rules.md), [capability packs](capability-packs.md) (proposed), [the project knowledge base](project-knowledge-base.md) (proposed), [process metrics and the improvement loop](process-metrics-and-improvement.md) (proposed), [ports v1.1](ports-v1.1.md), [ports v1.2](ports-v1.2.md), [ports v1.4](ports-v1.4.md), [ports v1.5](ports-v1.5.md), [ports v1.6](ports-v1.6.md), [contract schemas](../../schemas/README.md). The detailed threat model is written by the security specialist under `docs/security/` and is not duplicated here.
 
 Diagrams are Mermaid, kept as text so they change in the same pull request as the code. Every diagram in this file is parsed by Mermaid's own parser in the check described at the end.
 

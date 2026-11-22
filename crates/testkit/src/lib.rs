@@ -31,7 +31,8 @@
 //! | [`githost`] | `FakeChangeHost`, `FakeIssueSource` | `contracts::githost` |
 //! | [`issue_status`] | `FakeIssueStatusWriter` (one `factory: <state>` label and one status comment per issue; ports v1.2) | `contracts::issue_status` |
 //! | [`triage_issue`] | `FakeTriageIssues` (the troubleshooter's triage issues, found by a fingerprint marker; ports v1.3) | `contracts::triage_issue` |
-//! | [`project_rules`] | `FakeProjectRulesHost` (branches with their files, and the draft pull request that installs the project's rules for agents; ports v1.4) | `contracts::project_rules` |
+//! | [`proposal`] | `FakeProposalHost` (branches with their files, and the draft pull requests of the factory's own documents from a closed set of branches; ports v1.4 and v1.6) | `contracts::proposal` |
+//! | [`pull_request_fate`] | `FakePullRequestFates` (the pull requests of one repository and what a person did with each; ports v1.5) | `contracts::pull_request_fate` |
 //! | [`webhook`] | `FakeWebhookVerifier` (a real HMAC-SHA256, fixed test secrets) | `contracts::webhook` |
 //! | [`process`] | `ScriptedProcessRunner` (starts nothing) | `contracts::process` |
 //! | [`spec`] | `FakeSpecificationProvider` | none yet: Spec Kit is driven only by `spec_adapter` |
@@ -61,7 +62,8 @@ pub mod fx;
 pub mod githost;
 pub mod issue_status;
 pub mod process;
-pub mod project_rules;
+pub mod proposal;
+pub mod pull_request_fate;
 pub mod registry;
 pub mod router;
 pub mod sandbox;

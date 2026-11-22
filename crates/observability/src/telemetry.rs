@@ -19,7 +19,9 @@ use crate::logging::{self, CorrelationLayer};
 use crate::redact::Scrub;
 use crate::trace::SpanProcessing;
 use crate::{metrics, trace};
-use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{
+    MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
+};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::{SdkTracerProvider, SpanExporter as SdkSpanExporter};
 use std::fmt;
@@ -305,6 +307,38 @@ impl Pipeline {
     }
 }
 
+/// The blocking HTTP client of both exporters, with an explicit TLS configuration.
+///
+/// Cargo merges the features of `reqwest` across one build, and the MCP gateway turns on
+/// `rustls-no-provider`. A client built without a TLS configuration then panics ("No rustls
+/// crypto provider is configured"), so the client is never left to the exporter's default. The
+/// configuration names the `ring` provider and an empty root store: collector addresses are plain
+/// `http://`, so no server is trusted over TLS, and no process-wide provider is installed.
+///
+/// The client is built on its own thread, because a blocking client may not be built inside an
+/// async runtime, and it has the export timeout, as the exporter's default client had.
+fn export_client(timeout: Duration) -> Result<reqwest::blocking::Client, InitError> {
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| InitError::ExporterBuild(format!("TLS configuration: {error}")))?
+    .with_root_certificates(rustls::RootCertStore::empty())
+    .with_no_client_auth();
+    std::thread::Builder::new()
+        .name("otlp-client-build".to_owned())
+        .spawn(move || {
+            reqwest::blocking::Client::builder()
+                .tls_backend_preconfigured(tls)
+                .timeout(timeout)
+                .build()
+        })
+        .map_err(|error| InitError::ExporterBuild(format!("HTTP client thread: {error}")))?
+        .join()
+        .map_err(|_| InitError::ExporterBuild("the HTTP client thread panicked".to_owned()))?
+        .map_err(|error| InitError::ExporterBuild(format!("HTTP client: {error}")))
+}
+
 /// Build the pipeline without installing it as the process-wide subscriber.
 ///
 /// `log_writer` receives the JSON log lines. With no collector in `config`, nothing is exported.
@@ -325,8 +359,10 @@ where
 
     let (tracer_provider, meter_provider) = match (config.traces_url(), config.metrics_url()) {
         (Some(traces_url), Some(metrics_url)) => {
+            let client = export_client(config.export_timeout)?;
             let span_exporter = SpanExporter::builder()
                 .with_http()
+                .with_http_client(client.clone())
                 .with_protocol(Protocol::HttpBinary)
                 .with_endpoint(traces_url)
                 .with_timeout(config.export_timeout)
@@ -334,6 +370,7 @@ where
                 .map_err(|error| InitError::ExporterBuild(error.to_string()))?;
             let metric_exporter = MetricExporter::builder()
                 .with_http()
+                .with_http_client(client)
                 .with_protocol(Protocol::HttpBinary)
                 .with_endpoint(metrics_url)
                 .with_timeout(config.export_timeout)

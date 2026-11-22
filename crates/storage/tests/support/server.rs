@@ -490,36 +490,111 @@ impl Server {
     }
 
     /// The migrated template: all migrations applied by a superuser, in order, the way the deploy
-    /// step does.
+    /// step does. One template per server and set of migrations, shared by every test process
+    /// (`docs/database/running.md`, "Run the Rust suites that need this database").
+    ///
+    /// The migrations hold cluster-wide statements (`CREATE ROLE factory_app`), so two processes
+    /// that migrate at once on one server race on them. The first process that finds no template
+    /// therefore builds it under an advisory lock, under a building name, and renames it to the
+    /// template name only when every migration has run: a template always holds the whole schema.
+    /// The others wait for the lock, find the template and clone it. The template is never in
+    /// `databases`, so no process drops it.
     async fn template(&self) -> &str {
         self.template
             .get_or_init(|| async {
-                let name = format!("factory_tpl_{}", self.run);
-                self.create_database(&name, "template0").await;
-                let mut connection = self.admin(&name).await;
-                connection
-                    .batch_execute(
-                        "CREATE TABLE __diesel_schema_migrations (\
-                           version VARCHAR(50) PRIMARY KEY NOT NULL, \
-                           run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-                    )
-                    .await
-                    .expect("create the migration table");
-                for (version, sql) in migration_files() {
-                    connection
-                        .batch_execute(&sql)
-                        .await
-                        .unwrap_or_else(|error| panic!("migration {version} failed: {error}"));
-                    connection
-                        .batch_execute(&format!(
-                            "INSERT INTO __diesel_schema_migrations (version) VALUES ('{version}')"
-                        ))
-                        .await
-                        .expect("record the migration");
+                let name = template_name(&migration_files());
+                if self.database_exists(&name).await {
+                    return name;
                 }
+                // The lock is held by this connection and ends with it, also when the process
+                // dies, so a crashed builder never leaves the lock taken.
+                let mut lock = self.admin("postgres").await;
+                lock.batch_execute(&format!("SELECT pg_advisory_lock({TEMPLATE_LOCK})"))
+                    .await
+                    .unwrap_or_else(|error| panic!("cannot take the template lock: {error}"));
+                if !self.database_exists(&name).await {
+                    self.build_template(&name).await;
+                }
+                lock.batch_execute(&format!("SELECT pg_advisory_unlock({TEMPLATE_LOCK})"))
+                    .await
+                    .unwrap_or_else(|error| panic!("cannot release the template lock: {error}"));
                 name
             })
             .await
+    }
+
+    /// Build the template `name`. The caller holds the template lock.
+    async fn build_template(&self, name: &str) {
+        // A builder that died left its building database. No one else builds while the lock is
+        // held, so every database with the building prefix is dead.
+        let prefix = format!("{name}_building_");
+        for dead in self.databases_with_prefix(&prefix).await {
+            self.admin("postgres")
+                .await
+                .batch_execute(&format!("DROP DATABASE IF EXISTS \"{dead}\" WITH (FORCE)"))
+                .await
+                .unwrap_or_else(|error| panic!("cannot drop {dead}: {error}"));
+        }
+        let building = format!("{prefix}{}", self.run);
+        // Listed for clean-up, so a build that fails is dropped with the rest of this run.
+        self.create_database(&building, "template0").await;
+        let mut connection = self.admin(&building).await;
+        connection
+            .batch_execute(
+                "CREATE TABLE __diesel_schema_migrations (\
+                   version VARCHAR(50) PRIMARY KEY NOT NULL, \
+                   run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            )
+            .await
+            .expect("create the migration table");
+        for (version, sql) in migration_files() {
+            connection
+                .batch_execute(&sql)
+                .await
+                .unwrap_or_else(|error| panic!("migration {version} failed: {error}"));
+            connection
+                .batch_execute(&format!(
+                    "INSERT INTO __diesel_schema_migrations (version) VALUES ('{version}')"
+                ))
+                .await
+                .expect("record the migration");
+        }
+        // A database with a session open cannot be renamed.
+        drop(connection);
+        self.admin("postgres")
+            .await
+            .batch_execute(&format!(
+                "ALTER DATABASE \"{building}\" RENAME TO \"{name}\""
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("cannot publish the template {name}: {error}"));
+    }
+
+    /// Whether a database named `name` exists on the server.
+    async fn database_exists(&self, name: &str) -> bool {
+        !self
+            .databases_matching(&format!("datname = '{}'", literal(name)))
+            .await
+            .is_empty()
+    }
+
+    /// The databases whose names start with `prefix`.
+    async fn databases_with_prefix(&self, prefix: &str) -> Vec<String> {
+        // `starts_with`, not `LIKE`: an underscore of the prefix is a wildcard to `LIKE`.
+        self.databases_matching(&format!("starts_with(datname, '{}')", literal(prefix)))
+            .await
+    }
+
+    async fn databases_matching(&self, condition: &str) -> Vec<String> {
+        sql_query(format!(
+            "SELECT datname::text AS v FROM pg_database WHERE {condition} ORDER BY datname"
+        ))
+        .load::<Scalar>(&mut self.admin("postgres").await)
+        .await
+        .unwrap_or_else(|error| panic!("cannot list the databases: {error}"))
+        .into_iter()
+        .map(|row| row.v)
+        .collect()
     }
 
     /// The three logins of the deployment. Created once per server.
@@ -672,6 +747,32 @@ impl Server {
         });
         let _ = cleanup.join();
     }
+}
+
+/// The key of the advisory lock that lets one process at a time build the template of a server.
+/// The bytes spell `factotpl`.
+const TEMPLATE_LOCK: i64 = 0x6661_6374_6f74_706c;
+
+/// The template's name for a set of migrations: `factory_tpl_` and the first 16 hexadecimal
+/// characters of the SHA-256 of every version and file, each one framed by its length, so that
+/// no two different sets give the same text. With the building suffix and the longest run, a
+/// name stays under PostgreSQL's 63 bytes.
+pub fn template_name(migrations: &[(String, String)]) -> String {
+    let mut framed = String::new();
+    for (version, sql) in migrations {
+        framed.push_str(&format!(
+            "{}:{version}\n{}:{sql}\n",
+            version.len(),
+            sql.len()
+        ));
+    }
+    let digest = factory_domain::values::Sha256Digest::of(framed.as_bytes());
+    format!("factory_tpl_{}", &digest.hex()[..16])
+}
+
+/// `text` as the inside of a SQL string literal.
+fn literal(text: &str) -> String {
+    text.replace('\'', "''")
 }
 
 /// The migrations of the repository as (diesel version, up.sql), oldest first. The version is the

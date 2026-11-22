@@ -96,6 +96,19 @@ case $RUST_BASE$DISTROLESS_BASE in
   *) sbx_die "RUST_BASE and DISTROLESS_BASE in pins.env must both be pinned by digest" ;;
 esac
 
+# The commit the programs are built from: the full object id of HEAD, or nothing when the tree holds
+# a change that is not committed (a tracked file changed, or a file Git does not ignore is new). Such
+# a build is not the build of any commit, so its API states none and answers 503 on the process
+# snapshot (ADR 0029) instead of naming a commit that did not make it.
+build_commit=$(git -C "$SBX_REPO" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) || build_commit=""
+if [ -n "$build_commit" ] && [ -n "$(git -C "$SBX_REPO" status --porcelain 2>/dev/null)" ]; then
+  build_commit=""
+fi
+case $build_commit in
+  '') echo "note: the tree is not a clean commit, so the images state no build commit" ;;
+  *[!0-9a-f]*) sbx_die "git gave a commit id that is not lowercase hexadecimal: $build_commit" ;;
+esac
+
 tag_of() { printf 'factory-%s:local' "$1"; }
 
 # build_one ROLE [--no-cache]: build the target ROLE and load it into the local store under its tag.
@@ -117,6 +130,7 @@ build_one() {
     --build-arg "TOOLCHAIN_VERSION=$TOOLCHAIN_VERSION" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BUILD_JOBS=$jobs" \
+    --build-arg "FACTORY_BUILD_COMMIT=$build_commit" \
     --build-arg "SERVICE_UID=$SERVICE_UID" \
     --build-arg "SERVICE_GID=$SERVICE_GID" \
     --output "type=docker,name=$ref,rewrite-timestamp=true" \

@@ -20,7 +20,8 @@ use crate::core::{BackoffPolicy, HttpCore, Sleeper};
 use crate::issues::GithubIssueSource;
 use crate::jwt::JwtSigner;
 use crate::permissions::{AppAudit, AppPolicy};
-use crate::project_rules::GithubProjectRules;
+use crate::proposals::GithubProposals;
+use crate::pull_request_fate::GithubPullRequestFates;
 use crate::status::GithubIssueStatus;
 use crate::text::{Outbound, OutboundPolicy};
 use crate::token::{InstallationDirectory, MinterSettings, TokenMinter};
@@ -175,17 +176,25 @@ impl GithubAdapter {
         )
     }
 
-    /// The project rules host: the draft pull request that installs or updates the project's
-    /// rules for agents, with a token of its own that holds `contents: write` and
-    /// `pull_requests: write` for one repository (ports v1.4, ADR 0026).
+    /// The proposal host: the draft pull requests of the factory's own documents in a project
+    /// (the rules for agents, the weekly measurement), with a token of its own that holds
+    /// `contents: write` and `pull_requests: write` for one repository (ports v1.4 and v1.6,
+    /// ADR 0026 and 0031).
     #[must_use]
-    pub fn project_rules_host(&self) -> GithubProjectRules {
-        GithubProjectRules::new(
+    pub fn proposal_host(&self) -> GithubProposals {
+        GithubProposals::new(
             Arc::clone(&self.client),
             Arc::clone(&self.outbound),
             Arc::clone(&self.sleeper),
             Arc::clone(&self.clock),
         )
+    }
+
+    /// The fate reader: what became of a pull request the factory opened, with a token of its own
+    /// that holds `pull_requests: read` for one repository and can write nothing (ports v1.5).
+    #[must_use]
+    pub fn pull_request_fates(&self) -> GithubPullRequestFates {
+        GithubPullRequestFates::new(Arc::clone(&self.client))
     }
 
     /// Reads the App's own permissions (`GET /app`, signed with the App JWT) and judges them

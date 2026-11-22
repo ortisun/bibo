@@ -43,6 +43,7 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /openapi.json` | none | none | read |
 | `POST /v1/jobs` | bearer token | `requester` | `Idempotency-Key` required: the same key and request finds the first job (`200`), the same key and another request is `409`. `source_ref` is required and must be `owner/name#number` of an issue of the repository the job is for, or the answer is `400` naming the field: a job is for one issue (FR-001), intake reads it from the pointer and delivery links the pull request to it. The `text` must be the title, a blank line and the body of that issue as the code host shows them when intake runs; the API cannot check it, and intake refuses a job whose text is not the issue's (DG-3) |
 | `GET /v1/jobs` | bearer token | any designation | read |
+| `GET /v1/process-metrics/snapshot` | bearer token | any designation | read: the process numbers of the caller's tenant over the window `from` to `to`, as a `measurement` entry (ADR 0029, `process_metrics.rs`). Nothing is stored. `503` when the build does not know its own commit |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}/specification-draft` | bearer token | any designation | read: the commit of the draft, the head of the ledger and the approval window (`reads.rs`) |

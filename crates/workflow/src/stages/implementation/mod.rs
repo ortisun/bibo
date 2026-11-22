@@ -76,6 +76,6 @@ pub use input::{
 };
 pub use seams::{
     AgentOutputCheck, AnswerHistory, CapabilityProbes, Hold, LedgerError, PlannedTask,
-    ReworkContext, ReworkSource, SeamError, TaskLedger, TaskRecord, WorkspaceAccess,
+    ReworkContext, ReworkSource, SeamError, TaskLedger, TaskRecord, TaskRunRecord, WorkspaceAccess,
     WorkspaceAgentSpecs,
 };

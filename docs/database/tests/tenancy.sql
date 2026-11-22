@@ -32,7 +32,7 @@ BEGIN
   PERFORM dbtest.expect_eq('every table is tenant-owned or one of the four known shared tables (tenants, three state machine tables)', coalesce(untenanted, ''), '');
 
   SELECT count(*) INTO n FROM tenant_owned;
-  PERFORM dbtest.expect_eq('the catalog found the 21 tenant-owned tables, the four of the troubleshooter included (a new table must be added to this test deliberately)', n, 21);
+  PERFORM dbtest.expect_eq('the catalog found the 23 tenant-owned tables, the four of the troubleshooter and the two of the process metrics included (a new table must be added to this test deliberately)', n, 23);
 
   SELECT string_agg(t.tbl, ', ') INTO nullable
     FROM tenant_owned t JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = 'tenant_id'

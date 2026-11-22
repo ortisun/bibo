@@ -1,5 +1,5 @@
-//! An in-memory fake of `ProjectRulesHost` (ports v1.4, ADR 0026), with deliberate defects that
-//! the contract suite must catch.
+//! An in-memory fake of `ProposalHost` (ports v1.4 and v1.6, ADR 0026 and 0031), with deliberate
+//! defects that the contract suite must catch.
 //!
 //! The fake keeps one repository per name: a default branch `main`, branches with their files at
 //! their tip, and pull requests. A write makes a new commit id, so a branch that moved can be told
@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{GitHostError, PullRequestLifecycle, PullRequestRef, Rejection};
 use factory_ports::paths::{BranchName, CommitSha, RepoPath, RepoRef};
-use factory_ports::project_rules::{
-    DefaultBranch, FileAt, ProjectRulesHost, RULES_BRANCH, RulesProposal, RulesPullRequest,
-    RulesScope, proposal_marker, proposed_version,
+use factory_ports::proposal::{
+    DefaultBranch, FileAt, ProposalBranch, ProposalHost, ProposalPullRequest, ProposalScope,
+    PullRequestProposal,
 };
 
 use crate::contracts::githost::repo as suite_repo;
-use crate::contracts::project_rules::{ProjectRulesSubject, SeenPull};
+use crate::contracts::proposal::{ProposalSubject, SeenPull};
 use crate::githost::looks_like_a_secret;
 
 /// The default branch of every repository of the fake.
@@ -27,7 +27,7 @@ pub const DEFAULT_BRANCH: &str = "main";
 
 /// A deliberate defect. Each one breaks one rule of the contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectRulesDefect {
+pub enum ProposalDefect {
     /// Writes the files on the default branch instead of the rules branch.
     WritesTheDefaultBranch,
     /// Opens a new pull request even when one is open.
@@ -54,61 +54,67 @@ pub enum ProjectRulesDefect {
     KeepsAClosedBranch,
     /// Accepts an empty title or a proposal with no file.
     AcceptsEmptyText,
+    /// Writes and reads the rules branch whatever branch the proposal names.
+    IgnoresTheBranch,
 }
 
 /// Each defect, and the checks of the suite that must fail with it.
-pub const PROJECT_RULES_DEFECTS: &[(ProjectRulesDefect, &[&str])] = &[
+pub const PROPOSAL_DEFECTS: &[(ProposalDefect, &[&str])] = &[
     (
-        ProjectRulesDefect::WritesTheDefaultBranch,
+        ProposalDefect::WritesTheDefaultBranch,
         &["a_proposal_is_one_draft_pull_request_and_the_default_branch_is_untouched"],
     ),
     (
-        ProjectRulesDefect::OpensASecondPullRequest,
+        ProposalDefect::OpensASecondPullRequest,
         &["proposing_again_opens_no_second_pull_request"],
     ),
     (
-        ProjectRulesDefect::OpensReadyPullRequests,
+        ProposalDefect::OpensReadyPullRequests,
         &["a_proposal_is_one_draft_pull_request_and_the_default_branch_is_untouched"],
     ),
     (
-        ProjectRulesDefect::ForgetsTheMarker,
+        ProposalDefect::ForgetsTheMarker,
         &["the_latest_pull_request_carries_its_state_and_version"],
     ),
     (
-        ProjectRulesDefect::TrustsAnyAuthor,
+        ProposalDefect::TrustsAnyAuthor,
         &["a_pull_request_a_person_opened_from_the_rules_branch_is_not_the_factorys"],
     ),
     (
-        ProjectRulesDefect::ResetsAnOpenBranch,
+        ProposalDefect::ResetsAnOpenBranch,
         &["an_open_proposal_is_updated_on_top_and_a_persons_commit_is_kept"],
     ),
     (
-        ProjectRulesDefect::SkipsSecretCheck,
+        ProposalDefect::SkipsSecretCheck,
         &["a_body_with_a_secret_is_not_sent"],
     ),
     (
-        ProjectRulesDefect::AsksForAWiderToken,
+        ProposalDefect::AsksForAWiderToken,
         &["the_credential_is_contents_and_pull_requests_write_and_nothing_else"],
     ),
     (
-        ProjectRulesDefect::IgnoresTheScope,
+        ProposalDefect::IgnoresTheScope,
         &["a_scope_for_another_repository_reaches_nothing"],
     ),
     (
-        ProjectRulesDefect::IgnoresTheSizeLimit,
+        ProposalDefect::IgnoresTheSizeLimit,
         &["a_file_is_missing_found_or_too_large"],
     ),
     (
-        ProjectRulesDefect::ReportsAStaleTip,
+        ProposalDefect::ReportsAStaleTip,
         &["the_default_branch_is_read_with_its_tip"],
     ),
     (
-        ProjectRulesDefect::KeepsAClosedBranch,
+        ProposalDefect::KeepsAClosedBranch,
         &["a_new_proposal_after_a_closed_one_starts_from_the_default_branch"],
     ),
     (
-        ProjectRulesDefect::AcceptsEmptyText,
+        ProposalDefect::AcceptsEmptyText,
         &["an_empty_title_or_no_file_is_refused"],
+    ),
+    (
+        ProposalDefect::IgnoresTheBranch,
+        &["each_branch_has_its_own_pull_request_and_marker"],
     ),
 ];
 
@@ -219,12 +225,12 @@ pub struct PullView {
 
 /// The fake project rules host.
 #[derive(Debug, Default)]
-pub struct FakeProjectRulesHost {
+pub struct FakeProposalHost {
     state: Mutex<State>,
-    defect: Option<ProjectRulesDefect>,
+    defect: Option<ProposalDefect>,
 }
 
-impl FakeProjectRulesHost {
+impl FakeProposalHost {
     /// A fake with no repository yet. A repository is made, empty, the first time it is named.
     #[must_use]
     pub fn new() -> Self {
@@ -233,7 +239,7 @@ impl FakeProjectRulesHost {
 
     /// A fake with one deliberate defect.
     #[must_use]
-    pub fn with_defect(defect: ProjectRulesDefect) -> Self {
+    pub fn with_defect(defect: ProposalDefect) -> Self {
         Self {
             state: Mutex::new(State::default()),
             defect: Some(defect),
@@ -244,7 +250,7 @@ impl FakeProjectRulesHost {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn is(&self, defect: ProjectRulesDefect) -> bool {
+    fn is(&self, defect: ProposalDefect) -> bool {
         self.defect == Some(defect)
     }
 
@@ -383,7 +389,7 @@ impl FakeProjectRulesHost {
             ("contents".to_owned(), "write".to_owned()),
             ("pull_requests".to_owned(), "write".to_owned()),
         ];
-        if self.is(ProjectRulesDefect::AsksForAWiderToken) {
+        if self.is(ProposalDefect::AsksForAWiderToken) {
             asked.push(("issues".to_owned(), "write".to_owned()));
         }
         asked.sort();
@@ -401,19 +407,28 @@ impl FakeProjectRulesHost {
         }
     }
 
-    fn latest(&self, repo: &mut Repo) -> Option<Pull> {
-        let trust_anyone = self.is(ProjectRulesDefect::TrustsAnyAuthor);
+    /// The branch a call really uses: the one named, or, with the defect, the rules branch.
+    fn branch(&self, named: ProposalBranch) -> &'static str {
+        if self.is(ProposalDefect::IgnoresTheBranch) {
+            ProposalBranch::ProjectRules.name()
+        } else {
+            named.name()
+        }
+    }
+
+    fn latest(&self, repo: &mut Repo, branch: &str) -> Option<Pull> {
+        let trust_anyone = self.is(ProposalDefect::TrustsAnyAuthor);
         repo.pulls
             .iter()
-            .filter(|p| p.head == RULES_BRANCH && (p.by_factory || trust_anyone))
+            .filter(|p| p.head == branch && (p.by_factory || trust_anyone))
             .max_by_key(|p| p.number)
             .cloned()
     }
 }
 
 /// The repository a call reaches: the scope's, or, with the defect, another one the fake knows.
-fn reach(fake: &FakeProjectRulesHost, state: &State, scope: &RulesScope) -> RepoRef {
-    if fake.is(ProjectRulesDefect::IgnoresTheScope)
+fn reach(fake: &FakeProposalHost, state: &State, scope: &ProposalScope) -> RepoRef {
+    if fake.is(ProposalDefect::IgnoresTheScope)
         && !state
             .repos
             .contains_key(&scope.repo.to_string().to_ascii_lowercase())
@@ -426,17 +441,17 @@ fn reach(fake: &FakeProjectRulesHost, state: &State, scope: &RulesScope) -> Repo
 }
 
 #[async_trait]
-impl ProjectRulesHost for FakeProjectRulesHost {
+impl ProposalHost for FakeProposalHost {
     fn fidelity(&self) -> Fidelity {
         Fidelity::Fake
     }
 
-    async fn default_branch(&self, scope: &RulesScope) -> Result<DefaultBranch, GitHostError> {
+    async fn default_branch(&self, scope: &ProposalScope) -> Result<DefaultBranch, GitHostError> {
         let mut state = self.lock();
         let repo = reach(self, &state, scope);
         self.known(&state, &repo)?;
         self.note_credential(&mut state);
-        let stale = self.is(ProjectRulesDefect::ReportsAStaleTip);
+        let stale = self.is(ProposalDefect::ReportsAStaleTip);
         let target = state.repo(&repo);
         let tip = if stale {
             target.commits.keys().next().cloned()
@@ -455,7 +470,7 @@ impl ProjectRulesHost for FakeProjectRulesHost {
 
     async fn read_file(
         &self,
-        scope: &RulesScope,
+        scope: &ProposalScope,
         commit: &CommitSha,
         path: &RepoPath,
         max_bytes: u64,
@@ -474,7 +489,7 @@ impl ProjectRulesHost for FakeProjectRulesHost {
             None => FileAt::Missing,
             Some(bytes)
                 if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes
-                    && !self.is(ProjectRulesDefect::IgnoresTheSizeLimit) =>
+                    && !self.is(ProposalDefect::IgnoresTheSizeLimit) =>
             {
                 FileAt::TooLarge
             }
@@ -482,41 +497,60 @@ impl ProjectRulesHost for FakeProjectRulesHost {
         })
     }
 
-    async fn latest_rules_pull_request(
+    async fn latest_pull_request(
         &self,
-        scope: &RulesScope,
-    ) -> Result<Option<RulesPullRequest>, GitHostError> {
+        scope: &ProposalScope,
+        branch: ProposalBranch,
+    ) -> Result<Option<ProposalPullRequest>, GitHostError> {
         let mut state = self.lock();
         let repo = reach(self, &state, scope);
         self.known(&state, &repo)?;
         self.note_credential(&mut state);
-        let latest = self.latest(state.repo(&repo));
-        Ok(latest.map(|pull| RulesPullRequest {
+        let name = self.branch(branch);
+        let Some(pull) = self.latest(state.repo(&repo), name) else {
+            return Ok(None);
+        };
+        let head = state
+            .repo(&repo)
+            .branches
+            .get(name)
+            .map(|b| b.commit.clone())
+            .ok_or(GitHostError::Unavailable)?;
+        Ok(Some(ProposalPullRequest {
             pr: PullRequestRef {
                 repo: repo.clone(),
                 number: pull.number,
             },
             lifecycle: pull.lifecycle,
-            proposed_version: proposed_version(&pull.body),
+            head: CommitSha::parse(&head).map_err(|_| GitHostError::Unavailable)?,
+            marker: branch.marker_of(&pull.body),
         }))
     }
 
     async fn propose(
         &self,
-        scope: &RulesScope,
-        proposal: &RulesProposal,
+        scope: &ProposalScope,
+        proposal: &PullRequestProposal,
     ) -> Result<PullRequestRef, GitHostError> {
         if (proposal.title.trim().is_empty()
             || proposal.body.trim().is_empty()
             || proposal.files.is_empty())
-            && !self.is(ProjectRulesDefect::AcceptsEmptyText)
+            && !self.is(ProposalDefect::AcceptsEmptyText)
         {
             return Err(GitHostError::Rejected(Rejection::TextBounds));
         }
-        if proposal.base.name.as_str() == RULES_BRANCH {
+        if !proposal.branch.accepts(&proposal.marker) && !self.is(ProposalDefect::IgnoresTheBranch)
+        {
+            return Err(GitHostError::Rejected(Rejection::Other));
+        }
+        if ProposalBranch::ALL
+            .iter()
+            .any(|b| b.name() == proposal.base.name.as_str())
+        {
             return Err(GitHostError::BranchNotAllowed);
         }
-        if !self.is(ProjectRulesDefect::SkipsSecretCheck)
+        let branch = self.branch(proposal.branch);
+        if !self.is(ProposalDefect::SkipsSecretCheck)
             && (looks_like_a_secret(&proposal.body) || looks_like_a_secret(&proposal.title))
         {
             return Err(GitHostError::UnsafeText);
@@ -526,19 +560,19 @@ impl ProjectRulesHost for FakeProjectRulesHost {
         self.known(&state, &repo)?;
         self.note_credential(&mut state);
         let open = self
-            .latest(state.repo(&repo))
+            .latest(state.repo(&repo), branch)
             .filter(|p| p.lifecycle == PullRequestLifecycle::Open && p.by_factory)
-            .filter(|_| !self.is(ProjectRulesDefect::OpensASecondPullRequest));
-        let target = if self.is(ProjectRulesDefect::WritesTheDefaultBranch) {
+            .filter(|_| !self.is(ProposalDefect::OpensASecondPullRequest));
+        let target = if self.is(ProposalDefect::WritesTheDefaultBranch) {
             DEFAULT_BRANCH
         } else {
-            RULES_BRANCH
+            branch
         };
         // No open pull request: the branch starts again from the commit given.
-        let kept = self.is(ProjectRulesDefect::KeepsAClosedBranch)
-            && state.repo(&repo).branches.contains_key(RULES_BRANCH);
-        if (open.is_none() || self.is(ProjectRulesDefect::ResetsAnOpenBranch))
-            && target == RULES_BRANCH
+        let kept = self.is(ProposalDefect::KeepsAClosedBranch)
+            && state.repo(&repo).branches.contains_key(branch);
+        if (open.is_none() || self.is(ProposalDefect::ResetsAnOpenBranch))
+            && target == branch
             && !kept
         {
             let files = state
@@ -548,7 +582,7 @@ impl ProjectRulesHost for FakeProjectRulesHost {
                 .cloned()
                 .ok_or(GitHostError::Conflict)?;
             state.repo(&repo).branches.insert(
-                RULES_BRANCH.to_owned(),
+                branch.to_owned(),
                 Branch {
                     commit: proposal.base.commit.as_str().to_owned(),
                     files,
@@ -570,12 +604,12 @@ impl ProjectRulesHost for FakeProjectRulesHost {
                 );
             }
         }
-        let body = if self.is(ProjectRulesDefect::ForgetsTheMarker) {
+        let body = if self.is(ProposalDefect::ForgetsTheMarker) {
             proposal.body.clone()
         } else {
-            format!("{}\n\n{}", proposal.body, proposal_marker(proposal.version))
+            format!("{}\n\n{}", proposal.body, proposal.marker.text())
         };
-        let draft = !self.is(ProjectRulesDefect::OpensReadyPullRequests);
+        let draft = !self.is(ProposalDefect::OpensReadyPullRequests);
         let pulls = &mut state.repo(&repo).pulls;
         if let Some(open) = open
             && let Some(pull) = pulls.iter_mut().find(|p| p.number == open.number)
@@ -590,7 +624,7 @@ impl ProjectRulesHost for FakeProjectRulesHost {
         let number = u64::try_from(pulls.len()).unwrap_or(u64::MAX) + 1;
         pulls.push(Pull {
             number,
-            head: RULES_BRANCH.to_owned(),
+            head: branch.to_owned(),
             base: proposal.base.name.as_str().to_owned(),
             title: proposal.title.clone(),
             body,
@@ -603,24 +637,24 @@ impl ProjectRulesHost for FakeProjectRulesHost {
 }
 
 #[async_trait]
-impl ProjectRulesSubject for FakeProjectRulesHost {
-    fn host(&self) -> &dyn ProjectRulesHost {
+impl ProposalSubject for FakeProposalHost {
+    fn host(&self) -> &dyn ProposalHost {
         self
     }
 
     async fn person_commit(&self, branch: &str, changes: &[(&str, Option<&str>)]) {
-        FakeProjectRulesHost::person_commit(self, &suite_repo(), branch, changes);
+        FakeProposalHost::person_commit(self, &suite_repo(), branch, changes);
     }
 
     async fn files_on(&self, branch: &str) -> BTreeMap<String, String> {
-        FakeProjectRulesHost::files_on(self, &suite_repo(), branch)
+        FakeProposalHost::files_on(self, &suite_repo(), branch)
             .into_iter()
             .map(|(path, bytes)| (path, String::from_utf8_lossy(&bytes).into_owned()))
             .collect()
     }
 
     async fn pulls(&self) -> Vec<SeenPull> {
-        FakeProjectRulesHost::pulls(self, &suite_repo())
+        FakeProposalHost::pulls(self, &suite_repo())
             .into_iter()
             .map(|p| SeenPull {
                 number: p.number,
@@ -637,20 +671,20 @@ impl ProjectRulesSubject for FakeProjectRulesHost {
         if merged {
             self.merge(&suite_repo(), number);
         } else {
-            FakeProjectRulesHost::close(self, &suite_repo(), number);
+            FakeProposalHost::close(self, &suite_repo(), number);
         }
     }
 
     async fn person_pull_request(&self, head: &str, body: &str) {
-        FakeProjectRulesHost::person_pull_request(self, &suite_repo(), head, body);
+        FakeProposalHost::person_pull_request(self, &suite_repo(), head, body);
     }
 
     async fn permissions_asked(&self) -> Vec<Vec<(String, String)>> {
-        FakeProjectRulesHost::permissions_asked(self)
+        FakeProposalHost::permissions_asked(self)
     }
 }
 
-impl FakeProjectRulesHost {
+impl FakeProposalHost {
     /// A fake that already holds the repository of the contract suites, with an empty default
     /// branch.
     #[must_use]
@@ -662,7 +696,7 @@ impl FakeProjectRulesHost {
 
     /// The same, with one deliberate defect.
     #[must_use]
-    pub fn with_suite_repository_and_defect(defect: ProjectRulesDefect) -> Self {
+    pub fn with_suite_repository_and_defect(defect: ProposalDefect) -> Self {
         let fake = Self::with_defect(defect);
         fake.person_commit(&suite_repo(), DEFAULT_BRANCH, &[]);
         fake

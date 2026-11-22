@@ -1,4 +1,4 @@
-//! The project rules host of the GitHub adapter (ports v1.4, ADR 0026) against the fake GitHub
+//! The proposal host of the GitHub adapter (ports v1.4 and v1.6, ADR 0026 and 0031) against the fake GitHub
 //! server of the test kit: the whole shared contract suite, then what only the adapter can show
 //! (the token it asks for, the branches it writes, the one `PUT`, the text it sends).
 //!
@@ -10,33 +10,32 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use common::harness::{FIXTURE, World};
-use factory_github::GithubProjectRules;
+use factory_github::GithubProposals;
 use factory_ports::githost::PullRequestLifecycle;
 use factory_ports::paths::RepoPath;
-use factory_ports::project_rules::{
-    ProjectRulesHost, ProposedFile, RULES_BRANCH, RulesProposal, RulesScope, proposal_marker,
+use factory_ports::proposal::{
+    ProposalBranch, ProposalHost, ProposalMarker, ProposalScope, ProposedFile, PullRequestProposal,
+    RULES_BRANCH, proposal_marker,
 };
 use factory_testkit::contracts::githost::scope;
-use factory_testkit::contracts::project_rules::{
-    self, ProjectRulesSubject, SeenPull, project_rules_checks,
-};
+use factory_testkit::contracts::proposal::{self, ProposalSubject, SeenPull, proposal_checks};
 
 struct RulesWorld {
     world: World,
-    host: GithubProjectRules,
+    host: GithubProposals,
 }
 
 impl RulesWorld {
     fn new() -> Self {
         let world = World::new();
-        let host = world.adapter.project_rules_host();
+        let host = world.adapter.proposal_host();
         Self { world, host }
     }
 }
 
 #[async_trait]
-impl ProjectRulesSubject for RulesWorld {
-    fn host(&self) -> &dyn ProjectRulesHost {
+impl ProposalSubject for RulesWorld {
+    fn host(&self) -> &dyn ProposalHost {
         &self.host
     }
 
@@ -96,22 +95,23 @@ impl ProjectRulesSubject for RulesWorld {
     }
 }
 
-fn rules_scope() -> RulesScope {
+fn rules_scope() -> ProposalScope {
     let base = scope(1, 1);
-    RulesScope {
+    ProposalScope {
         tenant: base.tenant,
         session: base.job,
         repo: base.repo,
     }
 }
 
-async fn proposal(host: &GithubProjectRules, version: u32, body: &str) -> RulesProposal {
-    RulesProposal {
+async fn proposal(host: &GithubProposals, version: u32, body: &str) -> PullRequestProposal {
+    PullRequestProposal {
+        branch: ProposalBranch::ProjectRules,
         base: host
             .default_branch(&rules_scope())
             .await
             .expect("the default branch"),
-        version,
+        marker: ProposalMarker::RulesVersion(version),
         files: vec![
             ProposedFile {
                 path: RepoPath::new("AGENTS.md").unwrap(),
@@ -130,11 +130,11 @@ async fn proposal(host: &GithubProjectRules, version: u32, body: &str) -> RulesP
 // ---- the shared contract suite ---------------------------------------------------------------
 
 #[tokio::test]
-async fn the_github_project_rules_host_passes_the_whole_contract() {
-    let report = project_rules::run_project_rules(|| async { RulesWorld::new() }).await;
+async fn the_github_proposal_host_passes_the_whole_contract() {
+    let report = proposal::run_proposal(|| async { RulesWorld::new() }).await;
     report.assert_ok();
     assert!(report.skipped.is_empty(), "skipped: {:?}", report.skipped);
-    assert_eq!(report.passed.len(), project_rules_checks().len());
+    assert_eq!(report.passed.len(), proposal_checks().len());
 }
 
 // ---- what only the adapter shows -------------------------------------------------------------
@@ -250,9 +250,9 @@ async fn the_body_is_cleaned_before_the_marker_is_added() {
     assert!(body.ends_with(&proposal_marker(3)), "{body}");
     let found = subject
         .host
-        .latest_rules_pull_request(&rules_scope())
+        .latest_pull_request(&rules_scope(), ProposalBranch::ProjectRules)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.proposed_version, Some(3));
+    assert_eq!(found.marker, Some(ProposalMarker::RulesVersion(3)));
 }

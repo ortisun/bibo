@@ -25,12 +25,16 @@ use factory_composition::external::{
 };
 use factory_composition::hooks::BeforeClaim;
 use factory_composition::issue_status::{StatusStep, StatusStepInputs};
+use factory_composition::knowledge_measurements::{
+    KnowledgeMeasurements, KnowledgeMeasurementsDeps, build_commit,
+};
 use factory_composition::pipeline::{
     ExternalPorts, Pipeline, PipelineError, PipelineInputs, Tuning, assemble_pipeline,
 };
 use factory_composition::policy_broker::{JobSpend, PolicyBroker};
 use factory_composition::profile::PortName;
 use factory_composition::project_rules::{ProjectRulesSync, ProjectRulesSyncDeps};
+use factory_composition::pull_request_fates::{PullRequestFateSync, PullRequestFateSyncDeps};
 use factory_composition::redaction::RegisteringBroker;
 use factory_composition::routing::{enabled_models, first_selection};
 use factory_composition::sandbox_specs::PolicySpecs;
@@ -42,7 +46,8 @@ use factory_composition::token_sweep::RevokeEndedJobs;
 use factory_domain::vocabulary::StageKind;
 use factory_ports::agent::ModelBroker;
 use factory_ports::issue_status::IssueStatusWriter;
-use factory_ports::project_rules::ProjectRulesHost;
+use factory_ports::proposal::ProposalHost;
+use factory_ports::pull_request_fate::PullRequestFateSource;
 use factory_ports::store::{Store, WorkerId};
 use factory_sandbox::container::images::ImageCatalog;
 
@@ -320,7 +325,7 @@ pub fn project_rules(
         .worker
         .served_tenants()
         .map_err(|error| StartupFailure::Other(error.to_string()))?;
-    let host: Arc<dyn ProjectRulesHost> = Arc::new(world.github.project_rules_host());
+    let host: Arc<dyn ProposalHost> = Arc::new(world.github.proposal_host());
     config
         .profile
         .admit(PortName::Changes, host.fidelity())
@@ -336,6 +341,95 @@ pub fn project_rules(
             ids: Arc::new(ids),
             tenants,
             policy_hash: booted.prepared.policies.hash.clone(),
+        },
+    ))))
+}
+
+/// The step that follows the pull requests the factory opened (ADR 0029, ports v1.5): it asks the
+/// code host whether a person merged or closed each one, and records the answer for the process
+/// metrics. `None` when the configuration turns it off (`github.follow_pull_requests: false`) or
+/// has no `github` table. The binary puts it before each claim.
+///
+/// # Errors
+/// [`StartupFailure`] when the tenants or the identifiers cannot be made, or the profile refuses
+/// the source.
+pub fn pull_request_fates(
+    booted: &Booted,
+    config: &FactoryConfig,
+    world: &ExternalWorld,
+) -> Result<Option<Arc<PullRequestFateSync>>, StartupFailure> {
+    if !config
+        .github
+        .as_ref()
+        .is_some_and(|g| g.follow_pull_requests)
+    {
+        return Ok(None);
+    }
+    let tenants = config
+        .worker
+        .served_tenants()
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let source: Arc<dyn PullRequestFateSource> = Arc::new(world.github.pull_request_fates());
+    config
+        .profile
+        .admit(PortName::Changes, source.fidelity())
+        .map_err(|refused| StartupFailure::Other(refused.to_string()))?;
+    let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
+    Ok(Some(Arc::new(PullRequestFateSync::new(
+        PullRequestFateSyncDeps {
+            store: booted.prepared.store.clone(),
+            source,
+            changes: Arc::clone(&world.ports.changes),
+            jobs: Arc::clone(&booted.jobs),
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(ids),
+            tenants,
+        },
+    ))))
+}
+
+/// The weekly measurement (ADR 0029, ADR 0031): the snapshot of the last whole week of each
+/// project, proposed into its knowledge base as a draft pull request, before a claim, at most once
+/// an hour for each tenant. `None` when the configuration turns it off
+/// (`github.propose_knowledge_measurements: false`) or has no `github` table. A build that does not
+/// know its commit gets the step, which then proposes nothing.
+///
+/// # Errors
+/// [`StartupFailure`] when the tenants or the identifiers cannot be made, or the profile refuses
+/// the host.
+pub fn knowledge_measurements(
+    booted: &Booted,
+    config: &FactoryConfig,
+    world: &ExternalWorld,
+) -> Result<Option<Arc<KnowledgeMeasurements>>, StartupFailure> {
+    if !config
+        .github
+        .as_ref()
+        .is_some_and(|g| g.propose_knowledge_measurements)
+    {
+        return Ok(None);
+    }
+    let tenants = config
+        .worker
+        .served_tenants()
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let host: Arc<dyn ProposalHost> = Arc::new(world.github.proposal_host());
+    config
+        .profile
+        .admit(PortName::Changes, host.fidelity())
+        .map_err(|refused| StartupFailure::Other(refused.to_string()))?;
+    let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
+    Ok(Some(Arc::new(KnowledgeMeasurements::new(
+        KnowledgeMeasurementsDeps {
+            store: booted.prepared.store.clone(),
+            host,
+            changes: Arc::clone(&world.ports.changes),
+            jobs: Arc::clone(&booted.jobs),
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(ids),
+            tenants,
+            policy_hash: booted.prepared.policies.hash.clone(),
+            commit: build_commit(),
         },
     ))))
 }

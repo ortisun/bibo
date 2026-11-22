@@ -10,7 +10,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
+use factory_domain::contracts::agent_manifest::RecommendedTier;
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TaskNodeId, TenantId};
 use factory_domain::ledger::{head_of, verify_chain};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::scope::{PlatformScope, ResolvedPrincipal, TenantScope};
@@ -18,8 +19,11 @@ use factory_domain::state::{
     AttemptEvent, AttemptStatus, Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
     TaskNodeEvent, TaskNodeStatus,
 };
-use factory_domain::values::{GitSha, MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp};
+use factory_domain::values::{
+    GitSha, MediaType, NonEmptyString, NonNegativeInt, Sha256Digest, Slug, Timestamp,
+};
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
+use factory_ports::agent::RuntimeId;
 use factory_ports::store::*;
 
 use super::{
@@ -143,6 +147,11 @@ pub fn checks() -> Vec<StoreCheck> {
         a_duplicate_task_key_is_refused,
         a_task_graph_cycle_is_refused,
         a_task_move_needs_a_current_fence,
+        an_attempt_keeps_what_it_metered_and_unknown_is_not_zero,
+        a_task_run_is_fenced_written_once_and_listed_in_order,
+        a_pull_request_is_recorded_once_for_its_job,
+        the_first_fate_of_a_pull_request_is_final,
+        only_open_pull_requests_are_listed_to_check_the_longest_wait_first,
         a_ledger_entry_that_does_not_extend_the_chain_is_refused,
         a_ledger_position_can_be_taken_only_once,
         events_read_back_in_the_order_they_were_queued,
@@ -881,6 +890,19 @@ async fn a_tenant_cannot_read_another_tenants_row_through_any_new_method(
     mine.record_audit(audit_event(&w, Some(r.job), "job.admitted"))
         .await
         .ctx("audit")?;
+    let mine_repository = mine
+        .get_job(r.job)
+        .await
+        .ctx("read the job")?
+        .value
+        .repository;
+    mine.record_pull_request_opened(NewPullRequest {
+        job: r.job,
+        repository: mine_repository,
+        number: 7,
+    })
+    .await
+    .ctx("record a pull request")?;
     mine.commit().await.ctx("commit")?;
 
     let mut other = w.tx(w.b).await?;
@@ -908,6 +930,31 @@ async fn a_tenant_cannot_read_another_tenants_row_through_any_new_method(
         other.task_dependencies(r.run).await,
         StoreError::NotFound,
         "task dependencies"
+    );
+    ensure_err!(
+        other.list_task_runs(r.run).await,
+        StoreError::NotFound,
+        "task runs"
+    );
+    ensure_err!(
+        other.list_pull_requests(r.job).await,
+        StoreError::NotFound,
+        "pull requests"
+    );
+    ensure_err!(
+        other
+            .record_pull_request_sighting(mine_repository, 7, PullRequestSighting::Merged(at))
+            .await,
+        StoreError::NotFound,
+        "a sighting of another tenant's pull request"
+    );
+    ensure!(
+        other
+            .list_pull_requests_to_check(far_future(), 10)
+            .await
+            .ctx("list the pull requests to check")?
+            .is_empty(),
+        "the pull requests to check of another tenant are not listed"
     );
     ensure_err!(
         other.list_stage_run_artifacts(r.run).await,
@@ -2689,6 +2736,646 @@ async fn a_task_move_needs_a_current_fence(subject: &dyn StoreSubject) -> Result
         Some(started.attempt.value.id),
         "the attempt that took the node"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The facts of the process metrics (ports v1.5)
+// ---------------------------------------------------------------------------------------------
+
+/// The database's time now, read in a transaction of its own. A row written by a later
+/// transaction carries a time at or after it: a database stamps a row with the time its
+/// transaction began, so the reading must be taken before that transaction starts.
+async fn time_before(w: &World<'_>) -> Result<Timestamp, String> {
+    let mut tx = w.tx(w.a).await?;
+    let at = tx.database_time().await.ctx("time")?;
+    tx.rollback().await.ctx("end the reading")?;
+    Ok(at)
+}
+
+/// A time after every time a check produces.
+fn far_future() -> Timestamp {
+    Timestamp::parse("2999-01-01T00:00:00Z").expect("a valid time")
+}
+
+fn metered(input: u64, output: u64, cost: u64, requests: u64) -> MeteredUsage {
+    MeteredUsage::new(input, output, cost, requests).expect("a metered use in range")
+}
+
+async fn an_attempt_keeps_what_it_metered_and_unknown_is_not_zero(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let r = w.ready(w.a, 3).await?;
+    let fail = plan(
+        AttemptStatus::Starting,
+        AttemptEvent::ProvisionFailed,
+        Guard::EpochCurrent,
+    )?;
+
+    // The first attempt: a metered use on a move that does not end it is refused, and the largest
+    // value the store keeps comes back exactly.
+    let first = w
+        .start(r, "worker-1")
+        .await
+        .map_err(|e| format!("start: {e:?}"))?;
+    let mut tx = w.tx(w.a).await?;
+    let attempt = tx.get_attempt(first.attempt.value.id).await.ctx("read")?;
+    ensure_eq!(attempt.value.metered, None, "a running attempt has no use");
+    let largest = metered(MAX_METERED, MAX_METERED, MAX_METERED, MAX_METERED);
+    let running = plan(
+        AttemptStatus::Starting,
+        AttemptEvent::SandboxReady,
+        Guard::SandboxProvisioned,
+    )?;
+    ensure_err!(
+        tx.transition_attempt(
+            attempt.value.id,
+            attempt.version,
+            attempt.value.epoch,
+            running,
+            AttemptEnd {
+                metered: Some(largest),
+                ..AttemptEnd::default()
+            }
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::AttemptEndRule),
+        "a metered use on a move that does not end the attempt"
+    );
+    tx.transition_attempt(
+        attempt.value.id,
+        attempt.version,
+        attempt.value.epoch,
+        fail.clone(),
+        AttemptEnd {
+            metered: Some(largest),
+            ..effects_for_failure()
+        },
+    )
+    .await
+    .ctx("the end of the first attempt, with its use")?;
+    tx.commit().await.ctx("commit the first end")?;
+    let mut tx = w.tx(w.a).await?;
+    let stored = tx.get_attempt(first.attempt.value.id).await.ctx("read")?;
+    ensure_eq!(
+        stored.value.metered,
+        Some(largest),
+        "the largest use comes back exactly"
+    );
+
+    // The second attempt ends with its meter not read: the use is unknown, not zero.
+    let run = tx.get_stage_run(r.run).await.ctx("read the run")?;
+    let retry = plan(
+        StageRunStatus::Running,
+        StageRunEvent::AttemptFailedRetryable,
+        Guard::RetryAllowed,
+    )?;
+    tx.transition_stage_run(r.run, run.version, retry, StageRunEffects::default())
+        .await
+        .ctx("back to READY")?;
+    tx.commit().await.ctx("commit the retry")?;
+    let second = w
+        .start(r, "worker-1")
+        .await
+        .map_err(|e| format!("the second start: {e:?}"))?;
+    let mut tx = w.tx(w.a).await?;
+    tx.transition_attempt(
+        second.attempt.value.id,
+        second.attempt.version,
+        second.attempt.value.epoch,
+        fail.clone(),
+        effects_for_failure(),
+    )
+    .await
+    .ctx("the end of the second attempt, with no use")?;
+    tx.commit().await.ctx("commit the second end")?;
+    let mut tx = w.tx(w.a).await?;
+    let unknown = tx.get_attempt(second.attempt.value.id).await.ctx("read")?;
+    ensure!(unknown.value.ended_at.is_some(), "the attempt ended");
+    ensure_eq!(
+        unknown.value.metered,
+        None,
+        "a meter that was not read is unknown, never zero"
+    );
+
+    // The third attempt used nothing, and says so: zero is a value of its own.
+    let run = tx.get_stage_run(r.run).await.ctx("read the run")?;
+    let retry = plan(
+        StageRunStatus::Running,
+        StageRunEvent::AttemptFailedRetryable,
+        Guard::RetryAllowed,
+    )?;
+    tx.transition_stage_run(r.run, run.version, retry, StageRunEffects::default())
+        .await
+        .ctx("back to READY again")?;
+    tx.commit().await.ctx("commit the second retry")?;
+    let third = w
+        .start(r, "worker-1")
+        .await
+        .map_err(|e| format!("the third start: {e:?}"))?;
+    let mut tx = w.tx(w.a).await?;
+    tx.transition_attempt(
+        third.attempt.value.id,
+        third.attempt.version,
+        third.attempt.value.epoch,
+        fail,
+        AttemptEnd {
+            metered: Some(MeteredUsage::ZERO),
+            ..effects_for_failure()
+        },
+    )
+    .await
+    .ctx("the end of the third attempt, with a use of zero")?;
+    let listed = tx.list_attempts(r.run).await.ctx("list")?;
+    let uses: Vec<Option<MeteredUsage>> = listed.iter().map(|row| row.value.metered).collect();
+    ensure_eq!(
+        uses,
+        vec![Some(largest), None, Some(MeteredUsage::ZERO)],
+        "the listing keeps the largest use, the unknown one and the zero apart"
+    );
+    Ok(())
+}
+
+/// A stage run with one attempt that took the task node `t-001`, and a second node `t-002`.
+struct TaskWorld {
+    started: StartedAttempt,
+    first: TaskNodeId,
+    second: TaskNodeId,
+}
+
+async fn task_world(w: &World<'_>, r: Ready) -> Result<TaskWorld, String> {
+    let started = w
+        .start(r, "worker-1")
+        .await
+        .map_err(|e| format!("start: {e:?}"))?;
+    let mut tx = w.tx(r.tenant).await?;
+    let plan_hash = index_bytes(&mut *tx, b"plan").await?;
+    let nodes = tx
+        .insert_task_graph(NewTaskGraph {
+            stage_run: r.run,
+            plan_sha256: plan_hash,
+            nodes: vec![node(w, "t-001", &[]), node(w, "t-002", &[])],
+        })
+        .await
+        .ctx("graph")?;
+    tx.commit().await.ctx("commit the graph")?;
+    Ok(TaskWorld {
+        started,
+        first: nodes[0].value.id,
+        second: nodes[1].value.id,
+    })
+}
+
+fn task_run(node: TaskNodeId, tier: RecommendedTier, use_: Option<MeteredUsage>) -> NewTaskRun {
+    NewTaskRun {
+        task_node: node,
+        runtime: RuntimeId::new("claude-code-cli").expect("a runtime"),
+        model: NonEmptyString::parse("claude-sonnet-5-5").expect("a model"),
+        tier,
+        metered: use_,
+    }
+}
+
+async fn a_task_run_is_fenced_written_once_and_listed_in_order(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let r = w.ready(w.a, 3).await?;
+    let t = task_world(&w, r).await?;
+    let used = metered(1200, 300, 4500, 2);
+
+    let mut tx = w.tx(w.a).await?;
+    ensure!(
+        tx.list_task_runs(r.run).await.ctx("list")?.is_empty(),
+        "a stage run starts with no task run"
+    );
+    ensure_err!(
+        tx.record_task_run(
+            fence(&t.started, "worker-9"),
+            task_run(t.first, RecommendedTier::Standard, Some(used))
+        )
+        .await,
+        StoreError::LeaseFenced,
+        "a task run under another worker's fence"
+    );
+    let too_long = NewTaskRun {
+        model: NonEmptyString::parse(&"m".repeat(201)).expect("a long name"),
+        ..task_run(t.first, RecommendedTier::Standard, Some(used))
+    };
+    ensure_err!(
+        tx.record_task_run(fence(&t.started, "worker-1"), too_long)
+            .await,
+        StoreError::Constraint(ConstraintRule::TextBounds),
+        "a model name of 201 characters"
+    );
+    let longest = NewTaskRun {
+        model: NonEmptyString::parse(&"m".repeat(200)).expect("the longest name"),
+        ..task_run(t.second, RecommendedTier::Large, None)
+    };
+    tx.record_task_run(
+        fence(&t.started, "worker-1"),
+        task_run(t.first, RecommendedTier::Standard, Some(used)),
+    )
+    .await
+    .ctx("the first run")?;
+    tx.commit().await.ctx("commit the first run")?;
+
+    // The second run is recorded later, with a use that is not known and the longest name.
+    subject.advance_database_time(Duration::from_secs(2)).await;
+    let mut tx = w.tx(w.a).await?;
+    tx.record_task_run(fence(&t.started, "worker-1"), longest)
+        .await
+        .ctx("the second run")?;
+    // The same run again changes nothing; other content for the same task and attempt is refused.
+    tx.record_task_run(
+        fence(&t.started, "worker-1"),
+        task_run(t.first, RecommendedTier::Standard, Some(used)),
+    )
+    .await
+    .ctx("the first run again")?;
+    ensure_err!(
+        tx.record_task_run(
+            fence(&t.started, "worker-1"),
+            task_run(t.first, RecommendedTier::Large, Some(used))
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent),
+        "the same task and attempt on another tier"
+    );
+    ensure_err!(
+        tx.record_task_run(
+            fence(&t.started, "worker-1"),
+            task_run(t.first, RecommendedTier::Standard, None)
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent),
+        "the same task and attempt with another use"
+    );
+    let runs = tx.list_task_runs(r.run).await.ctx("list")?;
+    ensure_eq!(runs.len(), 2, "one row for each task and attempt");
+    ensure_eq!(runs[0].task_node_id, t.first, "the run recorded first");
+    ensure_eq!(runs[0].metered, Some(used), "the use of the first run");
+    ensure_eq!(runs[0].tier, RecommendedTier::Standard, "its tier");
+    ensure_eq!(
+        runs[0].attempt_id,
+        t.started.attempt.value.id,
+        "its attempt"
+    );
+    ensure_eq!(
+        (runs[0].job_id, runs[0].stage_run_id),
+        (r.job, r.run),
+        "its place"
+    );
+    ensure_eq!(runs[1].task_node_id, t.second, "the run recorded second");
+    ensure_eq!(runs[1].metered, None, "an unknown use stays unknown");
+    ensure_eq!(runs[1].tier, RecommendedTier::Large, "its tier");
+    ensure_eq!(
+        runs[1].model.as_str().chars().count(),
+        200,
+        "the longest name"
+    );
+    ensure!(
+        runs[0].recorded_at < runs[1].recorded_at,
+        "the rows carry the time they were recorded"
+    );
+
+    // A task node of another stage run is not the attempt's to record.
+    let elsewhere = w.ready(w.a, 3).await?;
+    let other = task_world(&w, elsewhere).await?;
+    ensure_err!(
+        tx.record_task_run(
+            fence(&t.started, "worker-1"),
+            task_run(other.first, RecommendedTier::Standard, Some(used))
+        )
+        .await,
+        StoreError::NotFound,
+        "a task node of another stage run"
+    );
+    tx.commit().await.ctx("commit")?;
+
+    // An attempt that has ended records nothing more.
+    let mut tx = w.tx(w.a).await?;
+    let attempt = tx
+        .get_attempt(t.started.attempt.value.id)
+        .await
+        .ctx("read")?;
+    let fail = plan(
+        AttemptStatus::Starting,
+        AttemptEvent::ProvisionFailed,
+        Guard::EpochCurrent,
+    )?;
+    tx.transition_attempt(
+        attempt.value.id,
+        attempt.version,
+        attempt.value.epoch,
+        fail,
+        effects_for_failure(),
+    )
+    .await
+    .ctx("end the attempt")?;
+    ensure_err!(
+        tx.record_task_run(
+            fence(&t.started, "worker-1"),
+            task_run(t.second, RecommendedTier::Small, Some(used))
+        )
+        .await,
+        StoreError::LeaseFenced,
+        "a task run of an attempt that has ended"
+    );
+    Ok(())
+}
+
+/// A job of tenant `a` with its repository.
+async fn job_with_repository(w: &World<'_>) -> Result<(JobId, RepositoryId), String> {
+    let job = w.active_job(w.a).await?;
+    let mut tx = w.tx(w.a).await?;
+    let repository = tx.get_job(job).await.ctx("read the job")?.value.repository;
+    Ok((job, repository))
+}
+
+async fn a_pull_request_is_recorded_once_for_its_job(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let (job, repository) = job_with_repository(&w).await?;
+    let (other_job, other_repository) = job_with_repository(&w).await?;
+    let new = |number| NewPullRequest {
+        job,
+        repository,
+        number,
+    };
+
+    let before = time_before(&w).await?;
+    let mut tx = w.tx(w.a).await?;
+    ensure!(
+        tx.list_pull_requests(job).await.ctx("list")?.is_empty(),
+        "a job starts with no pull request"
+    );
+    for number in [0, MAX_METERED + 1, u64::MAX] {
+        ensure_err!(
+            tx.record_pull_request_opened(new(number)).await,
+            StoreError::Constraint(ConstraintRule::TextBounds),
+            "the number {number}"
+        );
+    }
+    ensure_err!(
+        tx.record_pull_request_opened(NewPullRequest {
+            job,
+            repository: other_repository,
+            number: 1,
+        })
+        .await,
+        StoreError::NotFound,
+        "a repository that is not the job's"
+    );
+    tx.record_pull_request_opened(new(1))
+        .await
+        .ctx("number one")?;
+    tx.record_pull_request_opened(new(MAX_METERED))
+        .await
+        .ctx("the largest number")?;
+    tx.record_pull_request_opened(new(1))
+        .await
+        .ctx("number one again")?;
+    let listed = tx.list_pull_requests(job).await.ctx("list")?;
+    let numbers: Vec<u64> = listed.iter().map(|pull| pull.number).collect();
+    ensure_eq!(numbers, vec![1, MAX_METERED], "one row for each number");
+    for pull in &listed {
+        ensure_eq!(pull.fate, StoredFate::Open, "a new pull request is open");
+        ensure_eq!(pull.last_checked_at, None, "nobody looked yet");
+        ensure_eq!((pull.job_id, pull.repository), (job, repository), "its job");
+        ensure!(
+            pull.opened_at >= before,
+            "the opening carries the database's time"
+        );
+    }
+    // The same repository and number belong to one job.
+    ensure_err!(
+        tx.record_pull_request_opened(NewPullRequest {
+            job: other_job,
+            repository,
+            number: 1,
+        })
+        .await,
+        StoreError::NotFound,
+        "another job, whose repository is another one"
+    );
+    tx.commit().await.ctx("commit")?;
+
+    // Recording it again after the fate is known changes nothing.
+    let at = Timestamp::parse("2026-11-20T08:00:00Z").expect("a valid time");
+    let mut tx = w.tx(w.a).await?;
+    tx.record_pull_request_sighting(repository, 1, PullRequestSighting::Merged(at))
+        .await
+        .ctx("the merge")?;
+    tx.record_pull_request_opened(new(1))
+        .await
+        .ctx("number one once more")?;
+    let listed = tx.list_pull_requests(job).await.ctx("list")?;
+    ensure!(
+        matches!(listed[0].fate, StoredFate::Merged { .. }),
+        "the fate survives a repeated opening, found {:?}",
+        listed[0].fate
+    );
+    ensure!(
+        tx.list_pull_requests(other_job)
+            .await
+            .ctx("list the other job")?
+            .is_empty(),
+        "the other job has none"
+    );
+    Ok(())
+}
+
+async fn the_first_fate_of_a_pull_request_is_final(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let (job, repository) = job_with_repository(&w).await?;
+    let merged_at = Timestamp::parse("2026-11-20T08:00:00Z").expect("a valid time");
+    let closed_at = Timestamp::parse("2026-11-20T09:30:00Z").expect("a valid time");
+    let mut tx = w.tx(w.a).await?;
+    for number in [1, 2, 3] {
+        tx.record_pull_request_opened(NewPullRequest {
+            job,
+            repository,
+            number,
+        })
+        .await
+        .ctx("open")?;
+    }
+    ensure_err!(
+        tx.record_pull_request_sighting(repository, 4, PullRequestSighting::Open)
+            .await,
+        StoreError::NotFound,
+        "a pull request that was never recorded"
+    );
+    ensure_err!(
+        tx.record_pull_request_sighting(repository, 0, PullRequestSighting::Open)
+            .await,
+        StoreError::NotFound,
+        "the number zero"
+    );
+    tx.commit().await.ctx("commit the openings")?;
+
+    // A look that finds it open, and one that could not read, record the look and nothing else.
+    subject.advance_database_time(Duration::from_secs(2)).await;
+    let before = time_before(&w).await?;
+    let mut tx = w.tx(w.a).await?;
+    for sighting in [PullRequestSighting::Open, PullRequestSighting::Unread] {
+        let seen = tx
+            .record_pull_request_sighting(repository, 1, sighting)
+            .await
+            .ctx("a look")?;
+        ensure_eq!(seen.fate, StoredFate::Open, "still open after {sighting:?}");
+        ensure!(
+            seen.last_checked_at.is_some_and(|at| at >= before),
+            "the look is recorded for {sighting:?}"
+        );
+    }
+    let merged = tx
+        .record_pull_request_sighting(repository, 1, PullRequestSighting::Merged(merged_at))
+        .await
+        .ctx("the merge")?;
+    let StoredFate::Merged {
+        decided_at,
+        recorded_at,
+    } = merged.fate
+    else {
+        return Err(format!("expected a merge, found {:?}", merged.fate));
+    };
+    ensure_eq!(decided_at, merged_at, "the time the code host gave");
+    ensure!(
+        recorded_at >= before,
+        "the recording carries the database's time, not the code host's"
+    );
+    let closed = tx
+        .record_pull_request_sighting(repository, 2, PullRequestSighting::Closed(closed_at))
+        .await
+        .ctx("the close")?;
+    ensure!(
+        matches!(closed.fate, StoredFate::Closed { decided_at, .. } if decided_at == closed_at),
+        "the close is recorded with its time, found {:?}",
+        closed.fate
+    );
+    tx.commit().await.ctx("commit the fates")?;
+
+    // Later sightings of any kind leave the fate as it was, and still record the look.
+    subject.advance_database_time(Duration::from_secs(2)).await;
+    let later = time_before(&w).await?;
+    let mut tx = w.tx(w.a).await?;
+    for sighting in [
+        PullRequestSighting::Closed(closed_at),
+        PullRequestSighting::Merged(closed_at),
+        PullRequestSighting::Open,
+        PullRequestSighting::Unread,
+    ] {
+        let seen = tx
+            .record_pull_request_sighting(repository, 1, sighting)
+            .await
+            .ctx("a later look at the merged one")?;
+        ensure_eq!(
+            seen.fate,
+            merged.fate,
+            "the merge stands after {sighting:?}"
+        );
+        ensure!(
+            seen.last_checked_at.is_some_and(|at| at >= later),
+            "the later look is recorded"
+        );
+    }
+    let seen = tx
+        .record_pull_request_sighting(repository, 2, PullRequestSighting::Merged(merged_at))
+        .await
+        .ctx("a later look at the closed one")?;
+    ensure_eq!(seen.fate, closed.fate, "the close stands after a merge");
+    let listed = tx.list_pull_requests(job).await.ctx("list")?;
+    let fates: Vec<StoredFate> = listed.iter().map(|pull| pull.fate).collect();
+    ensure_eq!(
+        fates,
+        vec![merged.fate, closed.fate, StoredFate::Open],
+        "the listing shows the three fates"
+    );
+    Ok(())
+}
+
+async fn only_open_pull_requests_are_listed_to_check_the_longest_wait_first(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    const STEP: Duration = Duration::from_secs(2);
+    let w = World::new(subject).await;
+    let (job, repository) = job_with_repository(&w).await?;
+    let at = Timestamp::parse("2026-11-20T08:00:00Z").expect("a valid time");
+    let numbers = |rows: &[PullRequestRecord]| rows.iter().map(|p| p.number).collect::<Vec<u64>>();
+
+    let mut tx = w.tx(w.a).await?;
+    ensure!(
+        tx.list_pull_requests_to_check(far_future(), 10)
+            .await
+            .ctx("list")?
+            .is_empty(),
+        "nothing to check before anything was opened"
+    );
+    for number in [1, 2, 3, 4] {
+        tx.record_pull_request_opened(NewPullRequest {
+            job,
+            repository,
+            number,
+        })
+        .await
+        .ctx("open")?;
+    }
+    tx.commit().await.ctx("commit the openings")?;
+
+    // Number 1 is looked at first, number 2 later, number 3 never, and number 4 is merged.
+    subject.advance_database_time(STEP).await;
+    let mut tx = w.tx(w.a).await?;
+    tx.record_pull_request_sighting(repository, 1, PullRequestSighting::Open)
+        .await
+        .ctx("look at one")?;
+    tx.commit().await.ctx("commit the first look")?;
+    subject.advance_database_time(STEP).await;
+    let between = time_before(&w).await?;
+    subject.advance_database_time(STEP).await;
+    let mut tx = w.tx(w.a).await?;
+    tx.record_pull_request_sighting(repository, 2, PullRequestSighting::Unread)
+        .await
+        .ctx("look at two")?;
+    tx.record_pull_request_sighting(repository, 4, PullRequestSighting::Merged(at))
+        .await
+        .ctx("merge four")?;
+    tx.commit().await.ctx("commit the later looks")?;
+
+    let mut tx = w.tx(w.a).await?;
+    let all = tx
+        .list_pull_requests_to_check(far_future(), 10)
+        .await
+        .ctx("list all")?;
+    ensure_eq!(
+        numbers(&all),
+        vec![3, 1, 2],
+        "never looked at first, then the longest wait; a decided one is not listed"
+    );
+    let due = tx
+        .list_pull_requests_to_check(between, 10)
+        .await
+        .ctx("list the due ones")?;
+    ensure_eq!(
+        numbers(&due),
+        vec![3, 1],
+        "a look after the time asked for is not due yet"
+    );
+    let one = tx
+        .list_pull_requests_to_check(far_future(), 1)
+        .await
+        .ctx("list one")?;
+    ensure_eq!(numbers(&one), vec![3], "the limit is honoured");
+    let none = tx
+        .list_pull_requests_to_check(far_future(), 0)
+        .await
+        .ctx("list none")?;
+    ensure!(none.is_empty(), "a limit of zero lists nothing");
     Ok(())
 }
 

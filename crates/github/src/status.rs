@@ -75,7 +75,7 @@ struct OwnComment {
 }
 
 /// Leaves a gap between requests that change something. The triage issue writer (`triage.rs`)
-/// and the rules host (`project_rules.rs`) pace their writes with it too.
+/// and the proposal host (`proposals.rs`) pace their writes with it too.
 pub(crate) struct Pacer {
     sleeper: Arc<dyn Sleeper>,
     clock: Arc<dyn Clock>,

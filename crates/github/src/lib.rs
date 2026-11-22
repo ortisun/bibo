@@ -5,9 +5,12 @@
 //! GitHub, authenticated as a GitHub App (ports-v1.1, ADR 0014). It also implements
 //! [`factory_ports::issue_status::IssueStatusWriter`] (ports v1.2, ADR 0017),
 //! [`factory_ports::triage_issue::TriageIssueWriter`] (ports v1.3, ADR 0021), and
-//! [`factory_ports::project_rules::ProjectRulesHost`] (ports v1.4, ADR 0026). It has no merge call,
+//! [`factory_ports::proposal::ProposalHost`] (ports v1.4 and v1.6, ADR 0026 and 0031) and
+//! [`factory_ports::pull_request_fate::PullRequestFateSource`] (ports v1.5, ADR 0029), a read of
+//! what became of a pull request with a token that can write nothing. It has no merge call,
 //! no call that marks a pull request ready for review, and no call that writes a workflow file. Its
-//! one `PUT` writes a file of the contents API on the branch `factory/project-rules`, and the client
+//! one `PUT` writes a file of the contents API on a branch of `ProposalBranch` (`factory/project-rules`
+//! or `factory/knowledge-measurements`), and the client
 //! refuses it for any other path.
 //!
 //! # Dependencies (decision of work package `s1-github-adapter`, 2026-10-28)
@@ -65,8 +68,9 @@ mod issues;
 mod jwt;
 mod parse;
 mod permissions;
-mod project_rules;
+mod proposals;
 mod protection;
+mod pull_request_fate;
 mod status;
 mod text;
 mod token;
@@ -84,8 +88,9 @@ pub use encoding::{base64_decode, base64_encode, base64url_encode, percent_encod
 pub use issues::{GithubIssueSource, NormalizedText, normalize_untrusted_text};
 pub use jwt::{AppJwt, JwtError, JwtSigner, RingRs256Signer};
 pub use permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
-pub use project_rules::GithubProjectRules;
+pub use proposals::GithubProposals;
 pub use protection::{protection_from_rules, with_classic_protection};
+pub use pull_request_fate::GithubPullRequestFates;
 pub use status::{GithubIssueStatus, MUTATION_PAUSE};
 pub use text::{OutboundPolicy, keeps_link};
 pub use token::{InstallationDirectory, StaticInstallations};

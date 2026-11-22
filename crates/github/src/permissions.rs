@@ -147,6 +147,17 @@ impl PermissionSet {
         ])
     }
 
+    /// The credential of the fate reader (ports v1.5, ADR 0029): `pull_requests: read` and the
+    /// `metadata: read` that every installation token carries, for one repository, and nothing
+    /// else. It reads whether a person merged or closed a pull request the factory opened, after
+    /// the job that opened it has ended. It is minted for this purpose and independent of any
+    /// stage, and it can write nothing. The App held `pull_requests: write` already, for the
+    /// delivery stage, so it needs no new permission.
+    #[must_use]
+    pub fn pull_request_reader() -> Self {
+        Self::of(&[("metadata", Level::Read), ("pull_requests", Level::Read)])
+    }
+
     /// The credential of a troubleshooting run (ports v1.3, ADR 0021 Decision 7): `issues: write`
     /// and `metadata: read`, for the one configured issue repository, and nothing else. It opens
     /// the triage issues and comments on them. It is minted for a run, never for a job: no stage
