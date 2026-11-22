@@ -2,6 +2,8 @@
 
 Bibo is a universal agentic software factory. Its home is [github.com/ortisun/bibo](https://github.com/ortisun/bibo).
 
+The documentation is published as a site at [ortisun.github.io/bibo](https://ortisun.github.io/bibo/), built from `docs/` ([ADR 0033](docs/adr/0033-documentation-site-on-github-pages.md)).
+
 This repository holds the control plane of the software factory. It takes one authorized GitHub issue and turns it into a reviewed draft pull request with an evidence trail. A person approves the result. The factory never merges and never deploys.
 
 ## What the factory is
@@ -77,6 +79,7 @@ The API records what people ask for and never runs work. The worker holds the en
 | Set up the troubleshooter, which watches the factory itself and opens issues for a person to triage | [Troubleshooter guide](docs/guides/troubleshooter.md) |
 | Understand the design | [Architecture overview](docs/architecture/overview.md) and the [decision records](docs/adr/README.md) |
 | Read what independent reviewers found | [Reviews](docs/reviews/) and the [threat model](docs/security/threat-model.md) |
+| Report a vulnerability, or change Bibo itself | [Security policy](docs/SECURITY.md), [contributing guide](docs/CONTRIBUTING.md) |
 
 ## Checking the documents
 
@@ -84,4 +87,4 @@ The API records what people ask for and never runs work. The worker holds the en
 
 ## Working in this repository
 
-The toolchain is pinned in `rust-toolchain.toml`. `scripts/ci.sh` runs every check, on a laptop and in CI alike. `scripts/setup-tools.sh` installs the tools those checks run, at the versions in `scripts/lib/tool-pins.sh`, into `.tools/bin`; add `--check` to see what is missing without changing anything. The master prompt, `universal_agentic_software_factory_master_prompt.md`, is the source of the requirements.
+The toolchain is pinned in `rust-toolchain.toml`. `scripts/ci.sh` runs every check, on a laptop and in CI alike. `scripts/setup-tools.sh` installs the tools those checks run, at the versions in `scripts/lib/tool-pins.sh`, into `.tools/bin`; add `--check` to see what is missing without changing anything. `scripts/docs-site.sh serve` previews the documentation site. The master prompt, `universal_agentic_software_factory_master_prompt.md`, is the source of the requirements.
