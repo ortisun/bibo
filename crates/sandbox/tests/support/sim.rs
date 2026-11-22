@@ -325,15 +325,33 @@ fn derive(args: &[String], extra_networks: &[String]) -> Value {
     doc
 }
 
-/// What a container would read at a token path: the host file bind-mounted there.
+/// What a container would read at a token path: the host file bind-mounted there. When the
+/// supervisor handed the `0400` file to the sandbox user (the test process is root or holds
+/// `CAP_CHOWN`, as a Linux worker does, ADR 0035), the container user can read it and the test
+/// process cannot; the sim then takes the file back for the read and hands it over again, which
+/// the same capability allows.
 fn token_from_mount(args: &[String], target: &str) -> Option<Vec<u8>> {
+    use std::os::unix::fs::MetadataExt;
     let mount = args
         .windows(2)
         .find(|w| w[0] == "--mount" && w[1].contains(&format!("dst={target},")))?;
-    let source = mount[1]
-        .split(',')
-        .find_map(|part| part.strip_prefix("src="))?;
-    std::fs::read(source).ok()
+    let source = std::path::Path::new(
+        mount[1]
+            .split(',')
+            .find_map(|part| part.strip_prefix("src="))?,
+    );
+    match std::fs::read(source) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let owner = std::fs::metadata(source).ok()?;
+            let writer = std::fs::metadata(source.parent()?).ok()?;
+            std::os::unix::fs::chown(source, Some(writer.uid()), Some(writer.gid())).ok()?;
+            let bytes = std::fs::read(source).ok();
+            std::os::unix::fs::chown(source, Some(owner.uid()), Some(owner.gid())).ok()?;
+            bytes
+        }
+        Err(_) => None,
+    }
 }
 
 fn name_of(args: &[String]) -> String {
