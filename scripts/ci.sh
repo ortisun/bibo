@@ -313,8 +313,10 @@ register_builtin_steps() {
   step rust-fmt "Rust formatting is canonical" "cargo" "" -- cargo fmt --all -- --check
   step rust-clippy "Clippy reports nothing; every warning is an error" "cargo" "" -- \
     cargo clippy --workspace --all-targets --locked -- -D warnings
+  # --no-fail-fast: one failing test must not hide the others. A run on a new host (the first
+  # GitHub run stopped after 4 of 6222 tests) has to show every failure at once.
   step rust-test "Workspace tests pass, and at least one test runs" "cargo cargo-nextest" "" -- \
-    cargo nextest run --workspace --locked --no-tests=fail
+    cargo nextest run --workspace --locked --no-tests=fail --no-fail-fast
   step rust-doctest "Documentation examples compile and pass" "cargo" "" -- \
     cargo test --workspace --doc --locked
   internal_step rust-deny "cargo deny: licenses, bans, advisories and sources" "cargo-deny"
