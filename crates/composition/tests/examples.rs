@@ -133,3 +133,48 @@ fn the_docker_keys_in_the_worker_example_parse_once_uncommented() {
     let shipped = FactoryConfig::from_yaml(&text).expect("parses");
     assert!(shipped.sandbox.docker_host.is_none() && shipped.sandbox.docker_config.is_none());
 }
+
+/// The host worker's template (ADR 0036), filled in with the kind of values
+/// `scripts/worker-host.sh` writes, through the real parser. Every value the script decides is the
+/// one the parser reads, and the template holds no credential, so the worker is BLOCKED until a
+/// person's `credentials.yaml` adds them.
+#[test]
+fn the_host_worker_template_filled_in_parses() {
+    let filled = example("worker.host.example.yaml")
+        .replace("@PROTECTED@", "/srv/factory/protected")
+        .replace("@SECRETS@", "/srv/factory/secrets")
+        .replace("@KEY_FILE@", "/srv/factory/keys/decision_signing_key")
+        .replace("@ARTIFACTS@", "/srv/factory/artifacts")
+        .replace("@TOKEN_ROOT@", "/run/user/1000/factory-tokens")
+        .replace("@WORKSPACES@", "/srv/factory/workspaces")
+        .replace("@DOCKER_HOST@", "unix:///run/docker.sock")
+        .replace("@DOCKER_CONFIG@", "/srv/factory/docker-config")
+        .replace("@BROKER_LISTEN@", "172.17.0.1:8731")
+        .replace("@UPSTREAM@", "172.17.0.1:8731");
+    assert!(
+        filled
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .all(|line| !line.contains('@')),
+        "every placeholder outside the comments is filled in"
+    );
+    let config = FactoryConfig::from_yaml(&filled).expect("the filled-in template must parse");
+    assert_eq!(config.profile, Profile::Local);
+    assert_eq!(config.broker.listen.to_string(), "172.17.0.1:8731");
+    assert_eq!(
+        config.sandbox.token_root,
+        PathBuf::from("/run/user/1000/factory-tokens")
+    );
+    assert_eq!(
+        config.sandbox.docker_host.as_deref(),
+        Some("unix:///run/docker.sock")
+    );
+    assert!(
+        config
+            .sandbox
+            .sidecar_command
+            .contains(&"172.17.0.1:8731".to_owned())
+    );
+    assert!(config.broker.upstreams.is_empty() && config.github.is_none());
+    assert!(config.worker.tenants.is_empty());
+}
