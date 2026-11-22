@@ -65,10 +65,15 @@ use rustix::io::Errno;
 pub const DEFAULT_MAX_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The mode of a blob: readable by its owner, writable by nobody.
-const BLOB_MODE: u32 = 0o400;
+const BLOB_MODE: Mode = Mode::RUSR;
 
 /// The mode of a directory of the store: only its owner may enter.
-const DIRECTORY_MODE: u32 = 0o700;
+const DIRECTORY_MODE: Mode = Mode::RWXU;
+
+/// [`DIRECTORY_MODE`] as the number that `std::fs::DirBuilder` takes. It is a separate constant
+/// because the raw mode of rustix is `u16` on macOS and `u32` on Linux, so no single conversion
+/// compiles cleanly on both. A unit test keeps the two equal.
+const DIRECTORY_MODE_BITS: u32 = 0o700;
 
 struct Inner {
     root: OwnedFd,
@@ -186,11 +191,7 @@ fn open_or_create(parent: &OwnedFd, name: &str) -> Result<OwnedFd, ArtifactError
     if let Some(directory) = open_step(parent, name)? {
         return Ok(directory);
     }
-    match rustix::fs::mkdirat(
-        parent,
-        name,
-        Mode::from_raw_mode(DIRECTORY_MODE.try_into().unwrap_or(0o700)),
-    ) {
+    match rustix::fs::mkdirat(parent, name, DIRECTORY_MODE) {
         // Another writer made it between our look and our call. That is fine.
         Ok(()) | Err(Errno::EXIST) => {}
         Err(errno) => return Err(io_error("make a directory of the store", errno)),
@@ -251,7 +252,7 @@ impl LocalFsArtifactStore {
         let root = root.as_ref();
         std::fs::DirBuilder::new()
             .recursive(true)
-            .mode(DIRECTORY_MODE)
+            .mode(DIRECTORY_MODE_BITS)
             .create(root)
             .map_err(|error| plain_io_error("make the root directory", &error))?;
         let resolved = std::fs::canonicalize(root)
@@ -340,7 +341,7 @@ fn put_blocking(
         &directory,
         temporary.as_str(),
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::from_raw_mode(BLOB_MODE.try_into().unwrap_or(0o400)),
+        BLOB_MODE,
     )
     .map_err(|errno| io_error("create the temporary file", errno))?;
 
@@ -486,5 +487,19 @@ impl LocalFsArtifactStore {
         let inner = self.inner.clone();
         let reference = reference.clone();
         blocking(move || exists_blocking(&inner, &reference)).await
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{DIRECTORY_MODE, DIRECTORY_MODE_BITS};
+
+    #[test]
+    fn the_directory_mode_for_std_is_the_same_as_the_one_for_rustix() {
+        // i64 holds both a u16 and a u32, so this compiles on macOS and on Linux alike.
+        assert_eq!(
+            i64::from(DIRECTORY_MODE.bits()),
+            i64::from(DIRECTORY_MODE_BITS)
+        );
     }
 }
