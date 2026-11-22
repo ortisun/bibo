@@ -1,5 +1,4 @@
 ---
-title: Bibo
 description: An agentic software factory that turns an approved GitHub issue into a reviewed draft pull request with an evidence trail.
 hide:
   - navigation
