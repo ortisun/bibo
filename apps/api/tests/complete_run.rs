@@ -296,9 +296,8 @@ async fn worker(env: &Env, markers: Option<Arc<dyn DecisionMarkers>>) -> Worker 
     let redactor = Arc::new(
         factory_composition::redaction::redactor_from_policy(&policies.security).expect("redactor"),
     );
-    // Not under the system temporary directory: see the worker README, mismatch 2.
-    let scratch = root()
-        .join("target/complete-run")
+    // A folder the policy lets a sandbox mount on this host: see the worker README, mismatch 2.
+    let scratch = factory_testkit::fx::scratch::mountable_scratch("complete-run")
         .join(ids.new_uuid().simple().to_string());
     std::fs::create_dir_all(&scratch).expect("a scratch directory");
 

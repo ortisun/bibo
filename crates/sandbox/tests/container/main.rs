@@ -24,6 +24,23 @@ use factory_testkit::contracts::sandbox;
 async fn the_docker_adapter_passes_the_sandbox_contract() {
     let report = sandbox::run(|| async { contract::DockerSubject::new() }).await;
     report.assert_ok();
-    assert!(report.skipped.is_empty(), "skipped: {:?}", report.skipped);
-    assert_eq!(report.passed.len(), sandbox::checks().len());
+    // One check may be skipped, for one reason only: a daemon that has AppArmor (a Linux host)
+    // cannot be made to lack it, so the check of a daemon without AppArmor has nothing to run
+    // on. Docker Desktop lacks AppArmor and runs it; the scripted suite runs it on both hosts.
+    let allowed = (
+        "apparmor_not_available_is_accepted_only_by_policy",
+        "skipped: this subject cannot make the daemon lack AppArmor",
+    );
+    assert!(
+        report
+            .skipped
+            .iter()
+            .all(|(name, why)| (*name, why.as_str()) == allowed),
+        "skipped: {:?}",
+        report.skipped
+    );
+    assert_eq!(
+        report.passed.len() + report.skipped.len(),
+        sandbox::checks().len()
+    );
 }

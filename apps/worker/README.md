@@ -609,9 +609,13 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
 1. **Fixed by the parity work.** The engine recorded a gate with no report and the PostgreSQL store refused
    it; the engine now stores a decision report for every gate decision, jobs complete on PostgreSQL, and
    the 26 kill cases reach `COMPLETED`. `tests/known_defects.rs` was flipped by that work.
-2. **A sandbox spec under the system temporary directory is refused on macOS.** The policy forbids `/var`
-   as a mount source and `std::env::temp_dir()` is below it. Deployment note: workspace and token roots must
-   not be under a forbidden source. The smoke keeps its scratch under `target/`.
+2. **A sandbox spec under the system temporary directory is refused on macOS, and one under the
+   repository is refused on most Linux hosts.** The policy forbids `/var` and `/home` as mount sources:
+   `std::env::temp_dir()` is below `/var` on macOS, and a checkout is usually below `/home` on Linux (a
+   GitHub runner checks out to `/home/runner/work/...`, where the first GitHub run of these tests failed).
+   Deployment note: workspace and token roots must not be under a forbidden source. The tests keep that
+   scratch in `factory_testkit::fx::scratch::mountable_scratch`, which is the repository's `target/` when
+   the policy allows it and the canonical `/tmp` otherwise.
 3. **`WorkspaceAccess::Inspect` cannot be a read-only mount. Open.** `SandboxSpec::validate` refuses a
    read-only workspace under the `agent` profile (`WorkspaceAccessMismatch`, `crates/ports/src/sandbox.rs`),
    checked again on 2026-10-28. Reviewers get the worktree read-write; the tool grants and the workspace

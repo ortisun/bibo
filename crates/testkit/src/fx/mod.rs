@@ -60,6 +60,7 @@ pub mod http;
 pub mod registry;
 pub mod repos;
 pub mod rng;
+pub mod scratch;
 #[cfg(test)]
 mod self_check;
 pub mod sinks;

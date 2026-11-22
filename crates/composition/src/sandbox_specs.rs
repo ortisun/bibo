@@ -746,10 +746,9 @@ mod tests {
     async fn a_troubleshooter_spec_has_no_repository_two_tokens_and_passes_the_policy_check() {
         use factory_ports::agent::{CostMicroUsd, JobTokenRequest, ModelBroker as _};
         // A normalized absolute path: the policy check refuses one with `..` in it.
-        let dir = repository_root()
-            .canonicalize()
-            .expect("the repository root")
-            .join("target/sandbox-specs-troubleshooter")
+        // A folder the policy lets a sandbox mount on this host (`mountable_scratch`), which is
+        // not the repository's target/ when that is under /home.
+        let dir = factory_testkit::fx::scratch::mountable_scratch("sandbox-specs-troubleshooter")
             .join(std::process::id().to_string());
         let _ = std::fs::remove_dir_all(&dir);
         let policy = Arc::new(repository_security_policy());

@@ -7,6 +7,7 @@ that put their state in a temporary folder and log every call. Nothing touches t
 configuration or any GitHub repository. Each test builds a correct situation, shows the outcome, then changes one
 thing and shows that the outcome changes.
 """
+import atexit
 import json
 import os
 import re
@@ -21,6 +22,30 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 INSTALL = os.path.join(ROOT, "scripts", "install.sh")
 BASH = "/bin/bash" if os.path.exists("/bin/bash") else "bash"
 DUMMY_TOKEN = "dummy-value-that-is-not-a-secret-4242"
+
+# Programs that the tests replace with fakes, or remove to show what happens without them. A real copy in /usr/bin
+# must not stand in for a removed fake: a GitHub runner, for one, ships a real gh there.
+FAKED = {"actionlint", "brew", "cargo", "claude", "codex", "docker", "gh", "gitleaks", "node", "npm", "shellcheck",
+         "specify", "uv"}
+
+
+def system_bin():
+    """A folder of links to every program in /usr/bin and /bin except the FAKED ones, used in place of
+    "/usr/bin:/bin" on the PATH of a test. Made once per run and removed at exit."""
+    folder = tempfile.mkdtemp(prefix="install-test-system-bin-")
+    atexit.register(shutil.rmtree, folder, True)
+    for source in ("/usr/bin", "/bin"):
+        if not os.path.isdir(source):
+            continue
+        for name in sorted(os.listdir(source)):
+            target = os.path.join(folder, name)
+            if name in FAKED or os.path.lexists(target):
+                continue
+            os.symlink(os.path.join(source, name), target)
+    return folder
+
+
+SYSTEM_PATH = system_bin()
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -294,7 +319,7 @@ class Case(unittest.TestCase):
             args = ("--no-tools", *args)
         if not policy:
             args = ("--no-git-policy", *args)
-        environment = {"PATH": self.bin + ":/usr/bin:/bin", "FAKE_STATE": self.state, "HOME": self.tmp,
+        environment = {"PATH": self.bin + ":" + SYSTEM_PATH, "FAKE_STATE": self.state, "HOME": self.tmp,
                        "FACTORY_TOOLS_PREFIX": os.path.join(self.tmp, "factory-tools")}
         if token:
             environment["FACTORY_GITHUB_MCP_TOKEN"] = token
@@ -1219,7 +1244,7 @@ class TokenHygiene(Case):
 
     def test_the_control_a_program_does_see_the_token_when_it_is_not_dropped(self):
         # Proves that the fakes can see the variable, so that the test above is not blind.
-        environment = {"PATH": self.bin + ":/usr/bin:/bin", "FAKE_STATE": self.state, "FACTORY_GITHUB_MCP_TOKEN": self.TOKEN}
+        environment = {"PATH": self.bin + ":" + SYSTEM_PATH, "FAKE_STATE": self.state, "FACTORY_GITHUB_MCP_TOKEN": self.TOKEN}
         subprocess.run([os.path.join(self.bin, "claude"), "--version"], env=environment, capture_output=True)
         self.assertTrue(os.path.exists(os.path.join(self.state, "saw_token.log")))
 
@@ -1715,7 +1740,7 @@ class SpecKit(Case):
             self.skipTest("the specify on this machine is not 1.1.2")
         os.remove(os.path.join(self.bin, "specify"))
         self.put_speckit(("claude",))
-        path = "%s:%s:/usr/bin:/bin" % (self.bin, os.path.dirname(real))
+        path = "%s:%s:%s" % (self.bin, os.path.dirname(real), SYSTEM_PATH)
         _, out = self.install(env={"PATH": path})
         self.assertTrue(self.has(out, "ADDED", "speckit", "codex: specify integration install codex"), out)
         for relative, digest in reference_manifest("codex")["files"].items():
@@ -2019,7 +2044,7 @@ class GitPolicy(Case):
         self.egm_installed()
 
     def git(self, *args, check=True):
-        environment = dict(self.GIT_ENV, PATH="/usr/bin:/bin", HOME=self.tmp)
+        environment = dict(self.GIT_ENV, PATH=SYSTEM_PATH, HOME=self.tmp)
         done = subprocess.run(["git", *args], cwd=self.project, capture_output=True, text=True, env=environment)
         if check and done.returncode != 0:
             raise AssertionError("git %s: %s" % (" ".join(args), done.stdout + done.stderr))

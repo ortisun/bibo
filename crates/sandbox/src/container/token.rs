@@ -21,6 +21,8 @@
 //! Desktop the file sharing layer shows it to the container as owned by the container user
 //! anyway (experiment B1). The supervisor reads the file from inside the started container before
 //! it releases the workload, so a host where neither holds fails at provisioning and not later.
+//! On a Linux host the worker is given `CAP_CHOWN` for this, and nothing more (ADR 0035): the
+//! first Linux CI run, as an unprivileged user, failed every agent sandbox here.
 
 use std::fs;
 use std::io::{self, Write};
@@ -215,6 +217,38 @@ mod tests {
         fs::metadata(path).expect("metadata").permissions().mode() & 0o777
     }
 
+    /// The file's content, read as its writer. When the file was handed to the sandbox user (the
+    /// writer is root or holds `CAP_CHOWN`, as a Linux worker does, ADR 0035), the writer can no
+    /// longer read a `0400` file, so the test takes it back for the read and hands it over again.
+    /// It also checks who owns it: the sandbox user when the hand-over was applied, the writer
+    /// otherwise.
+    fn read_back(file: &TokenFile, uid: u32, gid: u32) -> String {
+        use std::os::unix::fs::MetadataExt;
+        let writer = fs::metadata(file.path().parent().expect("parent")).expect("metadata");
+        let owner = fs::metadata(file.path()).expect("metadata");
+        if file.ownership_applied() {
+            assert_eq!(
+                (owner.uid(), owner.gid()),
+                (uid, gid),
+                "handed to the sandbox user"
+            );
+        } else {
+            assert_eq!(owner.uid(), writer.uid(), "left with its writer");
+        }
+        match fs::read_to_string(file.path()) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                std::os::unix::fs::chown(file.path(), Some(writer.uid()), Some(writer.gid()))
+                    .expect("take the file back");
+                let text = fs::read_to_string(file.path()).expect("read");
+                std::os::unix::fs::chown(file.path(), Some(uid), Some(gid))
+                    .expect("hand it over again");
+                text
+            }
+            Err(error) => panic!("read: {error}"),
+        }
+    }
+
     #[test]
     fn the_file_is_0400_in_a_0700_directory_and_holds_the_secret_only() {
         let scratch = Scratch::new("write");
@@ -226,10 +260,7 @@ mod tests {
         assert_eq!(mode(file.path()), 0o400);
         assert_eq!(mode(file.path().parent().expect("parent")), 0o700);
         assert_eq!(mode(store.root()), 0o700);
-        assert_eq!(
-            fs::read_to_string(file.path()).expect("read"),
-            secret.expose()
-        );
+        assert_eq!(read_back(&file, 10_001, 10_001), secret.expose());
     }
 
     #[test]
@@ -248,10 +279,7 @@ mod tests {
             .expect("write the gateway token");
         assert_eq!(file.path().parent(), job.path().parent());
         assert_eq!(mode(file.path()), 0o400);
-        assert_eq!(
-            fs::read_to_string(file.path()).expect("read"),
-            gateway.expose()
-        );
+        assert_eq!(read_back(&file, 10_001, 10_001), gateway.expose());
         // A second write is refused: the file is created new.
         assert!(store.write_mcp("job-m", &gateway, 10_001, 10_001).is_err());
         store.remove("job-m").expect("remove");

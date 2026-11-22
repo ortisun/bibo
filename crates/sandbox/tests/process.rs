@@ -31,7 +31,9 @@ impl Scratch {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        // A folder the policy lets a sandbox mount on this host (`mountable_scratch`): the build's
+        // temporary directory is under /home on most Linux hosts, which the policy forbids.
+        let dir = factory_testkit::fx::scratch::mountable_scratch("sandbox-tests")
             .join(format!("process-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).expect("a scratch directory");
         Self(dir)

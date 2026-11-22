@@ -641,6 +641,19 @@ impl Server {
         Login { name, password }
     }
 
+    /// Where a client reaches the server: the socket directory of the private server, or the host
+    /// name of a server in Docker or named by `FACTORY_DB_ADMIN_URL`. A client that builds its own
+    /// connection string (a configuration file for the worker) takes these, not the server's own
+    /// `unix_socket_directories`, which is inside the container when the server runs in one.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The port that goes with [`Server::host`].
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// The URL of a login on a database. Built at run time; never written in source.
     pub fn url(&self, login: &Login, database: &str) -> DatabaseUrl {
         DatabaseUrl::new(self.connection_string(&login.name, Some(&login.password), database))

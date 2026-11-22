@@ -21,7 +21,7 @@ The script refuses the file unless its SHA-256 equals `--sha256` (the person who
 
 ### Compiling the program in the verify image
 
-This is how the program of the current `ready` entry was made (2 November 2026). It needs the network for one reason: cargo fetches the crates that `Cargo.lock` names, and `--locked` refuses any other. The container is not the sandbox profile, so run it only on a trusted machine. It still runs as a non-root user with no capability, a read-only root and the repository mounted read-only.
+This is how the program of the current `ready` entry was made. It needs the network for one reason: cargo fetches the crates that `Cargo.lock` names, and `--locked` refuses any other. The container is not the sandbox profile, so run it only on a trusted machine. It still runs as a non-root user with no capability, a read-only root and the repository mounted read-only.
 
 ```sh
 OUT=$(mktemp -d) && chmod 777 "$OUT"
@@ -34,7 +34,7 @@ shasum -a 256 "$OUT/release/factory-egress-sidecar"
 infra/sandbox-images/egress-sidecar/build.sh --binary "$OUT/release/factory-egress-sidecar" --sha256 HEX_FROM_THE_LINE_ABOVE
 ```
 
-Two builds with this recipe on the same machine gave the same program (SHA-256 `466cce26…`). The program that was listed before (`1b0fa8fc…`) was made some other way that is not written down, and this recipe does not reproduce it, so the digest of the image changed when it was replaced. What is not shown: that another machine, another Docker or another source path gives the same bytes (the path `/src` and the unstripped binary are part of what the build records). Until that is shown, `binary_sha256` says which build was supplied, not that anyone can rebuild it elsewhere.
+The program of the current `ready` entry (SHA-256 `accde5ca…`, image `sha256:4f2f6a0d…`) was built with this recipe on 2026-11-22, after commit `4f7e78d` (2026-11-20) changed the program and left the image of the older program (`466cce26…`) pinned. Two machines gave the same program and the same image digest: the owner's Mac (Docker Desktop, engine 29.9.3) and a GitHub `ubuntu-24.04-arm` runner (Docker Engine 29.9.3), which builds it on every CI run ([ADR 0034](../../../docs/adr/0034-github-ci-on-arm64-with-a-database-and-built-images.md)). So `binary_sha256` now also says that the program can be rebuilt elsewhere. What is still not shown: that another Docker version or another source path than `/src` gives the same bytes (the path and the unstripped binary are part of what the build records). A change to the program's sources changes its hash: rebuild the image with this recipe in the same change, or the CI's comparison step shows the image as DIFFERENT and the image tests report BLOCKED.
 
 ## The base
 

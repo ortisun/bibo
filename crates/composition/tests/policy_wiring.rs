@@ -877,3 +877,15 @@ fn with_only_the_authors_model_served_the_review_waits_for_a_person() {
         );
     }
 }
+
+#[test]
+fn the_testkit_refuses_the_same_mount_sources_as_the_policy() {
+    // `factory_testkit::fx::scratch::mountable_scratch` picks the tests' scratch folder by the
+    // testkit's copy of the list. If the policy gains a source, the copy has to follow, or a test
+    // could again hand a sandbox a path that only the real policy refuses.
+    let policies = load_policy(&root(), &[]).expect("the real policies load");
+    assert_eq!(
+        factory_testkit::fixtures::sandbox_policy().forbidden_mount_sources,
+        policies.security.sandbox.forbidden_mount_sources
+    );
+}

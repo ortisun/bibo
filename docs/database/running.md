@@ -55,7 +55,7 @@ The role that runs them must be a superuser or the role that created the five gr
 
 The script picks the first of these that works:
 
-1. `FACTORY_DB_ADMIN_URL`, a superuser URL of a server you provide, such as `postgres://postgres@localhost:5432/postgres`. The script creates and drops only databases named `factory_t_*` and `factory_tpl_*`. Use this in CI with a service container. **Do not point it at a server that matters.** The tests create the cluster-wide role `factory_app`, create and drop test roles, and switch superuser-only session settings. The script leaves `factory_app` behind on purpose.
+1. `FACTORY_DB_ADMIN_URL`, a superuser URL of a server you provide, such as `postgres://postgres@localhost:5432/postgres`. The script creates and drops only databases named `factory_t_*` and `factory_tpl_*`. Use this in CI with a server container; the GitHub CI starts one in a workflow step ([ADR 0034](../adr/0034-github-ci-on-arm64-with-a-database-and-built-images.md)). **Do not point it at a server that matters.** The tests create the cluster-wide role `factory_app`, create and drop test roles, and switch superuser-only session settings. The script leaves `factory_app` behind on purpose.
 2. A private local cluster. The script looks for `initdb`, `pg_ctl` and `postgres` in `FACTORY_PG_BIN`, on `PATH`, and in the usual Homebrew and Debian directories. It starts a cluster on a unix socket in a mode 0700 directory, with TCP off and `fsync` off, and stops and deletes it at the end.
 3. Docker, with the image in `FACTORY_DB_IMAGE` (default `postgres:18`), published on a random loopback port with a random password.
 

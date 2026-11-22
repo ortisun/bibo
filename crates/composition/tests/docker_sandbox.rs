@@ -152,10 +152,10 @@ async fn body() {
     let (_db, world, tenant) = pg_world().await;
     let job = world.admitted_job().await;
 
-    // Everything this test creates lives under the repository's target directory, which the
-    // policy allows as a mount source (the system temporary directory is under /var, which it
-    // forbids).
-    let scratch = root().join("target/composition-docker").join(&run);
+    // Everything this test creates lives in a folder the policy allows as a mount source on this
+    // host (`mountable_scratch`: the system temporary directory is under /var on macOS and the
+    // repository under /home on most Linux hosts, both forbidden).
+    let scratch = factory_testkit::fx::scratch::mountable_scratch("composition-docker").join(&run);
     let _cleanup = Scratch(scratch.clone());
     for dir in ["workspace", "out", "tokens", "workspaces"] {
         std::fs::create_dir_all(scratch.join(dir)).expect("a directory");

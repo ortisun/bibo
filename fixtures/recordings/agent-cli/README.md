@@ -38,7 +38,7 @@ docker pull alpine@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c
 mkdir -p "$SCRATCH/empty"
 docker build -f fixtures/recordings/agent-cli/images/Dockerfile.claude -t ars-claude:2.1.311 "$SCRATCH/empty"
 docker build -f fixtures/recordings/agent-cli/images/Dockerfile.codex  -t ars-codex:0.163.0  "$SCRATCH/empty"
-docker pull python:3.13-alpine   # runs the fake provider and the sinkhole
+docker pull python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e   # runs the fake provider and the sinkhole (the tests pin this digest)
 
 # 2. Start the fake world: an internal network, the fake provider, the sinkhole and the fake bridge.
 python3 fixtures/recordings/agent-cli/harness/spike.py world-up
