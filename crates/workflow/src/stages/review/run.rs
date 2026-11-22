@@ -37,6 +37,7 @@ use super::evidence::Evidence;
 use super::findings::{EngineFields, Reviewer, wrap};
 use super::handler::{RECORD, ReviewHandler, VERDICT};
 use super::locate::PatchIndex;
+use super::rejection::{Rejection, refuse};
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::handlers::{NamedArtifact, StageContext, StageError, StageOutput};
 use crate::prompts::{Assembler, ContentClass, IndependentRequest, Input, Limits, Scope, Source};
@@ -47,6 +48,9 @@ use crate::stages::implementation::input::{
 use crate::stages::implementation::run::{close, open_sandbox, workspace_error};
 use crate::stages::implementation::seams::{WorkspaceAccess, verify_read_only_tools};
 use crate::stages::validation::POLICY_INPUT;
+
+/// The name of this stage in the reason of a refused answer.
+const STAGE: &str = "code review";
 
 fn slug(text: &str) -> Result<Slug, StageError> {
     Slug::parse(text).map_err(|_| StageError::Internal)
@@ -399,7 +403,7 @@ async fn review_in(
     // A reply the redactor cannot judge is not kept.
     let output_text = match std::str::from_utf8(output.as_bytes()) {
         Ok(text) => text,
-        Err(_) => return Err(StageError::InvalidOutput),
+        Err(_) => return Err(refuse(ctx, STAGE, &Rejection::NotText)),
     };
     let redacted_output = match handler.redactor.redact_str(output_text) {
         Ok(redacted) => {
@@ -416,13 +420,15 @@ async fn review_in(
                 AuditKind::SecretRedactedOrBlocked,
                 AuditDecision::Denied,
             ));
-            return Err(StageError::InvalidOutput);
+            return Err(refuse(ctx, STAGE, &Rejection::NotRedactable));
         }
     };
-    let validated = handler
+    let Ok(validated) = handler
         .schemas
         .check(&manifest.outputs_schema, redacted_output.as_bytes())
-        .map_err(|_| StageError::InvalidOutput)?;
+    else {
+        return Err(refuse(ctx, STAGE, &Rejection::Schema));
+    };
     let fields = EngineFields {
         review: ReviewId::from_uuid(ports.ids.new_uuid()),
         job: identity.job,
@@ -445,11 +451,14 @@ async fn review_in(
         diff: patch_ref.sha256.clone(),
         gate_reports: evidence.references(),
     };
-    let wrapped = wrap(&validated.value, &fields).map_err(|_| StageError::InvalidOutput)?;
+    let wrapped = match wrap(&validated.value, &fields) {
+        Ok(wrapped) => wrapped,
+        Err(problem) => return Err(refuse(ctx, STAGE, &Rejection::of_wrap(&problem))),
+    };
     // A finding of a verdict other than PASS cites a file and a line that the patch shows.
     if wrapped.verdict.verdict != Verdict::Pass {
         let index = PatchIndex::parse(patch);
-        for finding in &wrapped.verdict.findings {
+        for (position, finding) in wrapped.verdict.findings.iter().enumerate() {
             let shown = finding.location.as_ref().is_some_and(|location| {
                 location.line_start.is_some_and(|start| {
                     index.shows(
@@ -462,7 +471,7 @@ async fn review_in(
                 })
             });
             if !shown {
-                return Err(StageError::InvalidOutput);
+                return Err(refuse(ctx, STAGE, &Rejection::not_shown(position, finding)));
             }
         }
     }

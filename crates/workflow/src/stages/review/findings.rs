@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 
 use factory_domain::contracts::review_verdict::{DefectClass, Finding, Severity};
-use factory_domain::contracts::{Contract, ReviewVerdict};
+use factory_domain::contracts::{Contract, ReadProblem, ReviewVerdict, Violations};
 use factory_domain::ids::{GateReportId, JobId, ReviewId, StageRunId};
 use factory_domain::machines::rework::DEFECT_PRECEDENCE;
 use factory_domain::values::{Sha256Digest, Slug, Timestamp};
@@ -37,9 +37,23 @@ pub enum WrapProblem {
     /// The document is not an object, or names a field the contract does not.
     #[error("the review findings do not have the shape of their contract")]
     Shape,
-    /// The wrapped verdict breaks a rule of the `review-verdict` contract.
+    /// The wrapped verdict breaks a rule of the `review-verdict` contract. `fields` names the
+    /// fields of the rules it breaks, written like `findings[0].location`, in the order they were
+    /// found; it is empty when the document does not read as a verdict at all. The paths are made
+    /// by the contract check, never copied from the answer.
     #[error("the review verdict breaks a rule of its contract")]
-    Contract,
+    Contract {
+        /// The fields of the broken rules.
+        fields: Vec<String>,
+    },
+}
+
+/// The fields of the broken rules, in the order they were found.
+fn broken_fields(violations: &Violations) -> Vec<String> {
+    violations
+        .iter()
+        .map(|violation| violation.path.clone())
+        .collect()
 }
 
 /// Who reviewed and on what, as the factory knows it.
@@ -123,11 +137,21 @@ pub fn wrap(output: &Value, fields: &EngineFields) -> Result<Wrapped, WrapProble
     }
     document.insert("metadata".into(), metadata(fields));
     document.insert("inputs_reviewed".into(), inputs_reviewed(fields));
-    let mut verdict = ReviewVerdict::from_json_value(Value::Object(document))
-        .map_err(|_| WrapProblem::Contract)?;
+    let mut verdict = ReviewVerdict::read_value(Value::Object(document)).map_err(|problem| {
+        WrapProblem::Contract {
+            fields: match problem {
+                ReadProblem::Rules(violations) => broken_fields(&violations),
+                ReadProblem::Shape(_) => Vec::new(),
+            },
+        }
+    })?;
     let reported_findings = verdict.findings.len();
     verdict.findings = deduplicate(std::mem::take(&mut verdict.findings));
-    verdict.validate().map_err(|_| WrapProblem::Contract)?;
+    verdict
+        .validate()
+        .map_err(|violations| WrapProblem::Contract {
+            fields: broken_fields(&violations),
+        })?;
     Ok(Wrapped {
         verdict,
         reported_findings,
@@ -365,7 +389,11 @@ mod tests {
     fn a_field_the_contract_does_not_name_is_refused() {
         let mut output = value(PASS);
         output["approved_by"] = json!("nobody");
-        assert_eq!(wrap(&output, &fields()).unwrap_err(), WrapProblem::Contract);
+        // The answer does not read as a verdict, so no field of a rule can be named.
+        assert_eq!(
+            wrap(&output, &fields()).unwrap_err(),
+            WrapProblem::Contract { fields: Vec::new() }
+        );
     }
 
     #[test]
@@ -389,12 +417,44 @@ mod tests {
     }
 
     #[test]
+    fn an_informational_finding_of_a_verdict_other_than_pass_still_needs_a_line() {
+        // FR-023 and SC-008 hold for every severity; the contract names the field it misses.
+        let mut output = value(CHANGES);
+        let note = json!({
+            "finding_id": "example-file-missing",
+            "severity": "info",
+            "category": "documentation",
+            "title": "The example names a file the change does not hold",
+            "description": "The README runs the tool on a file that is not in the repository.",
+            "confidence": 0.6,
+            "proposed_next_action": "fix",
+            "defect_class": "documentation"
+        });
+        output["findings"]
+            .as_array_mut()
+            .expect("findings")
+            .push(note);
+        let index = output["findings"].as_array().expect("findings").len() - 1;
+        match wrap(&output, &fields()).unwrap_err() {
+            WrapProblem::Contract { fields } => {
+                assert!(
+                    fields.contains(&format!("findings[{index}].location")),
+                    "{fields:?}"
+                );
+            }
+            other @ WrapProblem::Shape => panic!("expected a contract problem, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_review_with_no_gate_report_cannot_be_wrapped() {
         let mut empty = fields();
         empty.gate_reports.clear();
+        // The list of gate reports is typed as non-empty, so this is a shape problem of the
+        // verdict, and no rule's field is named.
         assert_eq!(
             wrap(&value(PASS), &empty).unwrap_err(),
-            WrapProblem::Contract
+            WrapProblem::Contract { fields: Vec::new() }
         );
     }
 

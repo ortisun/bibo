@@ -6,7 +6,7 @@
 
 ## What this page is, and what it is not
 
-A first end-to-end run needs five questions answered from telemetry: is a lease stuck, is a stage over its deadline, is a gate blocked by the environment, is a job over its budget, and did the redactor remove something. This page gives, for each, the exact span, metric and log names that exist in the code today, and says plainly which ones do not exist yet.
+A first end-to-end run needs five questions answered from telemetry: is a lease stuck, is a stage over its deadline, is a gate blocked by the environment, is a job over its budget, and did the redactor remove something. A sixth question is answered from the audit log only: why did the factory refuse a reviewer's answer. This page gives, for each, the exact span, metric and log names that exist in the code today, and says plainly which ones do not exist yet.
 
 Two rules for reading it.
 
@@ -35,6 +35,7 @@ The troubleshooter ([guide](../guides/troubleshooter.md), ADR 0021) is designed 
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
 | 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | `factory_spend_usd_total` by provider and stage | none | `budget_threshold_crossed` | none |
 | 5. Redaction hit | marker `[REDACTED:` in attribute values and names | `factory_redactions_total` by kind | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a count of the log writer's own redactions |
+| 6. A reviewer's answer refused | `factory.attempt`, with `factory.error_class` | none | none | `gate_result`, decision `denied`, with the reason | the refused answer itself, and a repair attempt that is told the reason |
 
 ## 1. Stuck lease
 
@@ -130,6 +131,31 @@ The troubleshooter ([guide](../guides/troubleshooter.md), ADR 0021) is designed 
 4. If the marker is `scrubber_unavailable`, or a "log line dropped" line appears, look for the cause in the redactor's limits (the input was larger than the limit) before anything else.
 
 **Not yet emitted.** The log writer's own redactions are not counted: a search for the marker in the logs is the only way to find a hit in a log line. Do not rely on the marker, or on the counter, to show that no secret reached a log line or a span: the redactor only knows the shapes in the security policy and the values registered with it.
+
+## 6. A reviewer's answer refused
+
+**What it means.** The code reviewer or the documentation reviewer answered, and the factory refused the answer before it became a verdict. The attempt fails with the class `INVALID_OUTPUT`. The engine retries it while the stage contract allows, and then the stage run waits for a person with the reason `attempt-limit`. A refusal is not a verdict on the change: it says the answer broke a rule the factory checks in code.
+
+The rules, in the order they are checked:
+
+1. The answer is UTF-8 text and the redactor can judge it (code review only, which redacts the answer before it is stored).
+2. The answer follows the output schema of the agent.
+3. The answer has the shape of the review findings: an object, with no field the contract does not name.
+4. The wrapped verdict keeps the rules of the `review-verdict` contract. One of them is that every finding of a verdict other than `PASS`, of any severity, `info` too, names a file and a line (FR-023, SC-008).
+5. That line is inside one hunk of a patch the reviewer was shown: the code patch for the code reviewer, the code patch or the documentation patch for the documentation reviewer.
+
+**What exists.**
+
+- Audit record `gate_result`, decision `denied`, with a reason of fixed words that names the stage, the rule the answer broke and, for rule 4, the fields of the contract it broke (for example `findings[1].location`). For rule 5 the reason names the finding by its place in the verdict, the path it cites, cleaned to the characters a repository path uses and cut at 120 characters, and the lines. It never holds the words of a finding.
+- Span `factory.attempt` with `factory.error_class` = `INVALID_OUTPUT`, as for every attempt that fails this way.
+
+**First check.**
+
+1. Read the reason: `SELECT created_at, reason FROM audit_events WHERE stage_run_id = '<stage run>' AND action = 'gate_result.denied' ORDER BY sequence;` as the observer login.
+2. When the finding cites a path that no patch shows, the reviewer objected to a file the change did not touch: a file an example names, a gate, or a page the writer left alone. Fix the cause (for example, add the file the example needs to the repository), then send the stage run back from its wait.
+3. When the answer broke the schema or the contract, compare the reviewer's prompt with the schema it embeds: a prompt that says less than the schema leads the model to break it.
+
+**Not yet emitted.** The refused answer itself is not kept, so a person reads the rule it broke, not the text. The next attempt is not told why the last one was refused, so it can make the same mistake again: telling it needs the attempt context to carry the reason of the attempt before, which is a change to the engine's ports.
 
 ## Keeping this page true
 

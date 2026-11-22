@@ -921,3 +921,37 @@ async fn a_writer_that_needs_a_decision_asks_a_person() {
     assert!(!passed(&rig, StageKind::Documenting).await);
     assert_eq!(rig.events_of("workspace.commit:").len(), commits);
 }
+
+// ---- A refused answer says why ---------------------------------------------------------------
+
+/// The first real run that stopped here: the reviewer objected to `notes.txt`, a file the README's
+/// example names and the change does not hold, so no patch shows the line it cites. The answer is
+/// refused as before, and the audit log now says which finding and which path, so a person can
+/// act on it (the runbook of first-run signals, signal 6).
+#[tokio::test]
+async fn a_finding_on_a_file_no_patch_shows_is_refused_with_its_reason_in_the_audit_log() {
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    reviewer_will(&rig, reviewer_asks("documentation", "notes.txt", 1));
+    run(&rig, StageKind::Documenting).await;
+    let outcome = run(&rig, StageKind::DocumentationReview).await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert!(verdict_of(&rig).await.is_none(), "nothing was stored");
+    let refusals: Vec<String> = rig
+        .world
+        .audit(rig.job)
+        .await
+        .into_iter()
+        .filter(|record| record.event.action.as_str() == "gate_result.denied")
+        .map(|record| record.event.reason)
+        .collect();
+    assert_eq!(
+        refusals,
+        [
+            "documentation review: the reviewer's answer was refused: finding 1 cites `notes.txt` at line 1, which no patch the reviewer was shown holds in one hunk"
+        ]
+    );
+}

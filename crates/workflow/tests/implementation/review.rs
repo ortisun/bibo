@@ -513,6 +513,31 @@ async fn invalid_reviewer_output_is_never_accepted() {
             other => panic!("{name}: {other:?}"),
         }
         assert!(rig.verdict().await.is_none(), "{name}: nothing was stored");
+        // The audit log says which rule the answer broke (runbook of first-run signals, 6).
+        let refusals: Vec<String> = rig
+            .world
+            .audit(rig.job)
+            .await
+            .into_iter()
+            .filter(|record| {
+                record.event.action.as_str() == "gate_result.denied"
+                    && record
+                        .event
+                        .reason
+                        .starts_with("code review: the reviewer's answer was refused: ")
+            })
+            .map(|record| record.event.reason)
+            .collect();
+        assert_eq!(refusals.len(), 1, "{name}: {refusals:?}");
+        let expected = match name {
+            "a line outside the patch" => Some("finding 1 cites `src/output.rs` at line 999,"),
+            "a file outside the patch" => Some("finding 1 cites `src/lib.rs` at line 1,"),
+            "a finding with no line" => Some("contract at findings[0].location.line_start"),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            assert!(refusals[0].contains(expected), "{name}: {}", refusals[0]);
+        }
         // The next attempt, with a valid answer, is accepted.
         rig.reviewer_returns(pass());
         let (_, outcome) = rig.run_next().await;

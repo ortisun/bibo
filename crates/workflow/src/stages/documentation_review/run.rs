@@ -68,6 +68,7 @@ use crate::stages::implementation::run::{close, open_sandbox, seam_error, worksp
 use crate::stages::implementation::seams::{WorkspaceAccess, verify_read_only_tools};
 use crate::stages::review::findings::{EngineFields, Reviewer, wrap};
 use crate::stages::review::locate::PatchIndex;
+use crate::stages::review::rejection::{Rejection, refuse};
 
 fn slug(text: &str) -> Result<Slug, StageError> {
     Slug::parse(text).map_err(|_| StageError::Internal)
@@ -170,6 +171,9 @@ pub(crate) const NO_ANSWERS: &str =
 /// The most bytes of one answer of a person that are read. An answer is short text typed by a
 /// person; the bound only stops a pasted file from filling the prompt.
 const ANSWER_MAX_BYTES: usize = 8 * 1024;
+
+/// The name of this stage in the reason of a refused answer.
+const STAGE: &str = "documentation review";
 
 /// The documentation diff the reviewer reads: the sections of the whole change, from the job's
 /// base to the documentation head, that touch the pages the gates judged. [`NO_PAGES`] when they
@@ -668,10 +672,12 @@ pub(super) async fn execute(
     let (output, usage, denials, runtime_version, model, independence) = reviewed?;
 
     // The answer, checked twice and wrapped.
-    let validated = handler
+    let Ok(validated) = handler
         .schemas
         .check(&manifest.outputs_schema, output.as_bytes())
-        .map_err(|_| StageError::InvalidOutput)?;
+    else {
+        return Err(refuse(ctx, STAGE, &Rejection::Schema));
+    };
     let gate_ids: Vec<_> = reports
         .iter()
         .zip(&report_values)
@@ -701,13 +707,16 @@ pub(super) async fn execute(
         diff: docs_ref.sha256.clone(),
         gate_reports: gate_ids.clone(),
     };
-    let wrapped = wrap(&validated.value, &fields).map_err(|_| StageError::InvalidOutput)?;
+    let wrapped = match wrap(&validated.value, &fields) {
+        Ok(wrapped) => wrapped,
+        Err(problem) => return Err(refuse(ctx, STAGE, &Rejection::of_wrap(&problem))),
+    };
     // A finding of a verdict other than PASS cites a file and a line that one of the two patches
     // shows.
     if wrapped.verdict.verdict != Verdict::Pass {
         let code_index = PatchIndex::parse(&code_patch);
         let docs_index = PatchIndex::parse(&docs_patch);
-        for finding in &wrapped.verdict.findings {
+        for (position, finding) in wrapped.verdict.findings.iter().enumerate() {
             let shown = finding.location.as_ref().is_some_and(|location| {
                 location.line_start.is_some_and(|start| {
                     let start = u32::try_from(start.get()).unwrap_or(0);
@@ -719,7 +728,7 @@ pub(super) async fn execute(
                 })
             });
             if !shown {
-                return Err(StageError::InvalidOutput);
+                return Err(refuse(ctx, STAGE, &Rejection::not_shown(position, finding)));
             }
         }
     }
