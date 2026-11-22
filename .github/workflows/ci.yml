@@ -23,10 +23,8 @@ name: ci
 
 on:
   pull_request:
-  # develop too: the merged result is checked, and its run leaves the build cache that pull
-  # requests into develop start from (a pull request can read its base branch's cache, never write it).
   push:
-    branches: [main, develop]
+    branches: [main]
   workflow_dispatch:
 
 # Read the repository, nothing else.
@@ -57,13 +55,15 @@ jobs:
     env:
       FACTORY_DB_ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
       # Build settings of this runner only; they change no result. Line tables keep panics and
-      # backtraces readable and make the debug build a fraction of its size, which is what lets it
-      # fit the build cache below; incremental compilation is of no use in a fresh checkout.
+      # backtraces readable and cut the test build from about 9 to about 6 minutes; incremental
+      # compilation is of no use in a fresh checkout. (A cache of the build output was measured and
+      # dropped: 23 GB, about 3 minutes to restore and save, and no faster build, because a fresh
+      # checkout gives every workspace file a new time stamp.)
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
       # Most tests wait on PostgreSQL or Docker rather than on a CPU, so twice the runner's four
-      # CPUs run at once.
+      # CPUs run at once: the tests took about 17 minutes instead of 21.
       NEXTEST_TEST_THREADS: "8"
     steps:
       # v7.0.1 (2026-07-20). The whole history is needed: scripts/ci.sh scans every commit for
@@ -120,21 +120,6 @@ jobs:
           cp .github/tools/pyright/package.json .github/tools/pyright/package-lock.json "$RUNNER_TEMP/pyright/"
           (cd "$RUNNER_TEMP/pyright" && npm ci --ignore-scripts --no-audit --no-fund)
           echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
-
-      # The crates and the build output of the last run with the same lockfile and toolchain, so an
-      # unchanged crate is not compiled again. The key names everything a build depends on outside
-      # the sources; cargo rebuilds whatever the sources changed. v6.1.0 (2026-06-26).
-      - name: Restore the Cargo build cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
 
       # The image builds below need the Docker engine the images were pinned with: Docker 28, which
       # the runner ships, has a BuildKit that refuses the reproducible export of the recipes with the
@@ -243,11 +228,6 @@ jobs:
                      echo "the gate must run as the runner user with CAP_CHOWN alone"; id; grep ^Cap /proc/self/status; exit 1
                    fi
                    exec scripts/ci.sh --json-file "$RUNNER_TEMP/ci-summary.json"'
-
-      # How big the build output is, which decides whether the cache above stays useful.
-      - name: Show the size of the build output
-        if: always()
-        run: du -sh target 2>/dev/null || true
 
       # v7.0.2 (2026-10-07). Kept even when the run fails, because that is when it is read.
       - name: Keep the machine-readable summary
