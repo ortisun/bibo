@@ -333,6 +333,40 @@ The `measurement` entry as text and its path. Writing it into the project's repo
 - A window may be at most 366 days long. The cost of a snapshot grows with the tenant's history, not with the window, and the request runs under the API's ordinary deadline and rate limit.
 - A snapshot names the commit of the factory that computed it. The build sets it at compile time in the environment variable `FACTORY_BUILD_COMMIT` (a full Git object id). To build such a binary by hand: `FACTORY_BUILD_COMMIT=$(git rev-parse HEAD) cargo build --release -p factory-api`. A build without it answers `503`: an entry that cannot say which code computed it cannot be computed again, so it is not handed out. Options weighed: a commit sent by the caller was rejected, because the caller could name any commit; a value in the configuration file was rejected, because it can drift from the binary that runs.
 
+## The weekly measurement pull request
+
+Each week the factory proposes the snapshot of each project into that project's knowledge base, as a draft pull request a person merges. The decisions and the options weighed are in [ADR 0031](../adr/0031-factory-documents-proposed-through-one-port.md); the port is [ports v1.6](ports-v1.6.md). The code is `KnowledgeMeasurements` in `crates/composition`.
+
+### When and for whom
+
+- Before a claim, at most once an hour for each tenant the worker serves, the worker takes **the last whole ISO week**: from the Monday 00:00 UTC of the week before the current one, to the Monday 00:00 UTC of the current one.
+- It reads the facts of the tenant once and computes the snapshot of each repository the jobs belong to, from the jobs of that repository only (ADR 0029, Decision 6: a project's numbers go into that project's knowledge base). A repository whose week has no sample of any measured metric is skipped.
+- A repository that is not enabled, or whose default branch has no `docs/knowledge/README.md`, is skipped: the project has not accepted the knowledge base.
+- A week a repository has already proposed is not looked at again by the same process.
+
+### The decision
+
+The newest pull request of the factory's App on `factory/knowledge-measurements` and the week its marker names decide:
+
+| Newest pull request | Its week | What the factory does |
+|---|---|---|
+| none | — | Opens a pull request with the week |
+| open | before this week | Adds this week to it: the entry and its line in the index, on top of its branch. Title and body name this week |
+| open | this week or later | Nothing |
+| merged or closed | before this week | Opens a new pull request with the week, from the tip of the default branch |
+| merged or closed | this week or later | Nothing: it is recorded, or a person declined it |
+| any | none (no marker) | Opens a new pull request, or updates the open one, as for an earlier week |
+
+Weeks compare by their identifier: `M-2026-W09` is before `M-2026-W47`, and `M-2025-W52` before `M-2026-W01`.
+
+### What the pull request holds
+
+- `docs/knowledge/measurements/<id>.md`, the entry the section "A measurement entry" describes.
+- `docs/knowledge/README.md` with the entry's line added under "Measurements", in the order of the identifiers. The index is read from the head of the open pull request when there is one, else from the default branch; nothing else in it changes. When the section does not exist yet it is added after the sections of the kinds that come before it.
+- A title and a body from a closed template: the week, the number of weeks the pull request holds, and that a person reviews and merges it.
+
+The factory never merges, never writes to the default branch, and writes only the branch `factory/knowledge-measurements`. The audit record `knowledge.measurement_proposed` names the repository, the week and the pull request. The switch `github.propose_knowledge_measurements` (on by default) turns it off.
+
 ## Tier A settings
 
 A setting can be changed automatically only if it is declared here with its safe range. The first candidates:
@@ -408,6 +442,6 @@ Every decision is the file `docs/knowledge/improvements/<identifier>-<name>.md`,
 | Reading a job's spend from the columns of `attempts` for the budget check | Not built. The engine still sums the events |
 | The operator's command and the API route behind it | Built: `factory-cli metrics snapshot`, `GET /v1/process-metrics/snapshot` |
 | Passing `FACTORY_BUILD_COMMIT` to the build of the service images | Built: `infra/service-images/build.sh` passes the commit of a clean tree, and nothing for a tree with changes that are not committed. Checked by the static rules of the recipe only; the images were not built with it yet |
-| A schedule for the snapshot job | Not built |
+| The weekly measurement pull request into each project's knowledge base | Built: `KnowledgeMeasurements` in `crates/composition`. Not verified against the real GitHub |
 | Writing the entries into a project's knowledge base by pull request | Not built. It needs the knowledge base of [ADR 0028](../adr/0028-project-knowledge-base.md) |
 | The retrospective agent and the scheduled sweeps | Not built |

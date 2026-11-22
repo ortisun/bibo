@@ -28,10 +28,10 @@
 //! The one division, the spend over the merged pull requests, is made by
 //! `factory_domain::metrics` when the entry is built, half to even to a whole millionth.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use factory_domain::contracts::domain_event::{AggregateKind, DomainEvent};
-use factory_domain::ids::TaskNodeId;
+use factory_domain::ids::{RepositoryId, TaskNodeId};
 use factory_domain::machines::limits::ReworkTrack;
 use factory_domain::metrics::{
     ComparisonSettings, Measurement, Metric, MetricError, MicroUsd, Milliseconds, Samples, Window,
@@ -460,19 +460,34 @@ pub async fn read_job_records(tx: &mut dyn Tx) -> Result<Vec<JobRecord>, StoreEr
     Ok(records)
 }
 
-/// Builds the snapshot of `window` for the transaction's tenant. `previous` is the window to
+/// The repositories the records belong to, each once, in the order of their identifiers.
+pub fn repositories_of(records: &[JobRecord]) -> Vec<RepositoryId> {
+    let set: BTreeSet<RepositoryId> = records.iter().map(|record| record.job.repository).collect();
+    set.into_iter().collect()
+}
+
+/// The records of the jobs of one repository. A project's numbers are computed from that
+/// project's jobs only (ADR 0029, Decision 6).
+pub fn of_repository(records: &[JobRecord], repository: RepositoryId) -> Vec<JobRecord> {
+    records
+        .iter()
+        .filter(|record| record.job.repository == repository)
+        .cloned()
+        .collect()
+}
+
+/// Builds the snapshot of `window` from records already read. `previous` is the window to
 /// compare with, when there is one. `computed_at_commit` is the commit of the factory that runs.
-pub async fn process_snapshot(
-    tx: &mut dyn Tx,
+pub fn snapshot_of(
+    records: &[JobRecord],
     window: Window,
     previous: Option<Window>,
     computed_at_commit: GitSha,
     settings: ComparisonSettings,
 ) -> Result<Measurement, SnapshotError> {
-    let records = read_job_records(tx).await?;
-    let current = window_facts(&records, window)?;
+    let current = window_facts(records, window)?;
     let before = previous
-        .map(|previous| window_facts(&records, previous))
+        .map(|previous| window_facts(records, previous))
         .transpose()?;
     Ok(snapshot(
         window,
@@ -482,4 +497,18 @@ pub async fn process_snapshot(
         before.as_ref(),
         settings,
     )?)
+}
+
+/// Builds the snapshot of `window` for the transaction's tenant, from every job of the tenant.
+/// `previous` is the window to compare with, when there is one. `computed_at_commit` is the
+/// commit of the factory that runs.
+pub async fn process_snapshot(
+    tx: &mut dyn Tx,
+    window: Window,
+    previous: Option<Window>,
+    computed_at_commit: GitSha,
+    settings: ComparisonSettings,
+) -> Result<Measurement, SnapshotError> {
+    let records = read_job_records(tx).await?;
+    snapshot_of(&records, window, previous, computed_at_commit, settings)
 }

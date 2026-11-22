@@ -162,7 +162,7 @@ fn aut_8_no_gate_reports_is_not_a_conclusion_that_passes_a_required_check() {
 /// The adapter has no way to merge or to mark a pull request ready: `Method` has one PUT,
 /// `PutContents`, which the client and the transport refuse for any path but a file of the
 /// contents API (ports v1.4, ADR 0026), and no source file of the crate names a merge or ready
-/// endpoint, a GraphQL mutation or auto-merge. `project_rules.rs` is the only user of that PUT.
+/// endpoint, a GraphQL mutation or auto-merge. `proposals.rs` is the only user of that PUT.
 #[test]
 fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {
     let sources = [
@@ -173,10 +173,7 @@ fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {
         ("token.rs", include_str!("../../src/token.rs")),
         ("adapter.rs", include_str!("../../src/adapter.rs")),
         ("edits.rs", include_str!("../../src/edits.rs")),
-        (
-            "project_rules.rs",
-            include_str!("../../src/project_rules.rs"),
-        ),
+        ("proposals.rs", include_str!("../../src/proposals.rs")),
     ];
     let wire = include_str!("../../src/wire.rs");
     let put_variants: Vec<&str> = wire
@@ -208,7 +205,7 @@ fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {
     );
     for (name, source) in sources {
         // The client names it in its guard; only the rules host sends it.
-        if name != "project_rules.rs" && name != "client.rs" {
+        if name != "proposals.rs" && name != "client.rs" {
             assert!(
                 !source.contains("PutContents"),
                 "{name} uses the PUT of the contents API"

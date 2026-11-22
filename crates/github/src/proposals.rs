@@ -1,24 +1,26 @@
-//! The project rules host: the draft pull request that installs or updates the project's rules
-//! for agents in `AGENTS.md` (ports v1.4, ADR 0026).
+//! The proposal host: the draft pull requests of the factory's own documents in a project, the
+//! rules for agents in `AGENTS.md` (ports v1.4, ADR 0026) and the weekly measurement of the
+//! knowledge base (ports v1.6, ADR 0031).
 //!
 //! # What this code does and does not do
 //!
 //! * **Its own credential.** Every request uses a token narrowed to one repository and to
 //!   `contents: write`, `pull_requests: write` and `metadata: read`, minted for this purpose
-//!   (`PermissionSet::project_rules`). No stage token is widened and the delivery token is not
-//!   borrowed.
-//! * **One branch.** Every write names the branch [`RULES_BRANCH`] and no other: the reference
-//!   calls are built from that constant, and a file is written with `branch` set to it. The
-//!   default branch is only ever the base of the pull request. A base that names the rules branch
-//!   itself is refused before any request.
+//!   (`PermissionSet::project_rules`, for every proposal). No stage token is widened and the
+//!   delivery token is not borrowed.
+//! * **A closed set of branches.** Every write names the branch of the proposal, a
+//!   [`ProposalBranch`], and no other: the reference calls are built from
+//!   [`ProposalBranch::name`], and a file is written with `branch` set to it. The default branch
+//!   is only ever the base of the pull request. A base that names a proposal branch is refused
+//!   before any request, and so is a marker of another branch's kind.
 //! * **No merge.** The one `PUT` is [`Method::PutContents`], which the client refuses for any
 //!   path but a file of the contents API. The pull request is opened as a draft and never marked
 //!   ready.
-//! * **Only the factory's own pull requests.** A pull request on the rules branch counts only when
+//! * **Only the factory's own pull requests.** A pull request on a proposal branch counts only when
 //!   the factory's App opened it (its bot login), so a person cannot steer the decision with a
 //!   pull request from a branch of the same name.
 //! * **Text is checked first.** The title and the body pass the secret check and the output
-//!   hygiene rules before anything is written. The version marker is added after the cleaning,
+//!   hygiene rules before anything is written. The marker is added after the cleaning,
 //!   because the cleaning removes HTML comments.
 //! * **Paced.** Every request that changes something waits for the one-second gap GitHub asks of
 //!   an integration (the status writer's pacer).
@@ -43,9 +45,9 @@ use factory_ports::githost::{
     GitHostError, GitScope, PullRequestLifecycle, PullRequestRef, Rejection,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoPath};
-use factory_ports::project_rules::{
-    DefaultBranch, FileAt, ProjectRulesHost, RULES_BRANCH, RulesProposal, RulesPullRequest,
-    RulesScope, proposal_marker, proposed_version,
+use factory_ports::proposal::{
+    DefaultBranch, FileAt, ProposalBranch, ProposalHost, ProposalPullRequest, ProposalScope,
+    PullRequestProposal,
 };
 use serde_json::{Value, json};
 
@@ -58,17 +60,17 @@ use crate::text::{Outbound, TextKind};
 use crate::token::TokenClass;
 use crate::wire::Method;
 
-/// The project rules host of the GitHub adapter.
+/// The proposal host of the GitHub adapter.
 #[derive(Clone)]
-pub struct GithubProjectRules {
+pub struct GithubProposals {
     client: Arc<Client>,
     outbound: Arc<Outbound>,
     pacer: Arc<Pacer>,
 }
 
-impl std::fmt::Debug for GithubProjectRules {
+impl std::fmt::Debug for GithubProposals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("GithubProjectRules")
+        f.write_str("GithubProposals")
     }
 }
 
@@ -78,7 +80,7 @@ struct Existing {
     bytes: Option<Vec<u8>>,
 }
 
-impl GithubProjectRules {
+impl GithubProposals {
     pub(crate) fn new(
         client: Arc<Client>,
         outbound: Arc<Outbound>,
@@ -94,7 +96,7 @@ impl GithubProjectRules {
 
     /// The scope the token minter sees. `TokenClass::ProjectRules` ignores the stage; the
     /// delivery stage is not named so that nothing can read it as a grant.
-    fn git_scope(scope: &RulesScope) -> GitScope {
+    fn git_scope(scope: &ProposalScope) -> GitScope {
         GitScope {
             tenant: scope.tenant,
             job: scope.session,
@@ -183,13 +185,18 @@ impl GithubProjectRules {
         Ok(Some(Existing { sha, bytes }))
     }
 
-    /// The newest pull request of the factory's own App on the rules branch.
-    async fn latest(&self, scope: &GitScope) -> Result<Option<Value>, GitHostError> {
+    /// The newest pull request of the factory's own App on `branch`.
+    async fn latest(
+        &self,
+        scope: &GitScope,
+        branch: ProposalBranch,
+    ) -> Result<Option<Value>, GitHostError> {
+        let name = branch.name();
         let bot = self.client.minter().app_identity().await?.bot_login;
         let target = format!(
             "{}/pulls?state=all&head={}&per_page=100",
             repo_path(&scope.repo),
-            percent_encode_component(&format!("{}:{RULES_BRANCH}", scope.repo.owner()))
+            percent_encode_component(&format!("{}:{name}", scope.repo.owner()))
         );
         let pages = self
             .client
@@ -202,15 +209,21 @@ impl GithubProjectRules {
         Ok(pages
             .items
             .into_iter()
-            .filter(|pull| pull["head"]["ref"].as_str() == Some(RULES_BRANCH))
+            .filter(|pull| pull["head"]["ref"].as_str() == Some(name))
             .filter(|pull| pull["user"]["login"].as_str() == Some(bot.as_str()))
             .filter(|pull| pull["number"].as_u64().is_some())
             .max_by_key(|pull| pull["number"].as_u64().unwrap_or(0)))
     }
 
-    /// Points the rules branch at `commit`: creates it, or moves it there.
-    async fn reset_branch(&self, scope: &GitScope, commit: &CommitSha) -> Result<(), GitHostError> {
-        let encoded = percent_encode_component(RULES_BRANCH);
+    /// Points `branch` at `commit`: creates it, or moves it there.
+    async fn reset_branch(
+        &self,
+        scope: &GitScope,
+        branch: ProposalBranch,
+        commit: &CommitSha,
+    ) -> Result<(), GitHostError> {
+        let name = branch.name();
+        let encoded = percent_encode_component(name);
         let lookup = format!("{}/git/ref/heads/{encoded}", repo_path(&scope.repo));
         match self.read(scope, &lookup).await {
             Ok(_) => {
@@ -229,7 +242,7 @@ impl GithubProjectRules {
                     scope,
                     Method::Post,
                     &target,
-                    &json!({ "ref": format!("refs/heads/{RULES_BRANCH}"), "sha": commit.as_str() }),
+                    &json!({ "ref": format!("refs/heads/{name}"), "sha": commit.as_str() }),
                 )
                 .await?;
             }
@@ -250,12 +263,12 @@ fn lifecycle_of(pull: &Value) -> PullRequestLifecycle {
 }
 
 #[async_trait]
-impl ProjectRulesHost for GithubProjectRules {
+impl ProposalHost for GithubProposals {
     fn fidelity(&self) -> Fidelity {
         Fidelity::Real
     }
 
-    async fn default_branch(&self, scope: &RulesScope) -> Result<DefaultBranch, GitHostError> {
+    async fn default_branch(&self, scope: &ProposalScope) -> Result<DefaultBranch, GitHostError> {
         let git = Self::git_scope(scope);
         let repository = self.read(&git, &repo_path(&scope.repo)).await?;
         let name = repository["default_branch"]
@@ -277,7 +290,7 @@ impl ProjectRulesHost for GithubProjectRules {
 
     async fn read_file(
         &self,
-        scope: &RulesScope,
+        scope: &ProposalScope,
         commit: &CommitSha,
         path: &RepoPath,
         max_bytes: u64,
@@ -296,25 +309,36 @@ impl ProjectRulesHost for GithubProjectRules {
         Ok(FileAt::Found(bytes))
     }
 
-    async fn latest_rules_pull_request(
+    async fn latest_pull_request(
         &self,
-        scope: &RulesScope,
-    ) -> Result<Option<RulesPullRequest>, GitHostError> {
+        scope: &ProposalScope,
+        branch: ProposalBranch,
+    ) -> Result<Option<ProposalPullRequest>, GitHostError> {
         let git = Self::git_scope(scope);
-        Ok(self.latest(&git).await?.map(|pull| RulesPullRequest {
+        let Some(pull) = self.latest(&git, branch).await? else {
+            return Ok(None);
+        };
+        let head = pull["head"]["sha"]
+            .as_str()
+            .and_then(|sha| CommitSha::parse(sha).ok())
+            .ok_or(GitHostError::Unavailable)?;
+        Ok(Some(ProposalPullRequest {
             pr: PullRequestRef {
                 repo: scope.repo.clone(),
                 number: pull["number"].as_u64().unwrap_or(0),
             },
             lifecycle: lifecycle_of(&pull),
-            proposed_version: pull["body"].as_str().and_then(proposed_version),
+            head,
+            marker: pull["body"]
+                .as_str()
+                .and_then(|body| branch.marker_of(body)),
         }))
     }
 
     async fn propose(
         &self,
-        scope: &RulesScope,
-        proposal: &RulesProposal,
+        scope: &ProposalScope,
+        proposal: &PullRequestProposal,
     ) -> Result<PullRequestRef, GitHostError> {
         if proposal.title.trim().is_empty()
             || proposal.body.trim().is_empty()
@@ -322,26 +346,35 @@ impl ProjectRulesHost for GithubProjectRules {
         {
             return Err(GitHostError::Rejected(Rejection::TextBounds));
         }
-        if proposal.base.name.as_str() == RULES_BRANCH {
+        if !proposal.branch.accepts(&proposal.marker) {
+            return Err(GitHostError::Rejected(Rejection::Other));
+        }
+        if ProposalBranch::ALL
+            .iter()
+            .any(|branch| branch.name() == proposal.base.name.as_str())
+        {
             return Err(GitHostError::BranchNotAllowed);
         }
+        let branch = proposal.branch;
+        let name = branch.name();
         // The text first: nothing is written when it holds a secret.
         let title = self.outbound.prepare(TextKind::Title, &proposal.title)?;
         let cleaned = self.outbound.prepare(TextKind::Markdown, &proposal.body)?;
-        let body = format!("{cleaned}\n\n{}", proposal_marker(proposal.version));
+        let body = format!("{cleaned}\n\n{}", proposal.marker.text());
         let git = Self::git_scope(scope);
 
         let open = self
-            .latest(&git)
+            .latest(&git, branch)
             .await?
             .filter(|pull| lifecycle_of(pull) == PullRequestLifecycle::Open)
             .and_then(|pull| pull["number"].as_u64());
         if open.is_none() {
             // A branch left from a merged or declined proposal starts again from the tip.
-            self.reset_branch(&git, &proposal.base.commit).await?;
+            self.reset_branch(&git, branch, &proposal.base.commit)
+                .await?;
         }
         for file in &proposal.files {
-            let existing = self.existing(&git, RULES_BRANCH, &file.path).await?;
+            let existing = self.existing(&git, name, &file.path).await?;
             if existing
                 .as_ref()
                 .is_some_and(|e| e.bytes.as_deref() == Some(file.bytes.as_slice()))
@@ -349,13 +382,9 @@ impl ProjectRulesHost for GithubProjectRules {
                 continue;
             }
             let mut request = json!({
-                "message": format!(
-                    "Install the factory's rules for agents, version {}: {}",
-                    proposal.version,
-                    file.path.as_str()
-                ),
+                "message": proposal.marker.commit_message(&file.path),
                 "content": base64_encode(&file.bytes),
-                "branch": RULES_BRANCH,
+                "branch": name,
             });
             if let (Some(existing), Some(object)) = (existing, request.as_object_mut()) {
                 object.insert("sha".into(), json!(existing.sha));
@@ -380,7 +409,7 @@ impl ProjectRulesHost for GithubProjectRules {
                         &pulls,
                         &json!({
                             "title": title,
-                            "head": RULES_BRANCH,
+                            "head": name,
                             "base": proposal.base.name.as_str(),
                             "body": body,
                             "draft": true,
@@ -399,7 +428,7 @@ impl ProjectRulesHost for GithubProjectRules {
                     }
                     // Another worker opened it between the look and the open: update that one.
                     Err(GitHostError::Rejected(_)) => self
-                        .latest(&git)
+                        .latest(&git, branch)
                         .await?
                         .filter(|pull| lifecycle_of(pull) == PullRequestLifecycle::Open)
                         .and_then(|pull| pull["number"].as_u64())

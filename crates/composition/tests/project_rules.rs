@@ -4,7 +4,7 @@
 //! credential that ends with each check.
 //!
 //! **Fake, and labelled so:** the store (`InMemoryStore`), the code host
-//! (`FakeProjectRulesHost`, `FakeChangeHost`) and the clock. Nothing here reaches GitHub.
+//! (`FakeProposalHost`, `FakeChangeHost`) and the clock. Nothing here reaches GitHub.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,13 +24,13 @@ use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::clock::Uuid;
 use factory_ports::paths::RepoRef;
-use factory_ports::project_rules::RULES_BRANCH;
+use factory_ports::proposal::RULES_BRANCH;
 use factory_ports::store::{
     AuditFilter, NewJob, NewPrincipal, PipelineScope, PrincipalKind, Store,
 };
 use factory_testkit::clock::{FakeClock, SequentialIdGenerator};
 use factory_testkit::githost::FakeChangeHost;
-use factory_testkit::project_rules::{DEFAULT_BRANCH, FakeProjectRulesHost};
+use factory_testkit::proposal::{DEFAULT_BRANCH, FakeProposalHost};
 use factory_testkit::store::InMemoryStore;
 
 fn uid(n: u128) -> Uuid {
@@ -45,7 +45,7 @@ fn repo() -> RepoRef {
 struct Rig {
     clock: Arc<FakeClock>,
     store: Arc<InMemoryStore>,
-    host: Arc<FakeProjectRulesHost>,
+    host: Arc<FakeProposalHost>,
     changes: Arc<FakeChangeHost>,
     jobs: Arc<ActiveJobs>,
     tenant: TenantId,
@@ -58,7 +58,7 @@ impl Rig {
         let store = Arc::new(InMemoryStore::new(clock.clone()));
         let tenant = TenantId::from_uuid(uid(1));
         let repository = store.seed_repository(tenant);
-        let host = Arc::new(FakeProjectRulesHost::new());
+        let host = Arc::new(FakeProposalHost::new());
         host.person_commit(
             &repo(),
             DEFAULT_BRANCH,
@@ -403,7 +403,7 @@ async fn before_a_claim_the_repository_of_a_waiting_job_is_checked_once_an_hour(
 async fn a_failure_of_the_host_is_reported_and_changes_nothing() {
     let rig = Rig::new();
     // The rules host knows no repository of that name: every read is NotFound.
-    let other = Arc::new(FakeProjectRulesHost::new());
+    let other = Arc::new(FakeProposalHost::new());
     let sync = ProjectRulesSync::new(ProjectRulesSyncDeps {
         store: rig.store.clone(),
         host: other.clone(),

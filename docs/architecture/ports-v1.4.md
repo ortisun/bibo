@@ -1,6 +1,7 @@
 # Ports v1.4: the project rules host
 
 - Status: proposed on 2026-11-20, **pending confirmation by the architect**. Specifies an addition to `ports-v1.1`, `ports-v1.2` and the troubleshooter's v1.3 (the section "Ports v1.3" of `ports-v1.2.md`). This document was v1.3 until the merge of `develop` on 2026-11-20, where the troubleshooter's triage issue writer already held that number. The decisions and the reasons are in [ADR 0026](../adr/0026-project-rules-installed-by-pull-request.md); the design is in [project-rules.md](project-rules.md).
+- Revised by [ports v1.6](ports-v1.6.md) on 2026-11-21: the port is now `ProposalHost`, and the names below are those of v1.4. The contract of section 3 still holds, for every branch of `ProposalBranch`.
 - Form: reference. Read the design first for why, this file for what.
 - What this does not change: every port of `ports-v1.1`, `ports-v1.2` and v1.3 and its contract, the state machine and the schemas of `schemas/`.
 - Verified against: the fake GitHub server of the test kit (FX-GH, which gained one route) and an in-memory fake. **Not verified against the real GitHub.**

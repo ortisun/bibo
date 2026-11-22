@@ -36,7 +36,8 @@ use factory_ports::store::{
     TaskNode, TaskRun,
 };
 use factory_workflow::process_metrics::{
-    JobRecord, QUERY_VERSION, SnapshotError, process_snapshot, read_job_records, window_facts,
+    JobRecord, QUERY_VERSION, SnapshotError, of_repository, process_snapshot, read_job_records,
+    repositories_of, snapshot_of, window_facts,
 };
 use support::World;
 
@@ -988,4 +989,48 @@ async fn twenty_merges_show_the_cost_and_the_rate_as_numbers() {
         "{text}"
     );
     drop(world);
+}
+
+#[tokio::test]
+async fn each_repository_is_measured_from_its_own_jobs_only() {
+    let (_world, records) = completed_job().await;
+    let mine = records[0].job.repository;
+    // A copy of the job in another repository of the same tenant.
+    let mut other = records[0].clone();
+    other.job.repository = factory_domain::ids::RepositoryId::from_uuid(uuid::Uuid::from_u128(
+        (0xfeed_u128 << 80) | (0x7_u128 << 76) | (0b10_u128 << 62) | 0xfeed,
+    ));
+    let theirs = other.job.repository;
+    let both = vec![records[0].clone(), other];
+
+    let mut expected = vec![mine, theirs];
+    expected.sort();
+    assert_eq!(repositories_of(&both), expected);
+    assert_eq!(of_repository(&both, mine).len(), 1);
+    assert_eq!(of_repository(&both, theirs).len(), 1);
+    assert!(
+        of_repository(&both, mine)
+            .iter()
+            .all(|record| record.job.repository == mine)
+    );
+
+    // The tenant's snapshot counts both jobs; each repository's counts its own.
+    let count = |records: &[JobRecord]| match &window_facts(records, day()).expect("fits")
+        [&Metric::HumanWaitTime]
+    {
+        Samples::Durations(samples) => samples.len(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(count(&both), 2);
+    assert_eq!(count(&of_repository(&both, mine)), 1);
+    let commit = GitSha::parse(&"b".repeat(40)).expect("valid");
+    let own = snapshot_of(
+        &of_repository(&both, mine),
+        day(),
+        None,
+        commit,
+        ComparisonSettings::default(),
+    )
+    .expect("a snapshot");
+    assert_eq!(own.query_version, QUERY_VERSION);
 }

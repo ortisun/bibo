@@ -10,7 +10,7 @@
 //! through the token of a stage, in a scope that names a job, and a job that has ended can never
 //! mint a token again. The fate is read after the job has ended, so this port has a credential of
 //! its own that belongs to no job and no stage: `metadata: read` and `pull_requests: read`, for
-//! one repository (the same reasoning as [`ProjectRulesHost`](crate::project_rules::ProjectRulesHost),
+//! one repository (the same reasoning as [`ProposalHost`](crate::proposal::ProposalHost),
 //! ADR 0026). It can write nothing.
 //!
 //! # The contract

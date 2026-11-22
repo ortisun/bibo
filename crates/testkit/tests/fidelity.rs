@@ -13,7 +13,7 @@ use factory_ports::clock::{CancelSignal, Clock, IdGenerator};
 use factory_ports::githost::{ChangeHost, IssueSource, WebhookVerifier};
 use factory_ports::issue_status::IssueStatusWriter;
 use factory_ports::process::ProcessRunner;
-use factory_ports::project_rules::ProjectRulesHost;
+use factory_ports::proposal::ProposalHost;
 use factory_ports::registry::AgentRegistry;
 use factory_ports::require_permitted;
 use factory_ports::sandbox::SandboxProvider;
@@ -27,7 +27,7 @@ use factory_testkit::clock::{FakeCancel, FakeClock, SequentialIdGenerator};
 use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
 use factory_testkit::issue_status::FakeIssueStatusWriter;
 use factory_testkit::process::ScriptedProcessRunner;
-use factory_testkit::project_rules::FakeProjectRulesHost;
+use factory_testkit::proposal::FakeProposalHost;
 use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
@@ -103,8 +103,8 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
             TriageIssueWriter::fidelity(&FakeTriageIssues::new()),
         ),
         (
-            "ProjectRulesHost",
-            ProjectRulesHost::fidelity(&FakeProjectRulesHost::new()),
+            "ProposalHost",
+            ProposalHost::fidelity(&FakeProposalHost::new()),
         ),
         (
             "WebhookVerifier",
@@ -148,7 +148,7 @@ const PORT_SOURCES: [&str; 13] = [
     include_str!("../../ports/src/githost.rs"),
     include_str!("../../ports/src/issue_status.rs"),
     include_str!("../../ports/src/process.rs"),
-    include_str!("../../ports/src/project_rules.rs"),
+    include_str!("../../ports/src/proposal.rs"),
     include_str!("../../ports/src/registry.rs"),
     include_str!("../../ports/src/sandbox.rs"),
     include_str!("../../ports/src/spec.rs"),
