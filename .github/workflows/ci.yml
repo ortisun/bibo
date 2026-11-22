@@ -204,8 +204,19 @@ jobs:
 
       # The one command that matters. It exits 0 only if every step passed, 1 if a step failed,
       # and 3 if a step was BLOCKED (for example a missing tool). The summary is also saved.
+      # It runs as the runner user with CAP_CHOWN as an ambient capability and nothing more: what a
+      # worker on a Linux host holds to hand the job token file to the sandbox user (ADR 0035).
+      # Root only sets the capability; the checks never run as root.
       - name: Run scripts/ci.sh
-        run: scripts/ci.sh --json-file "$RUNNER_TEMP/ci-summary.json"
+        run: |
+          set -euo pipefail
+          command -v capsh >/dev/null || sudo apt-get install -y -qq libcap2-bin
+          sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" \
+            capsh --caps="cap_setpcap,cap_setuid,cap_setgid+ep cap_chown+eip" --keep=1 --user="$(id -un)" --addamb=cap_chown \
+            -- -c 'if ! grep -q "^CapAmb:.*0000000000000001$" /proc/self/status || [ "$(id -u)" = 0 ]; then
+                     echo "the gate must run as the runner user with CAP_CHOWN alone"; id; grep ^Cap /proc/self/status; exit 1
+                   fi
+                   exec scripts/ci.sh --json-file "$RUNNER_TEMP/ci-summary.json"'
 
       # v7.0.2 (2026-10-07). Kept even when the run fails, because that is when it is read.
       - name: Keep the machine-readable summary

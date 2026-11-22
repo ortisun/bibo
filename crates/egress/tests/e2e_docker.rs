@@ -237,13 +237,16 @@ impl Lab {
         .expect("the broker starts");
         let broker_port = broker.local_addr().port();
 
-        // Where the host is, as a container on the bridge sees it.
+        // Where the host is, as a container on the bridge sees it. Docker Desktop defines the name;
+        // a Linux daemon defines it only when asked, and `host-gateway` is the same address that
+        // Docker Desktop gives the name, so the flag changes nothing there.
         let resolved = docker(
             &scope,
             &label(strings(&[
                 "run",
                 "--rm",
                 "--pull=never",
+                "--add-host=host.docker.internal:host-gateway",
                 PROVIDER_IMAGE,
                 "python3",
                 "-c",

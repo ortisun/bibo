@@ -21,6 +21,8 @@
 //! Desktop the file sharing layer shows it to the container as owned by the container user
 //! anyway (experiment B1). The supervisor reads the file from inside the started container before
 //! it releases the workload, so a host where neither holds fails at provisioning and not later.
+//! On a Linux host the worker is given `CAP_CHOWN` for this, and nothing more (ADR 0035): the
+//! first Linux CI run, as an unprivileged user, failed every agent sandbox here.
 
 use std::fs;
 use std::io::{self, Write};
