@@ -65,6 +65,7 @@ COPY schemas schemas
 COPY migrations migrations
 COPY docs/database/tests/role_readiness.sql docs/database/tests/role_readiness.sql
 COPY fixtures/readability/rules.json fixtures/readability/rules.json
+COPY onboarding/project-rules onboarding/project-rules
 
 # The commit the programs are built from, as a full Git object id. The API states it in every process
 # snapshot (ADR 0029) and answers 503 on that route when it is empty. It is declared here and given to

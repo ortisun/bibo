@@ -24,6 +24,9 @@
 !docs/database/tests/role_readiness.sql
 # Read at compile time by `crates/workflow/src/gates/readability/catalog.rs` (include_str!).
 !fixtures/readability/rules.json
+# Read at compile time by `crates/domain/src/project_rules.rs` (include_str!): the project rules the
+# installer writes into a repository.
+!onboarding/project-rules/
 
 # Inside what is let in: files that are named like a credential.
 **/.DS_Store
