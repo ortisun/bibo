@@ -121,3 +121,5 @@ A job moves through 13 stages: intake, repository intelligence, specification, d
 | Know why it is built this way | [Decision records](adr/README.md) |
 | Report a vulnerability | [Security policy](SECURITY.md) |
 | Change Bibo itself | [Contributing](CONTRIBUTING.md) |
+
+Bibo is released under the [MIT License](https://github.com/ortisun/bibo/blob/develop/LICENSE).

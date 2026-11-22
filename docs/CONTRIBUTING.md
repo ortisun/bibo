@@ -69,6 +69,10 @@ The preview is at `http://127.0.0.1:8000` and reloads when a file changes. `scri
 2. Give it a Conventional Commit title and say in the body what changed, why, and how you checked it.
 3. CI must pass. A reviewer from [`CODEOWNERS`](../.github/CODEOWNERS) reviews it.
 
+## License of contributions
+
+Bibo is released under the [MIT License](../LICENSE). By opening a pull request, you agree that your contribution is released under the same license.
+
 ## Report a vulnerability
 
 Do not open a public issue for a security problem. Follow the [security policy](SECURITY.md).

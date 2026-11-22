@@ -6,7 +6,7 @@ site_url: https://ortisun.github.io/bibo/
 repo_url: https://github.com/ortisun/bibo
 repo_name: ortisun/bibo
 edit_uri: edit/develop/docs/
-copyright: Bibo, the universal agentic software factory
+copyright: Copyright &copy; 2026 The Bibo Authors. Released under the <a href="https://github.com/ortisun/bibo/blob/develop/LICENSE">MIT License</a>.
 
 docs_dir: docs
 exclude_docs: |

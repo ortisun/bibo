@@ -85,6 +85,10 @@ The API records what people ask for and never runs work. The worker holds the en
 
 `scripts/docs-check.sh` checks these documents the way the factory checks the documents of others: links, runnable examples, command names, configuration keys, walkthrough citations and readability. The [documentation policy](docs/reference/documentation-policy.md) holds the rules, and [documentation checks](docs/reference/documentation-checks.md) says what each check reads.
 
+## License
+
+Bibo is released under the [MIT License](LICENSE).
+
 ## Working in this repository
 
 The toolchain is pinned in `rust-toolchain.toml`. `scripts/ci.sh` runs every check, on a laptop and in CI alike. `scripts/setup-tools.sh` installs the tools those checks run, at the versions in `scripts/lib/tool-pins.sh`, into `.tools/bin`; add `--check` to see what is missing without changing anything. `scripts/docs-site.sh serve` previews the documentation site. The master prompt, `universal_agentic_software_factory_master_prompt.md`, is the source of the requirements.
