@@ -1,0 +1,14 @@
+# infra/compose/host-worker.yml - add to local.yml when the worker runs on the host (ADR 0036).
+#
+#   FACTORY_COMPOSE_OVERRIDE=infra/compose/host-worker.yml scripts/local-up.sh --api
+#
+# The worker on the host writes its artifacts under FACTORY_HOST_DIR/artifacts (scripts/worker-host.sh). The API reads
+# the same store, so this file mounts that folder where local.yml mounts the artifacts volume. On Linux the files
+# belong to the host user, so also set FACTORY_UID=$(id -u) FACTORY_GID=$(id -g): the API then runs as that user.
+# Docker Desktop for macOS shows the files to the container as its own.
+services:
+  api:
+    volumes:
+      - type: bind
+        source: ${FACTORY_HOST_DIR:?set FACTORY_HOST_DIR to the host worker's folder, as scripts/worker-host.sh uses it}/artifacts
+        target: /var/lib/factory/artifacts

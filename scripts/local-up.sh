@@ -6,6 +6,10 @@
 #   scripts/local-up.sh --factory        Also start the factory services (profile "factory"). Needs their images, which
 #                                        nobody builds yet (no Dockerfile for api or worker): see
 #                                        docs/operations/local-deployment.md.
+#   scripts/local-up.sh --api            Like --factory, but start the API only and not the container worker: the worker
+#                                        then runs on the host (scripts/worker-host.sh, ADR 0036). With
+#                                        FACTORY_COMPOSE_OVERRIDE=infra/compose/host-worker.yml the API reads the host
+#                                        worker's artifact store.
 #   scripts/local-up.sh --bare           Start PostgreSQL and the artifact volume only: no migrations, no logins. This is
 #                                        the empty target that scripts/restore.sh needs.
 #   scripts/local-up.sh --status         Show what is running.
@@ -37,6 +41,7 @@ OPS_TOOL=local-up
 
 action=up
 profile=local
+factory_services="api worker"
 yes=0
 bare=0
 while [ $# -gt 0 ]; do
@@ -46,6 +51,7 @@ while [ $# -gt 0 ]; do
     --destroy) action=destroy ;;
     --yes) yes=1 ;;
     --factory) profile=factory ;;
+    --api) profile=factory factory_services=api ;;
     --bare) bare=1 ;;
     -h | --help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) ops_usage_error "unknown argument '$1' (try --help)" ;;
@@ -142,7 +148,8 @@ for pair in "factory_worker:f|f|f|t|f|f|f|f" "factory_api:f|f|f|f|f|t|f|t" "fact
 done
 
 # The factory services start last, so the database they check at start-up is ready for them.
-if [ "$profile" = factory ]; then ops_stack_up api worker; fi
+# shellcheck disable=SC2086 # the list of service names is meant to split
+if [ "$profile" = factory ]; then ops_stack_up $factory_services; fi
 ops_lock_release
 
 ops_say "local-up: ready."

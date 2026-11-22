@@ -1,0 +1,4 @@
+id       = worker-host-tests
+title    = The host worker's start script refuses forbidden roots, names what is missing and writes a configuration the worker reads (scripts/tests/test_worker_host.py, ADR 0036)
+requires = python3 bash uv
+run      = python3 -I scripts/tests/test_worker_host.py
