@@ -80,15 +80,10 @@ pub async fn deployment_in(
         ))
         .await;
     }
-    let port = db
-        .text("SELECT current_setting('port')")
-        .await
-        .expect("a port");
-    let sockets = db
-        .text("SELECT current_setting('unix_socket_directories')")
-        .await
-        .expect("a socket directory");
-    let host = sockets.split(',').next().expect("a host").trim().to_owned();
+    // The address the tests reach the server at: its socket directory when it is the private
+    // server, its host name when it runs in Docker or is named by FACTORY_DB_ADMIN_URL.
+    let host = db.server.host().to_owned();
+    let port = db.server.port();
     let url = |login: &str| {
         format!(
             "host={host} port={port} user={login} password={password} dbname={}",
