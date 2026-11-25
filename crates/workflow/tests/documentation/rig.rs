@@ -49,9 +49,9 @@ use factory_workflow::engine::{AttemptOutcome, Engine};
 use factory_workflow::handlers::{HandlerRegistry, RunIdentity};
 use factory_workflow::scheduler::ClaimedAttempt;
 use factory_workflow::stages::implementation::{
-    CommitIdentity, Hold, ImplementationConfig, ImplementationDeps, ImplementationHandler,
-    LedgerError, PlannedTask, ReworkContext, ReworkSource, SeamError, StageBudget, TaskLedger,
-    TaskRecord, TaskRunRecord, WorkspaceAccess, WorkspaceAgentSpecs,
+    AnswerHistory, CommitIdentity, Hold, ImplementationConfig, ImplementationDeps,
+    ImplementationHandler, LedgerError, PlannedTask, ReworkContext, ReworkSource, SeamError,
+    StageBudget, TaskLedger, TaskRecord, TaskRunRecord, WorkspaceAccess, WorkspaceAgentSpecs,
 };
 use factory_workflow::stages::intake::{AgentOutputCheck, CapabilityProbes};
 use serde_json::{Value, json};
@@ -597,6 +597,102 @@ impl ReworkSource for RigRework {
     }
 }
 
+// ---- the answers of earlier runs -----------------------------------------------------------
+
+/// What the composition root reads from the store for a reviewing stage: the answers people gave
+/// to the earlier runs of the same stage in the job. This one reads the same records, the links
+/// `human-answer-<k>` the engine wrote, from the rig's store, so a test that answers and then
+/// sends the work back sees what the factory would hand on. `unavailable` makes it fail as a
+/// store that cannot be read.
+pub struct RigAnswers {
+    store: Arc<dyn factory_ports::store::Store>,
+    artifacts: Arc<Granting>,
+    tenant: factory_domain::ids::TenantId,
+    pub unavailable: Mutex<bool>,
+}
+
+impl RigAnswers {
+    pub fn new(
+        store: Arc<dyn factory_ports::store::Store>,
+        artifacts: Arc<Granting>,
+        tenant: factory_domain::ids::TenantId,
+    ) -> Self {
+        Self {
+            store,
+            artifacts,
+            tenant,
+            unavailable: Mutex::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl AnswerHistory for RigAnswers {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn earlier_answers(&self, run: &RunIdentity) -> Result<Vec<String>, SeamError> {
+        use factory_ports::store::ArtifactDirection;
+        use factory_workflow::engine::links::answer_attempts_before;
+        if *lock(&self.unavailable) {
+            return Err(SeamError::Unavailable);
+        }
+        let scope = TenantScope::new(self.tenant);
+        let mut tx = self
+            .store
+            .begin(scope)
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        let runs = tx
+            .list_stage_runs(run.job)
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        let this = runs
+            .iter()
+            .find(|candidate| candidate.value.id == run.stage_run)
+            .ok_or(SeamError::NotFound)?
+            .value
+            .clone();
+        let mut earlier: Vec<_> = runs
+            .iter()
+            .filter(|candidate| {
+                candidate.value.kind == this.kind && candidate.value.run_number < this.run_number
+            })
+            .map(|candidate| (candidate.value.run_number, candidate.value.id))
+            .collect();
+        earlier.sort_by_key(|(number, _)| *number);
+        let mut answers = Vec::new();
+        for (_, id) in earlier {
+            let mut linked: Vec<_> = tx
+                .list_stage_run_artifacts(id)
+                .await
+                .map_err(|_| SeamError::Unavailable)?
+                .into_iter()
+                .filter(|link| link.direction == ArtifactDirection::Input)
+                .filter_map(|link| {
+                    answer_attempts_before(link.role.as_str()).map(|before| (before, link.sha256))
+                })
+                .collect();
+            linked.sort_by_key(|(before, _)| *before);
+            for (_, sha256) in linked {
+                let reference = factory_domain::contracts::ArtifactRef {
+                    sha256,
+                    media_type: factory_domain::values::MediaType::parse("text/plain")
+                        .expect("a media type"),
+                    size_bytes: None,
+                };
+                let bytes = ArtifactStore::get(&*self.artifacts, &scope, &reference)
+                    .await
+                    .map_err(|_| SeamError::Unavailable)?;
+                answers.push(String::from_utf8_lossy(&bytes).trim().to_owned());
+            }
+        }
+        let _ = tx.rollback().await;
+        Ok(answers)
+    }
+}
+
 // ---- spies ---------------------------------------------------------------------------------
 
 pub struct SpyWorkspaces {
@@ -997,6 +1093,8 @@ pub struct Rig {
     pub validation: Arc<Mutex<crate::standin::ValidationMode>>,
     /// The feedback the documenting stage receives in a rework round.
     pub doc_rework: Arc<RigRework>,
+    /// What the documentation review reads of the answers to its earlier runs.
+    pub answers: Arc<RigAnswers>,
     /// What the program and the tools in the verify sandbox do.
     pub cli: Arc<Mutex<Cli>>,
 }
@@ -1054,10 +1152,24 @@ fn programs(sandbox: FakeSandbox, cli: &Arc<Mutex<Cli>>) -> FakeSandbox {
                 exit(0, "")
             }
         })
-        .with_program("target/debug/word-count", move |words, _| {
+        .with_program("target/debug/word-count", move |words, stdin| {
             let state = lock(&program).clone();
             match words.get(1).map(String::as_str) {
                 Some("--help") => exit(0, &state.help),
+                // With no file the program counts its standard input, so a test sees what the
+                // gate fed it.
+                Some("--json") if words.len() == 2 => {
+                    let text = String::from_utf8_lossy(stdin);
+                    exit(
+                        0,
+                        &format!(
+                            "{{\"lines\":{},\"words\":{},\"characters\":{}}}\n",
+                            text.matches('\n').count(),
+                            text.split_whitespace().count(),
+                            text.chars().count()
+                        ),
+                    )
+                }
                 Some("--json") => exit(0, &state.json),
                 Some(_) => exit(2, ""),
                 None => exit(0, "words\n"),
@@ -1098,6 +1210,7 @@ fn register_documentation(
     check: &Arc<StandInCheck>,
     specs: &Arc<RigSpecs>,
     doc_rework: &Arc<RigRework>,
+    answers: &Arc<RigAnswers>,
 ) {
     let budget = StageBudget {
         wall_time_seconds: 3_600,
@@ -1207,6 +1320,7 @@ fn register_documentation(
                 schemas: check.clone(),
                 specs: specs.clone(),
                 probes: Arc::new(FixedProbes),
+                answers: answers.clone(),
             },
         );
         handlers.register(Arc::new(handler)).expect("one handler");
@@ -1421,7 +1535,19 @@ impl Rig {
             log.clone(),
         );
         let doc_rework = Arc::new(RigRework::new());
-        register_documentation(&mut handlers, &options, &check, &specs, &doc_rework);
+        let answers = Arc::new(RigAnswers::new(
+            world.store.clone(),
+            artifacts.clone(),
+            world.tenant,
+        ));
+        register_documentation(
+            &mut handlers,
+            &options,
+            &check,
+            &specs,
+            &doc_rework,
+            &answers,
+        );
         let engine = Engine::new(deps, world.config.clone(), handlers).expect("the engine starts");
         Self {
             world,
@@ -1440,6 +1566,7 @@ impl Rig {
             job,
             validation,
             doc_rework,
+            answers,
             cli,
         }
     }

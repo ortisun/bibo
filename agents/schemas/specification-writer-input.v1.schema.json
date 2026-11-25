@@ -15,6 +15,11 @@
       "maxLength": 1048576,
       "description": "The normalized request: its title and body."
     },
+    "documented_behaviour": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "What the repository documents about the previous release: the README and the guides the repository map lists, read at the commit the work starts from, each under a heading with its path. It says so when the repository documents nothing."
+    },
     "clarification_answers": {
       "type": "string",
       "maxLength": 1048576,

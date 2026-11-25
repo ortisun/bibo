@@ -44,6 +44,30 @@ Claude Code 2.1.325 records a typed command in its stream only when the prompt i
 
 The skill runs inside a sandbox container. The host audits the tree when the sandbox is gone, commits only what the workspace ingestion returned, reads the files back, and hands the exact bytes to the provider. The provider builds a typed `SpecificationContract` that every later stage reads. No later stage reads Spec Kit files.
 
+## What the writer reads about the previous release
+
+A request often keeps a behaviour "as it is today", and a good specification then states the facts it relies on: the messages, the exit statuses, the inputs the previous release accepts or refuses. The writer can only take those facts from what the repository documents. Its file tools read the feature directory, `.specify/` and `inputs/` only (`policies/security.yaml`), so a README in the checkout is outside what it may read.
+
+In real run 38 the writer was given no documented behaviour at all. The independent reviewer found, one attempt after another, a fact the draft had assumed instead of taking it from the repository: the exit status table of the README (status 1 for input that cannot be read or is not valid UTF-8, status 2 for more than one file, status 0 for success), and a requirement that said MAY for a behaviour its own scenario required. The specification needed four attempts after its two rework rounds, and the facts reached it only through a person's answers.
+
+So the stage gives the writer the documented behaviour as an input, like the request:
+
+- **What.** The documents the repository map lists as the README and as guides under `docs/`, read at the commit the work starts from, the README first and at most twenty documents. A file that cannot be read, or is not text, is named as such. Each file is redacted like every other repository text, and each sits under a heading with its path. The file holds at most 64 KiB; a file that does not fit is named and left out, never cut in the middle. When the map lists no such document, the file says so in one sentence, so an absence is stated and not an empty file.
+- **Where.** `inputs/documented-behaviour.md`, written before each skill runs and removed before the tree is read back, like the request and the answers. It is inside the writer's read scope, so no permission widens. The evidence of the stage records the hash of the file and the paths whose text it holds (`documented_behaviour`).
+- **The agent definition.** The writer's prompt (`agents/specification-writer/prompt.md`, version 1.3.0) and its input schema list the input `documented_behaviour` and the same two rules, so the definition and the instruction say one thing.
+- **What the writer is told.** The fixed instruction of `specify`, of a repair and of applying answers names the file and says to read it as untrusted source material. Two rules come with it. A requirement that states how the previous release behaves cites, under Assumptions, the documented fact and the file and section it comes from, for example the exit status table of `README.md`. A person's answer is a source too: a behaviour that a person has answered is cited under Assumptions with its clarification, and is never asked again. Only a behaviour that no file documents and no person has answered is a `NEEDS CLARIFICATION` marker, not an assumption. Real run 39 showed why: without the second source, the writer refused a person's answer about the previous release and asked the same question after every answer. And a behaviour the feature requires, including every behaviour an acceptance scenario checks, is written with MUST; MAY is only for a behaviour that is allowed and that no scenario requires.
+
+The independent reviewer is not changed: its bar stays where it is, and it still reports a fact the draft did not take from the repository.
+
+The options weighed:
+
+| Option | What it would do | Why it was or was not chosen |
+|---|---|---|
+| The stage writes the documented behaviour into `inputs/` from the repository map (chosen) | The writer reads the same documents every run, chosen by repository intelligence, redacted and bounded. | No permission widens, the input is known and can be hashed, the instruction stays a closed template with one fixed path, and the map already says which files are the README and the guides. |
+| Widen the writer's read scope to `README.md` and `docs/**` and tell it to read the checkout | The writer reads the files itself. | It widens a permission of the security policy, which is the security specialist's decision, and the writer would choose what to read with no record of what it saw. |
+| A rule in the deterministic self-check that rejects MAY in a requirement a scenario cites | It would catch the run 38 MAY at no cost of a round. | MAY can rightly grant a permission in a requirement whose scenario checks another part of it, and the self-check would push the writer to change a correct word. The rule in the instruction says the same thing without that risk. |
+| Change only the writer's prompt, with no new input | The writer is asked to cite documented behaviour. | It cannot cite what it cannot read: the request and the answers do not hold the README. |
+
 ## What the contract holds
 
 Spec Kit supplies requirements (`FR-nnn`), stories with priorities, scenarios, success criteria (`SC-nnn`), edge cases, key entities, assumptions, clarification decisions and `[NEEDS CLARIFICATION]` markers. It does not supply an identifier, a version, a commit, hashes, risks, constraints or an out-of-scope list. The factory adds those. A structure the parser does not recognize is `SPEC_PARSE_ERROR`. The parser never guesses.

@@ -122,7 +122,7 @@ The factory writes the smallest set of documents that covers what the change tou
 5. Add the domain content from 8.4 only when the change touches that behavior.
 6. Record the result in the documentation plan: audience, pages affected, owner, sources and acceptance criteria. The plan is the master prompt's `documentation_plan.json`. Its schema is defined by the documentation stage package. Until it exists, the information is kept in a structured record and never in titles.
 7. If nothing needs documenting, the answer is NOT_APPLICABLE with the rule that led there, not a blank PASSED. The PR text is still written and still checked.
-8. The documents may already be written when the documentation stage runs: the builder often updates the README and the changelog together with the code. The documentation writer then checks each page of the plan against the change, marks it covered, lists no file as written and changes nothing. The stage accepts that report and records that no documentation commit was needed; the documentation review still reads the pages. The writer's word is contradicted, and the attempt fails, only when it names a file as written and the tree shows no change. A file the writer changes outside the README, the changelog and `docs/` is a separate matter: the scope gate fails it and nothing is committed.
+8. The documents may already be written when the documentation stage runs: the builder often updates the README and the changelog together with the code. The documentation writer then checks each page of the plan against the change, marks it covered, lists no file as written and changes nothing. The stage accepts that report and records that no documentation commit was needed; the documentation review still reads the pages, because the reviewer is shown the pages the gates judged and not only what the writer committed (9.9). The writer's word is contradicted, and the attempt fails, only when it names a file as written and the tree shows no change. A file the writer changes outside the README, the changelog and `docs/` is a separate matter: the scope gate fails it and nothing is committed.
 
 For a significant new product, the full onboarding set applies (last row of 8.3).
 
@@ -304,7 +304,7 @@ Master prompt section 10.4 lists what a PASS requires. This table says who decid
 |---|---|---|---|---|
 | Clear English and readable titles | The readability gate, then the reviewer | No blocking finding | The gate cannot load its word lists | The change adds no human-facing text |
 | Internal links and anchors resolve | Code | Every target exists on the branch | The link checker cannot run | The documents contain no links |
-| Examples run and print what the page says | Code, in the sandbox | Each example executed, exit code 0, output matches | The runtime or tool for an example is missing | No document contains an executable example |
+| Examples run and print what the page says | Code, in the sandbox ([9.10](#910-how-the-gate-finds-and-runs-examples)) | Each example executed, exit code 0, output matches | The runtime or tool for an example is missing | No changed document shows a command that names the program |
 | Named commands, flags, keys and variables exist | Code, against real help output and the source | Every name found | The program cannot be run | No document names one |
 | API, command line and schema references match the source | Code where generated, reviewer otherwise | The page equals the generated output | The generator is missing | No public interface changed |
 | Diagrams parse and render | Code | The diagram renders. A syntax check alone is reported as syntax-checked, not rendered | The parser or renderer is missing | No diagram exists |
@@ -316,6 +316,76 @@ Master prompt section 10.4 lists what a PASS requires. This table says who decid
 The result is stored with the source-to-document traceability, the documentation changes, the lint results and the reviewer decisions.
 
 How a named flag counts as the program's own: the program's help output lists it, or the program's source code at the documentation commit holds it as a quoted literal (for example `"--json"`). The help output is not enough on its own, because a project may decide that its help text does not change: in the thirty-fifth real run the owner kept the help text of the word count tool as it was, the README documented the new `--json` flag, and the check called the flag invented. A command counts as the program's when the help output names it. An environment variable counts when the source reads it or the help output names it.
+
+### 9.9 What the documentation reviewer reads
+
+The independent documentation reviewer must judge exactly the pages the gates judged, over the same commits. The gate report binds its result to three commits: the job's base commit, the code head and the documentation head. The reviewer's inputs are bound to the same three.
+
+| Input | What it holds | Commits |
+|---|---|---|
+| `frozen_specification` | The frozen specification. | None |
+| `documentation_plan` | The documentation plan. | None |
+| `code_diff` | The patch of the code change. | Base commit to code head |
+| `documentation_diff` | The patch of every page the gates judged: each Markdown file the change adds or modifies, and nothing else. | Base commit to documentation head |
+| `gate_reports` | The reports of the readability gate and of each check, in words. | Those of the gate report |
+| `people_answers` | What people answered when a documentation review of this job asked them a question: the earlier runs of the stage first, then this run. It comes from the factory's own record of their answers, and it says so when nobody was asked. | None |
+| `project_rules` | The project's rules for agents ([project rules](../architecture/project-rules.md)). | Base commit |
+
+Why the documentation diff starts at the base commit and not at the code head. The builder often writes the README and the changelog together with the code, and the writer then changes nothing (8.2, item 8). A patch from the code head to the documentation head is empty in that case. The gates still judge those pages, because they read the change from the base commit. In the thirty-seventh real run the reviewer received the empty patch, could not see the pages, and stopped the job to ask a person whether a documentation commit was missing. A page written in the code commits is therefore in both diffs. That is intended: the code diff shows what the code does, the documentation diff shows every page under review.
+
+When no page changed, the documentation diff is not left empty. It says, in one sentence, that no documentation page changed between the base commit and the documentation head. An empty block means something went wrong; a stated absence does not.
+
+Why the reviewer receives people's answers. When the reviewer returns `NEEDS_HUMAN`, a person answers and the stage runs again. Without the answer the reviewer asks the same question again. The answers come from the factory's record, never from a file the writer wrote, so they are not the writer's account of its work. They are decisions of the people who own the job: the reviewer reads them as settled and does not ask them again.
+
+Why the answers of earlier runs come too. A documentation review run does not live for the whole job. When a later round sends the work back to documenting, to implementation or to the specification, the engine creates a new documentation review run, and when the code changes it supersedes the run and creates another. The new run has no answers of its own yet, so without the earlier ones the reviewer asks a settled question again. The reviewer therefore receives the answers given to every earlier documentation review run of the same job, oldest run first and each run's answers in the order they were given, and then the answers given to this run. The two groups have their own headings, so the reviewer can tell an answer to an earlier round from an answer to this one.
+
+The options weighed for where these answers come from:
+
+| Option | What it would do | Why it was or was not chosen |
+|---|---|---|
+| A new, narrow seam that reads the answers of the earlier runs of the stage from the store (chosen) | The composition root implements it over the stored links of a person's answers, the same records the specification stage reads. | It gives the stage exactly what it needs and nothing else, it does not change what a rework round means to any other stage, and it can serve another reviewer later without a change to its callers. |
+| The rework seam (`ReworkSource`) that the specification stage reads | It already carries `earlier_answers`. | It answers only for the run a rework move sent the work back to. The documentation review run is re-created after its target, so it would get no answers, and widening the seam would make every re-created run look like a rework round to the stages that use it. |
+| Only the chain of runs a rework names (`rework_of`) | The answers of the runs this run replaced one by one. | A run superseded because the code changed is not named by the run after it, so its answers would be lost. Every earlier run of the stage in the same job covers both ways a run is replaced. |
+| The engine adds the earlier answers to the answers of this run | The stage would read them with its own. | Every stage counts the answers of its own run to know which round it is in. Mixing in earlier runs would change that count for all of them. |
+
+An answer to an earlier run may be about pages that later changed. It is still a decision of the people who own the job, and the reviewer reads it beside the pages as they are now.
+
+The record of the review stores the hash of each input it gave, the list of pages the documentation diff holds, and how many answers came from this run and how many from earlier runs.
+
+### 9.10 How the gate finds and runs examples
+
+The check `docs-examples` runs every example of the program that a changed page shows, and compares what the program prints with the output the page shows. It must never pass a page whose examples it did not run. In the thirty-sixth and thirty-seventh real runs it did: the README showed the new option in the fixture's own style, a `sh` block with `word-count notes.txt` and then a `text` block with the output, and also `printf 'one two three\n' | word-count --json`. The gate knew only lines that start with `$ word-count`, found nothing, and reported `NOT_APPLICABLE` ("no command of the program to run"). A page full of examples that nobody ran looked like a page with no examples.
+
+**What counts as an example.** A command line names the program when the program's name is the first word of the line, or of any command of its pipeline, after any variables set before it (such as `LANG=C`). The gate reads two forms of block.
+
+| Form | Where | The command | The output it compares |
+|---|---|---|---|
+| Prompt form | A block of language `console`, `shell-session`, `sh`, `bash`, `shell`, `zsh` or `text` | Each line that starts with `$ ` and names the program | The lines after it, up to the next `$ ` line or the end of the block |
+| Script form | A block of language `sh`, `bash`, `shell` or `zsh` that has no `$ ` line | Each line that names the program. Empty lines and lines that start with `#` are not commands. | The next block of the page, when its language is `text`, `output`, `plaintext` or `txt`, it has no `$ ` line, and no heading stands between the two blocks |
+
+An example with no output shown must still run and end with exit code 0. A script block that holds more than one command of the program and is followed by an output block is reported: the gate cannot tell which command printed that output. Lines that name another program, such as `cargo build`, are not examples of the program and are left alone.
+
+**How an example runs.** The gate runs the built program in the verify sandbox with the example's arguments, as an argument vector, never through a shell. Quotes and backslashes are read the way the standard Unix shell (`sh`, as the Portable Operating System Interface (POSIX) standard defines it) reads them, with no expansion. One pipeline is understood without a shell, because it is the usual way to show a program that reads standard input:
+
+* `printf 'TEXT' | program ARGUMENTS`, where `TEXT` is one argument whose only escapes are `\n`, `\t`, `\r`, `\\` and `%%`;
+* `echo WORDS | program ARGUMENTS` or `echo -n WORDS | program ARGUMENTS`, where no word holds a backslash.
+
+The factory works out the bytes `printf` or `echo` would print, and the sandbox gives them to the program as its standard input. The program is always the process whose output is compared.
+
+The program runs in the read-only checkout of the documentation commit, with the root of the repository as its working directory. A file an example names, such as `notes.txt` in `word-count notes.txt`, must therefore be in the repository at that path. The gate creates no file for an example: a file it made up would make the example pass with input the page never showed. An example whose file is missing ends with the program's own error and fails with `example-failed`, which tells the writer to show an input the repository holds. This is why the word count fixture keeps a `notes.txt` at its root, the file its README's examples count.
+
+**An example the gate cannot run is reported, never passed.** Any other command that names the program is reported with the rule `example-not-runnable`, and the check fails: a pipe into another program, a redirect, a chain (`;`, `&&`, `||`), a background `&`, a command or variable substitution, a glob, a `~`, a variable set before the command, a line that continues on the next line, or a `printf` or `echo` the gate does not read. The message says which forms the gate runs, so the writer can show the example in one of them. An example that ran and printed other output fails with `example-output-differs`, and one that ended with another exit code fails with `example-failed`. `NOT_APPLICABLE` means only that no changed page shows a command that names the program.
+
+The report names every command it ran. Its evidence lines name each example by page, line and the command as written, and the hash of the standard input when the example had one, so the report vouches for exactly the examples it ran.
+
+The options weighed:
+
+| Option | What it would do | Why it was or was not chosen |
+|---|---|---|
+| Recognise the script form, paired with the next output block (chosen) | Reads examples in the style many projects already use. | The gate follows the project's style instead of making the writer change it, and the pairing rule is strict enough that an output block is never compared with the wrong command. |
+| Run the command line through `/bin/sh -c` in the verify sandbox | Any shell example would run. | The sandbox has no network and a read-only checkout, so a shell would not escape it. What a shell adds is that the page's text becomes a program: it could chain or substitute other commands and print the expected output itself, such as `word-count notes.txt > /dev/null; echo '{"lines":1}'`, and the gate would pass an example whose output the program never printed. The page is written by an agent, so the evidence would be the agent's word again. A shell also breaks the rule of the sandbox port that a command is never a shell string, and its behaviour depends on which shell the image has (`echo` and `printf` differ between them). |
+| Understand the `printf` and `echo` pipeline without a shell (chosen) | Covers the common way to show standard input. | The factory computes the input and the program alone produces the output, so the evidence stays about the program. Everything else stays reported. |
+| Require the writer to use `$ ` lines | One form only. | It puts the gate's limit on every project's style, and a page written another way would still need to be reported, not ignored. The prompt form stays supported. |
 
 ## 10. Changing this policy
 

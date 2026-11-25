@@ -57,6 +57,7 @@ pub mod metadata;
 pub mod replan;
 mod run;
 
+pub use gates::task_body;
 pub use handler::{
     GRANTED_TOOLS, MATRIX, METADATA_GATE, PlanningConfig, PlanningDeps, PlanningHandler, RECORD,
     TASK_PLAN, TRACEABILITY_GATE,

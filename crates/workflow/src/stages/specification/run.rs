@@ -53,6 +53,7 @@ use factory_ports::workspace::{
 };
 use serde_json::{Value, json};
 
+use super::documented::DOCUMENTED_FILE;
 use super::evidence::{Evidence, Failure, InvocationRecord, Refusal, ReviewRecord, Revision};
 use super::handler::SpecificationHandler;
 use super::input::{
@@ -402,12 +403,52 @@ struct Work<'a> {
     /// Present only while the self-check pass of this attempt runs: the list of faults the clarify
     /// skill reads.
     self_check: Option<String>,
+    /// What the repository documents about the previous release, written to
+    /// [`DOCUMENTED_FILE`] before each skill ([`super::documented`]).
+    documented: Vec<u8>,
     manifest: AgentManifest,
     repo: Box<dyn JobRepo>,
     previous: Option<&'a PreviousSpec>,
     evidence: Evidence,
     tally: Tally,
     head: CommitSha,
+}
+
+/// What the repository documents about the previous release: the README and the guides the map
+/// lists, read at the commit the work starts from as an agent may see them, and redacted. A file
+/// that cannot be read is named in the text and does not stop the stage.
+async fn documented_behaviour(
+    h: &SpecificationHandler,
+    repo: &dyn JobRepo,
+    base: &CommitSha,
+    map_bytes: &[u8],
+) -> Result<super::documented::Documented, StageError> {
+    use super::documented::{Read, listed, render};
+    let map: Value = serde_json::from_slice(map_bytes).unwrap_or(Value::Null);
+    let mut documents = Vec::new();
+    for path in listed(&map) {
+        let read = match RepoPath::new(&path) {
+            Ok(at) => match repo
+                .read_file_at(base, &at, h.config.max_file_bytes, ReadView::Agent)
+                .await
+            {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) => Read::Text(
+                        h.redactor
+                            .redact_str(&text)
+                            .map_err(|_| StageError::Internal)?
+                            .output
+                            .into_owned(),
+                    ),
+                    Err(_) => Read::Unreadable,
+                },
+                Err(_) => Read::Unreadable,
+            },
+            Err(_) => Read::Unreadable,
+        };
+        documents.push((path, read));
+    }
+    Ok(render(&documents))
 }
 
 /// Runs one skill from the commit `work.head` and judges what it left.
@@ -499,6 +540,13 @@ async fn run_skill_in(
             ctx.cancel,
             &["tee", "--", work.request_file.as_str()],
             Some(work.request_bytes.clone()),
+        )
+        .await?;
+        run_command(
+            &mut *session,
+            ctx.cancel,
+            &["tee", "--", DOCUMENTED_FILE],
+            Some(work.documented.clone()),
         )
         .await?;
         if !work.answers.is_empty() {
@@ -630,6 +678,7 @@ async fn run_skill_in(
             work.request_file.as_str(),
             work.answers_file.as_str(),
             FEEDBACK_FILE,
+            DOCUMENTED_FILE,
             crate::prompts::skill::RULES_FILE,
         ],
         None,
@@ -1346,6 +1395,7 @@ pub(super) async fn execute(
     };
     let repairing = repair.is_some();
     let resuming = resume.is_some();
+    let documented = documented_behaviour(h, repo.as_ref(), &base, &map_bytes).await?;
     let mut work = Work {
         feature: feature.clone(),
         request_file: RepoPath::new(REQUEST_FILE).map_err(|_| StageError::Internal)?,
@@ -1357,6 +1407,7 @@ pub(super) async fn execute(
         repair,
         resume: resume.map(|(_, round)| round),
         self_check: None,
+        documented: documented.text.into_bytes(),
         manifest: writer_manifest,
         repo,
         previous: previous.as_ref(),
@@ -1371,6 +1422,10 @@ pub(super) async fn execute(
         h.provider.fidelity(),
     ]
     .contains(&Fidelity::Fake);
+    work.evidence.documented = Some((
+        Sha256Digest::of(&work.documented).to_string(),
+        documented.included,
+    ));
     if let Some(previous) = &previous {
         work.evidence.revision = Some(Revision {
             basis_version: u32::try_from(previous.contract.metadata.spec_version.get())

@@ -224,6 +224,104 @@ async fn an_example_that_needs_a_shell_is_not_passed() {
     ])
     .await;
     assert_eq!(gate_outcomes(&rig).await["docs-examples"], "FAILED");
+    let messages = failures_of(&rig, "docs-examples").await.join("\n");
+    assert!(
+        messages.contains("needs a shell, so it was not run"),
+        "{messages}"
+    );
+}
+
+/// A README in the fixture's own style: bare commands in `sh` blocks, each followed by a `text`
+/// block with its output, and standard input fed with `printf`. In the thirty-sixth and
+/// thirty-seventh real runs the gate found none of these examples and called the check not
+/// applicable (documentation policy 9.10).
+fn readme_in_the_fixture_style(piped_output: &str) -> String {
+    format!(
+        "# Word count\n\nWord count prints the number of lines, words and characters of a text file.\n\n## Usage\n\nAdd `--json` to print the counts as JSON.\n\n```sh\nword-count --json notes.txt\n```\n\nIt prints:\n\n```text\n{{\"lines\":1,\"words\":2,\"characters\":9}}\n```\n\nWithout a file it reads standard input:\n\n```sh\nprintf 'one two three\\n' | word-count --json\n```\n\n```text\n{piped_output}\n```\n\nThe [changelog](CHANGELOG.md#unreleased) lists what changed.\n"
+    )
+}
+
+/// The gate runs both examples of the fixture style, feeds the piped text to the program on its
+/// standard input, and compares each output with the block after it.
+#[tokio::test]
+async fn examples_in_the_fixture_style_are_run_and_compared() {
+    let readme = readme_in_the_fixture_style("{\"lines\":1,\"words\":3,\"characters\":14}");
+    let rig = documented_with(vec![
+        write("README.md", &readme),
+        write("CHANGELOG.md", CHANGELOG),
+    ])
+    .await;
+    let outcomes = gate_outcomes(&rig).await;
+    assert_eq!(outcomes["docs-examples"], "PASSED", "{outcomes:?}");
+    assert_eq!(outcomes["docs-commands"], "PASSED", "{outcomes:?}");
+    let document = rig
+        .deliverable(StageKind::DocumentationReview, "documentation-gate-report")
+        .await
+        .expect("the gate report is stored");
+    let report = document["reports"]
+        .as_array()
+        .expect("reports")
+        .iter()
+        .find(|report| report["metadata"]["gate_id"] == "docs-examples")
+        .expect("the examples report")
+        .clone();
+    // Both examples ran in the sandbox, as argument vectors of the program alone.
+    let argvs: Vec<Value> = report["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .map(|command| command["argv"].clone())
+        .collect();
+    assert_eq!(
+        argvs,
+        [
+            json!(["target/debug/word-count", "--json", "notes.txt"]),
+            json!(["target/debug/word-count", "--json"]),
+        ]
+    );
+}
+
+/// An output block that does not match what the program printed for the piped text fails the
+/// check: the gate compared it, it did not pass the page on trust.
+#[tokio::test]
+async fn a_fixture_style_example_whose_output_differs_fails_the_check() {
+    let readme = readme_in_the_fixture_style("{\"lines\":1,\"words\":2,\"characters\":9}");
+    let rig = documented_with(vec![
+        write("README.md", &readme),
+        write("CHANGELOG.md", CHANGELOG),
+    ])
+    .await;
+    assert_eq!(gate_outcomes(&rig).await["docs-examples"], "FAILED");
+    let messages = failures_of(&rig, "docs-examples").await.join("\n");
+    assert!(messages.contains("different output"), "{messages}");
+    assert!(
+        messages.contains("printf 'one two three\\n' | word-count --json"),
+        "{messages}"
+    );
+    assert!(!passed(&rig, StageKind::DocumentationReview).await);
+}
+
+/// A bare command the gate cannot run without a shell is reported and fails the check, instead
+/// of leaving the check not applicable.
+#[tokio::test]
+async fn a_fixture_style_example_that_needs_a_shell_is_reported_not_skipped() {
+    let readme = readme_in_the_fixture_style("{\"lines\":1,\"words\":3,\"characters\":14}")
+        .replace(
+            "printf 'one two three\\n' | word-count --json",
+            "cat notes.txt | word-count --json",
+        );
+    let rig = documented_with(vec![
+        write("README.md", &readme),
+        write("CHANGELOG.md", CHANGELOG),
+    ])
+    .await;
+    assert_eq!(gate_outcomes(&rig).await["docs-examples"], "FAILED");
+    let messages = failures_of(&rig, "docs-examples").await.join("\n");
+    assert!(
+        messages.contains("cat notes.txt | word-count --json"),
+        "{messages}"
+    );
+    assert!(messages.contains("needs a shell"), "{messages}");
 }
 
 // ---- NT-INJ-06: a reviewer cannot overrule a failed check -------------------------------------
@@ -420,6 +518,215 @@ async fn a_writer_that_finds_the_pages_already_written_changes_nothing_and_passe
     assert!(passed(&rig, StageKind::Documenting).await, "{result}");
 }
 
+/// The builder wrote the README in the code commits and the writer changed nothing, so the code
+/// head and the documentation head are one commit. The reviewer still sees the README: its
+/// documentation diff runs from the job's base to the documentation head and holds the pages the
+/// gates judged (documentation policy 9.9). In the thirty-seventh real run it received an empty
+/// patch and stopped the job to ask whether a documentation commit was missing.
+#[tokio::test]
+async fn the_reviewer_sees_the_pages_the_builder_wrote_when_the_writer_changed_nothing() {
+    let rig = up_to_documenting().await;
+    writer_will(&rig, Vec::new(), writer_done(&[], "src/main.rs"));
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+    let prompts = rig.runtime.prompts("documentation-reviewer");
+    let diff = block(&prompts[0].instructions, "documentation_diff");
+    assert!(
+        diff.contains("diff --git a/README.md b/README.md"),
+        "{diff}"
+    );
+    assert!(diff.contains("+Use --json to print JSON."), "{diff}");
+    // Only pages: the code is in the code diff and nowhere else.
+    assert!(!diff.contains("src/main.rs"), "{diff}");
+    let record = rig
+        .deliverable(
+            StageKind::DocumentationReview,
+            "documentation-review-record",
+        )
+        .await
+        .expect("the record is stored");
+    assert_eq!(
+        record["inputs"]["documentation_diff_pages"],
+        json!(["README.md"])
+    );
+    // The record names the same commits the gate report is bound to.
+    let gate = rig
+        .deliverable(StageKind::DocumentationReview, "documentation-gate-report")
+        .await
+        .expect("the gate report is stored");
+    assert_eq!(
+        record["candidate"]["documentation_head"],
+        record["candidate"]["code_head"]
+    );
+    for key in ["base_commit", "code_head", "documentation_head"] {
+        assert_eq!(record["candidate"][key], gate["binding"][key], "{key}");
+    }
+    // The verdict names the hash of the patch the reviewer was given, which is not empty.
+    let verdict = verdict_of(&rig).await.expect("the verdict");
+    assert_eq!(
+        verdict["inputs_reviewed"]["diff_sha256"],
+        record["inputs"]["documentation_diff_sha256"]
+    );
+    assert_ne!(
+        record["inputs"]["documentation_diff_sha256"],
+        json!("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    );
+}
+
+/// The reviewer asks a person, the person answers, and the stage runs again. The reviewer of the
+/// second attempt reads the answer, so it does not ask the same question again (documentation
+/// policy 9.9). In the thirty-seventh real run the answer never reached it and it asked again.
+#[tokio::test]
+async fn a_persons_answer_reaches_the_documentation_reviewer() {
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::{Decision, Subject};
+    const ANSWER: &str = "There is no separate documentation commit: review the README.";
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    let mut ask = reviewer_passes();
+    ask["verdict"] = json!("NEEDS_HUMAN");
+    ask["human_question"] = json!("Is there a documentation commit that was not exported?");
+    reviewer_will(&rig, ask);
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+    let view = rig.world.view(rig.job).await;
+    assert_eq!(
+        view.newest(StageKind::DocumentationReview)
+            .expect("a run")
+            .status,
+        StageRunStatus::WaitingForHuman
+    );
+    let person = rig.world.person("operator-d", &[HumanRole::Operator]).await;
+    let review = rig.run_of(StageKind::DocumentationReview).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(person),
+            Subject {
+                job: rig.job,
+                stage_run: review,
+            },
+            Decision::Answer {
+                text: ANSWER.to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the answer applies");
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::DocumentationReview).await;
+    let prompts = rig.runtime.prompts("documentation-reviewer");
+    assert_eq!(prompts.len(), 2);
+    let first = block(&prompts[0].instructions, "people_answers");
+    assert!(first.contains("No person has answered"), "{first}");
+    let second = block(&prompts[1].instructions, "people_answers");
+    assert!(second.contains(ANSWER), "{second}");
+    assert!(passed(&rig, StageKind::DocumentationReview).await);
+    // Each attempt stored its record in the same run: the first one counts no answer, the second
+    // one the answer it was given.
+    let mut given = Vec::new();
+    for link in rig.world.links(review).await {
+        let reference = factory_domain::contracts::ArtifactRef {
+            sha256: link.sha256.clone(),
+            media_type: factory_domain::values::MediaType::parse("application/json")
+                .expect("a media type"),
+            size_bytes: None,
+        };
+        let tenant = factory_domain::scope::TenantScope::new(rig.world.tenant);
+        if let Ok(bytes) =
+            factory_ports::artifact::ArtifactStore::get(&*rig.artifacts, &tenant, &reference).await
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            && value["kind"] == "documentation-review-record"
+        {
+            given.push(value["inputs"]["people_answers_given"].clone());
+        }
+    }
+    given.sort_by_key(Value::to_string);
+    assert_eq!(given, [json!(0), json!(1)]);
+}
+
+/// The reviewer asks a person, the person answers, and the reviewer then sends the work back to
+/// documenting. The engine creates a new documentation review run, which has no answers of its
+/// own. Its reviewer still reads the earlier answer, under its own heading, so it does not ask
+/// the settled question again (documentation policy 9.9).
+#[tokio::test]
+async fn an_answer_survives_a_rework_round_that_re_creates_the_documentation_review() {
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::{Decision, Subject};
+    const ANSWER: &str = "The changelog entry belongs under Unreleased.";
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    let mut ask = reviewer_passes();
+    ask["verdict"] = json!("NEEDS_HUMAN");
+    ask["human_question"] = json!("Which section of the changelog should the entry go under?");
+    reviewer_will(&rig, ask);
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+    let person = rig.world.person("operator-e", &[HumanRole::Operator]).await;
+    let first_review = rig.run_of(StageKind::DocumentationReview).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(person),
+            Subject {
+                job: rig.job,
+                stage_run: first_review,
+            },
+            Decision::Answer {
+                text: ANSWER.to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the answer applies");
+    // The second attempt finds a documentation defect, which sends the work back to documenting.
+    reviewer_will(&rig, reviewer_asks("documentation", "README.md", 5));
+    run(&rig, StageKind::DocumentationReview).await;
+    assert_eq!(rig.runs_of(StageKind::Documenting).await.len(), 2);
+    writer_will_document(&rig);
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::Documenting).await;
+    run(&rig, StageKind::DocumentationReview).await;
+
+    let reviews = rig.runs_of(StageKind::DocumentationReview).await;
+    assert_eq!(reviews.len(), 2, "the rework made a new review run");
+    assert_ne!(reviews[1].0, first_review);
+    let prompts = rig.runtime.prompts("documentation-reviewer");
+    assert_eq!(prompts.len(), 3);
+    let third = block(&prompts[2].instructions, "people_answers");
+    assert!(third.contains(ANSWER), "{third}");
+    assert!(
+        third.contains("earlier runs of this documentation review"),
+        "{third}"
+    );
+    // The new run's own answers are none, and the heading of this run's answers is not there.
+    assert!(
+        !third.contains("People answered questions this documentation review asked"),
+        "{third}"
+    );
+    assert!(passed(&rig, StageKind::DocumentationReview).await);
+    let record = rig
+        .deliverable_in(reviews[1].0, "documentation-review-record")
+        .await
+        .expect("the record of the new run");
+    assert_eq!(record["inputs"]["people_answers_given"], json!(0));
+    assert_eq!(record["inputs"]["people_answers_of_earlier_runs"], json!(1));
+}
+
+/// A store that cannot say what people answered earlier runs fails the attempt. The review must
+/// not run as if nobody had answered, because that brings back a settled question.
+#[tokio::test]
+async fn a_review_that_cannot_read_earlier_answers_does_not_run_the_reviewer() {
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    reviewer_will(&rig, reviewer_passes());
+    run(&rig, StageKind::Documenting).await;
+    *crate::rig::lock(&rig.answers.unavailable) = true;
+    let outcome = run(&rig, StageKind::DocumentationReview).await;
+    assert!(!matches!(outcome, AttemptOutcome::Succeeded), "{outcome:?}");
+    assert!(rig.runtime.prompts("documentation-reviewer").is_empty());
+    assert!(!passed(&rig, StageKind::DocumentationReview).await);
+}
+
 /// A writer that names a file it wrote and leaves the tree as it was is contradicted.
 #[tokio::test]
 async fn a_writer_that_names_a_file_it_did_not_write_fails_the_attempt() {
@@ -613,4 +920,38 @@ async fn a_writer_that_needs_a_decision_asks_a_person() {
     run(&rig, StageKind::Documenting).await;
     assert!(!passed(&rig, StageKind::Documenting).await);
     assert_eq!(rig.events_of("workspace.commit:").len(), commits);
+}
+
+// ---- A refused answer says why ---------------------------------------------------------------
+
+/// The first real run that stopped here: the reviewer objected to `notes.txt`, a file the README's
+/// example names and the change does not hold, so no patch shows the line it cites. The answer is
+/// refused as before, and the audit log now says which finding and which path, so a person can
+/// act on it (the runbook of first-run signals, signal 6).
+#[tokio::test]
+async fn a_finding_on_a_file_no_patch_shows_is_refused_with_its_reason_in_the_audit_log() {
+    let rig = up_to_documenting().await;
+    writer_will_document(&rig);
+    reviewer_will(&rig, reviewer_asks("documentation", "notes.txt", 1));
+    run(&rig, StageKind::Documenting).await;
+    let outcome = run(&rig, StageKind::DocumentationReview).await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert!(verdict_of(&rig).await.is_none(), "nothing was stored");
+    let refusals: Vec<String> = rig
+        .world
+        .audit(rig.job)
+        .await
+        .into_iter()
+        .filter(|record| record.event.action.as_str() == "gate_result.denied")
+        .map(|record| record.event.reason)
+        .collect();
+    assert_eq!(
+        refusals,
+        [
+            "documentation review: the reviewer's answer was refused: finding 1 cites `notes.txt` at line 1, which no patch the reviewer was shown holds in one hunk"
+        ]
+    );
 }

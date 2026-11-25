@@ -17,7 +17,7 @@ not hold.
 | `agent-output/*.json` | The final answer of each agent, in the form of its own output schema. `builder.<task>.json` is one per task of the plan. The planner's answer takes its metadata and its scenario identifiers from the prompt it receives, as a real planner is told to. |
 | `patch/` | The builder's change to the fixture: whole files, as they are once the task is done. The change was run against the fixture's own checks (formatting, the linter with warnings as errors, build and tests) on a real toolchain when it was written. |
 | `docs/` | The README and the changelog the documentation writer leaves. |
-| `sandbox/` | What the programs of the verify image printed, recorded from a real run of the patched tool and of the unpatched one. The scripted sandbox plays them back. |
+| `sandbox/` | What the programs of the verify image printed, recorded from a real run of the patched tool and of the unpatched one. The scripted sandbox plays them back. `word-count-notes.txt`, `word-count--json-notes.txt` and `word-count-stdin.txt` are the patched tool's output for the three examples of the README, run from the root of the fixture with its `notes.txt`, as the documentation gate runs them (documentation policy 9.10). |
 
 ## How the files were made
 

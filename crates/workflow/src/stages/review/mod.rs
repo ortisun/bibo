@@ -54,6 +54,7 @@ pub mod gates;
 pub mod handler;
 pub mod independence;
 pub mod locate;
+pub mod rejection;
 mod run;
 
 pub use gates::{EVIDENCE_GATE, GROUNDED_GATE};

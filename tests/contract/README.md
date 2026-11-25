@@ -8,7 +8,7 @@ end-to-end proof stops meaning what it says, so the checks run on every change t
 
 | Check | What it holds |
 |---|---|
-| Layout | The files the run needs exist, and there is no build script, no cargo configuration directory and no `.git` entry. |
+| Layout | The files the run needs exist, and there is no build script, no cargo configuration directory and no `.git` entry. Among them is `notes.txt`, the file the README's examples count: the documentation gate runs those examples in a checkout of the repository, so the file must be there (documentation policy 9.10). |
 | No dependencies | `Cargo.toml` lists no dependency of any kind, the lock file lists only the project, and the project is its own workspace root, so it builds with no network and does not join the factory's workspace. |
 | Manifest | `.factory/project.yaml` loads through the same loader and schema as the intake stage. It declares the gates `format`, `lint`, `build` and `unit-tests` (the last two mandatory), protects `.factory/**`, `CODEOWNERS` and `tests/golden/**`, and names documents that exist. |
 | Owners | `CODEOWNERS` has a catch-all rule and covers the manifest, the stored samples and itself. |

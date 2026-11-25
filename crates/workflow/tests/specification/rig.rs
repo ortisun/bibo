@@ -1385,7 +1385,13 @@ fn register_around(
     description: &str,
     real_request: Option<Vec<u8>>,
 ) {
-    let map = serde_json::to_vec(&json!({ "commit_sha": base.as_str() })).expect("serializes");
+    // The map lists the README of the base files, as repository intelligence does, so the stage
+    // gives the writer what the repository documents.
+    let map = serde_json::to_vec(&json!({
+        "commit_sha": base.as_str(),
+        "documents": [{"path": "README.md", "kind": "readme"}],
+    }))
+    .expect("serializes");
     let request = real_request.unwrap_or_else(|| {
         serde_json::to_vec(&json!({
             "title": "Add a json flag",

@@ -15,7 +15,7 @@ use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Metadata, Subscriber};
 
-use crate::evidence::{Correlated, Span};
+use crate::evidence::{Correlated, JOB_SPANS, Span};
 
 const CORRELATION: &str = "factory.correlation_id";
 
@@ -102,11 +102,14 @@ impl Capture {
             .skip(mark)
             .map(|(index, event)| {
                 let mut correlation = event.fields.get(CORRELATION).cloned();
+                let mut in_job = correlation.is_some();
                 let mut cursor = event.parent;
-                while correlation.is_none() {
-                    let Some(id) = cursor else { break };
+                while let Some(id) = cursor {
                     let span = state.spans.get(&id);
-                    correlation = span.and_then(|s| s.fields.get(CORRELATION).cloned());
+                    if correlation.is_none() {
+                        correlation = span.and_then(|s| s.fields.get(CORRELATION).cloned());
+                    }
+                    in_job |= span.is_some_and(|s| JOB_SPANS.contains(&s.name.as_str()));
                     cursor = span.and_then(|s| s.parent);
                 }
                 let label = event
@@ -119,6 +122,7 @@ impl Capture {
                     source: "log".to_owned(),
                     label: format!("event {} ({label})", index + 1),
                     correlation_id: correlation,
+                    in_job,
                 }
             })
             .collect()

@@ -82,6 +82,21 @@ pub trait Contract: Serialize + DeserializeOwned + Sized {
         serde_json::from_value(value)
     }
 
+    /// Reads a JSON value and checks it, keeping the rule breaks apart from a shape problem.
+    ///
+    /// [`from_json_value`](Contract::from_json_value) turns the rule breaks into the text of a
+    /// `serde` error. A caller that must say which rules a document broke, without quoting the
+    /// document, reads it with this instead: the fields of [`ReadProblem::Rules`] are made by the
+    /// rule checks, never copied from the value. The documents of this module override it; the
+    /// default reports every problem as a shape problem.
+    ///
+    /// # Errors
+    /// [`ReadProblem::Shape`] for a value that does not have the document's shape, and
+    /// [`ReadProblem::Rules`] with every broken rule for one that has it.
+    fn read_value(value: serde_json::Value) -> Result<Self, ReadProblem> {
+        Self::from_json_value(value).map_err(ReadProblem::Shape)
+    }
+
     /// Writes the document as a JSON value.
     ///
     /// # Errors
@@ -90,6 +105,16 @@ pub trait Contract: Serialize + DeserializeOwned + Sized {
     fn to_json_value(&self) -> Result<serde_json::Value, serde_json::Error> {
         serde_json::to_value(self)
     }
+}
+
+/// Why a JSON value is not a valid document of a [`Contract`] type.
+#[derive(Debug)]
+pub enum ReadProblem {
+    /// The value does not have the document's shape: a field is missing, unknown or of the wrong
+    /// type. The error may quote the value, so it is not text for an audit record.
+    Shape(serde_json::Error),
+    /// The shape is right, and the value breaks these rules.
+    Rules(Violations),
 }
 
 /// Defines a contract document: the public struct, a `Serialize` that writes it, a `Deserialize`
@@ -133,17 +158,28 @@ macro_rules! contract {
                     Ok(document)
                 }
             }
-        };
 
-        impl $crate::contracts::Contract for $name {
-            const SCHEMA: &'static str = $schema;
+            impl $crate::contracts::Contract for $name {
+                const SCHEMA: &'static str = $schema;
 
-            fn violations(&self) -> $crate::contracts::Violations {
-                let mut found = $crate::contracts::Violations::new();
-                self.check(&mut found);
-                found
+                fn violations(&self) -> $crate::contracts::Violations {
+                    let mut found = $crate::contracts::Violations::new();
+                    self.check(&mut found);
+                    found
+                }
+
+                fn read_value(
+                    value: ::serde_json::Value,
+                ) -> Result<Self, $crate::contracts::ReadProblem> {
+                    let wire: Wire = ::serde_json::from_value(value)
+                        .map_err($crate::contracts::ReadProblem::Shape)?;
+                    let document = $name { $( $field : wire.$field ),* };
+                    $crate::contracts::Contract::validate(&document)
+                        .map_err($crate::contracts::ReadProblem::Rules)?;
+                    Ok(document)
+                }
             }
-        }
+        };
     };
 }
 pub(crate) use contract;

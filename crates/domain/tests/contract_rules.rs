@@ -1368,3 +1368,32 @@ fn several_broken_rules_are_reported_together() {
         "{message}"
     );
 }
+
+/// `read_value` keeps the broken rules typed, with the fields the checks name, and keeps a
+/// shape problem apart: a caller can say which rules a document broke without quoting it.
+#[test]
+fn read_value_names_the_broken_rules_and_keeps_shape_problems_apart() {
+    use factory_domain::contracts::{ReadProblem, ReviewVerdict};
+
+    let (_, base) = base_document("review-verdict/changes-required-missing-test.json");
+    assert!(ReviewVerdict::read_value(base.clone()).is_ok());
+
+    // A finding of a verdict other than PASS with no location breaks FR-023.
+    let mut no_location = base.clone();
+    remove(&mut no_location, "/findings/0/location");
+    match ReviewVerdict::read_value(no_location) {
+        Err(ReadProblem::Rules(violations)) => {
+            let fields: Vec<&str> = violations.iter().map(|v| v.path.as_str()).collect();
+            assert_eq!(fields, ["findings[0].location"]);
+        }
+        other => panic!("expected broken rules, got {other:?}"),
+    }
+
+    // A field the contract does not name is a shape problem, not a rule.
+    let mut unknown = base;
+    put(&mut unknown, "/approved_by", json!("nobody"));
+    assert!(matches!(
+        ReviewVerdict::read_value(unknown),
+        Err(ReadProblem::Shape(_))
+    ));
+}

@@ -3,7 +3,9 @@
 //! One workspace and one sandbox are made for the stage run: a read-only checkout of the
 //! documentation commit, and a new container of the `verify` profile with no network. Neither is
 //! the writer's. The commands are the build of the program, its `--help`, each example of the
-//! documents and the diagram parser, all as typed argument vectors and never through a shell. What
+//! documents and the diagram parser, all as typed argument vectors and never through a shell. An
+//! example fed by a `printf` or an `echo` gets the bytes the factory worked out on its standard
+//! input. What
 //! the supervisor returned from `exec` is the evidence.
 //!
 //! **A tool that is absent is never a pass.** A program that is not in the image, a build that
@@ -79,12 +81,13 @@ async fn observe(
     session: &mut dyn SandboxSession,
     io: &Io<'_>,
     argv: &[String],
+    stdin: Option<Vec<u8>>,
 ) -> Result<Option<Ran>, StageError> {
     let vector = ExecArgv::new(argv.to_vec()).map_err(|_| StageError::Internal)?;
     let request = ExecRequest {
         argv: vector,
         cwd: None,
-        stdin: None,
+        stdin,
         timeout: Duration::from_secs(io.toolchain.command_timeout_seconds),
         max_output_bytes: io.toolchain.max_output_bytes,
     };
@@ -198,7 +201,7 @@ async fn run_all(
     // The program must build before anything is run against it.
     let mut built = program_needed;
     if program_needed && !io.toolchain.build.is_empty() {
-        match observe(session, io, &io.toolchain.build).await? {
+        match observe(session, io, &io.toolchain.build, None).await? {
             Some(ran) if ran.exec.exit_code == Some(0) && !ran.exec.timed_out => {}
             other => {
                 built = false;
@@ -220,23 +223,26 @@ async fn run_all(
     if built {
         let binary = io.toolchain.binary.clone();
         if needs.help {
-            seen.help = match observe(session, io, &[binary.clone(), "--help".to_owned()]).await? {
-                Some(ran) if unusable(&ran) => absent("the built program"),
-                Some(ran) => Observed::Seen(ran),
-                None => absent("a working sandbox"),
-            };
+            seen.help =
+                match observe(session, io, &[binary.clone(), "--help".to_owned()], None).await? {
+                    Some(ran) if unusable(&ran) => absent("the built program"),
+                    Some(ran) => Observed::Seen(ran),
+                    None => absent("a working sandbox"),
+                };
         }
         if !needs.examples.is_empty() {
             let mut runs = Vec::new();
             let mut gone = false;
             for example in &needs.examples {
-                if !example.runnable {
+                if !example.runnable() {
                     runs.push((example.clone(), None));
                     continue;
                 }
                 let mut argv = vec![binary.clone()];
                 argv.extend(example.args.iter().cloned());
-                match observe(session, io, &argv).await? {
+                // The bytes a `printf` or `echo` of the page pipes in reach the program on its
+                // standard input; no shell runs (documentation policy 9.10).
+                match observe(session, io, &argv, example.stdin.clone()).await? {
                     Some(ran) if unusable(&ran) => {
                         gone = true;
                         break;
@@ -258,7 +264,7 @@ async fn run_all(
     if !needs.diagrams.is_empty() {
         seen.diagrams = match &io.toolchain.diagrams {
             None => absent("a diagram parser"),
-            Some(argv) => match observe(session, io, argv).await? {
+            Some(argv) => match observe(session, io, argv, None).await? {
                 Some(ran) if unusable(&ran) => {
                     absent(argv.first().map_or("a diagram parser", String::as_str))
                 }

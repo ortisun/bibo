@@ -101,3 +101,90 @@ fn the_owner_may_approve_their_own_request_when_the_solo_mode_is_on() {
     let refused = a9(&evidence, &strict);
     assert!(!refused.pass, "{refused}");
 }
+
+/// The shapes real run 36 of E1 left (2026-11-20), which the assertions first misread: the head
+/// hash written as bare digits in the pull request body (A4), a specification kept only in the
+/// job's store and not on the head branch (A5), and a link check and an example check that are
+/// `NOT_APPLICABLE` with the rule recorded as an object (A12). Each holds.
+#[test]
+fn the_shapes_of_real_run_36_hold_a4_a5_and_a12() {
+    use factory_e2e::assertions::by_id;
+    use serde_json::json;
+    let env = env();
+    let mut evidence = honest(&env, Options::e1_production());
+    evidence.github.head_files.clear();
+    for record in &mut evidence.contracts.gate_reports {
+        let gate = record.report["metadata"]["gate_id"].as_str().unwrap_or("");
+        if gate == "docs-links" || gate == "docs-examples" {
+            record.report["outcome"] = json!("NOT_APPLICABLE");
+            record.report["not_applicable_reason"] = json!({
+                "code": "no_matching_files",
+                "decided_by": "deterministic_rule",
+                "justification": "The changed documents contain no internal links.",
+            });
+        }
+    }
+    let body = &evidence.github.pull_requests[0].body;
+    assert!(!body.contains("sha256:"), "the body writes bare digits");
+    for id in ["A4", "A5", "A12"] {
+        let verdict = by_id(id).expect("an assertion").apply(&evidence, &env);
+        assert!(verdict.pass, "{verdict}");
+    }
+}
+
+/// A page that no task owns holds A6 only when the documentation stage wrote it: that stage's
+/// own scope gate judges it against the documentation plan.
+#[test]
+fn a6_leaves_the_pages_of_the_documentation_stage_to_that_stage() {
+    use factory_e2e::assertions::by_id;
+    let env = env();
+    let mut evidence = honest(&env, Options::e1_production());
+    evidence
+        .github
+        .changed_paths
+        .push("docs/json-output.md".to_owned());
+    let a6 = by_id("A6").expect("A6");
+    let stray = a6.apply(&evidence, &env);
+    assert!(
+        !stray.pass && stray.to_string().contains("docs/json-output.md"),
+        "{stray}"
+    );
+    evidence.facts.insert(
+        "documentation_paths".to_owned(),
+        serde_json::json!(["docs/json-output.md"]),
+    );
+    let written = a6.apply(&evidence, &env);
+    assert!(written.pass, "{written}");
+}
+
+/// A line of the job that carries no correlation id still fails A11; a line written outside any
+/// job (the token sweep) does not.
+#[test]
+fn a11_judges_the_lines_of_the_job_and_leaves_the_lines_outside_it() {
+    use factory_e2e::assertions::by_id;
+    let env = env();
+    let evidence = honest(&env, Options::e1_production());
+    assert!(
+        evidence
+            .telemetry
+            .correlated
+            .iter()
+            .any(|line| !line.in_job && line.correlation_id.is_none())
+    );
+    let a11 = by_id("A11").expect("A11");
+    assert!(a11.apply(&evidence, &env).pass);
+    let mut broken = evidence;
+    if let Some(line) = broken
+        .telemetry
+        .correlated
+        .iter_mut()
+        .find(|line| line.in_job && line.source == "log")
+    {
+        line.correlation_id = None;
+    }
+    let verdict = a11.apply(&broken, &env);
+    assert!(
+        !verdict.pass && verdict.to_string().contains("None"),
+        "{verdict}"
+    );
+}

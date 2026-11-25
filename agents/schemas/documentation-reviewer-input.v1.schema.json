@@ -11,6 +11,7 @@
     "code_diff",
     "documentation_diff",
     "gate_reports",
+    "people_answers",
     "project_rules"
   ],
   "properties": {
@@ -32,12 +33,17 @@
     "documentation_diff": {
       "type": "string",
       "maxLength": 1048576,
-      "description": "The exported patch of the documentation change."
+      "description": "The exported patch of every documentation page the gates judged, from the job's base commit to the documentation head. When no page changed, it says so in one sentence."
     },
     "gate_reports": {
       "type": "string",
       "maxLength": 1048576,
       "description": "The reports of the documentation gate and the readability gate."
+    },
+    "people_answers": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "What people answered when a documentation review of this job asked them a question, the answers to earlier runs first, from the factory's own record of their answers. It says so when nobody was asked."
     },
     "project_rules": {
       "type": "string",

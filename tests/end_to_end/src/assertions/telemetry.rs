@@ -9,7 +9,8 @@ pub const STAGE_RUN_SPAN: &str = "factory.stage_run";
 pub const ATTEMPT_SPAN: &str = "factory.attempt";
 
 /// A11: every attempt has a span whose parent is its stage run span, and the correlation id appears
-/// on every event and log line.
+/// on every event and on every log line of the job: a line written inside one of the job's spans.
+/// A line written outside any job carries none, by design, and must not carry this job's.
 #[must_use]
 pub fn a11(ev: &RunEvidence, _env: &Env) -> Verdict {
     const ID: &str = "A11";
@@ -82,11 +83,34 @@ pub fn a11(ev: &RunEvidence, _env: &Env) -> Verdict {
             "no event or log line was captured, so the correlation id cannot be checked",
         );
     }
-    if !captured.iter().any(|line| line.source == "log") {
-        return Verdict::fail(ID, "no log line was captured");
+    if !captured
+        .iter()
+        .any(|line| line.source == "log" && line.in_job)
+    {
+        return Verdict::fail(ID, "no log line of the job was captured");
+    }
+    // A line written outside any job (the token sweep of the worker loop, a start-up message)
+    // carries no correlation id by design (`docs/observability/conventions.md`, section 7). It
+    // must not carry this job's id either, which would mean the capture misread its place.
+    let outside = captured
+        .iter()
+        .filter(|line| line.source == "log" && !line.in_job)
+        .count();
+    if let Some(line) = captured
+        .iter()
+        .find(|line| !line.in_job && line.correlation_id.as_deref() == Some(correlation))
+    {
+        return Verdict::fail(
+            ID,
+            format!(
+                "the {} {} is recorded as written outside the job but carries the job's correlation id",
+                line.source, line.label
+            ),
+        );
     }
     if let Some(line) = captured
         .iter()
+        .filter(|line| line.in_job)
         .find(|line| line.correlation_id.as_deref() != Some(correlation))
     {
         return Verdict::fail(
@@ -113,8 +137,8 @@ pub fn a11(ev: &RunEvidence, _env: &Env) -> Verdict {
     Verdict::pass(
         ID,
         format!(
-            "{attempts_seen} attempt span(s) hang under their stage run spans, and all {} captured events and lines and {} audit events carry the correlation id",
-            captured.len(),
+            "{attempts_seen} attempt span(s) hang under their stage run spans, and all {} captured events and lines of the job and {} audit events carry the correlation id ({outside} line(s) written outside any job carry none, by design)",
+            captured.len() - outside,
             ev.audit.len()
         ),
     )

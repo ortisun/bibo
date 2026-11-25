@@ -450,12 +450,15 @@ pub const REVIEWER_INPUTS: [(&str, &[&str]); 4] = [
     ),
     (
         "documentation_reviewer",
+        // `people_answers` is what people answered this review, from the factory's own record.
+        // The writer cannot write it, so it is not the author's account.
         &[
             "frozen_specification",
             "documentation_plan",
             "code_diff",
             "documentation_diff",
             "gate_reports",
+            "people_answers",
             "project_rules",
         ],
     ),

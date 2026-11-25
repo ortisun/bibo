@@ -5,8 +5,12 @@
 //!
 //! 1. Read the implementation result, the frozen specification, the documentation plan and the
 //!    documentation result by the hash the contract pinned.
-//! 2. Read the tree at the documentation commit and export the three patches on the host: the
-//!    whole change (to know which pages changed), the code patch and the documentation patch.
+//! 2. Read the tree at the documentation commit and export two patches on the host: the whole
+//!    change from the job's base to the documentation head (to know which pages changed) and the
+//!    code patch. The documentation patch is the part of the whole change that touches the pages
+//!    the gates judge, so the reviewer sees exactly those pages over the same commits, also when
+//!    the pages were written in the code commits and the writer changed nothing (documentation
+//!    policy 9.9).
 //! 3. Run the programs the checks need in a fresh verify sandbox and remove it
 //!    ([`verify`](super::verify)), then run the checks and the readability gate. Each check
 //!    becomes one typed gate report, and the reports are stored in `documentation-gate-report`.
@@ -14,7 +18,10 @@
 //!    spec the seam returned. The reviewer is granted no tool that writes or runs a command, and
 //!    its checkout is a copy that is never ingested.
 //! 5. Assemble the prompt with `assemble_independent`. Its inputs are of a type that no writer
-//!    summary can have, and the hash of the writer's own result is withheld as well.
+//!    summary can have, and the hash of the writer's own result is withheld as well. What people
+//!    answered goes in as its own input, so a question they settled is not asked again: first
+//!    the answers to the earlier documentation review runs of the job, read through the
+//!    `AnswerHistory` seam, then the answers to this run.
 //! 6. Run the reviewer, remove the sandbox, check the answer against the schema of the agent, wrap
 //!    it into the stored verdict with the factory's own fields, and check that every finding of a
 //!    verdict other than `PASS` points at a line one of the two patches shows.
@@ -43,7 +50,7 @@ use super::handler::DocumentationReviewHandler;
 use super::verify::{Io, observe_all};
 use crate::gates::command::report::{Subject, image_digest};
 use crate::gates::docs::check::{self, Inputs};
-use crate::gates::docs::plan::{DocPlan, Form, parse_patch};
+use crate::gates::docs::plan::{DocPlan, Form, parse_patch, select_files};
 use crate::gates::docs::report::{Reporter, SandboxFacts};
 use crate::gates::readability::{
     Artifact, DocumentType, Options, ReadabilityGate, ReportContext, ReviewerPolicy,
@@ -56,10 +63,12 @@ use crate::stages::documenting::input::{
     parse_candidate,
 };
 use crate::stages::documenting::repo::read_tree;
-use crate::stages::implementation::run::{close, open_sandbox, workspace_error};
+use crate::stages::implementation::feedback::earlier_answers;
+use crate::stages::implementation::run::{close, open_sandbox, seam_error, workspace_error};
 use crate::stages::implementation::seams::{WorkspaceAccess, verify_read_only_tools};
 use crate::stages::review::findings::{EngineFields, Reviewer, wrap};
 use crate::stages::review::locate::PatchIndex;
+use crate::stages::review::rejection::{Rejection, refuse};
 
 fn slug(text: &str) -> Result<Slug, StageError> {
     Slug::parse(text).map_err(|_| StageError::Internal)
@@ -124,7 +133,11 @@ pub(crate) fn render_reports(reports: &[Value]) -> String {
     text
 }
 
-fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
+/// The document type the readability gate judges a page as: the changelog by its name, a planned
+/// page by the form the plan gives it, the README as reference, any other page as explanation.
+/// Public so that the end-to-end evidence collector judges a page as this stage does (A8).
+#[must_use]
+pub fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
     if path == "CHANGELOG.md" {
         return DocumentType::Changelog;
     }
@@ -145,10 +158,108 @@ fn document_type(plan: &DocPlan, path: &str) -> DocumentType {
         })
 }
 
+/// What the documentation diff says when the change touches no documentation page. A stated
+/// absence, so that the reviewer never reads an empty block as a patch that went missing.
+pub(crate) const NO_PAGES: &str =
+    "No documentation page changed between the job's base commit and the documentation head.\n";
+
+/// What the reviewer reads when nobody answered a question of this documentation review or of
+/// an earlier run of it in the job.
+pub(crate) const NO_ANSWERS: &str =
+    "No person has answered a question of this documentation review.";
+
+/// The most bytes of one answer of a person that are read. An answer is short text typed by a
+/// person; the bound only stops a pasted file from filling the prompt.
+const ANSWER_MAX_BYTES: usize = 8 * 1024;
+
+/// The name of this stage in the reason of a refused answer.
+const STAGE: &str = "documentation review";
+
+/// The documentation diff the reviewer reads: the sections of the whole change, from the job's
+/// base to the documentation head, that touch the pages the gates judged. [`NO_PAGES`] when they
+/// are none (documentation policy 9.9).
+pub(crate) fn documentation_diff(
+    whole_patch: &[u8],
+    pages: &std::collections::BTreeSet<String>,
+) -> Vec<u8> {
+    let selected = select_files(whole_patch, pages);
+    if selected.is_empty() {
+        NO_PAGES.as_bytes().to_vec()
+    } else {
+        selected
+    }
+}
+
+/// The heading of the answers people gave to earlier documentation review runs of the job.
+pub(crate) const EARLIER_RUNS: &str = "People answered questions that earlier runs of this documentation review asked, in this job. Their decisions stand.";
+
+/// The heading of the answers people gave to this documentation review run.
+pub(crate) const THIS_RUN: &str =
+    "People answered questions this documentation review asked. Their decisions stand.";
+
+/// What the reviewer reads in `people_answers`, and how many answers it holds from where.
+pub(crate) struct PeopleAnswers {
+    /// The text of the input.
+    pub text: String,
+    /// How many answers came from earlier runs of the stage in the job.
+    pub earlier: usize,
+    /// How many answers came from this run.
+    pub this_run: usize,
+}
+
+/// The text of `people_answers`: the answers of the earlier runs under [`EARLIER_RUNS`], then the
+/// answers of this run under [`THIS_RUN`], each group in the same form the other stages give their
+/// reviewers. A group with no answer is left out, and [`NO_ANSWERS`] stands for both being empty
+/// (documentation policy 9.9).
+pub(crate) fn render_answers(earlier: &[String], this_run: &[String]) -> String {
+    let earlier = earlier_answers(earlier);
+    let this_run = earlier_answers(this_run);
+    match (earlier.is_empty(), this_run.is_empty()) {
+        (true, true) => NO_ANSWERS.to_owned(),
+        (true, false) => format!("{THIS_RUN}\n{this_run}"),
+        (false, true) => format!("{EARLIER_RUNS}\n{earlier}"),
+        (false, false) => format!("{EARLIER_RUNS}\n{earlier}\n{THIS_RUN}\n{this_run}"),
+    }
+}
+
+/// What people answered the earlier documentation review runs of the job, from the store through
+/// the seam, and this run, from the stage's own context, as the reviewer reads it.
+async fn people_answers(
+    handler: &DocumentationReviewHandler,
+    ctx: &StageContext<'_>,
+) -> Result<PeopleAnswers, StageError> {
+    let earlier = handler
+        .answers
+        .earlier_answers(&ctx.identity)
+        .await
+        .map_err(seam_error)?;
+    let scope = TenantScope::new(ctx.identity.tenant);
+    let mut this_run = Vec::with_capacity(ctx.human_inputs.len());
+    for answer in ctx.human_inputs {
+        let bytes = ctx
+            .ports
+            .artifacts
+            .get(&scope, answer)
+            .await
+            .map_err(|_| StageError::Tool)?;
+        let bounded = bytes
+            .get(..bytes.len().min(ANSWER_MAX_BYTES))
+            .unwrap_or(&bytes);
+        this_run.push(String::from_utf8_lossy(bounded).into_owned());
+    }
+    Ok(PeopleAnswers {
+        text: render_answers(&earlier, &this_run),
+        earlier: earlier.len(),
+        this_run: this_run.len(),
+    })
+}
+
 /// The most bytes of a page that are read at the job's base to compare its title.
 const MAX_BASE_PAGE_BYTES: u64 = 1024 * 1024;
 
-fn title_of<'a>(path: &'a str, text: &'a str) -> &'a str {
+/// The title of a page: its first level-one heading, or its path when it has none.
+#[must_use]
+pub fn title_of<'a>(path: &'a str, text: &'a str) -> &'a str {
     text.lines()
         .find_map(|line| line.strip_prefix("# "))
         .map_or(path, str::trim)
@@ -234,9 +345,7 @@ pub(super) async fn execute(
     };
     let (whole_export, whole_patch) = export(candidate.base.clone(), docs_head.clone()).await?;
     let (code_export, code_patch) = export(candidate.base.clone(), candidate.head.clone()).await?;
-    let (docs_export, docs_patch) = export(candidate.head.clone(), docs_head.clone()).await?;
     let whole = parse_patch(&String::from_utf8_lossy(&whole_patch));
-    let _ = (&whole_export, &code_export);
     let changed_docs: std::collections::BTreeSet<String> = whole
         .iter()
         .filter(|file| {
@@ -244,6 +353,15 @@ pub(super) async fn execute(
         })
         .map(|file| file.path.clone())
         .collect();
+    // The reviewer's documentation diff: the pages the gates judge, from the same patch and so
+    // over the same commits as the gate report's binding. Stored, so that its hash in the record
+    // names an artifact.
+    let docs_patch = documentation_diff(&whole_patch, &changed_docs);
+    let docs_ref = ports
+        .artifacts
+        .put(docs_patch.clone(), whole_export.patch.media_type.clone())
+        .await
+        .map_err(|_| StageError::Tool)?;
     let changelog_added: String = whole
         .iter()
         .filter(|file| file.path == "CHANGELOG.md")
@@ -439,6 +557,9 @@ pub(super) async fn execute(
     let writer_result = input_artifact(ctx.contract, DOCUMENTATION_RESULT);
     // The project's rules for agents (ADR 0026): pinned by the contract, or the built-in copy.
     let rules = crate::stages::project_rules::block(ctx).await?;
+    let people = people_answers(handler, ctx).await?;
+    let answers = people.text;
+    let answers_sha = Sha256Digest::of(answers.as_bytes());
     let assembled = {
         let now = ports.clock.now();
         let tenant_id = identity.tenant;
@@ -454,11 +575,7 @@ pub(super) async fn execute(
             .iter()
             .map(|change| change.path.as_str().to_owned())
             .collect();
-        let doc_paths: Vec<String> = docs_export
-            .changes
-            .iter()
-            .map(|change| change.path.as_str().to_owned())
-            .collect();
+        let doc_paths: Vec<String> = changed_docs.iter().cloned().collect();
         let inputs = vec![
             independent(Input::untrusted(
                 "frozen_specification",
@@ -488,7 +605,7 @@ pub(super) async fn execute(
                 Input::untrusted(
                     "documentation_diff",
                     ContentClass::ModelOutput,
-                    artifact("diff", &docs_export.patch.sha256),
+                    artifact("diff", &docs_ref.sha256),
                     tenant_id,
                     docs_patch.clone(),
                 )
@@ -500,6 +617,15 @@ pub(super) async fn execute(
                 artifact("gate-reports", &Sha256Digest::of(rendered.as_bytes())),
                 tenant_id,
                 rendered.clone().into_bytes(),
+            )),
+            // What people decided comes from the factory's own record of their answers, never
+            // from a file the writer wrote.
+            independent(Input::untrusted(
+                "people_answers",
+                ContentClass::IssueComment,
+                artifact("people-answers", &answers_sha),
+                tenant_id,
+                answers.clone().into_bytes(),
             )),
             rules.into_independent(),
         ]
@@ -546,10 +672,12 @@ pub(super) async fn execute(
     let (output, usage, denials, runtime_version, model, independence) = reviewed?;
 
     // The answer, checked twice and wrapped.
-    let validated = handler
+    let Ok(validated) = handler
         .schemas
         .check(&manifest.outputs_schema, output.as_bytes())
-        .map_err(|_| StageError::InvalidOutput)?;
+    else {
+        return Err(refuse(ctx, STAGE, &Rejection::Schema));
+    };
     let gate_ids: Vec<_> = reports
         .iter()
         .zip(&report_values)
@@ -576,16 +704,19 @@ pub(super) async fn execute(
             fidelity: ports.runtime.fidelity(),
         },
         frozen_spec: spec_ref.sha256.clone(),
-        diff: docs_export.patch.sha256.clone(),
+        diff: docs_ref.sha256.clone(),
         gate_reports: gate_ids.clone(),
     };
-    let wrapped = wrap(&validated.value, &fields).map_err(|_| StageError::InvalidOutput)?;
+    let wrapped = match wrap(&validated.value, &fields) {
+        Ok(wrapped) => wrapped,
+        Err(problem) => return Err(refuse(ctx, STAGE, &Rejection::of_wrap(&problem))),
+    };
     // A finding of a verdict other than PASS cites a file and a line that one of the two patches
     // shows.
     if wrapped.verdict.verdict != Verdict::Pass {
         let code_index = PatchIndex::parse(&code_patch);
         let docs_index = PatchIndex::parse(&docs_patch);
-        for finding in &wrapped.verdict.findings {
+        for (position, finding) in wrapped.verdict.findings.iter().enumerate() {
             let shown = finding.location.as_ref().is_some_and(|location| {
                 location.line_start.is_some_and(|start| {
                     let start = u32::try_from(start.get()).unwrap_or(0);
@@ -597,7 +728,7 @@ pub(super) async fn execute(
                 })
             });
             if !shown {
-                return Err(StageError::InvalidOutput);
+                return Err(refuse(ctx, STAGE, &Rejection::not_shown(position, finding)));
             }
         }
     }
@@ -618,7 +749,11 @@ pub(super) async fn execute(
             "frozen_spec_sha256": spec_ref.sha256,
             "plan_sha256": plan_ref.sha256,
             "code_diff_sha256": code_export.patch.sha256,
-            "documentation_diff_sha256": docs_export.patch.sha256,
+            "documentation_diff_sha256": docs_ref.sha256,
+            "documentation_diff_pages": changed_docs.iter().collect::<Vec<_>>(),
+            "people_answers_sha256": answers_sha,
+            "people_answers_given": people.this_run,
+            "people_answers_of_earlier_runs": people.earlier,
             "gate_report_ids": gate_ids.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>(),
             "writer_summary_given": false,
             "context": assembled.manifest().to_json(),
@@ -740,4 +875,50 @@ async fn review_in(
         Some(model),
         independence,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn no_answer_anywhere_says_so() {
+        assert_eq!(render_answers(&[], &[]), NO_ANSWERS);
+    }
+
+    #[test]
+    fn answers_of_this_run_alone_come_under_their_heading() {
+        let text = render_answers(&[], &texts(&["Review the README."]));
+        assert!(text.starts_with(THIS_RUN), "{text}");
+        assert!(text.contains("Answer 1 from a person:\n    Review the README.\n"));
+        assert!(!text.contains(EARLIER_RUNS), "{text}");
+    }
+
+    #[test]
+    fn answers_of_earlier_runs_alone_come_under_their_heading() {
+        let text = render_answers(&texts(&["Under Unreleased."]), &[]);
+        assert!(text.starts_with(EARLIER_RUNS), "{text}");
+        assert!(text.contains("    Under Unreleased.\n"));
+        assert!(!text.contains(THIS_RUN), "{text}");
+    }
+
+    #[test]
+    fn earlier_answers_come_before_the_answers_of_this_run_in_the_order_given() {
+        let text = render_answers(
+            &texts(&["First decision.", "Second decision."]),
+            &texts(&["Third decision."]),
+        );
+        let now = text.find(THIS_RUN).expect("this run's heading");
+        assert!(text.find(EARLIER_RUNS).expect("the earlier heading") < now);
+        let first = text.find("First decision.").expect("the first answer");
+        let second = text.find("Second decision.").expect("the second answer");
+        let third = text.find("Third decision.").expect("the third answer");
+        assert!(first < second && second < now && now < third, "{text}");
+        // Each group numbers its own answers from one.
+        assert_eq!(text.matches("Answer 1 from a person:").count(), 2);
+    }
 }

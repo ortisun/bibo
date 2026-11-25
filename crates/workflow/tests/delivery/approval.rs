@@ -479,6 +479,55 @@ async fn an_approval_passes_the_stage_and_nothing_merges() {
     rig.host_only_read();
 }
 
+/// Real run 36 of E1: `approval.recorded` carried a new random correlation id, so a search by the
+/// job's id missed the approval. Every audit record the service writes about the job, for an
+/// approval and for a refusal, carries the job's own id (`docs/observability/conventions.md`,
+/// section 7).
+#[tokio::test]
+async fn the_audit_records_of_a_decision_carry_the_job_s_correlation_id() {
+    let rig = Rig::new(RiskTier::Low).await;
+    let stranger = rig.command(Verb::Approve, 987_654_321).await;
+    let _ = refused(rig.service.submit(stranger).await);
+    let cmd = rig.command(Verb::Approve, rig.person(0)).await;
+    rig.service.submit(cmd).await.expect("applied");
+    let mut tx = rig
+        .w
+        .store
+        .begin(TenantScope::new(rig.w.tenant))
+        .await
+        .expect("a tx");
+    let job_correlation = tx
+        .get_job(rig.job)
+        .await
+        .expect("the job")
+        .value
+        .correlation_id;
+    let records = tx
+        .read_audit(AuditFilter::Job(rig.job), 0, 1000)
+        .await
+        .expect("audit");
+    let of_the_service: Vec<_> = records
+        .iter()
+        .filter(|record| record.event.action.as_str().starts_with("approval."))
+        .collect();
+    assert!(
+        of_the_service.len() >= 2,
+        "a refusal and an approval are audited: {:?}",
+        records
+            .iter()
+            .map(|record| record.event.action.as_str())
+            .collect::<Vec<_>>()
+    );
+    for record in of_the_service {
+        assert_eq!(
+            record.event.correlation_id,
+            job_correlation,
+            "{} carries another correlation id",
+            record.event.action.as_str()
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_approval_is_bound_to_the_pushed_head_while_the_evidence_stays_on_the_code_head() {
     let rig = Rig::new(RiskTier::Low).await;

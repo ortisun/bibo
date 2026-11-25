@@ -591,3 +591,22 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
         specification,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    /// The stage writes the inputs of a skill and the adapter names them in its fixed instruction.
+    /// Neither crate may depend on the other, so the composition root, which wires both, checks
+    /// that the two fixed paths agree.
+    #[test]
+    fn the_stage_writes_the_inputs_where_the_adapter_says_they_are() {
+        use factory_workflow::stages::specification as stage;
+        assert_eq!(
+            stage::DOCUMENTED_FILE,
+            factory_spec_adapter::invocation::DOCUMENTED_FILE
+        );
+        assert_eq!(
+            stage::ANSWERS_FILE,
+            factory_spec_adapter::assemble::ANSWERS_FILE
+        );
+    }
+}

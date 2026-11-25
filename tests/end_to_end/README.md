@@ -21,19 +21,19 @@ saved as JSON, checked again later, and corrupted on purpose.
 | A1 | The job is `COMPLETED`. Each stage listed for Slice 1 in `docs/architecture/state-machine.json` has exactly one `PASSED` run, and each passed after the stages it requires. The number of stages is read from the file and not written in code. |
 | A2 | `DOCUMENTING` and `DOCUMENTATION_REVIEW` finished after `REVIEW` and before `DELIVERY`, by ledger sequence. |
 | A3 | One open draft pull request that links the issue, and a head branch with the code commits and then a documentation commit. |
-| A4 | The evidence manifest validates, lists limitations and, in a production job, only real adapters. The ledger chain verifies. The head hash in the manifest is the stored entry, and the pull request body carries it. |
-| A5 | The specification contract validates, is approved, uses only the four allowed Spec Kit skills, and its artifact hashes match the files on the branch. |
-| A6 | The task graph validates and passes the planner checks (unique ids, no cycle, no dangling dependency, no shared file). Every acceptance scenario and requirement is covered. The changed paths are inside the owned files. |
+| A4 | The evidence manifest validates, lists limitations and, in a production job, only real adapters. The ledger chain verifies. The head hash in the manifest is the stored entry, and the pull request body carries its 64 hexadecimal digits (the body writes every hash without the `sha256:` prefix). |
+| A5 | The specification contract validates, is approved, uses only the four allowed Spec Kit skills, and its artifact hashes match the files at the commit it was frozen at, read from the job's own store (`contracts.specification_files`). A cited file that is also on the head branch (`github.head_files`) must match there too. The specification is not required on the head branch: the code starts from the repository map's commit (ADR 0025), so the specification commits stay in the job's store. |
+| A6 | The task graph validates and passes the planner checks (unique ids, no cycle, no dangling dependency, no shared file). Every acceptance scenario and requirement is covered. The changed paths are inside the owned files, or among the pages the documentation stage wrote (`facts.documentation_paths`), which its own scope gate judges. |
 | A7 | Every gate report validates. A `PASSED` report ran every command with exit code 0, in an image pinned by digest, and in a production job with real adapters. |
 | A8 | Every human-facing text passes the readability gate. For a request in another language the specification, plan, pull request and documentation are English. |
 | A9 | The approval waited for a person, was recorded for a person who is not the requester and who held the approver role in the ledger, and the job then completed. The pull request is not merged and the base branch did not move. |
 | A10 | No request merges, enables auto-merge or deploys. No token holds a permission the policy forbids, and each is narrowed to one repository. The head branch is under `factory/`. The base branch needs a review that the App cannot bypass. |
-| A11 | Each attempt has one span whose parent is its stage run span. Every captured event, log line and audit event carries the job's correlation id. |
-| A12 | The documentation gate report is `PASSED` with the link check and a snippet execution run with exit code 0, or `NOT_APPLICABLE` with a recorded rule. |
+| A11 | Each attempt has one span whose parent is its stage run span. Every captured event, audit event and log line of the job carries the job's correlation id. A log line of the job is one written inside one of the job's spans (`in_job`); a line written outside any job, such as the token sweep of the worker loop, carries none by design ([conventions, section 7](../../docs/observability/conventions.md)) and must not carry this job's. |
+| A12 | The documentation gate writes one report for each check. In the passed `DOCUMENTATION_REVIEW` run, the `docs-links` report is `PASSED`, and the `docs-examples` report is `PASSED` with every example run with exit code 0; either may be `NOT_APPLICABLE` with a recorded rule (`not_applicable_reason.justification`). |
 | A13 | `DELIVERY` starts only when every stage before it has a current `PASSED` run with passing gate reports. A failing check keeps it from starting. |
 | A14 | In a production job no ledger entry and no manifest adapter is a fake. In test mode a fake is allowed only when labelled: it claims no assurance level, and the manifest attains none on it. |
 
-Each assertion is shown to fail. `scripts/e2e.sh --self-test` runs 89 deliberate corruptions of an
+Each assertion is shown to fail. `scripts/e2e.sh --self-test` runs 96 deliberate corruptions of an
 honest evidence set, at least two for each assertion, and checks that the assertion fails with a
 reason that names the broken fact. The scenario checks have their own corruptions in
 `tests/scenario_mutations.rs`.
@@ -221,11 +221,16 @@ scripted wiring includes those files as they are, with `#[path]`, so that it and
 scenario tests drive one construction. If the engine package turns that harness into a public
 testkit surface, the `#[path]` goes away.
 
-## Two assumptions to settle
+## Judging stored evidence again
 
-* The documentation gate package (`s1-stage-documentation`) is not merged. A12 reads the report for
-  a command whose arguments contain `link` and one that contains `snippet`. When that package
-  defines how it records its checks, change the three constants at the top of the documentation
-  section of `src/assertions/contracts.rs`.
+`e2e judge --scenario E1 PATH` judges an evidence file again with the checks of the scenario,
+without a new run: for example the `answer.json` or `recording/E1/evidence.json` of a real run in
+`target/e2e-real/`. Nothing proves where the file came from, so the result is labelled a
+re-judgement and is never the proof. A recording made before a field existed is judged with the
+field's default: `in_job` counts every line as the job's, and `specification_files` is empty, so
+A5 fails on it.
+
+## An assumption to settle
+
 * The planner validator (`s1-stage-architecture-and-planning`) is not merged either, so A6 writes
   out the planner checks itself (`planner_problems`). Replace it with the validator when it exists.

@@ -320,6 +320,26 @@ pub fn human_targets(from: StageKind) -> &'static [StageKind] {
         .map_or(&[], |route| route.targets)
 }
 
+/// The stages a person may send rework to from `from` now: the targets [`human_targets`] lists,
+/// kept only when the count each one is charged to still has a round under its cap. In pipeline
+/// order; empty when the table lists none or every listed count is used up.
+///
+/// This is the cap half of [`decide_human_rework`] without the role, so whatever offers a person
+/// the decisions of a waiting stage offers only the rework the engine would accept. The role is
+/// the person's own and is checked when they decide.
+#[must_use]
+pub fn open_human_targets(
+    from: StageKind,
+    ledger: ReworkLedger,
+    limits: ReworkLimits,
+) -> Vec<StageKind> {
+    human_targets(from)
+        .iter()
+        .copied()
+        .filter(|target| ledger.has_room(ReworkTrack::for_target(*target), limits))
+        .collect()
+}
+
 /// Who is asking for rework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReworkCause {

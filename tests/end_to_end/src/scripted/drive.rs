@@ -1046,17 +1046,18 @@ impl<'a> Flow<'a> {
         if let Some((run, attempt)) = find("DOCUMENTATION_REVIEW") {
             gate_reports.push(GateReportRecord {
                 stage_run_id: run.clone(),
+                report: canned::gate_report(&job_id, &run, &attempt, "docs-links", &[], o, 2),
+            });
+            gate_reports.push(GateReportRecord {
+                stage_run_id: run.clone(),
                 report: canned::gate_report(
                     &job_id,
                     &run,
                     &attempt,
-                    "documentation-gate",
-                    &[
-                        &["docs-link-check", "--root", "."],
-                        &["docs-snippet-run", "README.md"],
-                    ],
+                    "docs-examples",
+                    &[&["word-count", "--json", "tests/fixtures/three-lines.txt"]],
                     o,
-                    2,
+                    3,
                 ),
             });
         }
@@ -1070,6 +1071,7 @@ impl<'a> Flow<'a> {
                 evidence_manifest: Some(manifest),
                 gate_reports,
                 stored_hashes,
+                specification_files: files,
             },
             documents,
             ..Extra::default()
@@ -1145,6 +1147,7 @@ impl<'a> Flow<'a> {
             source: "audit".to_owned(),
             label: format!("{} #{}", record.action, record.seq),
             correlation_id: record.correlation_id.clone(),
+            in_job: true,
         }));
         correlated.extend(
             self.world
@@ -1155,6 +1158,7 @@ impl<'a> Flow<'a> {
                     source: "outbox".to_owned(),
                     label: event.event_type.as_str().to_owned(),
                     correlation_id: Some(event.correlation_id.to_string()),
+                    in_job: true,
                 }),
         );
         let mut facts = extra.facts;

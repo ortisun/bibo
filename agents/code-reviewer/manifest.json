@@ -100,7 +100,7 @@
   },
   "prompt": {
     "template_path": "agents/code-reviewer/prompt.md",
-    "template_version": "1.3.0",
-    "template_sha256": "sha256:a9c9b38090a7e567df4b8d76ec2a7ba19ac90b609e8c62a50093450729cff06e"
+    "template_version": "1.4.0",
+    "template_sha256": "sha256:3d7cf209aea7dbb65df4e5b05bff2c83d09611972d7b3dd466d53f04560de158"
   }
 }

@@ -44,8 +44,10 @@ fn failures(findings: &[Finding]) -> Vec<(String, String)> {
 }
 
 /// The body of a task as the readability gate reads it: the four parts of the template, each under
-/// its own heading.
-fn task_body(task: &Task) -> String {
+/// its own heading. Public so that the end-to-end evidence collector hands the readability gate
+/// the same text this stage judged (assertion A8).
+#[must_use]
+pub fn task_body(task: &Task) -> String {
     let list = |items: Vec<&str>| {
         items
             .into_iter()

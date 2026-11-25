@@ -458,27 +458,40 @@ impl Rig {
             artifacts.clone(),
             derived,
         ));
+        // The scripted tool answers what the stages run: its help, its version and the examples of
+        // the README, which the documentation gate runs from the root of the checkout (policy
+        // 9.10). Each answer is what the real patched tool printed there, with the fixture's
+        // `notes.txt` in place and, for the standard input example, the bytes of its `printf`.
         let help = playbook.recorded("word-count--help.txt");
         let version = playbook.recorded("word-count--version.txt");
+        let notes = playbook.recorded("word-count-notes.txt");
+        let json_notes = playbook.recorded("word-count--json-notes.txt");
+        let from_stdin = playbook.recorded("word-count-stdin.txt");
         sandbox = sandbox.with_program(
             &factory_composition::sandbox_specs::built_program("word-count"),
-            move |argv: &[String], _: &[u8]| match argv.get(1).map(String::as_str) {
-                Some("--help") => ProgramOutput {
+            move |argv: &[String], stdin: &[u8]| {
+                let args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+                let printed = |text: &String| ProgramOutput {
                     exit_code: Some(0),
-                    stdout: help.clone().into_bytes(),
+                    stdout: text.clone().into_bytes(),
                     stderr: Vec::new(),
-                },
-                Some("--version") => ProgramOutput {
-                    exit_code: Some(0),
-                    stdout: version.clone().into_bytes(),
-                    stderr: Vec::new(),
-                },
-                other => ProgramOutput {
-                    exit_code: Some(2),
-                    stdout: Vec::new(),
-                    stderr: format!("the scripted word-count does not run {other:?}\n")
+                };
+                match (args.as_slice(), stdin) {
+                    (["--help"], _) => printed(&help),
+                    (["--version"], _) => printed(&version),
+                    (["notes.txt"], _) => printed(&notes),
+                    (["--json", "notes.txt"], _) => printed(&json_notes),
+                    ([], b"one two three\n") => printed(&from_stdin),
+                    (other, input) => ProgramOutput {
+                        exit_code: Some(2),
+                        stdout: Vec::new(),
+                        stderr: format!(
+                            "the scripted word-count does not run {other:?} with {} byte(s) of input\n",
+                            input.len()
+                        )
                         .into_bytes(),
-                },
+                    },
+                }
             },
         );
         // The small file programs the specification stage runs in the sandbox. A stand-in: they

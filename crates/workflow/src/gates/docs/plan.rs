@@ -43,18 +43,24 @@ pub struct ChangedFile {
     pub removed: Vec<String>,
 }
 
+/// The line that opens the section of one file in a patch.
+const FILE_HEADER: &str = "diff --git ";
+
+/// The path a file header names: `a/PATH b/PATH`, where the path of the new side follows the last
+/// ` b/`. `rest` is the header without [`FILE_HEADER`]. [`parse_patch`] and [`select_files`] both
+/// read a path this way, so they always agree on which file a section belongs to.
+fn header_path(rest: &str) -> &str {
+    rest.rsplit_once(" b/").map_or(rest, |(_, path)| path)
+}
+
 /// Reads a patch in the form of `git diff --no-renames`.
 #[must_use]
 pub fn parse_patch(patch: &str) -> Vec<ChangedFile> {
     let mut files: Vec<ChangedFile> = Vec::new();
     let mut in_hunk = false;
     for line in patch.lines() {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            // `a/PATH b/PATH`: the path of the new side follows the last ` b/`.
-            let path = rest
-                .rsplit_once(" b/")
-                .map_or(rest, |(_, path)| path)
-                .to_owned();
+        if let Some(rest) = line.strip_prefix(FILE_HEADER) {
+            let path = header_path(rest).to_owned();
             files.push(ChangedFile {
                 path,
                 kind: Kind::Modified,
@@ -84,6 +90,28 @@ pub fn parse_patch(patch: &str) -> Vec<ChangedFile> {
         }
     }
     files
+}
+
+/// The sections of a patch that belong to the files in `keep`, byte for byte and in the order of
+/// the patch. Bytes before the first file header belong to no file and are dropped. A path is read
+/// as [`parse_patch`] reads it, so the selection holds exactly the files a caller chose from that
+/// parse. The documentation review uses it to show its reviewer the pages the gates judged
+/// (documentation policy 9.9).
+#[must_use]
+pub fn select_files(patch: &[u8], keep: &BTreeSet<String>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut keeping = false;
+    for line in patch.split_inclusive(|byte| *byte == b'\n') {
+        if let Some(rest) = line.strip_prefix(FILE_HEADER.as_bytes()) {
+            let text = String::from_utf8_lossy(rest);
+            let header = text.trim_end_matches(['\n', '\r']);
+            keeping = keep.contains(header_path(header));
+        }
+        if keeping {
+            out.extend_from_slice(line);
+        }
+    }
+    out
 }
 
 /// Who a page is for.
@@ -1366,5 +1394,64 @@ mod tests {
         let mut bad_commit = good;
         bad_commit["code_head"] = json!("not-a-commit");
         assert!(validate(&bad_commit).is_err());
+    }
+
+    /// A patch of three files: code, a page and the changelog. The page and the changelog are
+    /// what the documentation gates judge.
+    const THREE_FILES: &str = "diff --git a/src/main.rs b/src/main.rs\nindex 1..2 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/README.md b/README.md\nindex 3..4 100644\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # Word count\n+Add `--json`.\ndiff --git a/CHANGELOG.md b/CHANGELOG.md\nnew file mode 100644\n--- /dev/null\n+++ b/CHANGELOG.md\n@@ -0,0 +1 @@\n+# Changelog\n";
+
+    fn keep(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    #[test]
+    fn select_files_keeps_the_sections_of_the_chosen_files_byte_for_byte() {
+        let kept = select_files(
+            THREE_FILES.as_bytes(),
+            &keep(&["README.md", "CHANGELOG.md"]),
+        );
+        let start = THREE_FILES
+            .find("diff --git a/README.md")
+            .expect("the page");
+        assert_eq!(kept, &THREE_FILES.as_bytes()[start..]);
+        // What the selection holds parses to exactly the files chosen.
+        let parsed: Vec<String> = parse_patch(&String::from_utf8_lossy(&kept))
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        assert_eq!(parsed, ["README.md", "CHANGELOG.md"]);
+    }
+
+    #[test]
+    fn select_files_keeps_one_file_from_the_middle() {
+        let kept = select_files(THREE_FILES.as_bytes(), &keep(&["README.md"]));
+        let text = String::from_utf8(kept).expect("text");
+        assert!(text.starts_with("diff --git a/README.md b/README.md\n"));
+        assert!(text.ends_with("+Add `--json`.\n"));
+        assert!(!text.contains("src/main.rs") && !text.contains("CHANGELOG"));
+    }
+
+    #[test]
+    fn select_files_of_nothing_or_of_an_empty_patch_is_empty() {
+        assert!(select_files(THREE_FILES.as_bytes(), &BTreeSet::new()).is_empty());
+        assert!(select_files(b"", &keep(&["README.md"])).is_empty());
+        assert!(select_files(THREE_FILES.as_bytes(), &keep(&["docs/absent.md"])).is_empty());
+    }
+
+    #[test]
+    fn select_files_drops_bytes_before_the_first_header_and_keeps_a_last_line_without_a_newline() {
+        let patch = b"preamble\ndiff --git a/README.md b/README.md\n@@ -1 +1 @@\n+end";
+        assert_eq!(
+            select_files(patch, &keep(&["README.md"])),
+            b"diff --git a/README.md b/README.md\n@@ -1 +1 @@\n+end"
+        );
+    }
+
+    #[test]
+    fn select_files_reads_a_header_with_a_carriage_return_as_parse_patch_does() {
+        let patch = b"diff --git a/README.md b/README.md\r\n@@ -1 +1 @@\r\n+x\r\n";
+        assert_eq!(select_files(patch, &keep(&["README.md"])), patch);
+        let parsed = parse_patch(&String::from_utf8_lossy(patch));
+        assert_eq!(parsed[0].path, "README.md");
     }
 }

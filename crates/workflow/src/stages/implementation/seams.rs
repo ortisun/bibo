@@ -245,6 +245,31 @@ pub trait ReworkSource: Send + Sync {
     async fn of(&self, run: &RunIdentity) -> Result<Option<ReworkContext>, SeamError>;
 }
 
+/// Where a stage learns what people answered to the earlier runs of the same stage in its job.
+///
+/// A run of a reviewing stage is re-created when a later round sends the work back past it, and
+/// superseded when the work it judged changes. The new run has no answers of its own yet, so a
+/// reviewer without the earlier ones asks a settled question again (documentation policy 9.9).
+/// [`ReworkSource`] does not serve this: it answers only for the run a rework move sent the work
+/// back to, and a re-created run after that target is a first run to it.
+#[async_trait]
+pub trait AnswerHistory: Send + Sync {
+    /// Says whether this reads the store (`real`) or a fixed answer (`fake`). The profile check
+    /// refuses a `fake` in production: a stand-in that always says "nobody answered" brings back
+    /// the question a person settled.
+    fn fidelity(&self) -> Fidelity;
+
+    /// The answers people gave to every run of the same stage that came before `run` in its job,
+    /// in their words: the oldest run first, and in each run in the order given. The answers of
+    /// `run` itself are not in it; the stage reads those from its own context. Empty for the
+    /// first run of the stage, or when nobody answered.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the store cannot be read. The stage fails closed: a run
+    /// that cannot read what people decided must not run as if nobody had.
+    async fn earlier_answers(&self, run: &RunIdentity) -> Result<Vec<String>, SeamError>;
+}
+
 /// Checks a spec before a sandbox is made from it. The agent runs only in the `agent` profile, over
 /// exactly the workspace the stage made, with the job token it needs and nothing else.
 ///

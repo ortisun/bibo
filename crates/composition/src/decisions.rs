@@ -87,7 +87,7 @@ use factory_domain::policy::authority::{
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::policy::solo::ConfirmationWord;
 use factory_domain::scope::TenantScope;
-use factory_domain::state::{JobStatus, Status as _};
+use factory_domain::state::{Guard, JobStatus, Status as _};
 use factory_domain::values::{GitSha, HumanText, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::{RiskTier, StageKind};
 use factory_ports::clock::Clock;
@@ -359,11 +359,14 @@ pub enum Reason {
     ConfirmationMissing,
     /// The requester asked to approve their own request and the solo mode does not apply.
     IneligibleApprover,
+    /// A person asked to send work back to a stage whose phase has used its rework rounds
+    /// (ADR 0023). The cap holds for a person as it does for a gate.
+    ReworkLimit,
 }
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 28] = [
+    pub const ALL: [Reason; 29] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -392,6 +395,7 @@ impl Reason {
         Self::SoloDelay,
         Self::ConfirmationMissing,
         Self::IneligibleApprover,
+        Self::ReworkLimit,
     ];
 
     /// The sentence the person may read. Authority is never explained.
@@ -440,6 +444,9 @@ impl Reason {
             Self::IneligibleApprover => {
                 "The requester may not approve their own request, because the solo mode does not apply to it."
             }
+            Self::ReworkLimit => {
+                "The rework rounds of the phase this work would be sent back to are used up. Answer the stage, or reject the job."
+            }
         }
     }
 
@@ -475,6 +482,7 @@ impl Reason {
             Self::SoloDelay => "solo_delay",
             Self::ConfirmationMissing => "confirmation_missing",
             Self::IneligibleApprover => "ineligible_approver",
+            Self::ReworkLimit => "rework_limit",
         }
     }
 
@@ -1791,8 +1799,10 @@ impl ClaimWork {
             )),
             Err(EngineError::NotAuthorized(_)) => Verdict::Done(Reason::NotAuthorized.into()),
             Err(EngineError::NotFound) => Verdict::Done(Reason::NoStageRun.into()),
-            // The run does not wait for a person, the target has no route from this stage, or the
-            // rework cap is used up.
+            // The rework cap of the target's phase is used up: the person is told so, and what
+            // is left to them, instead of a state that does not apply.
+            Err(error) if is_rework_cap(&error) => Verdict::Done(Reason::ReworkLimit.into()),
+            // The run does not wait for a person, or the target has no route from this stage.
             Err(EngineError::Illegal(_) | EngineError::GuardUnmet(_) | EngineError::Refused(_)) => {
                 Verdict::Done(Reason::WrongState.into())
             }
@@ -2280,6 +2290,13 @@ async fn warnings_decided(
     )
 }
 
+/// True when the engine refused a person's rework because the cap of the target's count is used
+/// up. The engine answers a person without the role with `NotAuthorized`, so a failed guard
+/// `G_HUMAN_REWORK_ALLOWED` that reaches here is the cap.
+fn is_rework_cap(error: &EngineError) -> bool {
+    matches!(error, EngineError::GuardUnmet(failure) if failure.guard == Guard::HumanReworkAllowed)
+}
+
 /// The reason for a refusal of the approval service. Authority is never explained, with one
 /// exception: `ineligible_approver` names the solo mode (ADR 0022). Whoever reaches the approval
 /// stage's judge has passed step 5 of the hook ("May they, now, on this repository?"): they are on
@@ -2647,6 +2664,32 @@ mod tests {
         }
         assert_eq!(scan.junk.len(), JUNK_KEPT);
         assert_eq!(scan.left_out, 5);
+    }
+
+    #[test]
+    fn a_rework_refused_at_the_cap_has_a_reason_of_its_own() {
+        use factory_domain::machines::guards::GuardFailure;
+        let cap = EngineError::GuardUnmet(GuardFailure {
+            guard: Guard::HumanReworkAllowed,
+            unmet: vec!["the rework cap is used up"],
+            any_of: false,
+        });
+        assert!(is_rework_cap(&cap));
+        assert_eq!(Reason::ReworkLimit.code(), "rework_limit");
+        assert_eq!(Reason::code_of(Reason::ReworkLimit.text()), "rework_limit");
+        // Another guard, a missing route or a missing role is not the cap.
+        let other = EngineError::GuardUnmet(GuardFailure {
+            guard: Guard::BlockClearedRerun,
+            unmet: vec!["the block is not cleared"],
+            any_of: false,
+        });
+        assert!(!is_rework_cap(&other));
+        assert!(!is_rework_cap(&EngineError::Refused(
+            "the table of human rework routes has no such route from this stage"
+        )));
+        assert!(!is_rework_cap(&EngineError::NotAuthorized(
+            "only an approver or an operator may send work back"
+        )));
     }
 
     #[test]

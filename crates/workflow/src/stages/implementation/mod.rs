@@ -75,7 +75,7 @@ pub use input::{
     VALIDATION_EVIDENCE,
 };
 pub use seams::{
-    AgentOutputCheck, CapabilityProbes, Hold, LedgerError, PlannedTask, ReworkContext,
-    ReworkSource, SeamError, TaskLedger, TaskRecord, TaskRunRecord, WorkspaceAccess,
+    AgentOutputCheck, AnswerHistory, CapabilityProbes, Hold, LedgerError, PlannedTask,
+    ReworkContext, ReworkSource, SeamError, TaskLedger, TaskRecord, TaskRunRecord, WorkspaceAccess,
     WorkspaceAgentSpecs,
 };

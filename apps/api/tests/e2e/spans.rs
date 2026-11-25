@@ -77,7 +77,24 @@ pub struct SpanRecord {
 pub struct LineRecord {
     pub label: String,
     pub correlation_id: Option<String>,
+    /// Whether the line was written inside one of the job's spans ([`JOB_SPANS`]), or carries the
+    /// correlation id in its own fields. A line written outside any job, such as the token sweep
+    /// of the worker loop, has no correlation id by design (`docs/observability/conventions.md`,
+    /// section 7), and assertion A11 does not ask it for one.
+    pub in_job: bool,
 }
+
+/// The spans of a job: the ones whose required attributes hold `factory.correlation_id` (the span
+/// table of `docs/observability/conventions.md`). The harness keeps the same list
+/// (`tests/end_to_end/src/evidence.rs`, `JOB_SPANS`).
+pub const JOB_SPANS: [&str; 6] = [
+    "factory.job",
+    "factory.stage_run",
+    "factory.attempt",
+    "factory.agent",
+    "factory.tool_call",
+    "factory.gate",
+];
 
 /// Installs the capture as the global subscriber, once, and returns the handle.
 pub fn install() -> &'static Capture {
@@ -144,11 +161,14 @@ impl Capture {
             })
             .map(|(index, event)| {
                 let mut correlation = event.fields.get(CORRELATION).cloned();
+                let mut in_job = correlation.is_some();
                 let mut cursor = event.parent;
-                while correlation.is_none() {
-                    let Some(id) = cursor else { break };
+                while let Some(id) = cursor {
                     let span = state.spans.get(&id);
-                    correlation = span.and_then(|s| s.fields.get(CORRELATION).cloned());
+                    if correlation.is_none() {
+                        correlation = span.and_then(|s| s.fields.get(CORRELATION).cloned());
+                    }
+                    in_job |= span.is_some_and(|s| JOB_SPANS.contains(&s.name.as_str()));
                     cursor = span.and_then(|s| s.parent);
                 }
                 let label = event
@@ -160,6 +180,7 @@ impl Capture {
                 LineRecord {
                     label: format!("event {} ({}: {label})", index + 1, event.target),
                     correlation_id: correlation.map(|text| text.trim_matches('"').to_owned()),
+                    in_job,
                 }
             })
             .collect()
