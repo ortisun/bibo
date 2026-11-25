@@ -34,7 +34,7 @@ For the critic, two options:
 - `RiskFacts` gains `design_decision_needs_person`: "a decision of the design needs a person to approve it". The architecture stage sets it when any decision of the design has `needs_person`. It no longer sets `new_dependency`.
 - `policies/approval.yaml` names `design_decision_needs_person` in `criteria_any` of the **medium** tier.
 - `single_module_change_without_sensitive_or_protected_paths` still does not hold when such a decision exists, as before. That changes no tier, since medium is above low, and it keeps the fact from reading as a plain change.
-- The architecture stage calls the independent critic when the tier is at or above `critic_from`, **or** when any decision has `needs_person`. The record says why the critic ran.
+- The architecture stage calls the independent critic when the tier is at or above `critic_from`, **or** when any decision has `needs_person`. The record keeps the tier, `critic_from` and `decisions_for_a_person`, which together show why the critic ran, and the critic gate's reason names both rules when no critic was required or none could be used.
 - The design gate still stops for a person when any decision has `needs_person`, as before.
 - `decisions_for_a_person` in the architecture record still lists the decisions; it is now explained by the new criterion, not by `new_dependency`.
 
