@@ -83,7 +83,7 @@
    "production": "engine",
    "source": "crates/workflow/src/engine/gate.rs",
    "token": "AuditKind::GateResult",
-   "note": "One record for each gate the engine evaluates."
+   "note": "One record for each gate the engine evaluates. The code review and the documentation review also write one, decision `denied`, with the reason, when they refuse a reviewer's answer (`crates/workflow/src/stages/review/rejection.rs`)."
   },
   {
    "type": "approval_granted_or_rejected",
