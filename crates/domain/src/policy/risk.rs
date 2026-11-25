@@ -31,6 +31,10 @@ pub struct RiskFacts {
     pub public_api_change: bool,
     /// A schema migration that loses no data.
     pub schema_migration_without_data_loss: bool,
+    /// A decision of the design needs a person to approve it (ADR 0037). It is not a new
+    /// dependency: a real one is `sensitive_file_change` in the design and `new_dependency` in
+    /// the diff.
+    pub design_decision_needs_person: bool,
     /// Authentication or authorization code changes.
     pub authn_authz_change: bool,
     /// Secret handling changes.
@@ -70,6 +74,7 @@ impl RiskFacts {
             "multi_module_change" => self.multi_module_change,
             "public_api_change" => self.public_api_change,
             "schema_migration_without_data_loss" => self.schema_migration_without_data_loss,
+            "design_decision_needs_person" => self.design_decision_needs_person,
             "authn_authz_change" => self.authn_authz_change,
             "secret_handling_change" => self.secret_handling_change,
             "new_dependency" => self.new_dependency,

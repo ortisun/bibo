@@ -12,8 +12,8 @@ use factory_workflow::stages::architecture::{
 use serde_json::{Value, json};
 
 use crate::rig::{
-    Critic, Options, Rig, block, critic_manifest, design, gate_outcome, high_risk_design, review,
-    risk_of,
+    Critic, Options, Rig, block, critic_manifest, decision_for_a_person_design, design,
+    gate_outcome, high_risk_design, review, risk_of,
 };
 
 /// Runs the architecture stage once with this design and returns the rig and the run.
@@ -281,6 +281,37 @@ async fn critic_runs_only_when_policy_requires() {
 }
 
 #[tokio::test]
+async fn a_decision_for_a_person_is_medium_and_still_calls_the_critic() {
+    // ADR 0037: the decision is its own fact at the medium tier, not a new dependency, and the
+    // person it waits for gets a design a second agent has reviewed.
+    let options = Options {
+        critic: Critic::Manifest(Box::new(critic_manifest(|_| {}))),
+        ..Options::default()
+    };
+    let rig = Rig::build(options).await;
+    rig.run_until_architecture().await;
+    rig.architect_returns(decision_for_a_person_design());
+    rig.critic_returns(review("PASS", "low"));
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(rig.runtime.runs("architecture-critic"), 1);
+    let record = rig
+        .deliverable(StageKind::Architecture, RECORD)
+        .await
+        .expect("record");
+    assert_eq!(record["risk"]["tier"], "medium");
+    assert_eq!(
+        record["risk"]["matched"],
+        json!(["design_decision_needs_person"])
+    );
+    assert_eq!(record["critic"]["outcome"], "ran");
+    assert_eq!(
+        rig.status(StageKind::Architecture).await,
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test]
 async fn critic_missing_for_high_risk_work_is_reported_as_missing_and_a_person_decides() {
     let (rig, outcome) = run_design(Options::default(), high_risk_design()).await;
     assert_eq!(outcome, AttemptOutcome::Succeeded);
@@ -294,12 +325,15 @@ async fn critic_missing_for_high_risk_work_is_reported_as_missing_and_a_person_d
     assert_eq!(record["critic"]["outcome"], "absent");
     assert_eq!(record["critic"]["reason"], "no-such-agent");
     // The record says what put the design at a tier that needs a critic.
-    assert_eq!(record["risk"]["matched"], json!(["new_dependency"]));
+    assert_eq!(
+        record["risk"]["matched"],
+        json!(["design_decision_needs_person", "sensitive_file_change"])
+    );
     assert_eq!(
         record["risk"]["decisions_for_a_person"],
         json!(["hand-written-json"])
     );
-    assert_eq!(record["risk"]["sensitive_paths"], json!([]));
+    assert_eq!(record["risk"]["sensitive_paths"], json!(["Cargo.toml"]));
     let report = &reports_of_first_run(&rig, CRITIC_GATE).await[0];
     assert_eq!(report["outcome"], "BLOCKED");
     assert_eq!(report["blocked_reason"]["code"], "tool_unavailable");
@@ -310,7 +344,7 @@ async fn critic_missing_for_high_risk_work_is_reported_as_missing_and_a_person_d
         reason.contains("The design is in the high tier."),
         "{reason}"
     );
-    assert!(reason.contains("`new_dependency`"), "{reason}");
+    assert!(reason.contains("`sensitive_file_change`"), "{reason}");
     assert!(reason.contains("`hand-written-json`"), "{reason}");
     assert!(
         report["blocked_reason"]["missing"][0]
@@ -450,7 +484,7 @@ async fn risk_is_computed_from_facts_and_the_agents_claim_never_lowers_it() {
     assert!(
         record["risk"]["matched"]
             .as_array()
-            .is_some_and(|list| list.iter().any(|c| c == "new_dependency"))
+            .is_some_and(|list| list.iter().any(|c| c == "sensitive_file_change"))
     );
 
     // The claim says high for a design that matches the lowest tier: the claim raises it.

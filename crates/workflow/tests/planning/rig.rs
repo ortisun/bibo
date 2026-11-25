@@ -1527,8 +1527,17 @@ pub fn design() -> Value {
     })
 }
 
-/// The same design with a decision that adds a dependency, which the policy puts in the high tier.
+/// The same design with a decision that adds a dependency: a person must approve it, and it changes
+/// the manifest, a sensitive file, which the policy puts in the high tier (ADR 0037).
 pub fn high_risk_design() -> Value {
+    let mut value = decision_for_a_person_design();
+    value["design_elements"][0]["touches"] = json!(["src/main.rs", "src/output.rs", "Cargo.toml"]);
+    value
+}
+
+/// The same design with a decision a person must approve and no sensitive file: the medium tier,
+/// and the critic still reviews it (ADR 0037).
+pub fn decision_for_a_person_design() -> Value {
     let mut value = design();
     value["decisions"][0]["needs_person"] = json!(true);
     value["decisions"][0]["choice"] = json!(

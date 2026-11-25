@@ -208,7 +208,8 @@ risk_tiers:
     required_reviews: [code_reviewer]
     required_approvals: 1
   - id: medium
-    criteria_any: [multi_module_change, public_api_change, schema_migration_without_data_loss]
+    # design_decision_needs_person: a decision of the design a person must approve (ADR 0037).
+    criteria_any: [multi_module_change, public_api_change, schema_migration_without_data_loss, design_decision_needs_person]
     required_reviews: [code_reviewer, qa]
     required_approvals: 1
   - id: high

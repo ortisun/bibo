@@ -159,7 +159,7 @@ pub(super) async fn execute(
     } else {
         let found = checks::check(&design, &spec_ids, assessment.tier, &protected, &rules);
         let clean = found.traceability.is_empty() && found.completeness.is_empty();
-        if assessment.tier < rules.critic_from {
+        if !rules.critic_required(assessment.tier, &design) {
             (Outcome::NotRequired, None, None)
         } else if !clean {
             (Outcome::SkippedDesignFailed, None, None)
@@ -210,7 +210,8 @@ pub(super) async fn execute(
             "critic_from": rules.critic_from.as_str(),
             "human_from": rules.human_from.as_str(),
             // What in the design made the criteria hold: the paths the path policy marks
-            // sensitive, and the decisions a person must approve (counted as `new_dependency`).
+            // sensitive, and the decisions a person must approve (`design_decision_needs_person`,
+            // which also calls the critic at any tier, ADR 0037).
             "sensitive_paths": sensitive,
             "decisions_for_a_person": risk::decisions_for_a_person(&design),
         },

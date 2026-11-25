@@ -283,7 +283,7 @@ pub(super) async fn evaluate(
     let critic_report = match &critic_outcome {
         Outcome::NotRequired => {
             let reason = format!(
-                "The policy requires an independent critic from the {} tier, and this design is in the {} tier.",
+                "The policy requires an independent critic from the {} tier, or for a decision a person must approve. This design is in the {} tier and has no such decision.",
                 rules.critic_from.as_str(),
                 tier.as_str()
             );
@@ -323,7 +323,7 @@ pub(super) async fn evaluate(
                 "BLOCKED",
                 "No independent critic could review this design",
                 &format!(
-                    "The policy requires an independent critic from the {} tier and none could be used, so no critic reviewed the design. A person must decide.",
+                    "The policy requires an independent critic from the {} tier, or for a decision a person must approve, and none could be used, so no critic reviewed the design. A person must decide.",
                     rules.critic_from.as_str()
                 ),
                 Vec::new(),
