@@ -692,7 +692,7 @@ impl RealBench {
         // bound it instead.
         let lock = DockerLock::take_holding(settings.human_wait * 2 + Duration::from_secs(3600));
         let run = format!("real-{}", std::process::id());
-        let scratch = root().join("target/e2e-real").join(&run);
+        let scratch = factory_testkit::fx::scratch::mountable_scratch("e2e-real").join(&run);
         let _ = std::fs::remove_dir_all(&scratch);
         for directory in [
             "keys",

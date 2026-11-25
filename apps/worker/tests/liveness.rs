@@ -422,8 +422,7 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
             let (_db, world, tenant) = world(|_| {}).await;
             let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
             let checkout = Checkout(
-                repository_root()
-                    .join("target/worker-liveness")
+                factory_testkit::fx::scratch::mountable_scratch("worker-liveness")
                     .join(world.ids.new_uuid().simple().to_string()),
             );
             std::fs::create_dir_all(checkout.0.join("allowlist")).expect("a directory");

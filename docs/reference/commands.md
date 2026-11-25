@@ -255,6 +255,7 @@ Every script prints its usage with `--help` and ends with these codes: `0` done,
 | `scripts/docs-check.sh` | Checks these documents. | `python3`, `cargo` |
 | `scripts/dev-up.sh` | Starts PostgreSQL alone for development. | Docker |
 | `scripts/local-up.sh` | Starts the local stack: PostgreSQL 18 and the artifact volume. | Docker, `psql`, the Diesel CLI |
+| `scripts/worker-host.sh` | Runs the worker on the host beside the local stack, so it can start sandboxes (ADR 0036). `--check` prepares and checks without starting; `--setcap` gives the program `cap_chown` on Linux. | Docker, `cargo`, `uv`, the local stack |
 | `scripts/smoke.sh` | Starts a throwaway copy of the local stack and checks it. `--static` needs no running daemon. | Docker |
 | `scripts/backup.sh` | Backs up the database and the artifact directory of a running local stack. | Docker |
 | `scripts/restore.sh` | Restores a backup into a fresh local stack and verifies it. `--backup DIR` names the backup. | Docker |

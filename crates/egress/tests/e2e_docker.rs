@@ -42,7 +42,10 @@ const CLAUDE_MODEL: &str = "claude-sonnet-5-5";
 const CODEX_MODEL: &str = "gpt-fake";
 const SIDECAR_PORT: u16 = 8443;
 const ALIAS: &str = "egress";
-const PROVIDER_IMAGE: &str = "python:3.13-alpine";
+// The public Python image that runs the fake provider, pinned by the digest of its multi-platform
+// index (checked 2026-11-22) so that a moved tag cannot change what the test runs.
+const PROVIDER_IMAGE: &str =
+    "python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e";
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -73,7 +76,9 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        // A folder the policy lets a sandbox mount on this host (`mountable_scratch`): the build's
+        // temporary directory is under /home on most Linux hosts, which the policy forbids.
+        let dir = factory_testkit::fx::scratch::mountable_scratch("egress-e2e").join(format!(
             "e2e-{label}-{}-{}",
             std::process::id(),
             made_up_key("")[..8].to_owned()
@@ -232,13 +237,16 @@ impl Lab {
         .expect("the broker starts");
         let broker_port = broker.local_addr().port();
 
-        // Where the host is, as a container on the bridge sees it.
+        // Where the host is, as a container on the bridge sees it. Docker Desktop defines the name;
+        // a Linux daemon defines it only when asked, and `host-gateway` is the same address that
+        // Docker Desktop gives the name, so the flag changes nothing there.
         let resolved = docker(
             &scope,
             &label(strings(&[
                 "run",
                 "--rm",
                 "--pull=never",
+                "--add-host=host.docker.internal:host-gateway",
                 PROVIDER_IMAGE,
                 "python3",
                 "-c",

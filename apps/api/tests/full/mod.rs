@@ -352,9 +352,8 @@ impl Rig {
                 .register(label, value)
                 .expect("a secret value registers");
         }
-        // Not under the system temporary directory: see the worker README, mismatch 2.
-        let scratch = root()
-            .join("target/full-run")
+        // A folder the policy lets a sandbox mount on this host: see the worker README, mismatch 2.
+        let scratch = factory_testkit::fx::scratch::mountable_scratch("full-run")
             .join(ids.new_uuid().simple().to_string());
         std::fs::create_dir_all(&scratch).expect("a scratch directory");
 

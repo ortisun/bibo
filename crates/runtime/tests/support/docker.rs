@@ -53,8 +53,10 @@ pub const SIDECAR_ALIAS: &str = "egress";
 pub const PROVIDER_PORT: u16 = 8080;
 
 /// The public Python image that runs the fake provider. It is a test fixture, not part of the
-/// factory's images.
-const PROVIDER_IMAGE: &str = "python:3.13-alpine";
+/// factory's images. Pinned by the digest of its multi-platform index (checked 2026-11-22), so
+/// that a moved tag cannot change what the test runs.
+const PROVIDER_IMAGE: &str =
+    "python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e";
 
 /// A directory under the target directory, removed when dropped. It is under `/Users`, so Docker
 /// Desktop can mount it.
@@ -68,7 +70,9 @@ impl Scratch {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        // A folder the policy lets a sandbox mount on this host (`mountable_scratch`): the build's
+        // temporary directory is under /home on most Linux hosts, which the policy forbids.
+        let path = factory_testkit::fx::scratch::mountable_scratch("runtime-tests").join(format!(
             "{label}-{}-{nanos}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::SeqCst)

@@ -1,0 +1,52 @@
+# The worker's configuration when it runs on the host (ADR 0036), as a template.
+#
+# scripts/worker-host.sh fills in the @NAME@ values, merges FACTORY_HOST_DIR/credentials.yaml over the result and
+# writes FACTORY_HOST_DIR/worker.yaml, which the worker reads. Do not edit the generated file: it is written again on
+# every start. crates/composition/tests/examples.rs fills this template with sample values and runs it through the
+# worker's own parser, so it cannot drift from the code. The keys are listed in docs/reference/configuration.md.
+#
+#   @PROTECTED@        FACTORY_HOST_DIR/protected, a copy of the folders the worker reads (policies, agents, profiles,
+#                      schemas, the allowlist and the sandbox image catalog), made again on every start
+#   @SECRETS@          FACTORY_HOST_DIR/secrets: the database URL files of the two logins, for 127.0.0.1
+#   @KEY_FILE@         the decision signing key of the local stack, the SAME file the API signs with
+#   @ARTIFACTS@        FACTORY_HOST_DIR/artifacts, which infra/compose/host-worker.yml also gives the API
+#   @TOKEN_ROOT@       /run/user/<uid>/factory-tokens when it exists (a tmpfs), else FACTORY_HOST_DIR/tokens
+#   @WORKSPACES@       FACTORY_HOST_DIR/workspaces
+#   @DOCKER_HOST@      the endpoint of the current docker context
+#   @DOCKER_CONFIG@    FACTORY_HOST_DIR/docker-config, an empty folder: no context, no credential helper
+#   @BROKER_LISTEN@    the bridge gateway address on Linux, 127.0.0.1 on Docker Desktop, with the broker port
+#   @UPSTREAM@         the host-gateway address a container on the bridge resolves, with the broker port
+#
+# Every path above is a host path the Docker daemon mounts or the worker reads; none may be under a forbidden mount
+# source of policies/security.yaml, which the script checks first.
+#
+# What only a person can supply goes in FACTORY_HOST_DIR/credentials.yaml, never here: broker.upstreams (the model
+# provider and the file of its credential), github (a registered GitHub App) and worker.tenants. Until they are
+# there the worker prints BLOCKED lines and exits with code 3 (docs/reference/commands.md).
+
+profile: local
+protected_checkout: '@PROTECTED@'
+definitions_root: '@PROTECTED@'
+
+database:
+  tenant: { url_file: '@SECRETS@/db_worker', login: factory_worker, max_connections: 8 }
+  system: { url_file: '@SECRETS@/db_engine', login: factory_engine, max_connections: 4 }
+
+artifacts: { root: '@ARTIFACTS@' }
+
+sandbox:
+  images_catalog: '@PROTECTED@/infra/sandbox-images/images.json'
+  token_root: '@TOKEN_ROOT@'
+  workspace_root: '@WORKSPACES@'
+  docker_host: '@DOCKER_HOST@'
+  docker_config: '@DOCKER_CONFIG@'
+  # The egress sidecar relays the sandbox's traffic to the broker and nothing else (apps/egress-sidecar/README.md).
+  sidecar_command: [--mode, broker, --listen, '0.0.0.0:8443', --upstream, '@UPSTREAM@']
+
+broker:
+  listen: '@BROKER_LISTEN@'
+  upstreams: []
+  prices: []
+
+decisions:
+  key_file: '@KEY_FILE@'

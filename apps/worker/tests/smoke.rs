@@ -225,10 +225,9 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
     let policies = load_policy(&root, &[]).expect("the real policies load");
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
     let _secrets = FactorySecrets::new(Arc::clone(&redactor), &policies.security);
-    // Not under the system temporary directory: on macOS that is below /var, which the policy lists
-    // as a forbidden mount source.
-    let checkout = repository_root()
-        .join("target/smoke")
+    // A folder the policy lets a sandbox mount on this host: the system temporary directory is
+    // below /var on macOS and the repository is below /home on most Linux hosts, both forbidden.
+    let checkout = factory_testkit::fx::scratch::mountable_scratch("smoke")
         .join(ids.new_uuid().simple().to_string());
     std::fs::create_dir_all(checkout.join("allowlist")).expect("dir");
     std::fs::write(

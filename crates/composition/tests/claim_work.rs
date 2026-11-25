@@ -165,9 +165,8 @@ impl Rig {
     async fn new() -> Self {
         let (db, world, tenant) = pg_world().await;
         let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
-        // Not under the system temporary directory: see the worker README, mismatch 2.
-        let checkout = repository_root()
-            .join("target/claim-work")
+        // A folder the policy lets a sandbox mount on this host: see the worker README, mismatch 2.
+        let checkout = factory_testkit::fx::scratch::mountable_scratch("claim-work")
             .join(world.ids.new_uuid().simple().to_string());
         std::fs::create_dir_all(checkout.join("allowlist")).expect("a directory");
         let allowlist = Arc::new(FileAllowlist::in_checkout(&checkout));
