@@ -53,7 +53,7 @@ Gates are not separate stages. Each stage has its own `GATING` phase, which is w
 | 2 | `REPOSITORY_INTELLIGENCE` | `INTAKE` | deterministic | reproducible repository map and a build and test baseline run in a sandbox | never | 1 |
 | 3 | `SPECIFICATION` | `INTAKE`, `REPOSITORY_INTELLIGENCE` | agent_via_spec_kit | deterministic specification gate plus independent specification reviewer; freezes the SpecificationContract | policy_by_risk | 1 |
 | 4 | `DOMAIN_DISCOVERY` | `SPECIFICATION` | deterministic | profile resolution and tool capability probes; BLOCKED when a mandatory profile gate cannot run | never | 1 |
-| 5 | `ARCHITECTURE` | `SPECIFICATION`, `DOMAIN_DISCOVERY` | agent | schema validation, requirement-to-design traceability coverage, independent critic when risk tier is high | policy_by_risk | 1 |
+| 5 | `ARCHITECTURE` | `SPECIFICATION`, `DOMAIN_DISCOVERY` | agent | schema validation, requirement-to-design traceability coverage, independent critic when risk tier is high or a design decision needs a person | policy_by_risk | 1 |
 | 6 | `TASK_PLANNING` | `ARCHITECTURE` | agent | deterministic DAG validator: acyclic, every acceptance criterion covered, owned files do not overlap, sizes bounded | never | 1 |
 | 7 | `IMPLEMENTATION` | `TASK_PLANNING` | agent_in_sandbox | scope check: changed paths inside owned files, no protected path touched, no test weakening | never | 1 |
 | 8 | `VALIDATION` | `IMPLEMENTATION` | deterministic_in_fresh_sandbox | trusted gate definitions from the protected base branch; format, lint, build, tests, secret scan, acceptance evidence mapping | never | 1 |

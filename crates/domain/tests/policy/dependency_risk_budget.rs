@@ -426,6 +426,25 @@ proptest! {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
+fn a_design_decision_for_a_person_is_medium_and_no_new_dependency() {
+    // ADR 0037: the policy names the fact at the medium tier, so it never matches by accident
+    // of a missing name, and it lifts nothing to high on its own.
+    let facts = RiskFacts {
+        design_decision_needs_person: true,
+        ..RiskFacts::default()
+    };
+    let assessment = engine().risk.assess(&facts, None);
+    assert_eq!(assessment.tier, RiskTier::Medium);
+    assert_eq!(assessment.matched, ["design_decision_needs_person"]);
+    assert!(
+        !assessment
+            .required_reviews
+            .iter()
+            .any(|r| r == "security_reviewer")
+    );
+}
+
+#[test]
 fn negative_nt_pol_06_the_computed_tier_applies_and_an_agent_claim_only_raises() {
     let risk = &engine().risk;
     // The diff touches dependency manifests: sensitive files, so high, whatever the agent says.
@@ -561,8 +580,8 @@ proptest! {
 
     #[test]
     fn the_tier_never_goes_down_when_a_fact_is_added_or_an_agent_speaks(
-        bits in proptest::collection::vec(any::<bool>(), 19),
-        extra in 0usize..19,
+        bits in proptest::collection::vec(any::<bool>(), 20),
+        extra in 0usize..20,
         claim in prop::option::of(prop::sample::select(vec![RiskTier::Low, RiskTier::Medium, RiskTier::High, RiskTier::Critical])),
     ) {
         let make = |b: &[bool]| RiskFacts {
@@ -573,6 +592,7 @@ proptest! {
             data_migration: b[10], concurrency_or_locking_change: b[11], infra_change: b[12],
             protected_path_change: b[13], policy_or_sandbox_change: b[14], money_movement: b[15],
             physical_actuation: b[16], regulated_workflow: b[17], production_data_access: b[18],
+            design_decision_needs_person: b[19],
         };
         let risk = &engine().risk;
         let base = risk.assess(&make(&bits), None);

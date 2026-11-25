@@ -1155,7 +1155,7 @@
           "DOMAIN_DISCOVERY"
         ],
         "executor": "agent",
-        "gate": "schema validation, requirement-to-design traceability coverage, independent critic when risk tier is high",
+        "gate": "schema validation, requirement-to-design traceability coverage, independent critic when risk tier is high or a design decision needs a person",
         "human_gate": "policy_by_risk",
         "slice": 1
       },

@@ -42,6 +42,7 @@ This directory is `docs/adr/`, as the master prompt's workspace layout (section 
 | [0034](0034-github-ci-on-arm64-with-a-database-and-built-images.md) | The GitHub CI runs on an arm64 runner, the platform the sandbox images are pinned for; PostgreSQL is a service container, and the sandbox, service and `alpine/git` images are built or pulled in the job before `scripts/ci.sh`, whose test step shows every failure. | Decided by the owner, 2026-11-22 |
 | [0035](0035-the-worker-holds-cap-chown-on-linux.md) | On a Linux host the worker holds `CAP_CHOWN` (and the CI runs the gate with it as an ambient capability), so it can hand the `0400` job token file to the sandbox user; the file is unchanged. | Decided by the owner, 2026-11-22 |
 | [0036](0036-the-local-worker-runs-on-the-host.md) | In the local deployment the worker that runs sandboxes runs on the host (`scripts/worker-host.sh`), and only PostgreSQL and the API run in Compose; no container holds the Docker socket. | Decided by the owner, 2026-11-22 |
+| [0037](0037-a-design-decision-for-a-person-is-its-own-risk-fact.md) | A design decision that needs a person is the risk fact `design_decision_needs_person`, at the medium tier, and no longer counts as `new_dependency`; such a design still gets the independent critic. | Decided by the owner, 2026-11-24 |
 
 ## Rules for this directory
 

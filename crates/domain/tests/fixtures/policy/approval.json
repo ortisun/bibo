@@ -793,7 +793,8 @@
       "criteria_any": [
         "multi_module_change",
         "public_api_change",
-        "schema_migration_without_data_loss"
+        "schema_migration_without_data_loss",
+        "design_decision_needs_person"
       ],
       "id": "medium",
       "required_approvals": 1,

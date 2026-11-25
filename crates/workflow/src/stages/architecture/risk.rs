@@ -59,6 +59,8 @@ pub fn either(a: RiskFacts, b: RiskFacts) -> RiskFacts {
         public_api_change: a.public_api_change || b.public_api_change,
         schema_migration_without_data_loss: a.schema_migration_without_data_loss
             || b.schema_migration_without_data_loss,
+        design_decision_needs_person: a.design_decision_needs_person
+            || b.design_decision_needs_person,
         authn_authz_change: a.authn_authz_change || b.authn_authz_change,
         secret_handling_change: a.secret_handling_change || b.secret_handling_change,
         new_dependency: a.new_dependency || b.new_dependency,
@@ -120,8 +122,9 @@ pub fn sensitive_paths<'a>(design: &'a Design, policy: &PolicyEngine) -> Vec<&'a
         .collect()
 }
 
-/// The decisions of the design that a person must approve. The policy has no criterion of its own
-/// for them, so each one counts as `new_dependency`, the case the architect's schema names first.
+/// The decisions of the design that a person must approve. They make the criterion
+/// `design_decision_needs_person` hold (ADR 0037), not `new_dependency`: a real new dependency is a
+/// change to a manifest, which is `sensitive_file_change` here and `new_dependency` in the diff.
 #[must_use]
 pub fn decisions_for_a_person(design: &Design) -> Vec<&str> {
     design
@@ -148,7 +151,7 @@ pub fn measure(design: &Design, policy: &PolicyEngine) -> RiskFacts {
     facts.multi_module_change = modules.len() > 1;
     facts.public_api_change = design.elements.iter().any(|e| e.kind == "interface");
     facts.schema_migration_without_data_loss = design.elements.iter().any(|e| e.kind == "data");
-    facts.new_dependency = !decisions_for_a_person(design).is_empty();
+    facts.design_decision_needs_person = !decisions_for_a_person(design).is_empty();
 
     let every = |kind: &str| {
         !design.elements.is_empty() && design.elements.iter().all(|element| element.kind == kind)
@@ -159,7 +162,7 @@ pub fn measure(design: &Design, policy: &PolicyEngine) -> RiskFacts {
     facts.single_module_change_without_sensitive_or_protected_paths = modules.len() <= 1
         && !sensitive
         && !protected
-        && !facts.new_dependency
+        && !facts.design_decision_needs_person
         && !facts.public_api_change
         && !touched.is_empty();
     facts
@@ -368,13 +371,44 @@ mod tests {
     }
 
     #[test]
-    fn a_decision_for_a_person_counts_as_a_new_dependency_and_is_high() {
+    fn a_decision_for_a_person_is_its_own_fact_at_medium_and_no_new_dependency() {
+        // ADR 0037: before, such a decision counted as `new_dependency` and made the design high.
         let mut design = json_option_design();
+        design.elements[0].kind = "module".into();
         design.decisions[0].needs_person = true;
         let assessment = tier_of(&design, None);
-        assert_eq!(assessment.tier, RiskTier::High);
-        assert!(assessment.matched.contains(&"new_dependency".to_owned()));
+        assert_eq!(assessment.tier, RiskTier::Medium);
+        assert_eq!(assessment.matched, ["design_decision_needs_person"]);
+        let facts = measure(&design, &policy());
+        assert!(facts.design_decision_needs_person);
+        assert!(!facts.new_dependency);
+        assert!(!facts.single_module_change_without_sensitive_or_protected_paths);
         assert_eq!(decisions_for_a_person(&design), ["hand-written-json"]);
+    }
+
+    #[test]
+    fn a_decision_for_a_person_that_touches_the_manifest_is_still_high() {
+        // A real new dependency changes a manifest, a sensitive path, so it stays high.
+        let mut design = json_option_design();
+        design.decisions[0].needs_person = true;
+        design.elements.push(named(
+            "add-a-json-library",
+            "module",
+            &["FR-009"],
+            &["Cargo.toml", "Cargo.lock"],
+        ));
+        let assessment = tier_of(&design, None);
+        assert_eq!(assessment.tier, RiskTier::High);
+        assert!(
+            assessment
+                .matched
+                .contains(&"sensitive_file_change".to_owned())
+        );
+        assert!(
+            assessment
+                .matched
+                .contains(&"design_decision_needs_person".to_owned())
+        );
     }
 
     #[test]

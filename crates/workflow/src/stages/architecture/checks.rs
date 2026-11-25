@@ -91,6 +91,16 @@ pub struct Rules {
     pub human_from: RiskTier,
 }
 
+impl Rules {
+    /// Whether the independent critic reviews the design: from the `critic_from` tier, and at
+    /// any tier when a decision of the design needs a person, so that the person is shown a
+    /// decision a second agent has reviewed (ADR 0037).
+    #[must_use]
+    pub fn critic_required(&self, tier: RiskTier, design: &Design) -> bool {
+        tier >= self.critic_from || design.decisions.iter().any(|d| d.needs_person)
+    }
+}
+
 impl Default for Rules {
     fn default() -> Self {
         Self {
@@ -596,6 +606,26 @@ mod tests {
             complexity(&asks, &spec, RiskTier::Low, &Rules::default()),
             Complexity::NonTrivial
         );
+    }
+
+    #[test]
+    fn the_critic_reviews_from_its_tier_and_every_decision_for_a_person() {
+        // ADR 0037: a decision for a person is medium, below `critic_from`, and still gets one.
+        let rules = Rules::default();
+        let plain = design(
+            vec![element("a", &["FR-001"], &["src/a.rs"])],
+            vec![decision("d", 2, false)],
+            0,
+        );
+        assert!(!rules.critic_required(RiskTier::Medium, &plain));
+        assert!(rules.critic_required(RiskTier::High, &plain));
+        let asks = design(
+            vec![element("a", &["FR-001"], &["src/a.rs"])],
+            vec![decision("d", 2, true)],
+            0,
+        );
+        assert!(rules.critic_required(RiskTier::Low, &asks));
+        assert!(rules.critic_required(RiskTier::Medium, &asks));
     }
 
     #[test]

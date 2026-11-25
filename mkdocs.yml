@@ -211,6 +211,7 @@ nav:
       - "0034 GitHub CI on arm64 with built images": adr/0034-github-ci-on-arm64-with-a-database-and-built-images.md
       - "0035 The worker holds CAP_CHOWN on Linux": adr/0035-the-worker-holds-cap-chown-on-linux.md
       - "0036 The local worker runs on the host": adr/0036-the-local-worker-runs-on-the-host.md
+      - "0037 A design decision for a person is its own risk fact": adr/0037-a-design-decision-for-a-person-is-its-own-risk-fact.md
   - Security:
       - Security policy: SECURITY.md
       - security/negative-test-catalog.md
