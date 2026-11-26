@@ -213,6 +213,23 @@ const NEVER: &[&str] = &[
 /// reviewer checked on 2026-10-28. Keep the reasons short and true. A new use of an old name in a
 /// new file is a new line here, on purpose.
 const REVIEWED: &[(&str, &str, &str)] = &[
+    // The three fields of the deferred decision lines were added with the lines on 2026-11-26
+    // (ADR 0038) by the author of the lines, and wait for a reviewer.
+    (
+        "crates/composition/src/decisions.rs",
+        "why",
+        "why a decision was left for a later pass, Deferred::code: a closed set of static strings",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "failures",
+        "how many passes in a row could not decide a request, a count",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "tries",
+        "the most passes a request gets, MAX_TRIES: a constant count",
+    ),
     (
         "crates/workflow/src/engine/attempt.rs",
         "blocked_code",

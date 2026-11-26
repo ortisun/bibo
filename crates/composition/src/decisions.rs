@@ -996,8 +996,43 @@ impl AuditMarkers {
 enum Verdict {
     /// Dealt with: write the marker.
     Done(Marked),
-    /// Could not be decided now; try again on the next pass.
-    Later,
+    /// Could not be decided now; try again on the next pass, for the reason given.
+    Later(Deferred),
+}
+
+/// Why a decision was left for a later pass. The worker logs it (ADR 0038); nothing from the
+/// request is in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Deferred {
+    /// A source the hook reads (the store, the allowlist, the approval sources) could not be read.
+    Unreadable,
+    /// The engine lost a compare and swap: a row changed while it decided. The next pass reads
+    /// it again.
+    EngineConflict,
+    /// Another error of the engine or its store.
+    EngineError,
+    /// The approval stage has not stored what the decision needs yet.
+    NotReady,
+}
+
+impl Deferred {
+    /// The code in the log line.
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Unreadable => "unreadable",
+            Self::EngineConflict => "engine_conflict",
+            Self::EngineError => "engine_error",
+            Self::NotReady => "not_ready",
+        }
+    }
+}
+
+/// Why an engine error leaves a decision for later.
+fn deferred(error: &EngineError) -> Deferred {
+    match error {
+        EngineError::Conflict => Deferred::EngineConflict,
+        _ => Deferred::EngineError,
+    }
 }
 
 /// The audit log of one tenant as far as this worker has read it.
@@ -1356,10 +1391,22 @@ impl ClaimWork {
         let (verdict, decision) = self.decide(tenant, decision).await;
         let marked = match verdict {
             Verdict::Done(marked) => marked,
-            Verdict::Later if decision.failures + 1 >= MAX_TRIES => {
+            Verdict::Later(why) if decision.failures + 1 >= MAX_TRIES => {
+                tracing::warn!(
+                    decision = %decision.id,
+                    why = why.code(),
+                    tries = MAX_TRIES,
+                    "the decision could not be decided in its last try and is given up"
+                );
                 Marked::Rejected(Reason::GaveUp.text())
             }
-            Verdict::Later => {
+            Verdict::Later(why) => {
+                tracing::warn!(
+                    decision = %decision.id,
+                    why = why.code(),
+                    failures = decision.failures + 1,
+                    "the decision is left for a later pass"
+                );
                 self.note_failure(tenant, decision.sequence);
                 return;
             }
@@ -1390,8 +1437,12 @@ impl ClaimWork {
         };
         for _ in 0..PAGES_PER_PASS {
             let page = {
-                let Ok(mut tx) = self.store.begin(TenantScope::new(tenant)).await else {
-                    return false;
+                let mut tx = match self.store.begin(TenantScope::new(tenant)).await {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        tracing::warn!(%error, "the audit log cannot be read: no transaction");
+                        return false;
+                    }
                 };
                 let read = tx.read_audit(AuditFilter::Tenant, cursor, PAGE).await;
                 let _ = tx.rollback().await;
@@ -1490,7 +1541,7 @@ impl ClaimWork {
             }
             Ok(false) => {}
             Err(EngineError::NotFound) => return Verdict::Done(Reason::NoJob.into()),
-            Err(_) => return Verdict::Later,
+            Err(error) => return Verdict::Later(deferred(&error)),
         }
 
         // 2. Is it still good? A request is for the world as the person saw it. One that has waited
@@ -1508,7 +1559,7 @@ impl ClaimWork {
         let sender = match self.sender_of(tenant, decision.principal).await {
             Ok(Some(sender)) => sender,
             Ok(None) => return Verdict::Done(Reason::NotCurrentUser.into()),
-            Err(Unreadable) => return Verdict::Later,
+            Err(Unreadable) => return Verdict::Later(Deferred::Unreadable),
         };
         decision.actor_github_id = Some(sender.id);
 
@@ -1519,7 +1570,7 @@ impl ClaimWork {
             }
             Ok(Some((_, repository, github_repository))) => (repository, github_repository),
             Ok(None) => return Verdict::Done(Reason::NoJob.into()),
-            Err(Unreadable) => return Verdict::Later,
+            Err(Unreadable) => return Verdict::Later(Deferred::Unreadable),
         };
 
         // 5. May they, now, on this repository? The allowlist is read at this moment and the sender
@@ -1536,7 +1587,7 @@ impl ClaimWork {
         {
             Ok(true) => {}
             Ok(false) => return Verdict::Done(Reason::NotAuthorized.into()),
-            Err(Unreadable) => return Verdict::Later,
+            Err(Unreadable) => return Verdict::Later(Deferred::Unreadable),
         }
 
         // 6. Apply it.
@@ -1554,7 +1605,7 @@ impl ClaimWork {
         // other already moved and would call the request out of place; it asks again whether the
         // engine has this command, and if so the request was applied (R-9).
         match verdict {
-            Verdict::Done(Marked::Rejected(_)) | Verdict::Later => {
+            Verdict::Done(Marked::Rejected(_)) | Verdict::Later(_) => {
                 match self
                     .engine
                     .command_applied(tenant, fields.job, command)
@@ -1601,7 +1652,7 @@ impl ClaimWork {
             Err(EngineError::Illegal(_) | EngineError::GuardUnmet(_) | EngineError::Refused(_)) => {
                 Verdict::Done(Reason::WrongState.into())
             }
-            Err(_) => Verdict::Later,
+            Err(error) => Verdict::Later(deferred(&error)),
         }
     }
 
@@ -1626,7 +1677,7 @@ impl ClaimWork {
         let (kind, correlation) = match self.stage_facts(tenant, stage_run).await {
             Ok(Some(facts)) => facts,
             Ok(None) => return Verdict::Done(Reason::NoStageRun.into()),
-            Err(Unreadable) => return Verdict::Later,
+            Err(Unreadable) => return Verdict::Later(Deferred::Unreadable),
         };
         match (kind, fields.verb) {
             // The specification stage asks a person before it freezes its draft.
@@ -1670,7 +1721,7 @@ impl ClaimWork {
                 Ok(request) => Some(request),
                 // The request is stored by the approval stage. Before it passes there is nothing
                 // to approve; the decision waits, up to `MAX_TRIES` passes.
-                Err(_) => return Verdict::Later,
+                Err(_) => return Verdict::Later(Deferred::NotReady),
             }
         } else {
             None
@@ -1726,7 +1777,7 @@ impl ClaimWork {
                 Verdict::Done(refusal_reason(refusal.code()).into())
             }
             Err(ServiceError::Engine(_)) => Verdict::Done(Reason::WrongState.into()),
-            Err(ServiceError::Unavailable) => Verdict::Later,
+            Err(ServiceError::Unavailable) => Verdict::Later(Deferred::Unreadable),
         }
     }
 
@@ -1806,7 +1857,7 @@ impl ClaimWork {
             Err(EngineError::Illegal(_) | EngineError::GuardUnmet(_) | EngineError::Refused(_)) => {
                 Verdict::Done(Reason::WrongState.into())
             }
-            Err(_) => Verdict::Later,
+            Err(error) => Verdict::Later(deferred(&error)),
         }
     }
 
@@ -1846,7 +1897,7 @@ impl ClaimWork {
             // thirtieth real run an approval was taken for the answer to the reviewer's question,
             // and the stage ran again and asked the same question.
             Ok(_) => return Verdict::Done(Reason::WrongState.into()),
-            Err(_) => return Verdict::Later,
+            Err(_) => return Verdict::Later(Deferred::Unreadable),
         };
         let (Some(head), Some(evidence)) = (
             fields.head.as_deref(),
@@ -1898,7 +1949,7 @@ impl ClaimWork {
             Err(EngineError::Illegal(_) | EngineError::Refused(_)) => {
                 Verdict::Done(Reason::WrongState.into())
             }
-            Err(_) => Verdict::Later,
+            Err(error) => Verdict::Later(deferred(&error)),
         }
     }
 
@@ -1923,14 +1974,14 @@ impl ClaimWork {
             self.approvals.level(tenant, identity.job).await,
             self.approvals.requester(identity).await,
         ) else {
-            return Err(Verdict::Later);
+            return Err(Verdict::Later(Deferred::Unreadable));
         };
         if requester != sender.id {
             return Ok(None);
         }
         let now = self.clock.now();
         let Ok(inputs) = self.approvals.solo_inputs(tenant, identity.job, now).await else {
-            return Err(Verdict::Later);
+            return Err(Verdict::Later(Deferred::Unreadable));
         };
         let Some(id) = GithubUserId::new(sender.id) else {
             return Err(Verdict::Done(Reason::NotAuthorized.into()));
@@ -2023,7 +2074,7 @@ impl ClaimWork {
             Err(EngineError::Illegal(_) | EngineError::GuardUnmet(_) | EngineError::Refused(_)) => {
                 Verdict::Done(Reason::WrongState.into())
             }
-            Err(_) => Verdict::Later,
+            Err(error) => Verdict::Later(deferred(&error)),
         }
     }
 
@@ -2165,8 +2216,16 @@ impl WhileRunning for ClaimWork {
             let span = job_span_of(&*self.store, tenant, job).await;
             async {
                 let (verdict, decision) = self.decide(tenant, decision).await;
-                if let Verdict::Done(marked) = verdict {
-                    self.finish(tenant, &decision, &marked).await;
+                match verdict {
+                    Verdict::Done(marked) => self.finish(tenant, &decision, &marked).await,
+                    // Not counted against `MAX_TRIES`: the watch calls this at the loop's poll
+                    // interval, and a cancel must not be given up for losing a few races. The pass
+                    // before each claim counts its own tries.
+                    Verdict::Later(why) => tracing::warn!(
+                        decision = %decision.id,
+                        why = why.code(),
+                        "the cancel is left for the next check while the attempt runs"
+                    ),
                 }
             }
             .instrument(span)
