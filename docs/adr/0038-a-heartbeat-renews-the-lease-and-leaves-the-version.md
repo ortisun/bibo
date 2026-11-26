@@ -30,6 +30,7 @@ The bump had a stated reason: "a heartbeat raises `version`, so a stale move by 
 
 - `heartbeat` runs `UPDATE attempts SET lease_expires_at = ..., last_heartbeat_at = now()` and no longer changes `version`. The `WHERE` clause and the answers (`Conflict` for an ended attempt, `LeaseFenced` otherwise) are unchanged.
 - `version` of an attempt changes only with its state: a transition, a sandbox record, the start.
+- The database enforced the bump: `bump_guard` refuses any update that does not raise `version` by exactly one. Migration 33 (`2026-11-26-003300_lease_renewal_keeps_the_version`) puts `attempts_bump_guard` on `attempts` in its place, as migration 17 did for the ledger head of `jobs`: an update that changes only `lease_expires_at` and `last_heartbeat_at` may keep the version, a raise by one is still accepted (the earlier code's renewal), and every other update must still raise it by exactly one.
 - The sweeper keeps its own guard: its moves of a lapsed lease, a passed deadline and a passed teardown deadline are allowed only when the database clock says that time has passed (`$13`, `$14`, `$15` of `transition_attempt`).
 - The decision hook logs, at `warn`, why it leaves a request for a later pass (a store error, an unreadable source, an engine conflict). Before, that was silent.
 
@@ -46,4 +47,5 @@ The bump had a stated reason: "a heartbeat raises `version`, so a stale move by 
 - The storage tests of leases and claims (`crates/storage/tests/claims_and_leases.rs`), the store contract and tenant isolation.
 - The worker suite, including the liveness test with its evidence, and the engine and composition tests.
 - A new storage test: a heartbeat between a read and a move of the attempt leaves the move's compare and swap valid.
+- The SQL suites of `scripts/db-test.sh`, with a new `lease` section: a renewal keeps the version, a renewal that also changes another column must raise it, and the earlier code's renewal is still accepted.
 - Not measured: the heartbeat's throughput without the bump.
