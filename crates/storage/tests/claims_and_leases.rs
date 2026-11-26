@@ -287,6 +287,60 @@ async fn a_heartbeat_renews_the_lease_by_the_database_clock() {
     );
 }
 
+/// A heartbeat renews the lease and leaves `version` (ADR 0038): a move planned from a read made
+/// before the heartbeat keeps its compare and swap. Before, the cancel of a running attempt lost
+/// to every heartbeat that committed first, and under load it never got through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_heartbeat_between_a_read_and_a_move_leaves_the_move_valid() {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+    let started = scene.start(scene.a, run, "worker-1").await.expect("start");
+
+    // The mover reads the attempt.
+    let mut mover = scene.tx(scene.a).await;
+    let read = mover
+        .get_attempt(started.attempt.value.id)
+        .await
+        .expect("read");
+
+    // The heartbeat renews the lease and commits first.
+    let mut beat = scene.tx(scene.a).await;
+    beat.heartbeat(
+        Fence {
+            attempt: started.attempt.value.id,
+            epoch: started.attempt.value.epoch,
+            worker: WorkerId::new("worker-1").expect("name"),
+        },
+        Duration::from_secs(300),
+    )
+    .await
+    .expect("renew");
+    beat.commit().await.expect("commit the heartbeat");
+
+    // The move planned from the earlier read still applies.
+    let ready = factory_ports::store::AppliedTransition::plan(
+        AttemptStatus::Starting,
+        factory_domain::state::AttemptEvent::SandboxReady,
+        at(),
+        cleared(Guard::SandboxProvisioned),
+    )
+    .expect("A01");
+    let moved = mover
+        .transition_attempt(
+            read.value.id,
+            read.version,
+            read.value.epoch,
+            ready,
+            factory_ports::store::AttemptEnd::default(),
+        )
+        .await;
+    assert!(
+        moved.is_ok(),
+        "the move keeps its compare and swap after a heartbeat: {moved:?}"
+    );
+}
+
 /// A `start_attempt` that is open holds the job `FOR SHARE` and the stage run `FOR NO KEY UPDATE`.
 /// Neither stops an audit record (a `KEY SHARE` on both rows) from being written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

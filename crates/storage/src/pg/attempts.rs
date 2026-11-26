@@ -395,9 +395,11 @@ async fn heartbeat(
     ttl: Duration,
 ) -> Result<LeaseRenewal, StoreError> {
     // Renewed only while the lease has not lapsed: a lapsed lease is the sweeper's.
+    // `version` is left alone: it counts changes of state, and a renewal is not one, so a
+    // versioned move of the running attempt (a cancel) does not race its heartbeat (ADR 0038).
     let renewed = sql_query(
         "UPDATE attempts SET lease_expires_at = now() + $5 * interval '1 microsecond', \
-                last_heartbeat_at = now(), version = version + 1 \
+                last_heartbeat_at = now() \
           WHERE tenant_id = $1 AND id = $2 AND lease_owner = $3 AND lease_epoch = $4 \
             AND status IN ('STARTING', 'RUNNING', 'CANCELLING') AND lease_expires_at > now() \
           RETURNING status, lease_expires_at, deadline_at",

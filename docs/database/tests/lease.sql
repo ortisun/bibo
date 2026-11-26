@@ -144,7 +144,8 @@ CREATE FUNCTION dbtest.renew(p_tenant uuid, p_attempt uuid, p_worker text, p_epo
 DECLARE
   n bigint;
 BEGIN
-  UPDATE attempts SET lease_expires_at = now() + interval '30 seconds', last_heartbeat_at = now(), version = version + 1
+  -- The renewal of AttemptOps::heartbeat. It leaves the version where it is (ADR 0038, migration 33).
+  UPDATE attempts SET lease_expires_at = now() + interval '30 seconds', last_heartbeat_at = now()
    WHERE tenant_id = p_tenant AND id = p_attempt AND lease_owner = p_worker AND lease_epoch = p_epoch
      AND status IN ('STARTING', 'RUNNING', 'CANCELLING') AND lease_expires_at > now();
   GET DIAGNOSTICS n = ROW_COUNT;
@@ -770,7 +771,8 @@ $$;
 
 -- ---------------------------------------------------------------------------------------------
 -- 14. A lease renewal is a heap-only (HOT) update (work package s1-database-review, migration 19).
--- A heartbeat changes lease_expires_at, last_heartbeat_at and version, and nothing else. If an index is keyed on one of
+-- A heartbeat changes lease_expires_at and last_heartbeat_at, and nothing else (since migration 33 it no longer raises the
+-- version, ADR 0038). If an index is keyed on one of
 -- those columns the update cannot be heap-only: PostgreSQL then writes a new entry to every index of the table for every
 -- renewal and leaves a dead one behind in each. Measured at 100,000 rows, four clients renewing 200 live attempts: 0.00
 -- percent heap-only with the index `attempts_lease_expiry_idx`, 99.84 percent without it (docs/database/performance.md). The
@@ -783,5 +785,32 @@ BEGIN
   PERFORM dbtest.expect_true('a renewal of a live lease succeeds', dbtest.renew(dbtest.u(1), att, 'worker-q', 1));
   PERFORM dbtest.expect_eq('and it is a heap-only update: no index is keyed on a column that a renewal changes',
     pg_stat_get_xact_tuples_hot_updated('attempts'::regclass) - before, 1::bigint);
+END
+$$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 15. A lease renewal keeps the version (ADR 0038, migration 33). The version counts changes of state, so a move that read
+-- the attempt before a heartbeat still holds its compare and swap. Every other update still raises it by exactly one.
+DO $$
+DECLARE
+  tn uuid := dbtest.u(1);
+  att uuid := dbtest.mk_attempt(42, interval '10 minutes', interval '1 hour');
+  v bigint := (SELECT version FROM attempts WHERE id = dbtest.u(5042));
+BEGIN
+  PERFORM dbtest.expect_true('a renewal of a live lease succeeds', dbtest.renew(tn, att, 'worker-q', 1));
+  PERFORM dbtest.expect_eq('and leaves the version where it was', (SELECT version FROM attempts WHERE id = att), v);
+  PERFORM dbtest.expect_eq('so a compare and swap on the version read before the renewal still matches (one row)',
+    dbtest.run_as(format($q$UPDATE attempts SET sandbox_id = 'sbx-42', sandbox_leaked = false, version = version + 1 WHERE tenant_id = %L AND id = %L AND version = %s$q$, tn, att, v), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_ok('the renewal of the earlier code, which raises the version by one, is still accepted',
+    format($q$UPDATE attempts SET lease_expires_at = now() + interval '40 seconds', last_heartbeat_at = now(), version = version + 1 WHERE tenant_id = %L AND id = %L$q$, tn, att), 'factory_app');
+  PERFORM dbtest.expect_error('a renewal that also changes another column must raise the version',
+    format($q$UPDATE attempts SET lease_expires_at = now() + interval '50 seconds', failure_class = 'INTERNAL' WHERE tenant_id = %L AND id = %L$q$, tn, att),
+    '23514', 'factory_app', 'attempts_version_bump');
+  PERFORM dbtest.expect_error('a change of state without a raise is refused',
+    format($q$UPDATE attempts SET status = 'CANCELLING' WHERE tenant_id = %L AND id = %L$q$, tn, att), '23514', 'factory_app', 'attempts_version_bump');
+  PERFORM dbtest.expect_error('and so is a raise by two',
+    format($q$UPDATE attempts SET status = 'CANCELLING', version = version + 2 WHERE tenant_id = %L AND id = %L$q$, tn, att), '23514', 'factory_app', 'attempts_version_bump');
+  PERFORM dbtest.expect_error('an update that changes nothing and does not raise the version is refused',
+    format($q$UPDATE attempts SET lease_expires_at = lease_expires_at WHERE tenant_id = %L AND id = %L$q$, tn, att), '23514', 'factory_app', 'attempts_version_bump');
 END
 $$;
