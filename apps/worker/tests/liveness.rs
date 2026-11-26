@@ -58,6 +58,67 @@ async fn world(tune: impl FnOnce(&mut EngineConfig)) -> (support::TestDb, PgWorl
     (db, world, tenant)
 }
 
+/// Keeps the warnings and errors the worker logs while a test runs, with their fields, so a test
+/// that fails can say what the loop and the decision hook said. It needs only `tracing`: no layer
+/// and no formatter, and no line leaves the test.
+#[derive(Clone, Default)]
+struct Warnings {
+    lines: Arc<std::sync::Mutex<Vec<String>>>,
+    next_span: Arc<std::sync::atomic::AtomicU64>,
+    started: Arc<std::sync::OnceLock<std::time::Instant>>,
+}
+
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, " {}={value:?}", field.name());
+    }
+}
+
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        // Spans are kept so `instrument` works; events only from WARN up.
+        metadata.is_span() || *metadata.level() <= tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let at = self.started.get_or_init(std::time::Instant::now).elapsed();
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!(
+                "{at:?} {} {}:{}",
+                event.metadata().level(),
+                event.metadata().target(),
+                fields.0
+            ));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+impl Warnings {
+    fn text(&self) -> String {
+        let lines = self
+            .lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if lines.is_empty() {
+            "no warning or error was logged".to_owned()
+        } else {
+            lines.join("\n")
+        }
+    }
+}
+
 /// Passes the loop's cancel watch through to the decision hook, and notes when each call to
 /// `apply_cancels` started and how long it took. When a cancel never arrives, these notes tell
 /// apart a watch that never ran from a hook that ran and did not apply the request.
@@ -494,6 +555,8 @@ impl Drop for Checkout {
 /// the attempt is told to stop and ends as cancelled, long before the stage would have ended.
 #[tokio::test(flavor = "current_thread")]
 async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled() {
+    let warnings = Warnings::default();
+    let _logging = tracing::subscriber::set_default(warnings.clone());
     tokio::task::LocalSet::new()
         .run_until(async {
             let (_db, world, tenant) = world(|_| {}).await;
@@ -621,10 +684,11 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
                 String::new()
             } else {
                 format!(
-                    "{}; the request was recorded at {:?}\n{}",
+                    "{}; the request was recorded at {:?}\n{}\nwhat the worker logged:\n{}",
                     watched.summary(),
                     recorded_at,
-                    decision_trail(&world, tenant).await
+                    decision_trail(&world, tenant).await,
+                    warnings.text()
                 )
             };
             assert_eq!(

@@ -1429,8 +1429,12 @@ impl ClaimWork {
         };
         for _ in 0..PAGES_PER_PASS {
             let page = {
-                let Ok(mut tx) = self.store.begin(TenantScope::new(tenant)).await else {
-                    return false;
+                let mut tx = match self.store.begin(TenantScope::new(tenant)).await {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        tracing::warn!(%error, "the audit log cannot be read: no transaction");
+                        return false;
+                    }
                 };
                 let read = tx.read_audit(AuditFilter::Tenant, cursor, PAGE).await;
                 let _ = tx.rollback().await;
