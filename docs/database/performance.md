@@ -208,7 +208,7 @@ The plan never changes and never scans a table: it is the same index scan, neste
 
 ### 6. Churn: the lease renewal
 
-`heartbeat` renews a lease: `UPDATE attempts SET lease_expires_at = ..., last_heartbeat_at = now(), version = version + 1`. Four clients renew 200 live attempts at random as fast as they can, from a vacuumed table, the leases refreshed first. Same database, same machine, same PostgreSQL defaults; the "before" row has the index `attempts_lease_expiry_idx` put back.
+`heartbeat` renews a lease. When this was measured the statement was `UPDATE attempts SET lease_expires_at = ..., last_heartbeat_at = now(), version = version + 1`; since [ADR 0038](../adr/0038-a-heartbeat-renews-the-lease-and-leaves-the-version.md) it no longer changes `version`, and the numbers below were not measured again. Four clients renew 200 live attempts at random as fast as they can, from a vacuumed table, the leases refreshed first. Same database, same machine, same PostgreSQL defaults; the "before" row has the index `attempts_lease_expiry_idx` put back.
 
 | Schema | Renewals | per second | Heap-only (HOT) share | Dead tuples left | `attempts` heap, bytes | `attempts` indexes, bytes |
 |---|---:|---:|---:|---:|---|---|

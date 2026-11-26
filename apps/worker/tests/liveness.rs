@@ -19,6 +19,7 @@ use factory_composition::decisions::{
     REQUESTED,
 };
 use factory_composition::delivery::StoreApprovalSources;
+use factory_composition::hooks::WhileRunning;
 use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::load_policy;
 use factory_composition::system::{RandomIds, Shutdown, TokioTicker};
@@ -29,7 +30,9 @@ use factory_domain::state::{AttemptStatus, JobStatus, StageRunStatus};
 use factory_domain::vocabulary::{Fidelity, HumanRole, StageKind};
 use factory_ports::agent::RoutingNeed;
 use factory_ports::clock::IdGenerator;
-use factory_ports::store::{AuditAction, AuditActor, AuditDecision, NewAuditEvent, Store};
+use factory_ports::store::{
+    AuditAction, AuditActor, AuditDecision, AuditFilter, NewAuditEvent, Store,
+};
 use factory_storage::pg::PgStore;
 use factory_worker::run::{Flow, LoopSummary, Observer, WorkerLoop};
 use factory_workflow::engine::{AttemptOutcome, Engine, EngineConfig, JobView};
@@ -53,6 +56,141 @@ async fn world(tune: impl FnOnce(&mut EngineConfig)) -> (support::TestDb, PgWorl
         .expect("ready");
     let world = PgWorld::new(store, tenant, seeded_repository(tenant), tune).await;
     (db, world, tenant)
+}
+
+/// Keeps the warnings and errors the worker logs while a test runs, with their fields, so a test
+/// that fails can say what the loop and the decision hook said. It needs only `tracing`: no layer
+/// and no formatter, and no line leaves the test.
+#[derive(Clone, Default)]
+struct Warnings {
+    lines: Arc<std::sync::Mutex<Vec<String>>>,
+    next_span: Arc<std::sync::atomic::AtomicU64>,
+    started: Arc<std::sync::OnceLock<std::time::Instant>>,
+}
+
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, " {}={value:?}", field.name());
+    }
+}
+
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        // Spans are kept so `instrument` works; events only from WARN up.
+        metadata.is_span() || *metadata.level() <= tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let at = self.started.get_or_init(std::time::Instant::now).elapsed();
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!(
+                "{at:?} {} {}:{}",
+                event.metadata().level(),
+                event.metadata().target(),
+                fields.0
+            ));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+impl Warnings {
+    fn text(&self) -> String {
+        let lines = self
+            .lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if lines.is_empty() {
+            "no warning or error was logged".to_owned()
+        } else {
+            lines.join("\n")
+        }
+    }
+}
+
+/// Passes the loop's cancel watch through to the decision hook, and notes when each call to
+/// `apply_cancels` started and how long it took. When a cancel never arrives, these notes tell
+/// apart a watch that never ran from a hook that ran and did not apply the request.
+struct WatchedCancels {
+    hook: Arc<ClaimWork>,
+    started: tokio::time::Instant,
+    calls: std::sync::Mutex<Vec<(Duration, Duration)>>,
+}
+
+#[async_trait(?Send)]
+impl WhileRunning for WatchedCancels {
+    async fn apply_cancels(&self, tenant: TenantId, job: JobId) {
+        let at = self.started.elapsed();
+        self.hook.apply_cancels(tenant, job).await;
+        let took = self.started.elapsed().saturating_sub(at);
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((at, took));
+    }
+}
+
+impl WatchedCancels {
+    /// How many times the watch called the hook, when it first and last did, and the longest call.
+    fn summary(&self) -> String {
+        let calls = self
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let longest = calls.iter().map(|(_, took)| *took).max();
+        format!(
+            "the cancel watch called the hook {} times; first at {:?}, last at {:?}, longest call {:?}",
+            calls.len(),
+            calls.first().map(|(at, _)| *at),
+            calls.last().map(|(at, _)| *at),
+            longest,
+        )
+    }
+}
+
+/// The decision records of the tenant's audit log, one line each: the request, and the marker the
+/// worker writes when it applies or rejects it, with its reason.
+async fn decision_trail(world: &PgWorld, tenant: TenantId) -> String {
+    let mut tx = world
+        .store
+        .begin(TenantScope::new(tenant))
+        .await
+        .expect("a tx");
+    let records = tx
+        .read_audit(AuditFilter::Tenant, 0, 1000)
+        .await
+        .expect("the audit log");
+    let _ = tx.rollback().await;
+    let lines: Vec<String> = records
+        .iter()
+        .filter(|record| record.event.action.as_str().starts_with("decision."))
+        .map(|record| {
+            format!(
+                "#{} {} {:?} {:?} at {:?}",
+                record.sequence,
+                record.event.action.as_str(),
+                record.event.decision,
+                record.event.reason,
+                record.created_at,
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        "no decision record in the audit log".to_owned()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// Waits until `done` holds for the job, for at most `seconds`. Returns the last view.
@@ -417,6 +555,8 @@ impl Drop for Checkout {
 /// the attempt is told to stop and ends as cancelled, long before the stage would have ended.
 #[tokio::test(flavor = "current_thread")]
 async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled() {
+    let warnings = Warnings::default();
+    let _logging = tracing::subscriber::set_default(warnings.clone());
     tokio::task::LocalSet::new()
         .run_until(async {
             let (_db, world, tenant) = world(|_| {}).await;
@@ -469,6 +609,11 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
             let never = Arc::new(tokio::sync::Notify::new());
             world.script(StageKind::Intake).queue([Step::Hang(never)]);
             let job = world.admitted_job().await;
+            let watched = Arc::new(WatchedCancels {
+                hook: Arc::clone(&hook),
+                started: tokio::time::Instant::now(),
+                calls: std::sync::Mutex::new(Vec::new()),
+            });
 
             let shutdown = Shutdown::new();
             let worker_loop = WorkerLoop::shared(
@@ -479,7 +624,7 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
                 shutdown.clone(),
             )
             .with_before_claim(hook.clone())
-            .with_cancel_watch(hook.clone());
+            .with_cancel_watch(watched.clone());
             let task = tokio::task::spawn_local(async move { worker_loop.run().await });
             while world.script(StageKind::Intake).executed().is_empty() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -524,6 +669,7 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
             .await
             .expect("the request is recorded");
             tx.commit().await.expect("commit");
+            let recorded_at = watched.started.elapsed();
 
             // The loop polls every 50 ms, the heartbeat that tells the attempt runs every 500 ms.
             let view = until(&world, job, 8, |view| {
@@ -532,10 +678,23 @@ async fn a_cancel_recorded_while_an_attempt_runs_ends_that_attempt_as_cancelled(
             })
             .await;
             let intake = view.newest(StageKind::Intake).expect("a run");
+            // When the cancel did not arrive, say what the watch did and what the audit log holds,
+            // so a failure tells a watch that never ran from a request that was not applied.
+            let evidence = if intake.attempts[0].status == AttemptStatus::Cancelled {
+                String::new()
+            } else {
+                format!(
+                    "{}; the request was recorded at {:?}\n{}\nwhat the worker logged:\n{}",
+                    watched.summary(),
+                    recorded_at,
+                    decision_trail(&world, tenant).await,
+                    warnings.text()
+                )
+            };
             assert_eq!(
                 intake.attempts[0].status,
                 AttemptStatus::Cancelled,
-                "the running attempt was cancelled: {view:#?}"
+                "the running attempt was cancelled: {evidence}\n{view:#?}"
             );
             assert!(
                 matches!(view.status, JobStatus::Cancelling | JobStatus::Cancelled),

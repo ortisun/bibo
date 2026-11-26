@@ -196,13 +196,13 @@ Zero rows: read the run; `Conflict` if it changed, `NotFound` if it is not visib
 ### Renew a lease (`AttemptOps::heartbeat`), in a tenant transaction
 
 ```sql
-UPDATE attempts SET lease_expires_at = now() + $ttl, last_heartbeat_at = now(), version = version + 1
+UPDATE attempts SET lease_expires_at = now() + $ttl, last_heartbeat_at = now()
  WHERE tenant_id = $1 AND id = $attempt AND lease_owner = $worker AND lease_epoch = $epoch
    AND status IN ('STARTING', 'RUNNING', 'CANCELLING') AND lease_expires_at > now()
 RETURNING status, lease_expires_at, deadline_at;
 ```
 
-Zero rows: read the attempt. A terminal status is `Conflict`; anything else (wrong worker, wrong epoch, lapsed lease) is `LeaseFenced`. A lapsed lease belongs to the sweeper and the heartbeat cannot revive it. `CANCELLING` renews and the status read back tells the worker to tear down. A heartbeat raises `version`, so a stale move by the sweeper fails its compare and swap and reads again. Tested in `lease` sections 4 and 12.
+Zero rows: read the attempt. A terminal status is `Conflict`; anything else (wrong worker, wrong epoch, lapsed lease) is `LeaseFenced`. A lapsed lease belongs to the sweeper and the heartbeat cannot revive it. `CANCELLING` renews and the status read back tells the worker to tear down. A heartbeat leaves `version` alone ([ADR 0038](../adr/0038-a-heartbeat-renews-the-lease-and-leaves-the-version.md)): `version` counts changes of state, so a cancel or another versioned move of a running attempt does not race its heartbeat. The sweeper's move of a lapsed lease is guarded by the database clock in its own `UPDATE` (`lease_expires_at < now()`), and a heartbeat never renews a lapsed lease. Tested in `lease` sections 4 and 12.
 
 ### Due attempts and their moves (`SystemTx::find_due_attempts`, `transition_attempt` for A07, A06, A10)
 
