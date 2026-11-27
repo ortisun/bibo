@@ -48,3 +48,27 @@ The failures had four causes, and none was a defect of the factory itself:
 - On the owner's Mac (macOS, arm64): the storage clippy fix, the 230 installer tests, and the API tests that the forbidden mount source had blocked, both with the scratch under `target/` and with it forced to `/tmp`.
 - On GitHub (run 45033034531, x86-64, before this decision): the causes above, by reading each failing test's message.
 - The result on the arm64 runner is recorded in the pull request that brings this record.
+
+## Note of 2026-11-27: the tests run four at a time, one per CPU
+
+PR #16 ran the tests eight at a time on the runner's four CPUs (`NEXTEST_TEST_THREADS: "8"`), because most tests wait on PostgreSQL or Docker. That saved about two minutes, but tests with a time budget then failed now and then:
+- the worker's cancel, liveness and kill tests;
+- `loopback_status`, which failed to bind a port;
+- `loopback_e2e`;
+- `composed_start`;
+- the sandbox's process-group timeout.
+
+The owner chose to go back to one test per CPU after this measurement:
+
+| On the same commit (#18 with #20) | 4 at a time | 8 at a time |
+|---|---|---|
+| Runs with a failure that passes on its own | 0 of 3 | 2 of 3 |
+| Tests nextest marks slow, per run | 5 to 10 | 18 to 22 |
+| The `rust-test` step | 1552 to 1721 s | 1421 to 1518 s |
+
+Over every run since this record, 7 of 22 attempts at eight had such a failure, and 0 of 5 at four (two of those at nextest's default, which is the CPU count). Runs 45933028229, 45933030839 and 45933033644 were at four, and 45933036317, 45933039061 and 45933041796 at eight.
+
+- **Decision:** `NEXTEST_TEST_THREADS` is the runner's CPU count, `"4"`.
+- **Cost:** about 2.3 minutes a run.
+- **Rule:** a test whose deadline fails under contention is a test of the machine, not of the code. The number of tests that run at once is not raised again without a measurement like this one.
+
