@@ -62,9 +62,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
-      # Most tests wait on PostgreSQL or Docker rather than on a CPU, so twice the runner's four
-      # CPUs run at once: the tests took about 17 minutes instead of 21.
-      NEXTEST_TEST_THREADS: "8"
+      # One test for each of the runner's four CPUs. Eight at once saved about two minutes, and
+      # tests with a time budget then failed now and then: 7 of 22 attempts at eight, 0 of 5 at
+      # four (ADR 0034, note of 2026-11-27). Do not raise it without such a measurement.
+      NEXTEST_TEST_THREADS: "4"
     steps:
       # v7.0.1 (2026-07-20). The whole history is needed: scripts/ci.sh scans every commit for
       # secrets and reports BLOCKED on a shallow clone.
